@@ -16,11 +16,24 @@ class AgoraConfig(BaseModel):
     google_cloud_project: str | None = Field(
         default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT")
     )
-    google_cloud_location: str = "us-central1"
+    google_cloud_location: str = Field(
+        default_factory=lambda: os.getenv("AGORA_GOOGLE_CLOUD_LOCATION", "us-central1")
+    )
 
-    flash_model: str = "gemini-3.0-flash-preview"
-    pro_model: str = "gemini-3.1-pro-preview"
-    claude_model: str = "claude-sonnet-4-6"
+    flash_model: str = Field(
+        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-2.5-flash")
+    )
+    pro_model: str = Field(
+        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-2.5-pro")
+    )
+    claude_model: str = Field(
+        default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
+    )
+
+    # Gemini runtime feature controls.
+    gemini_enable_streaming: bool = True
+    gemini_enable_thinking: bool = True
+    gemini_thinking_budget: int = Field(default=1024, ge=0)
 
     max_rounds: int = 4
     quorum_threshold: float = 0.6

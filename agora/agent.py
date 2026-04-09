@@ -1,10 +1,12 @@
-"""Unified LLM caller abstraction for Vertex-hosted Gemini and Claude models."""
+"""Unified LLM caller abstraction for Gemini and Claude model backends."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
+from collections.abc import Callable
 from typing import Any
 
 import structlog
@@ -18,9 +20,9 @@ except ImportError:  # pragma: no cover
     ResourceExhausted = ServiceUnavailable = TooManyRequests = RuntimeError  # type: ignore[assignment]
 
 try:
-    from langchain_google_vertexai import ChatVertexAI
+    from langchain_google_genai import ChatGoogleGenerativeAI
 except ImportError:  # pragma: no cover
-    ChatVertexAI = None  # type: ignore[assignment]
+    ChatGoogleGenerativeAI = None  # type: ignore[assignment]
 
 try:
     from langchain_google_vertexai.model_garden import ChatAnthropicVertex
@@ -35,18 +37,21 @@ class AgentCallError(RuntimeError):
 
 
 class AgentCaller:
-    """Async abstraction over Vertex-hosted chat models.
+    """Async abstraction over chat models.
 
     This wrapper normalizes model routing, retries, and token usage metadata across
-    Gemini and Claude providers exposed through Vertex AI.
+    Gemini and Claude providers.
     """
 
     def __init__(
         self,
-        model: str = "gemini-2.0-flash",
+        model: str = "gemini-2.5-flash",
         temperature: float = 0.7,
         project: str | None = None,
-        location: str = "us-central1",
+        location: str | None = None,
+        enable_streaming: bool | None = None,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
     ) -> None:
         """Initialize caller and underlying LangChain model.
 
@@ -54,7 +59,7 @@ class AgentCaller:
             model: Model identifier.
             temperature: Default sampling temperature for calls.
             project: Google Cloud project id; defaults to environment value.
-            location: Vertex AI location.
+            location: Vertex AI location; defaults to configured runtime location.
 
         Raises:
             ValueError: If the model prefix is unsupported.
@@ -65,7 +70,16 @@ class AgentCaller:
         self.model = model
         self.temperature = temperature
         self.project = project or os.getenv("GOOGLE_CLOUD_PROJECT") or config.google_cloud_project
-        self.location = location
+        self.location = location or config.google_cloud_location
+        self.enable_streaming = (
+            config.gemini_enable_streaming if enable_streaming is None else enable_streaming
+        )
+        self.enable_thinking = (
+            config.gemini_enable_thinking if enable_thinking is None else enable_thinking
+        )
+        self.thinking_budget = (
+            config.gemini_thinking_budget if thinking_budget is None else thinking_budget
+        )
 
         if not self.project:
             raise AgentCallError(
@@ -75,21 +89,45 @@ class AgentCaller:
 
         if model.startswith("gemini"):
             self.provider = "gemini"
-            if ChatVertexAI is None:
+            if ChatGoogleGenerativeAI is None:
                 raise AgentCallError(
-                    "langchain-google-vertexai is not installed; ChatVertexAI unavailable"
+                    "langchain-google-genai is not installed; ChatGoogleGenerativeAI "
+                    "unavailable"
                 )
+            base_kwargs = {
+                "model": model,
+                "vertexai": True,
+                "project": self.project,
+                "location": self.location,
+                "temperature": temperature,
+            }
+            optional_kwargs: dict[str, Any] = {
+                "streaming": self.enable_streaming,
+            }
+            if self.enable_thinking:
+                optional_kwargs["include_thoughts"] = True
+                if self.thinking_budget is not None:
+                    optional_kwargs["thinking_budget"] = self.thinking_budget
             try:
-                self._chat_model = ChatVertexAI(
-                    model_name=model,
-                    project=self.project,
-                    location=self.location,
-                    temperature=temperature,
+                self._chat_model = ChatGoogleGenerativeAI(**base_kwargs, **optional_kwargs)
+            except TypeError as exc:
+                logger.warning(
+                    "gemini_optional_features_unsupported",
+                    model=model,
+                    unsupported=list(optional_kwargs.keys()),
+                    error=str(exc),
                 )
+                try:
+                    self._chat_model = ChatGoogleGenerativeAI(**base_kwargs)
+                except TypeError as init_exc:
+                    raise AgentCallError(
+                        "Installed langchain-google-genai is too old for Vertex mode. "
+                        "Upgrade langchain-google-genai to a recent version."
+                    ) from init_exc
             except Exception as exc:
                 raise AgentCallError(
-                    "Failed to initialize ChatVertexAI. Ensure GOOGLE_CLOUD_PROJECT and "
-                    "application default credentials are configured."
+                    "Failed to initialize ChatGoogleGenerativeAI in Vertex mode. Ensure "
+                    "GOOGLE_CLOUD_PROJECT and application default credentials are configured."
                 ) from exc
         elif model.startswith("claude"):
             self.provider = "claude"
@@ -121,6 +159,8 @@ class AgentCaller:
         user_prompt: str,
         response_format: type[BaseModel] | None = None,
         temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
     ) -> tuple[str | BaseModel, dict[str, Any]]:
         """Execute one model call with normalized metadata.
 
@@ -136,6 +176,9 @@ class AgentCaller:
         Raises:
             AgentCallError: If all retry attempts fail.
         """
+
+        if stream and response_format is not None:
+            raise ValueError("Streaming is currently supported for unstructured text calls only.")
 
         messages: list[tuple[str, str]] = [("system", system_prompt), ("human", user_prompt)]
         model = (
@@ -172,6 +215,12 @@ class AgentCaller:
                             f"{response_format.__name__}."
                         )
                     response_content: str | BaseModel = response
+                elif stream:
+                    response_content, raw_message = await self._stream_text(
+                        model=model,
+                        messages=messages,
+                        stream_callback=stream_callback,
+                    )
                 else:
                     raw_message = await model.ainvoke(messages)
                     content = getattr(raw_message, "content", "")
@@ -187,6 +236,8 @@ class AgentCaller:
                     input_tokens=usage["input_tokens"],
                     output_tokens=usage["output_tokens"],
                     latency_ms=usage["latency_ms"],
+                    streamed=stream,
+                    thinking_trace_present=usage.get("thinking_trace_present", False),
                 )
                 return response_content, usage
             except retryable_errors as exc:
@@ -224,6 +275,52 @@ class AgentCaller:
                 raise AgentCallError(f"Non-retryable failure for model {self.model}.") from exc
 
         raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
+
+    async def _stream_text(
+        self,
+        model: Any,
+        messages: list[tuple[str, str]],
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str, Any | None]:
+        """Stream text chunks and return final concatenated content."""
+
+        chunks: list[str] = []
+        raw_message: Any | None = None
+
+        async for chunk in model.astream(messages):
+            raw_message = chunk
+            content = self._extract_chunk_text(chunk)
+            if not content:
+                continue
+            chunks.append(content)
+            if stream_callback is not None:
+                try:
+                    stream_callback(content)
+                except Exception as exc:  # pragma: no cover
+                    logger.warning("stream_callback_error", error=str(exc))
+
+        return "".join(chunks), raw_message
+
+    @staticmethod
+    def _extract_chunk_text(chunk: Any) -> str:
+        """Extract plain text from a streamed LangChain chunk payload."""
+
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                else:
+                    text = getattr(item, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+        return str(content) if content else ""
 
     def _get_structured_runnable(
         self,
@@ -281,12 +378,45 @@ class AgentCaller:
                     or 0
                 )
 
+        thinking_trace_present = False
+        thinking_trace_chars = 0
+        if raw_message is not None:
+            additional_kwargs = getattr(raw_message, "additional_kwargs", None)
+            if isinstance(additional_kwargs, dict):
+                thought_payload = (
+                    additional_kwargs.get("thought")
+                    or additional_kwargs.get("thoughts")
+                    or additional_kwargs.get("reasoning_content")
+                )
+                if thought_payload is not None:
+                    thinking_trace_present = True
+                    if isinstance(thought_payload, str):
+                        thinking_trace_chars = len(thought_payload)
+                    else:
+                        thinking_trace_chars = len(json.dumps(thought_payload, default=str))
+
+            # Gemini can surface thinking blocks directly in message content.
+            content = getattr(raw_message, "content", None)
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "thinking" and item.get("thinking") is not None:
+                        thinking_trace_present = True
+                        payload = item.get("thinking")
+                        if isinstance(payload, str):
+                            thinking_trace_chars += len(payload)
+                        else:
+                            thinking_trace_chars += len(json.dumps(payload, default=str))
+
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "model": self.model,
             "latency_ms": latency_ms,
             "provider": self.provider,
+            "thinking_trace_present": thinking_trace_present,
+            "thinking_trace_chars": thinking_trace_chars,
         }
 
 
@@ -294,14 +424,25 @@ def flash_caller() -> AgentCaller:
     """Return cost-efficient generation caller for openings, voting, and rebuttals."""
 
     config = get_config()
-    return AgentCaller(model=config.flash_model, temperature=0.7)
+    return AgentCaller(
+        model=config.flash_model,
+        temperature=0.7,
+        enable_streaming=config.gemini_enable_streaming,
+        enable_thinking=False,
+    )
 
 
 def pro_caller() -> AgentCaller:
     """Return higher-quality reasoning caller for selection and synthesis."""
 
     config = get_config()
-    return AgentCaller(model=config.pro_model, temperature=0.5)
+    return AgentCaller(
+        model=config.pro_model,
+        temperature=0.5,
+        enable_streaming=config.gemini_enable_streaming,
+        enable_thinking=config.gemini_enable_thinking,
+        thinking_budget=config.gemini_thinking_budget,
+    )
 
 
 def claude_caller() -> AgentCaller:

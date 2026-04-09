@@ -11,7 +11,7 @@ from typing import Any
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
-from agora.agent import AgentCaller, AgentCallError, flash_caller
+from agora.agent import AgentCaller, AgentCallError, claude_caller, flash_caller, pro_caller
 from agora.config import get_config
 from agora.runtime.hasher import TranscriptHasher
 from agora.types import (
@@ -59,6 +59,8 @@ class VoteEngine:
         agent_count: int = 3,
         quorum_threshold: float = 0.6,
         flash_agent: AgentCaller | None = None,
+        pro_agent: AgentCaller | None = None,
+        claude_agent: AgentCaller | None = None,
         hasher: TranscriptHasher | None = None,
         temperature_scaling: float = 1.5,
     ) -> None:
@@ -76,6 +78,8 @@ class VoteEngine:
         self.quorum_threshold = max(0.0, min(1.0, quorum_threshold))
         self.temperature_scaling = max(0.1, temperature_scaling)
         self._flash_agent = flash_agent
+        self._pro_agent = pro_agent
+        self._claude_agent = claude_agent
         self.hasher = hasher or TranscriptHasher()
         self.graph = self._build_graph() if StateGraph is not None else None
 
@@ -166,6 +170,7 @@ class VoteEngine:
 
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
             agent_id = f"agent-{agent_idx + 1}"
+            tier = self._tier_for_agent(agent_idx)
             system_prompt = (
                 "Answer the task. Provide your answer, confidence, "
                 "predicted_group_answer, and reasoning."
@@ -177,6 +182,7 @@ class VoteEngine:
             )
             fallback = self._fallback_vote(task=task, agent_idx=agent_idx)
             response, usage = await self._call_structured(
+                tier=tier,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_model=_VoteResponse,
@@ -187,7 +193,7 @@ class VoteEngine:
             content = response.answer
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=self._model_name(),
+                agent_model=self._model_name(tier),
                 role="voter",
                 round_number=1,
                 content=content,
@@ -273,15 +279,16 @@ class VoteEngine:
 
     async def _call_structured(
         self,
+        tier: str,
         system_prompt: str,
         user_prompt: str,
         response_model: type[BaseModel],
         fallback: BaseModel,
     ) -> tuple[BaseModel, dict[str, Any]]:
-        """Call flash tier with structured output and fallback on failure."""
+        """Call selected tier with structured output and fallback on failure."""
 
         try:
-            caller = self._get_caller()
+            caller = self._get_caller(tier)
             response, usage = await caller.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -303,20 +310,60 @@ class VoteEngine:
 
         return fallback, {"tokens": 0, "latency_ms": 0.0}
 
-    def _get_caller(self) -> AgentCaller:
-        """Return lazy flash caller instance."""
+    def _get_caller(self, tier: str) -> AgentCaller:
+        """Return lazy caller instance for a tier."""
+
+        if tier == "pro":
+            if self._pro_agent is None:
+                self._pro_agent = pro_caller()
+            return self._pro_agent
+
+        if tier == "claude":
+            if self._claude_agent is None:
+                self._claude_agent = claude_caller()
+            return self._claude_agent
 
         if self._flash_agent is None:
             self._flash_agent = flash_caller()
         return self._flash_agent
 
-    def _model_name(self) -> str:
+    def _model_name(self, tier: str) -> str:
         """Resolve model name used for vote generation."""
 
         try:
-            return self._get_caller().model
+            return self._get_caller(tier).model
         except AgentCallError:
-            return get_config().flash_model
+            config = get_config()
+            if tier == "claude":
+                return config.claude_model
+            if tier == "pro":
+                return config.pro_model
+            return config.flash_model
+
+    def _tier_for_agent(self, agent_idx: int) -> str:
+        """Route voters across model tiers for diversity.
+
+        Strategy:
+            - 4+ agents: 1 pro, 1 claude, remaining flash.
+            - 3 agents: 1 pro, 1 claude, 1 flash.
+            - <3 agents: flash only.
+        """
+
+        if self.agent_count >= 4:
+            if agent_idx == 0:
+                return "pro"
+            if agent_idx == self.agent_count - 1:
+                return "claude"
+            return "flash"
+
+        if self.agent_count == 3:
+            if agent_idx == 0:
+                return "pro"
+            if agent_idx == self.agent_count - 1:
+                return "claude"
+            return "flash"
+
+        return "flash"
 
     @staticmethod
     def _temperature_scale(probability: float, temperature: float) -> float:

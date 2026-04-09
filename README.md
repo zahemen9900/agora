@@ -55,6 +55,9 @@ Not implemented yet:
 
 Model calls use Vertex-backed providers through the AgentCaller abstraction.
 
+- Gemini models use the latest langchain-google-genai client (ChatGoogleGenerativeAI) in Vertex mode.
+- Claude models continue to use the Vertex Model Garden integration.
+
 - If GOOGLE_CLOUD_PROJECT and credentials are configured, AGORA attempts real model calls.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
 - If AgentCaller cannot initialize due to missing project, that is surfaced clearly in model-layer errors.
@@ -140,14 +143,29 @@ Required for live Vertex calls:
 
 - GOOGLE_CLOUD_PROJECT: your Google Cloud Project ID (string project identifier)
 
+Optional model overrides:
+
+- AGORA_FLASH_MODEL (default: gemini-2.5-flash)
+- AGORA_PRO_MODEL (default: gemini-2.5-pro)
+- AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
+- AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
+
+Not required in the current setup:
+
+- GOOGLE_API_KEY (only needed if you choose non-Vertex Gemini usage later)
+
 Set in shell before running:
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 ```
 
-Current code defaults location to us-central1 internally for caller construction.
-If you need per-environment location overrides, add that wiring in config/caller initialization.
+If you enable Claude in vote routing, ensure your project has access to the selected
+Anthropic Model Garden ID in your configured region, or AGORA will log the model
+error and fall back for that voter.
+
+Current code defaults location to us-central1; set AGORA_GOOGLE_CLOUD_LOCATION to
+route calls to a different Vertex region.
 
 Also ensure ADC credentials are available, for example via:
 
