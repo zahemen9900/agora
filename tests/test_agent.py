@@ -124,7 +124,8 @@ class _FakeAnthropicClient:
 async def test_claude_requires_anthropic_api_key(monkeypatch) -> None:
     """Claude caller should fail fast when API key is missing."""
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Use an empty value so dotenv autoload cannot repopulate this key.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
     monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: object())
     with pytest.raises(AgentCallError, match="ANTHROPIC_API_KEY is not set"):
         AgentCaller(model="claude-sonnet-4-6", temperature=0.2)
