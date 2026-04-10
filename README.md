@@ -163,6 +163,12 @@ Optional model overrides:
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
+- AGORA_ANTHROPIC_THROTTLE_ENABLED (default: true)
+- AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
+- AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS (default: 60)
+
+The Claude caller uses a shared async sliding-window throttle to reduce Anthropic
+429s in multi-agent runs. Tune the throttle variables above to match your org limits.
 
 Not required in the current setup:
 

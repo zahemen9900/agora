@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -9,17 +10,33 @@ import pytest
 from pydantic import BaseModel
 
 import agora.agent as agent_module
-from agora.agent import AgentCaller, AgentCallError
+from agora.agent import AgentCaller, AgentCallError, _AsyncSlidingWindowRateLimiter
 from agora.config import get_config
 
 
 @pytest.fixture(autouse=True)
-def _clear_config_cache() -> None:
+def _clear_config_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure env overrides are reloaded for each test."""
 
+    monkeypatch.setenv("AGORA_ANTHROPIC_THROTTLE_ENABLED", "0")
     get_config.cache_clear()
     yield
     get_config.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_sliding_window_rate_limiter_waits_after_limit() -> None:
+    """Limiter should delay when max requests are already used in the window."""
+
+    limiter = _AsyncSlidingWindowRateLimiter(max_requests=1, window_seconds=0.05)
+    await limiter.acquire()
+
+    start = time.perf_counter()
+    waited_seconds = await limiter.acquire()
+    elapsed = time.perf_counter() - start
+
+    assert waited_seconds >= 0.04
+    assert elapsed >= 0.04
 
 
 class _StructuredResponse(BaseModel):

@@ -6,7 +6,9 @@ import asyncio
 import json
 import os
 import time
+from collections import deque
 from collections.abc import Callable
+from threading import Lock
 from typing import Any
 
 import structlog
@@ -42,6 +44,68 @@ logger = structlog.get_logger(__name__)
 
 class AgentCallError(RuntimeError):
     """Raised when an LLM call fails after retries."""
+
+
+class _AsyncSlidingWindowRateLimiter:
+    """Enforce a max number of requests per sliding time window."""
+
+    def __init__(self, max_requests: int, window_seconds: float) -> None:
+        if max_requests < 1:
+            raise ValueError("max_requests must be at least 1")
+        if window_seconds <= 0:
+            raise ValueError("window_seconds must be positive")
+
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._timestamps: deque[float] = deque()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> float:
+        """Reserve one request slot; returns total waited seconds."""
+
+        waited_seconds = 0.0
+
+        while True:
+            sleep_for = 0.0
+            async with self._lock:
+                now = time.monotonic()
+                cutoff = now - self.window_seconds
+
+                while self._timestamps and self._timestamps[0] <= cutoff:
+                    self._timestamps.popleft()
+
+                if len(self._timestamps) < self.max_requests:
+                    self._timestamps.append(now)
+                    return waited_seconds
+
+                sleep_for = max(0.0, self.window_seconds - (now - self._timestamps[0]))
+
+            if sleep_for > 0:
+                waited_seconds += sleep_for
+                await asyncio.sleep(sleep_for)
+
+
+_ANTHROPIC_THROTTLES: dict[tuple[str, int, float], _AsyncSlidingWindowRateLimiter] = {}
+_ANTHROPIC_THROTTLES_LOCK = Lock()
+
+
+def _get_shared_anthropic_throttle(
+    model: str,
+    requests_per_minute: int,
+    window_seconds: float,
+) -> _AsyncSlidingWindowRateLimiter:
+    """Return a process-shared Anthropic limiter keyed by model and policy."""
+
+    key = (model, requests_per_minute, window_seconds)
+    with _ANTHROPIC_THROTTLES_LOCK:
+        throttle = _ANTHROPIC_THROTTLES.get(key)
+        if throttle is None:
+            throttle = _AsyncSlidingWindowRateLimiter(
+                max_requests=requests_per_minute,
+                window_seconds=window_seconds,
+            )
+            _ANTHROPIC_THROTTLES[key] = throttle
+        return throttle
 
 
 class AgentCaller:
@@ -90,6 +154,10 @@ class AgentCaller:
         )
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or config.anthropic_api_key
         self._anthropic_max_tokens = config.anthropic_max_tokens
+        self._anthropic_throttle_enabled = config.anthropic_throttle_enabled
+        self._anthropic_requests_per_minute = config.anthropic_requests_per_minute
+        self._anthropic_throttle_window_seconds = config.anthropic_throttle_window_seconds
+        self._anthropic_throttle: _AsyncSlidingWindowRateLimiter | None = None
         self._chat_model: Any | None = None
         self._anthropic_client: Any | None = None
 
@@ -157,6 +225,12 @@ class AgentCaller:
                     api_key=self.anthropic_api_key,
                     max_retries=0,
                 )
+                if self._anthropic_throttle_enabled:
+                    self._anthropic_throttle = _get_shared_anthropic_throttle(
+                        model=self.model,
+                        requests_per_minute=self._anthropic_requests_per_minute,
+                        window_seconds=self._anthropic_throttle_window_seconds,
+                    )
             except Exception as exc:
                 raise AgentCallError(
                     "Failed to initialize AsyncAnthropic. Ensure ANTHROPIC_API_KEY is valid."
@@ -327,6 +401,7 @@ class AgentCaller:
                     parse_api = getattr(messages_api, "parse", None)
                     if callable(parse_api):
                         try:
+                            await self._acquire_anthropic_slot(request_kind="messages.parse")
                             raw_message = await parse_api(
                                 model=self.model,
                                 max_tokens=self._anthropic_max_tokens,
@@ -498,6 +573,23 @@ class AgentCaller:
 
         raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
 
+    async def _acquire_anthropic_slot(self, request_kind: str) -> None:
+        """Throttle Anthropic requests to reduce server-side rate-limit failures."""
+
+        if self._anthropic_throttle is None:
+            return
+
+        waited_seconds = await self._anthropic_throttle.acquire()
+        if waited_seconds > 0:
+            logger.info(
+                "anthropic_request_throttled",
+                model=self.model,
+                request_kind=request_kind,
+                wait_ms=round(waited_seconds * 1000.0, 2),
+                limit_rpm=self._anthropic_requests_per_minute,
+                window_seconds=self._anthropic_throttle_window_seconds,
+            )
+
     async def _anthropic_messages_create(
         self,
         system_prompt: str,
@@ -508,6 +600,8 @@ class AgentCaller:
 
         if self._anthropic_client is None:
             raise AgentCallError("Anthropic client was not initialized.")
+
+        await self._acquire_anthropic_slot(request_kind="messages.create")
 
         return await self._anthropic_client.messages.create(
             model=self.model,
@@ -528,6 +622,8 @@ class AgentCaller:
 
         if self._anthropic_client is None:
             raise AgentCallError("Anthropic client was not initialized.")
+
+        await self._acquire_anthropic_slot(request_kind="messages.stream")
 
         chunks: list[str] = []
         async with self._anthropic_client.messages.stream(

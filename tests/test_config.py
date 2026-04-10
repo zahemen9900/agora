@@ -8,7 +8,13 @@ import pytest
 
 from agora.config import get_config
 
-_CONFIG_ENV_KEYS = ("ANTHROPIC_API_KEY", "AGORA_CLAUDE_MODEL")
+_CONFIG_ENV_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "AGORA_CLAUDE_MODEL",
+    "AGORA_ANTHROPIC_THROTTLE_ENABLED",
+    "AGORA_ANTHROPIC_REQUESTS_PER_MINUTE",
+    "AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -60,3 +66,17 @@ def test_exported_environment_wins_over_dotenv(
 
     assert config.anthropic_api_key == "exported-key"
     assert os.environ["ANTHROPIC_API_KEY"] == "exported-key"
+
+
+def test_anthropic_throttle_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Throttle controls should parse from environment variables."""
+
+    monkeypatch.setenv("AGORA_ANTHROPIC_THROTTLE_ENABLED", "false")
+    monkeypatch.setenv("AGORA_ANTHROPIC_REQUESTS_PER_MINUTE", "7")
+    monkeypatch.setenv("AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS", "30")
+
+    config = get_config()
+
+    assert config.anthropic_throttle_enabled is False
+    assert config.anthropic_requests_per_minute == 7
+    assert config.anthropic_throttle_window_seconds == 30.0

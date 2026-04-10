@@ -9,6 +9,21 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse common boolean environment value formats."""
+
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _parse_env_assignment(line: str) -> tuple[str, str] | None:
     """Parse one dotenv-style assignment line."""
 
@@ -80,6 +95,17 @@ class AgoraConfig(BaseModel):
     anthropic_max_tokens: int = Field(
         default_factory=lambda: int(os.getenv("AGORA_ANTHROPIC_MAX_TOKENS", "1024")),
         ge=1,
+    )
+    anthropic_throttle_enabled: bool = Field(
+        default_factory=lambda: _env_bool("AGORA_ANTHROPIC_THROTTLE_ENABLED", True)
+    )
+    anthropic_requests_per_minute: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_ANTHROPIC_REQUESTS_PER_MINUTE", "5")),
+        ge=1,
+    )
+    anthropic_throttle_window_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS", "60")),
+        gt=0,
     )
 
     # Gemini runtime feature controls.
