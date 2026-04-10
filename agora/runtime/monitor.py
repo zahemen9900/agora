@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections import Counter
+from typing import Any
 
 from agora.types import AgentOutput, ConvergenceMetrics, MechanismType
 
@@ -37,7 +39,7 @@ class StateMonitor:
         if not agent_outputs:
             raise ValueError("compute_metrics requires at least one agent output")
 
-        normalized_answers = [output.content.strip().lower() for output in agent_outputs]
+        normalized_answers = [self.extract_answer_signal(output) for output in agent_outputs]
         counts = Counter(normalized_answers)
         total = len(normalized_answers)
 
@@ -59,6 +61,55 @@ class StateMonitor:
             unique_answers=len(counts),
             dominant_answer_share=dominant_share,
         )
+
+    @staticmethod
+    def extract_answer_signal(output: AgentOutput) -> str:
+        """Extract the answer signal used for convergence tracking.
+
+        Debate outputs are often structured JSON payloads whose evidence/defense text
+        changes every round. For convergence, we care about the defended answer, not
+        the entire serialized argument body.
+        """
+
+        parsed = StateMonitor._parse_payload(output.content)
+        extracted = StateMonitor._extract_signal_from_payload(parsed)
+        candidate = extracted if extracted is not None else output.content
+        return " ".join(candidate.strip().lower().split())
+
+    @staticmethod
+    def _parse_payload(content: str) -> Any:
+        """Parse a structured payload when possible."""
+
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            return content
+
+    @staticmethod
+    def _extract_signal_from_payload(payload: Any) -> str | None:
+        """Find the most relevant answer-like field inside a structured payload."""
+
+        if isinstance(payload, str):
+            return payload if payload.strip() else None
+
+        if isinstance(payload, dict):
+            for key in ("faction_answer", "answer", "final_answer", "claim"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+
+            for value in payload.values():
+                extracted = StateMonitor._extract_signal_from_payload(value)
+                if extracted is not None:
+                    return extracted
+
+        if isinstance(payload, list):
+            for item in payload:
+                extracted = StateMonitor._extract_signal_from_payload(item)
+                if extracted is not None:
+                    return extracted
+
+        return None
 
     def should_terminate(
         self,

@@ -124,9 +124,16 @@ class AgoraOrchestrator:
         else:
             reward = result.confidence * (1.0 if result.quorum_reached else 0.5)
 
-        self.selector.update(result.mechanism_selection, reward)
+        self.selector.update_with_mechanism(
+            result.mechanism_selection,
+            reward,
+            mechanism=result.mechanism_used,
+        )
         logger.info(
-            "orchestrator_bandit_updated", reward=reward, mechanism=result.mechanism_used.value
+            "orchestrator_bandit_updated",
+            reward=reward,
+            mechanism=result.mechanism_used.value,
+            originally_selected=result.mechanism_selection.mechanism.value,
         )
         return result
 

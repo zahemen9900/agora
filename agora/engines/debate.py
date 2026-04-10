@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import re
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,10 @@ from agora.types import (
 )
 
 logger = structlog.get_logger(__name__)
+
+_ARITHMETIC_CLAIM_RE = re.compile(
+    r"(?P<claim>[-+*/().\d\s]*\d[-+*/().\d\s]*=\s*[-+*/().\d\s]*\d[-+*/().\d\s]*)"
+)
 
 try:  # Optional import to keep API aligned with LangGraph-based architecture.
     from langgraph.graph import END, START, StateGraph
@@ -158,10 +163,14 @@ class DebateEngine:
             initial_outputs
         )
         state.factions["pro"] = [
-            output for output in initial_outputs if assignments[output.agent_id] == "pro"
+            output
+            for output in initial_outputs
+            if assignments.get(output.agent_id) == "pro"
         ]
         state.factions["opp"] = [
-            output for output in initial_outputs if assignments[output.agent_id] == "opp"
+            output
+            for output in initial_outputs
+            if assignments.get(output.agent_id) == "opp"
         ]
 
         opening_outputs, usage = await self._opening_statements(
@@ -380,28 +389,57 @@ class DebateEngine:
                 opp_count = sum(1 for assigned in assignments.values() if assigned == "opp")
                 assignments[output.agent_id] = "pro" if pro_count <= opp_count else "opp"
 
-        outlier = next(
-            (
-                output.agent_id
-                for output in outputs
-                if output.content.strip().lower() not in {pro_answer, opp_answer}
-            ),
-            None,
-        )
-        if outlier is not None:
-            devil_advocate_id = outlier
-        else:
-            minority_side = "pro"
-            pro_size = sum(1 for side in assignments.values() if side == "pro")
-            opp_size = sum(1 for side in assignments.values() if side == "opp")
-            if opp_size < pro_size:
-                minority_side = "opp"
-            devil_advocate_id = next(
-                (agent_id for agent_id, side in assignments.items() if side == minority_side),
-                outputs[0].agent_id,
-            )
+        self._ensure_both_factions_present(assignments)
+
+        outlier_candidates = [
+            output.agent_id
+            for output in outputs
+            if output.content.strip().lower() not in {pro_answer, opp_answer}
+        ]
+        devil_advocate_id = self._choose_devil_advocate(assignments, outlier_candidates)
+        assignments.pop(devil_advocate_id, None)
+        self._ensure_both_factions_present(assignments)
 
         return pro_answer, opp_answer, assignments, devil_advocate_id
+
+    @staticmethod
+    def _ensure_both_factions_present(assignments: dict[str, str]) -> None:
+        """Rebalance assignments so both factions are represented."""
+
+        pro_members = [agent_id for agent_id, side in assignments.items() if side == "pro"]
+        opp_members = [agent_id for agent_id, side in assignments.items() if side == "opp"]
+
+        if not pro_members and opp_members:
+            assignments[opp_members[-1]] = "pro"
+            pro_members = [opp_members[-1]]
+            opp_members = opp_members[:-1]
+
+        if not opp_members and pro_members:
+            assignments[pro_members[-1]] = "opp"
+
+    @staticmethod
+    def _choose_devil_advocate(
+        assignments: dict[str, str],
+        outlier_candidates: list[str],
+    ) -> str:
+        """Choose an independent devil's advocate without collapsing a faction."""
+
+        side_members = {
+            "pro": [agent_id for agent_id, side in assignments.items() if side == "pro"],
+            "opp": [agent_id for agent_id, side in assignments.items() if side == "opp"],
+        }
+
+        for candidate in outlier_candidates:
+            side = assignments.get(candidate)
+            if side is not None and len(side_members[side]) > 1:
+                return candidate
+
+        for side in ("pro", "opp"):
+            members = side_members[side]
+            if len(members) > 1:
+                return members[-1]
+
+        return next(iter(assignments))
 
     async def _opening_statements(
         self,
@@ -608,15 +646,14 @@ class DebateEngine:
     ) -> tuple[DeliberationResult, dict[str, float | int]]:
         """Aggregate trajectory, synthesize final answer, and build result."""
 
-        pro_score = self._score_faction_outputs(
-            state.factions.get("pro", []) + state.rebuttals.get("pro", [])
-        )
-        opp_score = self._score_faction_outputs(
-            state.factions.get("opp", []) + state.rebuttals.get("opp", [])
-        )
+        pro_outputs = state.factions.get("pro", []) + state.rebuttals.get("pro", [])
+        opp_outputs = state.factions.get("opp", []) + state.rebuttals.get("opp", [])
 
-        pro_bonus = self._locked_claim_bonus(state.locked_claims, state.factions.get("pro", []))
-        opp_bonus = self._locked_claim_bonus(state.locked_claims, state.factions.get("opp", []))
+        pro_score = self._score_faction_outputs(pro_outputs)
+        opp_score = self._score_faction_outputs(opp_outputs)
+
+        pro_bonus = self._locked_claim_bonus(state.locked_claims, pro_outputs)
+        opp_bonus = self._locked_claim_bonus(state.locked_claims, opp_outputs)
         pro_score += pro_bonus
         opp_score += opp_bonus
 
@@ -626,9 +663,7 @@ class DebateEngine:
 
         winning_side = "pro" if pro_score >= opp_score else "opp"
         winning_answer = pro_answer if winning_side == "pro" else opp_answer
-        winning_transcript = state.factions.get(winning_side, []) + state.rebuttals.get(
-            winning_side, []
-        )
+        winning_transcript = pro_outputs if winning_side == "pro" else opp_outputs
 
         system_prompt = (
             "Synthesize the strongest cumulative argument from the winning faction into "
@@ -814,15 +849,47 @@ class DebateEngine:
         """Extract simple arithmetic equality claims from text."""
 
         candidate_claims: list[str] = []
-        tokens = content.replace("\n", " ").split()
-        for token in tokens:
-            if "=" in token:
-                cleaned = token.strip(" ,.;:{}[]()")
-                if cleaned.count("=") == 1:
-                    left, right = cleaned.split("=", maxsplit=1)
-                    if left and right:
-                        candidate_claims.append(cleaned)
+        seen: set[str] = set()
+
+        for fragment in DebateEngine._extract_text_fragments(content):
+            for match in _ARITHMETIC_CLAIM_RE.finditer(fragment):
+                cleaned = re.sub(r"\s+", "", match.group("claim"))
+                if cleaned.count("=") != 1:
+                    continue
+                left, right = cleaned.split("=", maxsplit=1)
+                if not left or not right:
+                    continue
+                if cleaned not in seen:
+                    seen.add(cleaned)
+                    candidate_claims.append(cleaned)
+
         return candidate_claims
+
+    @staticmethod
+    def _extract_text_fragments(content: str) -> list[str]:
+        """Extract raw text fragments from plain text or JSON content."""
+
+        fragments = [content]
+
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return fragments
+
+        def walk(node: Any) -> None:
+            if isinstance(node, str):
+                fragments.append(node)
+                return
+            if isinstance(node, dict):
+                for value in node.values():
+                    walk(value)
+                return
+            if isinstance(node, list):
+                for item in node:
+                    walk(item)
+
+        walk(payload)
+        return fragments
 
     @staticmethod
     def _safe_eval_arithmetic(expression: str) -> float | None:
