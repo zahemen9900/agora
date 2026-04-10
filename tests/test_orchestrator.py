@@ -185,7 +185,10 @@ async def test_run_and_learn_credits_final_mechanism(monkeypatch) -> None:
     result = DeliberationResult(
         task="switch test",
         mechanism_used=MechanismType.VOTE,
-        mechanism_selection=make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning"),
+        mechanism_selection=make_selection(
+            mechanism=MechanismType.DEBATE,
+            topic_category="reasoning",
+        ),
         final_answer="Option A",
         confidence=0.9,
         quorum_reached=True,
