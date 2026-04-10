@@ -57,12 +57,13 @@ Not implemented yet:
 
 ## Cloud/Model Behavior
 
-Model calls use Vertex-backed providers through the AgentCaller abstraction.
+Model calls use mixed providers through the AgentCaller abstraction.
 
 - Gemini models use the latest langchain-google-genai client (ChatGoogleGenerativeAI) in Vertex mode.
-- Claude models continue to use the Vertex Model Garden integration.
+- Claude models use Anthropic's direct Python SDK.
 
-- If GOOGLE_CLOUD_PROJECT and credentials are configured, AGORA attempts real model calls.
+- If GOOGLE_CLOUD_PROJECT and credentials are configured, AGORA attempts live Gemini calls.
+- If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
 - If AgentCaller cannot initialize due to missing project, that is surfaced clearly in model-layer errors.
 
@@ -70,7 +71,7 @@ Model calls use Vertex-backed providers through the AgentCaller abstraction.
 
 ```
 agora/
-  agent.py               # Unified Vertex model caller (Gemini + Claude)
+  agent.py               # Unified model caller (Vertex Gemini + Anthropic Claude)
   config.py              # Runtime config (models, thresholds, GCP project)
   types.py               # Shared pydantic models and enums
   selector/
@@ -143,9 +144,16 @@ if __name__ == "__main__":
 
 ## Environment Variables
 
-Required for live Vertex calls:
+Required for live Gemini / Vertex calls:
 
 - GOOGLE_CLOUD_PROJECT: your Google Cloud Project ID (string project identifier)
+
+Required for live Claude / Anthropic calls:
+
+- ANTHROPIC_API_KEY: your Anthropic API key
+
+AGORA loads `.env` from the current working directory or repository root if present,
+without overriding environment variables already exported in your shell.
 
 Optional model overrides:
 
@@ -164,9 +172,9 @@ Set in shell before running:
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 ```
 
-If you enable Claude in vote routing, ensure your project has access to the selected
-Anthropic Model Garden ID in your configured region, or AGORA will log the model
-error and fall back for that voter.
+If you enable Claude in vote routing or set AGORA model overrides to Claude models,
+ensure ANTHROPIC_API_KEY is exported in your shell or present in `.env` before
+running AGORA.
 
 Current code defaults location to us-central1; set AGORA_GOOGLE_CLOUD_LOCATION to
 route calls to a different Vertex region.
