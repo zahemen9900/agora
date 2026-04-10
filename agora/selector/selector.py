@@ -72,14 +72,30 @@ class AgoraSelector:
             reward: Reward in [0, 1].
         """
 
+        self.update_with_mechanism(selection, reward, mechanism=selection.mechanism)
+
+    def update_with_mechanism(
+        self,
+        selection: MechanismSelection,
+        reward: float,
+        mechanism: MechanismType,
+    ) -> None:
+        """Update bandit using an explicit mechanism attribution.
+
+        Args:
+            selection: Mechanism selection metadata from run.
+            reward: Reward in [0, 1].
+            mechanism: Mechanism that should receive credit for the outcome.
+        """
+
         category = selection.task_features.topic_category
-        self.bandit.update(selection.mechanism, category, reward)
+        self.bandit.update(mechanism, category, reward)
         if self.bandit_state_path is not None:
             self.bandit.save_state(self.bandit_state_path)
 
         logger.info(
             "agora_selector_updated",
-            mechanism=selection.mechanism.value,
+            mechanism=mechanism.value,
             category=category,
             reward=max(0.0, min(1.0, reward)),
         )

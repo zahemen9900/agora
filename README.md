@@ -28,6 +28,10 @@ Implemented:
 - Deterministic transcript hashing and Merkle root generation with fallback when merkletools is unavailable.
 - CI + lint + test setup.
 
+Current execution note:
+
+- The engines retain LangGraph-compatible graph scaffolding for future integration, but the active Week 1 runtime path is still imperative Python orchestration rather than full StateGraph execution.
+
 Not implemented yet:
 
 - Real Solana integration (currently stubbed).

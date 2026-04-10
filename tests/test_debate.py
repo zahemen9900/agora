@@ -23,6 +23,39 @@ def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
 
     assert set(assignments.values()) == {"pro", "opp"}
     assert da_id in {"agent-1", "agent-2", "agent-3"}
+    assert da_id not in assignments
+    assert len(assignments) == 2
+
+
+def test_assign_factions_keeps_two_sides_when_da_is_separate() -> None:
+    """Removing the DA should still leave one debater on each faction."""
+
+    engine = DebateEngine(agent_count=3)
+    outputs = [
+        make_agent_output("agent-1", "Answer A", role="initial", round_number=0),
+        make_agent_output("agent-2", "Answer A", role="initial", round_number=0),
+        make_agent_output("agent-3", "Answer B", role="initial", round_number=0),
+    ]
+
+    _pro_answer, _opp_answer, assignments, da_id = engine._assign_factions(outputs)
+
+    assert da_id not in assignments
+    assert sorted(assignments.values()) == ["opp", "pro"]
+
+
+def test_verify_claims_extracts_arithmetic_equalities_from_json() -> None:
+    """Arithmetic claims inside structured debate content should be lockable."""
+
+    engine = DebateEngine(agent_count=3)
+    claims = engine._verify_claims(
+        '{"defense":"Because 2 + 2 = 4 and 3*3=9, the conclusion follows."}',
+        round_number=2,
+    )
+
+    claim_texts = {claim.claim_text for claim in claims}
+
+    assert "2+2=4" in claim_texts
+    assert "3*3=9" in claim_texts
 
 
 @pytest.mark.asyncio
