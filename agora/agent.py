@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from agora.config import get_config
 
@@ -25,9 +25,22 @@ except ImportError:  # pragma: no cover
     ChatGoogleGenerativeAI = None  # type: ignore[assignment]
 
 try:
-    from langchain_google_vertexai.model_garden import ChatAnthropicVertex
+    import anthropic
 except ImportError:  # pragma: no cover
-    ChatAnthropicVertex = None  # type: ignore[assignment]
+    anthropic = None  # type: ignore[assignment]
+
+if anthropic is not None:
+    AsyncAnthropic = anthropic.AsyncAnthropic
+    AnthropicAPIConnectionError = anthropic.APIConnectionError
+    AnthropicAPIError = anthropic.APIError
+    AnthropicRateLimitError = anthropic.RateLimitError
+    AnthropicAPITimeoutError = getattr(anthropic, "APITimeoutError", TimeoutError)
+else:  # pragma: no cover
+    AsyncAnthropic = None  # type: ignore[assignment]
+    AnthropicAPIConnectionError = RuntimeError  # type: ignore[assignment]
+    AnthropicAPIError = RuntimeError  # type: ignore[assignment]
+    AnthropicRateLimitError = RuntimeError  # type: ignore[assignment]
+    AnthropicAPITimeoutError = TimeoutError  # type: ignore[assignment]
 
 logger = structlog.get_logger(__name__)
 
@@ -80,15 +93,18 @@ class AgentCaller:
         self.thinking_budget = (
             config.gemini_thinking_budget if thinking_budget is None else thinking_budget
         )
-
-        if not self.project:
-            raise AgentCallError(
-                "GOOGLE_CLOUD_PROJECT is not set. Configure Vertex AI project or use "
-                "fallback-capable runtime paths."
-            )
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or config.anthropic_api_key
+        self._anthropic_max_tokens = config.anthropic_max_tokens
+        self._chat_model: Any | None = None
+        self._anthropic_client: Any | None = None
 
         if model.startswith("gemini"):
             self.provider = "gemini"
+            if not self.project:
+                raise AgentCallError(
+                    "GOOGLE_CLOUD_PROJECT is not set. Configure Vertex AI project or use "
+                    "fallback-capable runtime paths."
+                )
             if ChatGoogleGenerativeAI is None:
                 raise AgentCallError(
                     "langchain-google-genai is not installed; ChatGoogleGenerativeAI "
@@ -131,22 +147,20 @@ class AgentCaller:
                 ) from exc
         elif model.startswith("claude"):
             self.provider = "claude"
-            if ChatAnthropicVertex is None:
+            if AsyncAnthropic is None:
                 raise AgentCallError(
-                    "langchain-google-vertexai model_garden support is unavailable; "
-                    "ChatAnthropicVertex unavailable"
+                    "anthropic SDK is not installed; AsyncAnthropic unavailable"
+                )
+            if not self.anthropic_api_key:
+                raise AgentCallError(
+                    "ANTHROPIC_API_KEY is not set. Configure Anthropic API credentials "
+                    "for direct Claude access."
                 )
             try:
-                self._chat_model = ChatAnthropicVertex(
-                    model_name=model,
-                    project=self.project,
-                    location=self.location,
-                    temperature=temperature,
-                )
+                self._anthropic_client = AsyncAnthropic(api_key=self.anthropic_api_key)
             except Exception as exc:
                 raise AgentCallError(
-                    "Failed to initialize ChatAnthropicVertex. Ensure project, credentials, "
-                    "and Model Garden access are configured."
+                    "Failed to initialize AsyncAnthropic. Ensure ANTHROPIC_API_KEY is valid."
                 ) from exc
         else:
             raise ValueError(
@@ -179,6 +193,16 @@ class AgentCaller:
 
         if stream and response_format is not None:
             raise ValueError("Streaming is currently supported for unstructured text calls only.")
+
+        if self.provider == "claude":
+            return await self._call_claude(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_format=response_format,
+                temperature=temperature,
+                stream=stream,
+                stream_callback=stream_callback,
+            )
 
         messages: list[tuple[str, str]] = [("system", system_prompt), ("human", user_prompt)]
         model = (
@@ -275,6 +299,250 @@ class AgentCaller:
                 raise AgentCallError(f"Non-retryable failure for model {self.model}.") from exc
 
         raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
+
+    async def _call_claude(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None,
+        temperature: float | None,
+        stream: bool,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str | BaseModel, dict[str, Any]]:
+        """Execute one Claude call using the direct Anthropic SDK."""
+
+        if self._anthropic_client is None:
+            raise AgentCallError("Anthropic client was not initialized.")
+
+        effective_temperature = self.temperature if temperature is None else temperature
+        backoff_seconds = 0.5
+        max_retries = 3
+        retryable_errors: tuple[type[BaseException], ...] = (
+            AnthropicRateLimitError,
+            AnthropicAPIConnectionError,
+            AnthropicAPITimeoutError,
+            TimeoutError,
+        )
+
+        for attempt in range(1, max_retries + 1):
+            start = time.perf_counter()
+            try:
+                raw_message: Any | None = None
+                if response_format is not None:
+                    structured_user_prompt = self._with_structured_json_instructions(
+                        user_prompt=user_prompt,
+                        response_format=response_format,
+                    )
+                    raw_message = await self._anthropic_messages_create(
+                        system_prompt=system_prompt,
+                        user_prompt=structured_user_prompt,
+                        temperature=effective_temperature,
+                    )
+                    response_content: str | BaseModel = self._parse_anthropic_structured_response(
+                        raw_message=raw_message,
+                        response_format=response_format,
+                    )
+                elif stream:
+                    response_content, raw_message = await self._stream_anthropic_text(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=effective_temperature,
+                        stream_callback=stream_callback,
+                    )
+                else:
+                    raw_message = await self._anthropic_messages_create(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        temperature=effective_temperature,
+                    )
+                    response_content = self._extract_anthropic_text(raw_message)
+
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                usage = self._normalize_usage(raw_message, elapsed_ms)
+
+                logger.info(
+                    "agent_call_success",
+                    model=self.model,
+                    provider=self.provider,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    latency_ms=usage["latency_ms"],
+                    streamed=stream,
+                    thinking_trace_present=usage.get("thinking_trace_present", False),
+                )
+                return response_content, usage
+            except retryable_errors as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except AgentCallError:
+                raise
+            except AnthropicAPIError as exc:
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                raise AgentCallError(f"Anthropic API failure for model {self.model}.") from exc
+            except Exception as exc:
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                raise AgentCallError(f"Non-retryable failure for model {self.model}.") from exc
+
+        raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
+
+    async def _anthropic_messages_create(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+    ) -> Any:
+        """Create one Anthropic message response."""
+
+        if self._anthropic_client is None:
+            raise AgentCallError("Anthropic client was not initialized.")
+
+        return await self._anthropic_client.messages.create(
+            model=self.model,
+            max_tokens=self._anthropic_max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+    async def _stream_anthropic_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str, Any]:
+        """Stream Anthropic text chunks and return final concatenated content."""
+
+        if self._anthropic_client is None:
+            raise AgentCallError("Anthropic client was not initialized.")
+
+        chunks: list[str] = []
+        async with self._anthropic_client.messages.stream(
+            model=self.model,
+            max_tokens=self._anthropic_max_tokens,
+            temperature=temperature,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        ) as stream_response:
+            async for text_chunk in stream_response.text_stream:
+                chunks.append(text_chunk)
+                if stream_callback is not None:
+                    try:
+                        stream_callback(text_chunk)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("stream_callback_error", error=str(exc))
+            final_message = await stream_response.get_final_message()
+
+        return "".join(chunks), final_message
+
+    @staticmethod
+    def _with_structured_json_instructions(
+        user_prompt: str,
+        response_format: type[BaseModel],
+    ) -> str:
+        """Add strict JSON instructions for Claude structured responses."""
+
+        schema = json.dumps(response_format.model_json_schema(), ensure_ascii=True)
+        return (
+            f"{user_prompt}\n\n"
+            "Return only valid JSON matching the following JSON Schema. "
+            "Do not include markdown fences or explanatory text.\n"
+            f"{schema}"
+        )
+
+    def _parse_anthropic_structured_response(
+        self,
+        raw_message: Any,
+        response_format: type[BaseModel],
+    ) -> BaseModel:
+        """Parse and validate structured Claude JSON output into a Pydantic model."""
+
+        raw_text = self._extract_anthropic_text(raw_message)
+        json_payload = self._extract_json_payload(raw_text)
+        try:
+            parsed = json.loads(json_payload)
+        except json.JSONDecodeError as exc:
+            raise AgentCallError("Claude structured response was not valid JSON.") from exc
+
+        try:
+            return response_format.model_validate(parsed)
+        except ValidationError as exc:
+            raise AgentCallError(
+                "Claude structured response did not match expected format "
+                f"{response_format.__name__}."
+            ) from exc
+
+    @staticmethod
+    def _extract_json_payload(text: str) -> str:
+        """Extract a JSON object payload from model text, tolerating wrapped output."""
+
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].strip() == "```":
+                cleaned = "\n".join(lines[1:-1]).strip()
+
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end != -1 and start < end:
+            return cleaned[start : end + 1]
+        return cleaned
+
+    @staticmethod
+    def _extract_anthropic_text(raw_message: Any) -> str:
+        """Extract plain text from Anthropic message content blocks."""
+
+        content = getattr(raw_message, "content", None)
+        if isinstance(content, str):
+            return content
+
+        if not isinstance(content, list):
+            return str(content) if content is not None else ""
+
+        text_parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                text = block.get("text")
+            else:
+                block_type = getattr(block, "type", None)
+                text = getattr(block, "text", None)
+
+            if block_type == "text" and isinstance(text, str):
+                text_parts.append(text)
+
+        return "".join(text_parts)
 
     async def _stream_text(
         self,
@@ -378,6 +646,26 @@ class AgentCaller:
                     or 0
                 )
 
+            usage = getattr(raw_message, "usage", None)
+            if isinstance(usage, dict):
+                input_tokens = input_tokens or int(
+                    usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+                )
+                output_tokens = output_tokens or int(
+                    usage.get("output_tokens") or usage.get("completion_tokens") or 0
+                )
+            elif usage is not None:
+                input_tokens = input_tokens or int(
+                    getattr(usage, "input_tokens", None)
+                    or getattr(usage, "prompt_tokens", None)
+                    or 0
+                )
+                output_tokens = output_tokens or int(
+                    getattr(usage, "output_tokens", None)
+                    or getattr(usage, "completion_tokens", None)
+                    or 0
+                )
+
         thinking_trace_present = False
         thinking_trace_chars = 0
         if raw_message is not None:
@@ -399,11 +687,15 @@ class AgentCaller:
             content = getattr(raw_message, "content", None)
             if isinstance(content, list):
                 for item in content:
-                    if not isinstance(item, dict):
-                        continue
-                    if item.get("type") == "thinking" and item.get("thinking") is not None:
-                        thinking_trace_present = True
+                    if isinstance(item, dict):
+                        block_type = item.get("type")
                         payload = item.get("thinking")
+                    else:
+                        block_type = getattr(item, "type", None)
+                        payload = getattr(item, "thinking", None)
+
+                    if block_type in {"thinking", "redacted_thinking"} and payload is not None:
+                        thinking_trace_present = True
                         if isinstance(payload, str):
                             thinking_trace_chars += len(payload)
                         else:

@@ -29,6 +29,11 @@ class AgoraConfig(BaseModel):
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
     )
+    anthropic_api_key: str | None = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
+    anthropic_max_tokens: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_ANTHROPIC_MAX_TOKENS", "1024")),
+        ge=1,
+    )
 
     # Gemini runtime feature controls.
     gemini_enable_streaming: bool = True

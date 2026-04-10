@@ -57,20 +57,21 @@ Not implemented yet:
 
 ## Cloud/Model Behavior
 
-Model calls use Vertex-backed providers through the AgentCaller abstraction.
+Model calls route through the shared AgentCaller abstraction with provider-specific backends.
 
 - Gemini models use the latest langchain-google-genai client (ChatGoogleGenerativeAI) in Vertex mode.
-- Claude models continue to use the Vertex Model Garden integration.
+- Claude models use Anthropic's direct Python SDK (AsyncAnthropic).
 
-- If GOOGLE_CLOUD_PROJECT and credentials are configured, AGORA attempts real model calls.
+- If GOOGLE_CLOUD_PROJECT and credentials are configured, AGORA attempts live Gemini Vertex calls.
+- If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls through Anthropic API.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
-- If AgentCaller cannot initialize due to missing project, that is surfaced clearly in model-layer errors.
+- If AgentCaller cannot initialize due to missing credentials, that is surfaced clearly in model-layer errors.
 
 ## Project Structure
 
 ```
 agora/
-  agent.py               # Unified Vertex model caller (Gemini + Claude)
+  agent.py               # Unified caller (Gemini via Vertex + Claude via Anthropic SDK)
   config.py              # Runtime config (models, thresholds, GCP project)
   types.py               # Shared pydantic models and enums
   selector/
@@ -94,6 +95,7 @@ agora/
 
 tests/
   test_bandit.py
+  test_agent.py
   test_hasher.py
   test_debate.py
   test_vote.py
@@ -143,7 +145,11 @@ if __name__ == "__main__":
 
 ## Environment Variables
 
-Required for live Vertex calls:
+Required for live Claude calls:
+
+- ANTHROPIC_API_KEY: your Anthropic API key
+
+Required for live Gemini Vertex calls:
 
 - GOOGLE_CLOUD_PROJECT: your Google Cloud Project ID (string project identifier)
 
@@ -153,6 +159,7 @@ Optional model overrides:
 - AGORA_PRO_MODEL (default: gemini-2.5-pro)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
+- AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
 
 Not required in the current setup:
 
@@ -161,15 +168,16 @@ Not required in the current setup:
 Set in shell before running:
 
 ```bash
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 ```
 
-If you enable Claude in vote routing, ensure your project has access to the selected
-Anthropic Model Garden ID in your configured region, or AGORA will log the model
+If you enable Claude in vote routing, ensure your Anthropic account has access to the
+selected Claude model configured in AGORA_CLAUDE_MODEL, or AGORA will log the model
 error and fall back for that voter.
 
 Current code defaults location to us-central1; set AGORA_GOOGLE_CLOUD_LOCATION to
-route calls to a different Vertex region.
+route Gemini calls to a different Vertex region.
 
 Also ensure ADC credentials are available, for example via:
 
