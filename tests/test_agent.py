@@ -34,13 +34,25 @@ class _FakeMessage:
 
 
 class _FakeMessagesAPI:
-    def __init__(self, response: _FakeMessage) -> None:
+    def __init__(
+        self,
+        response: _FakeMessage,
+        parse_response: _FakeMessage | None = None,
+    ) -> None:
         self._response = response
+        self._parse_response = parse_response
         self.last_create_kwargs: dict[str, Any] | None = None
+        self.last_parse_kwargs: dict[str, Any] | None = None
 
     async def create(self, **kwargs: Any) -> _FakeMessage:
         self.last_create_kwargs = kwargs
         return self._response
+
+    async def parse(self, **kwargs: Any) -> _FakeMessage:
+        self.last_parse_kwargs = kwargs
+        if self._parse_response is None:
+            raise TypeError("parse unavailable")
+        return self._parse_response
 
 
 class _FakeStreamResponse:
@@ -74,8 +86,13 @@ class _FakeStreamContext:
 
 
 class _FakeAnthropicClient:
-    def __init__(self, response: _FakeMessage, stream_chunks: list[str] | None = None) -> None:
-        self.messages = _FakeMessagesAPI(response)
+    def __init__(
+        self,
+        response: _FakeMessage,
+        stream_chunks: list[str] | None = None,
+        parse_response: _FakeMessage | None = None,
+    ) -> None:
+        self.messages = _FakeMessagesAPI(response, parse_response=parse_response)
         self._stream_chunks = stream_chunks or []
         self._stream_final_message = response
 
@@ -91,7 +108,7 @@ async def test_claude_requires_anthropic_api_key(monkeypatch) -> None:
     """Claude caller should fail fast when API key is missing."""
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key: object())
+    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: object())
     with pytest.raises(AgentCallError, match="ANTHROPIC_API_KEY is not set"):
         AgentCaller(model="claude-sonnet-4-6", temperature=0.2)
 
@@ -103,8 +120,9 @@ async def test_claude_uses_async_anthropic_client(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     fake_client = _FakeAnthropicClient(response=_FakeMessage('{"answer":"ok","confidence":0.8}'))
 
-    def _fake_async_anthropic(api_key: str) -> _FakeAnthropicClient:
+    def _fake_async_anthropic(api_key: str, max_retries: int = 0) -> _FakeAnthropicClient:
         assert api_key == "test-key"
+        assert max_retries == 0
         return fake_client
 
     monkeypatch.setattr(agent_module, "AsyncAnthropic", _fake_async_anthropic)
@@ -130,6 +148,41 @@ async def test_claude_uses_async_anthropic_client(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_claude_structured_prefers_sdk_parse_when_available(monkeypatch) -> None:
+    """Structured calls should use Anthropic parse when available."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    parsed = _StructuredResponse(answer="Lima", confidence=0.88)
+    parse_message = _FakeMessage("ignored", input_tokens=13, output_tokens=7)
+    parse_message.parsed_output = parsed  # type: ignore[attr-defined]
+
+    fake_client = _FakeAnthropicClient(
+        response=_FakeMessage('{"answer":"fallback","confidence":0.2}'),
+        parse_response=parse_message,
+    )
+    monkeypatch.setattr(
+        agent_module,
+        "AsyncAnthropic",
+        lambda api_key, max_retries=0: fake_client,
+    )
+
+    caller = AgentCaller(model="claude-sonnet-4-6", temperature=0.4)
+    response, usage = await caller.call(
+        system_prompt="You are concise.",
+        user_prompt="Return JSON",
+        response_format=_StructuredResponse,
+    )
+
+    assert isinstance(response, _StructuredResponse)
+    assert response.answer == "Lima"
+    assert response.confidence == pytest.approx(0.88)
+    assert usage["input_tokens"] == 13
+    assert usage["output_tokens"] == 7
+    assert fake_client.messages.last_parse_kwargs is not None
+    assert fake_client.messages.last_parse_kwargs["output_format"] is _StructuredResponse
+
+
+@pytest.mark.asyncio
 async def test_claude_structured_parsing_tolerates_markdown_fence(monkeypatch) -> None:
     """Structured parser should extract JSON from fenced Claude output."""
 
@@ -140,7 +193,7 @@ async def test_claude_structured_parsing_tolerates_markdown_fence(monkeypatch) -
         output_tokens=9,
     )
     fake_client = _FakeAnthropicClient(response=fake_message)
-    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key: fake_client)
+    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: fake_client)
 
     caller = AgentCaller(model="claude-sonnet-4-6", temperature=0.3)
     response, usage = await caller.call(
@@ -163,7 +216,7 @@ async def test_claude_streaming_returns_full_text_and_usage(monkeypatch) -> None
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     fake_final = _FakeMessage("final", input_tokens=5, output_tokens=7)
     fake_client = _FakeAnthropicClient(response=fake_final, stream_chunks=["Hel", "lo"])
-    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key: fake_client)
+    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: fake_client)
 
     caller = AgentCaller(model="claude-sonnet-4-6", temperature=0.7)
     streamed_chunks: list[str] = []

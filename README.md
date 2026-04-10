@@ -153,6 +153,9 @@ Required for live Gemini Vertex calls:
 
 - GOOGLE_CLOUD_PROJECT: your Google Cloud Project ID (string project identifier)
 
+AGORA loads `.env` from the current working directory or repository root if present,
+without overriding environment variables already exported in your shell.
+
 Optional model overrides:
 
 - AGORA_FLASH_MODEL (default: gemini-2.5-flash)

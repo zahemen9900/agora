@@ -15,6 +15,19 @@ from pydantic import BaseModel, ValidationError
 from agora.config import get_config
 
 try:
+    from anthropic import APIConnectionError as AnthropicAPIConnectionError
+    from anthropic import APIStatusError as AnthropicAPIStatusError
+    from anthropic import APITimeoutError as AnthropicAPITimeoutError
+    from anthropic import AsyncAnthropic
+    from anthropic import RateLimitError as AnthropicRateLimitError
+except ImportError:  # pragma: no cover
+    AnthropicAPIConnectionError = RuntimeError  # type: ignore[assignment]
+    AnthropicAPIStatusError = RuntimeError  # type: ignore[assignment]
+    AnthropicAPITimeoutError = TimeoutError  # type: ignore[assignment]
+    AsyncAnthropic = None  # type: ignore[assignment]
+    AnthropicRateLimitError = RuntimeError  # type: ignore[assignment]
+
+try:
     from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, TooManyRequests
 except ImportError:  # pragma: no cover
     ResourceExhausted = ServiceUnavailable = TooManyRequests = RuntimeError  # type: ignore[assignment]
@@ -23,24 +36,6 @@ try:
     from langchain_google_genai import ChatGoogleGenerativeAI
 except ImportError:  # pragma: no cover
     ChatGoogleGenerativeAI = None  # type: ignore[assignment]
-
-try:
-    import anthropic
-except ImportError:  # pragma: no cover
-    anthropic = None  # type: ignore[assignment]
-
-if anthropic is not None:
-    AsyncAnthropic = anthropic.AsyncAnthropic
-    AnthropicAPIConnectionError = anthropic.APIConnectionError
-    AnthropicAPIError = anthropic.APIError
-    AnthropicRateLimitError = anthropic.RateLimitError
-    AnthropicAPITimeoutError = getattr(anthropic, "APITimeoutError", TimeoutError)
-else:  # pragma: no cover
-    AsyncAnthropic = None  # type: ignore[assignment]
-    AnthropicAPIConnectionError = RuntimeError  # type: ignore[assignment]
-    AnthropicAPIError = RuntimeError  # type: ignore[assignment]
-    AnthropicRateLimitError = RuntimeError  # type: ignore[assignment]
-    AnthropicAPITimeoutError = TimeoutError  # type: ignore[assignment]
 
 logger = structlog.get_logger(__name__)
 
@@ -157,7 +152,11 @@ class AgentCaller:
                     "for direct Claude access."
                 )
             try:
-                self._anthropic_client = AsyncAnthropic(api_key=self.anthropic_api_key)
+                # Keep SDK retries disabled because AGORA applies its own retry policy.
+                self._anthropic_client = AsyncAnthropic(
+                    api_key=self.anthropic_api_key,
+                    max_retries=0,
+                )
             except Exception as exc:
                 raise AgentCallError(
                     "Failed to initialize AsyncAnthropic. Ensure ANTHROPIC_API_KEY is valid."
@@ -317,31 +316,58 @@ class AgentCaller:
         effective_temperature = self.temperature if temperature is None else temperature
         backoff_seconds = 0.5
         max_retries = 3
-        retryable_errors: tuple[type[BaseException], ...] = (
-            AnthropicRateLimitError,
-            AnthropicAPIConnectionError,
-            AnthropicAPITimeoutError,
-            TimeoutError,
-        )
 
         for attempt in range(1, max_retries + 1):
             start = time.perf_counter()
             try:
                 raw_message: Any | None = None
                 if response_format is not None:
-                    structured_user_prompt = self._with_structured_json_instructions(
-                        user_prompt=user_prompt,
-                        response_format=response_format,
-                    )
-                    raw_message = await self._anthropic_messages_create(
-                        system_prompt=system_prompt,
-                        user_prompt=structured_user_prompt,
-                        temperature=effective_temperature,
-                    )
-                    response_content: str | BaseModel = self._parse_anthropic_structured_response(
-                        raw_message=raw_message,
-                        response_format=response_format,
-                    )
+                    parsed_via_sdk = False
+                    messages_api = getattr(self._anthropic_client, "messages", None)
+                    parse_api = getattr(messages_api, "parse", None)
+                    if callable(parse_api):
+                        try:
+                            raw_message = await parse_api(
+                                model=self.model,
+                                max_tokens=self._anthropic_max_tokens,
+                                temperature=effective_temperature,
+                                system=system_prompt,
+                                messages=[{"role": "user", "content": user_prompt}],
+                                output_format=response_format,
+                            )
+                            parsed_output = getattr(raw_message, "parsed_output", None)
+                            if parsed_output is None:
+                                parsed_output = getattr(raw_message, "parsed", None)
+                            if isinstance(parsed_output, response_format):
+                                response_content = parsed_output
+                                parsed_via_sdk = True
+                            else:
+                                logger.warning(
+                                    "anthropic_parse_unexpected_payload",
+                                    model=self.model,
+                                    payload_type=type(parsed_output).__name__,
+                                )
+                        except (TypeError, AttributeError) as exc:
+                            logger.warning(
+                                "anthropic_parse_unavailable",
+                                model=self.model,
+                                error=str(exc),
+                            )
+
+                    if not parsed_via_sdk:
+                        structured_user_prompt = self._with_structured_json_instructions(
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                        )
+                        raw_message = await self._anthropic_messages_create(
+                            system_prompt=system_prompt,
+                            user_prompt=structured_user_prompt,
+                            temperature=effective_temperature,
+                        )
+                        response_content = self._parse_anthropic_structured_response(
+                            raw_message=raw_message,
+                            response_format=response_format,
+                        )
                 elif stream:
                     response_content, raw_message = await self._stream_anthropic_text(
                         system_prompt=system_prompt,
@@ -371,7 +397,29 @@ class AgentCaller:
                     thinking_trace_present=usage.get("thinking_trace_present", False),
                 )
                 return response_content, usage
-            except retryable_errors as exc:
+            except AnthropicRateLimitError as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except (AnthropicAPIConnectionError, AnthropicAPITimeoutError, TimeoutError) as exc:
                 if attempt >= max_retries:
                     logger.error(
                         "agent_call_retry_exhausted",
@@ -395,15 +443,49 @@ class AgentCaller:
                 backoff_seconds *= 2.0
             except AgentCallError:
                 raise
-            except AnthropicAPIError as exc:
+            except AnthropicAPIStatusError as exc:
+                status_code = getattr(exc, "status_code", None)
+                retryable_status = isinstance(status_code, int) and (
+                    status_code in {408, 409, 429} or status_code >= 500
+                )
+
+                if retryable_status:
+                    if attempt >= max_retries:
+                        logger.error(
+                            "agent_call_retry_exhausted",
+                            model=self.model,
+                            provider=self.provider,
+                            attempt=attempt,
+                            status_code=status_code,
+                            error=str(exc),
+                        )
+                        raise AgentCallError(
+                            f"Model call failed after retries for model {self.model}."
+                        ) from exc
+                    logger.warning(
+                        "agent_call_retrying",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        backoff_seconds=backoff_seconds,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    backoff_seconds *= 2.0
+                    continue
+
                 logger.error(
                     "agent_call_non_retryable_failure",
                     model=self.model,
                     provider=self.provider,
                     attempt=attempt,
+                    status_code=status_code,
                     error=str(exc),
                 )
-                raise AgentCallError(f"Anthropic API failure for model {self.model}.") from exc
+                raise AgentCallError(
+                    f"Anthropic API returned status {status_code} for model {self.model}."
+                ) from exc
             except Exception as exc:
                 logger.error(
                     "agent_call_non_retryable_failure",
@@ -738,7 +820,7 @@ def pro_caller() -> AgentCaller:
 
 
 def claude_caller() -> AgentCaller:
-    """Return Vertex-hosted Claude caller for diversity or fallback routing."""
+    """Return direct Anthropic Claude caller for diversity or fallback routing."""
 
     config = get_config()
     return AgentCaller(model=config.claude_model, temperature=0.5)
