@@ -13,6 +13,7 @@ Last updated: Saturday 11:24am, 04/11/2026
 - A checked-in graph harness now exists at `scripts/agent_harness/build_graphify_snapshot.py`.
 - The first architecture snapshot has been generated under `graphify-out/agora-runtime/`.
 - The planning package now lives in `docs/`, with a brainstorming spec mirror under `docs/superpowers/specs/`.
+- A reusable proof-of-work runner now exists at `scripts/pipeline_demo.py`; it prints a clean runtime summary and can load `ANTHROPIC_API_KEY` from the `even-ally-480821-f3` GCloud project secret path when `gcloud` is available.
 - Validation on Saturday 11:49am, 04/11/2026: `37 passed` via `uv run pytest -q`, `uv run --with ruff ruff check .` passed, and a smoke run wrote settlement logs under `logs/`.
 
 ## Ownership Model

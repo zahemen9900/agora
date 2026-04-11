@@ -143,6 +143,19 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## Proof-Of-Work Demo
+
+This repo now includes a small live demo runner that prints the same kind of
+run summary Joshua saw in Dave's screenshot.
+
+```bash
+uv run python scripts/pipeline_demo.py "What is the capital of France?"
+```
+
+For Anthropic-only runs, set `ANTHROPIC_API_KEY` and leave the model defaults
+alone. The demo runner forces Claude-backed model names so the runtime does not
+need Google Cloud credentials for this proof path.
+
 ## Environment Variables
 
 Required for live Claude calls:

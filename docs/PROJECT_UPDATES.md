@@ -35,3 +35,13 @@
   - `uv run pytest -q` -> `37 passed`
   - `uv run --with ruff ruff check .` -> passed
 - Captured reviewable logs under `logs/`.
+
+## Saturday, 04/11/2026
+
+- Added `scripts/pipeline_demo.py` as a reusable proof-of-work runner that prints a clean runtime summary.
+- Forced the demo path onto Claude-backed models so it only needs Anthropic credentials for the live run path.
+- Added optional GCloud Secret Manager lookup for `ANTHROPIC_API_KEY` using the `even-ally-480821-f3` project and `ANTHROPIC_API_KEY` secret name.
+- Validated the demo CLI help path and reran the repo test/lint gates:
+  - `uv run python scripts/pipeline_demo.py --help`
+  - `uv run pytest -q`
+  - `uv run --with ruff ruff check .`
