@@ -145,9 +145,10 @@ if __name__ == "__main__":
 
 ## Environment Variables
 
-Required for live Claude calls:
+Required for live Claude calls (choose one):
 
 - ANTHROPIC_API_KEY: your Anthropic API key
+- Secret Manager access to the shared secret (default name: agora-anthropic-api-key)
 
 Required for live Gemini Vertex calls:
 
@@ -167,6 +168,12 @@ Optional model overrides:
 - AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
 - AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS (default: 60)
 
+Anthropic Secret Manager fetch controls:
+
+- AGORA_ANTHROPIC_SECRET_NAME (default: agora-anthropic-api-key)
+- AGORA_ANTHROPIC_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
+- AGORA_ANTHROPIC_SECRET_VERSION (default: latest)
+
 The Claude caller uses a shared async sliding-window throttle to reduce Anthropic
 429s in multi-agent runs. Tune the throttle variables above to match your org limits.
 
@@ -177,9 +184,38 @@ Not required in the current setup:
 Set in shell before running:
 
 ```bash
-export ANTHROPIC_API_KEY="your-anthropic-api-key"
 export GOOGLE_CLOUD_PROJECT="your-project-id"
+
+# Option A: fetch key into shell from Secret Manager
+export SECRET_NAME="agora-anthropic-api-key"
+export ANTHROPIC_API_KEY="$(gcloud secrets versions access latest \
+  --project "$GOOGLE_CLOUD_PROJECT" \
+  --secret "$SECRET_NAME")"
 ```
+
+### Fetch Anthropic Key From Google Secret Manager
+
+Teammate fetches key into shell before running AGORA:
+
+```bash
+PROJECT_ID="$(gcloud config get-value project)"
+SECRET_NAME="agora-anthropic-api-key"
+
+export ANTHROPIC_API_KEY="$(gcloud secrets versions access latest \
+  --project "$PROJECT_ID" \
+  --secret "$SECRET_NAME")"
+```
+
+Or let AGORA fetch directly from Secret Manager at runtime (no local `.env` key):
+
+```bash
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export AGORA_ANTHROPIC_SECRET_NAME="agora-anthropic-api-key"
+unset ANTHROPIC_API_KEY
+```
+
+Note: if your organization enforces periodic reauthentication, run
+`gcloud auth login` before fetching secrets.
 
 If you enable Claude in vote routing, ensure your Anthropic account has access to the
 selected Claude model configured in AGORA_CLAUDE_MODEL, or AGORA will log the model

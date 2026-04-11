@@ -70,6 +70,51 @@ def _load_dotenv_if_present() -> None:
             os.environ.setdefault(key, value)
 
 
+def _load_secret_manager_value(
+    project_id: str,
+    secret_name: str,
+    version: str = "latest",
+) -> str | None:
+    """Read a secret value from Google Secret Manager when available."""
+
+    try:
+        from google.cloud import secretmanager
+
+        client = secretmanager.SecretManagerServiceClient()
+        secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/{version}"
+        response = client.access_secret_version(request={"name": secret_path})
+    except Exception:
+        return None
+
+    payload = response.payload.data.decode("utf-8").strip()
+    return payload or None
+
+
+def _resolve_anthropic_api_key() -> str | None:
+    """Resolve Anthropic API key from env first, then Secret Manager fallback."""
+
+    explicit_key = os.getenv("ANTHROPIC_API_KEY")
+    if explicit_key:
+        return explicit_key
+
+    secret_name = os.getenv("AGORA_ANTHROPIC_SECRET_NAME", "agora-anthropic-api-key").strip()
+    if not secret_name:
+        return None
+
+    project_id = (
+        os.getenv("AGORA_ANTHROPIC_SECRET_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+    ).strip()
+    if not project_id:
+        return None
+
+    version = (os.getenv("AGORA_ANTHROPIC_SECRET_VERSION") or "latest").strip() or "latest"
+    return _load_secret_manager_value(
+        project_id=project_id,
+        secret_name=secret_name,
+        version=version,
+    )
+
+
 class AgoraConfig(BaseModel):
     """Typed runtime configuration for model routing and thresholds."""
 
@@ -91,7 +136,16 @@ class AgoraConfig(BaseModel):
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
     )
-    anthropic_api_key: str | None = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
+    anthropic_api_key: str | None = Field(default_factory=_resolve_anthropic_api_key)
+    anthropic_secret_name: str = Field(
+        default_factory=lambda: os.getenv("AGORA_ANTHROPIC_SECRET_NAME", "agora-anthropic-api-key")
+    )
+    anthropic_secret_project: str | None = Field(
+        default_factory=lambda: os.getenv("AGORA_ANTHROPIC_SECRET_PROJECT")
+    )
+    anthropic_secret_version: str = Field(
+        default_factory=lambda: os.getenv("AGORA_ANTHROPIC_SECRET_VERSION", "latest")
+    )
     anthropic_max_tokens: int = Field(
         default_factory=lambda: int(os.getenv("AGORA_ANTHROPIC_MAX_TOKENS", "1024")),
         ge=1,

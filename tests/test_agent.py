@@ -19,6 +19,7 @@ def _clear_config_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure env overrides are reloaded for each test."""
 
     monkeypatch.setenv("AGORA_ANTHROPIC_THROTTLE_ENABLED", "0")
+    monkeypatch.setenv("AGORA_ANTHROPIC_SECRET_NAME", "")
     get_config.cache_clear()
     yield
     get_config.cache_clear()

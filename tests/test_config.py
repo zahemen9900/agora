@@ -6,6 +6,7 @@ import os
 
 import pytest
 
+import agora.config as config_module
 from agora.config import get_config
 
 _CONFIG_ENV_KEYS = (
@@ -14,6 +15,10 @@ _CONFIG_ENV_KEYS = (
     "AGORA_ANTHROPIC_THROTTLE_ENABLED",
     "AGORA_ANTHROPIC_REQUESTS_PER_MINUTE",
     "AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS",
+    "AGORA_ANTHROPIC_SECRET_NAME",
+    "AGORA_ANTHROPIC_SECRET_PROJECT",
+    "AGORA_ANTHROPIC_SECRET_VERSION",
+    "GOOGLE_CLOUD_PROJECT",
 )
 
 
@@ -80,3 +85,40 @@ def test_anthropic_throttle_settings_from_env(monkeypatch: pytest.MonkeyPatch) -
     assert config.anthropic_throttle_enabled is False
     assert config.anthropic_requests_per_minute == 7
     assert config.anthropic_throttle_window_seconds == 30.0
+
+
+def test_anthropic_api_key_falls_back_to_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Config should resolve Anthropic key from Secret Manager when env key is absent."""
+
+    # Keep key present-but-empty so dotenv autoload cannot overwrite it.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("AGORA_ANTHROPIC_SECRET_NAME", "agora-anthropic-api-key")
+    monkeypatch.setenv("AGORA_ANTHROPIC_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_ANTHROPIC_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "sm-key",
+    )
+
+    config = get_config()
+
+    assert config.anthropic_api_key == "sm-key"
+
+
+def test_explicit_api_key_wins_over_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit ANTHROPIC_API_KEY should bypass Secret Manager lookup."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "explicit-key")
+    monkeypatch.setenv("AGORA_ANTHROPIC_SECRET_NAME", "agora-anthropic-api-key")
+    monkeypatch.setenv("AGORA_ANTHROPIC_SECRET_PROJECT", "demo-project")
+
+    def _unexpected(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("Secret Manager should not be called when key is explicit")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value", _unexpected)
+
+    config = get_config()
+
+    assert config.anthropic_api_key == "explicit-key"
