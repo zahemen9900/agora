@@ -37,7 +37,7 @@ jobs:
 
       - uses: coral-xyz/setup-anchor@v0.3
         with:
-          anchor-version: "0.30.1"
+          anchor-version: "1.0.0"
 
       - name: Build Anchor program
         run: |
@@ -47,7 +47,7 @@ jobs:
       - name: Run Anchor tests (localnet)
         run: |
           cd contract
-          anchor test
+          anchor test --provider.cluster localnet --validator legacy
 
   docker-build:
     runs-on: ubuntu-latest
