@@ -32,17 +32,37 @@ pub struct ReleasePayment<'info> {
 pub fn handler(ctx: Context<ReleasePayment>, _task_id: [u8; 32]) -> Result<()> {
     let task_account = &mut ctx.accounts.task_account;
 
-    require_keys_eq!(ctx.accounts.authority.key(), task_account.payer, AgoraError::Unauthorized);
-    require!(matches!(task_account.status, TaskStatus::Completed), AgoraError::InvalidTaskStatus);
+    require_keys_eq!(
+        ctx.accounts.authority.key(),
+        task_account.payer,
+        AgoraError::Unauthorized
+    );
+    if matches!(task_account.status, TaskStatus::Paid) {
+        return err!(AgoraError::AlreadyPaid);
+    }
+    require!(
+        matches!(task_account.status, TaskStatus::Completed),
+        AgoraError::InvalidTaskStatus
+    );
     require!(task_account.quorum_reached, AgoraError::QuorumNotReached);
-    require_keys_eq!(ctx.accounts.recipient.key(), task_account.recipient, AgoraError::RecipientMismatch);
+    require_keys_eq!(
+        ctx.accounts.recipient.key(),
+        task_account.recipient,
+        AgoraError::RecipientMismatch
+    );
 
     let payment_amount = task_account.payment_amount;
+    if payment_amount == 0 {
+        task_account.status = TaskStatus::Paid;
+        return Ok(());
+    }
+
     if payment_amount > 0 {
         let vault_info = ctx.accounts.vault.to_account_info();
         let recipient_info = ctx.accounts.recipient.to_account_info();
 
         let available = vault_info.lamports();
+        require!(available > 0, AgoraError::NoPayment);
         let transfer_amount = payment_amount.min(available);
 
         **vault_info.try_borrow_mut_lamports()? -= transfer_amount;
