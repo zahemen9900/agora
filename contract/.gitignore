@@ -1,0 +1,8 @@
+# Anchor / Solana build outputs
+target/
+.anchor/
+
+# Node.js dependencies and install state
+node_modules/
+.package-lock.json
+

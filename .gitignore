@@ -202,6 +202,12 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Infra scaffold artifacts
+contract/node_modules/
+contract/target/
+contract/.anchor/
+api/data/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
