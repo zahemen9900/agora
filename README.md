@@ -24,7 +24,7 @@ Implemented:
   - Confidence calibration (temperature scaling)
   - ISP-weighted aggregation
   - Switch-to-debate signaling when quorum is not reached
-- Orchestrator that runs selector -> mechanism -> receipt generation and optional online learning updates.
+- Orchestrator that runs selector -> mechanism -> receipt generation, optional online learning updates, and optional settlement submission.
 - Deterministic transcript hashing and Merkle root generation with fallback when merkletools is unavailable.
 - CI + lint + test setup.
 
@@ -34,7 +34,7 @@ Current execution note:
 
 Not implemented yet:
 
-- Real Solana integration (currently stubbed).
+- HTTP-backed Solana bridge boundary for receipt submission and task status queries.
 - Full Delphi and MoA engines (currently stubs for later phases).
 
 ## End-to-End Runtime Flow
@@ -91,7 +91,7 @@ agora/
   sdk/
     arbitrator.py        # Public SDK facade (Phase 2 target)
   solana/
-    client.py            # Stubbed on-chain client (Josh track)
+    client.py            # HTTP-backed settlement boundary (Josh track)
 
 tests/
   test_bandit.py
@@ -196,27 +196,16 @@ gcloud auth application-default login
 
 ## Next Tasks for Josh
 
-The codebase already marks the Solana responsibilities as Josh-owned in the client stubs.
+The runtime-side bridge work is now in place. The remaining gap is the real backend behind that boundary.
 
-1. Implement solana/client.py methods:
-   - submit_receipt
-   - record_mechanism_switch
-   - get_task_status
-2. Define final on-chain receipt schema and mapping:
-   - Align runtime receipt fields (merkle_root, final_answer_hash, mechanism, round metadata)
-   - Ensure deterministic task_id/decision_hash conventions
-3. Wire orchestrator -> Solana submission path:
-   - Submit receipt after successful deliberation
-   - Persist tx signature and status in returned metadata/logs
-4. Add reliability and observability around chain writes:
-   - Retry/backoff policy
-   - Idempotency for duplicate submissions
-   - Structured error codes
-5. Add integration tests with a Solana test validator or RPC sandbox.
-6. Expose API endpoints (if in Josh scope) for:
+1. Build the actual Solana/Anchor backend and indexer behind the HTTP contract.
+2. Add idempotency and structured error codes to the bridge for duplicate or partial submissions.
+3. Add integration tests against a Solana test validator or RPC sandbox.
+4. Expose API endpoints, if still in Josh scope, for:
    - Submit task
    - Query task status
    - Fetch finalized receipt and tx signature
+5. Add observability for settlement latency, retries, and failure modes.
 
 ## Notes
 

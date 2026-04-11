@@ -9,6 +9,7 @@ import pytest
 from agora.engines.debate import DebateEngineOutcome
 from agora.engines.vote import VoteEngineOutcome
 from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.solana.client import build_task_id
 from agora.types import DebateState, DeliberationResult, MechanismType, VoteState
 from tests.helpers import make_features, make_selection
 
@@ -224,3 +225,71 @@ async def test_run_and_learn_credits_final_mechanism(monkeypatch) -> None:
     assert captured["selection"] == result.mechanism_selection
     assert captured["reward"] == 0.9
     assert captured["mechanism"] == MechanismType.VOTE
+
+
+@pytest.mark.asyncio
+async def test_run_can_auto_submit_receipt(monkeypatch) -> None:
+    """Auto-submit should attach settlement metadata when a client is configured."""
+
+    class _FakeSolanaClient:
+        def __init__(self) -> None:
+            self.submitted_task_id: str | None = None
+            self.switch_calls: list[tuple[str, str, str]] = []
+
+        async def submit_receipt(self, receipt) -> str:
+            self.submitted_task_id = receipt.task_id
+            return "receipt-tx"
+
+        async def record_mechanism_switch(
+            self, task_id: str, from_mechanism: str, to_mechanism: str
+        ) -> str:
+            self.switch_calls.append((task_id, from_mechanism, to_mechanism))
+            return "switch-tx"
+
+        async def get_task_status(self, task_id: str) -> dict[str, str]:
+            return {"task_id": task_id, "status": "confirmed"}
+
+    orchestrator = AgoraOrchestrator(
+        agent_count=3,
+        solana_client=_FakeSolanaClient(),
+        auto_submit_receipts=True,
+    )
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+
+    async def fake_select(task_text: str, agent_count: int, stakes: float):
+        del task_text, agent_count, stakes
+        return selection
+
+    async def fake_execute(task: str, selection):
+        del task, selection
+        return DeliberationResult(
+            task="switch test",
+            mechanism_used=MechanismType.VOTE,
+            mechanism_selection=make_selection(
+                mechanism=MechanismType.DEBATE,
+                topic_category="reasoning",
+            ),
+            final_answer="Option A",
+            confidence=0.82,
+            quorum_reached=True,
+            round_count=1,
+            agent_count=3,
+            mechanism_switches=1,
+            merkle_root="root",
+            transcript_hashes=["h1"],
+            convergence_history=[],
+            locked_claims=[],
+            total_tokens_used=10,
+            total_latency_ms=2.0,
+            timestamp=datetime.now(UTC),
+        )
+
+    monkeypatch.setattr(orchestrator.selector, "select", fake_select)
+    monkeypatch.setattr(orchestrator, "_execute_mechanism", fake_execute)
+
+    result = await orchestrator.run("switch test")
+
+    assert result.chain_submission is not None
+    assert result.chain_submission.receipt_tx_signature == "receipt-tx"
+    assert result.chain_submission.mechanism_switch_tx_signature == "switch-tx"
+    assert result.chain_submission.task_id == build_task_id("switch test")

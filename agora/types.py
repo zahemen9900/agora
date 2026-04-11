@@ -144,6 +144,7 @@ class DeliberationResult(BaseModel):
     locked_claims: list[VerifiedClaim] = Field(default_factory=list)
     total_tokens_used: int = Field(ge=0)
     total_latency_ms: float = Field(ge=0.0)
+    chain_submission: SettlementRecord | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -158,3 +159,15 @@ class BanditArm(BaseModel):
     beta_param: float = Field(default=1.0, gt=0.0)
     total_pulls: int = Field(default=0, ge=0)
     last_reward: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class SettlementRecord(BaseModel):
+    """Chain submission metadata recorded after external settlement."""
+
+    model_config = ConfigDict(frozen=True)
+
+    task_id: str
+    decision_hash: str
+    receipt_tx_signature: str
+    mechanism_switch_tx_signature: str | None = None
+    status: str
