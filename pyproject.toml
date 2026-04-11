@@ -35,6 +35,7 @@ include = ["agora*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+addopts = "-p no:pytest_anchorpy"
 
 [tool.ruff]
 line-length = 100

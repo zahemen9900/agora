@@ -7,6 +7,7 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
@@ -24,6 +25,7 @@ from api.store import TaskStore, get_store
 from api.store_local import LocalTaskStore
 
 router = APIRouter()
+logger = structlog.get_logger(__name__)
 
 _store: TaskStore | LocalTaskStore = get_store(
     settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None
@@ -117,11 +119,15 @@ async def run_task(
     task = _to_status_response(raw_task)
 
     result = _mock_result(task_id, task.mechanism)
-    receipt = await bridge.submit_receipt(
-        task_id,
-        result.merkle_root or "",
-        result.decision_hash or "",
-    )
+    try:
+        receipt = await bridge.submit_receipt(
+            task_id,
+            result.merkle_root or "",
+            result.decision_hash or "",
+        )
+    except Exception as exc:
+        logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
+        raise HTTPException(status_code=502, detail="Failed to submit receipt on Solana") from exc
 
     task.status = "completed"
     task.quorum_reached = result.quorum_reached
@@ -129,11 +135,7 @@ async def run_task(
     task.decision_hash = result.decision_hash
     task.completed_at = datetime.now(UTC)
     task.solana_tx_hash = str(receipt.get("tx_hash", ""))
-    task.explorer_url = (
-        f"https://explorer.solana.com/tx/{task.solana_tx_hash}?cluster=devnet"
-        if task.solana_tx_hash
-        else None
-    )
+    task.explorer_url = str(receipt.get("explorer_url", "")) or None
     task.result = result
 
     await _store.save_task(user.id, task_id, task.model_dump(mode="json"))
@@ -141,11 +143,23 @@ async def run_task(
         user.id,
         task_id,
         SSEEvent(
-            event="quorum_reached" if result.quorum_reached else "quorum_not_reached",
+            event="quorum_reached" if result.quorum_reached else "error",
             data={
                 "task_id": task_id,
                 "final_answer": result.final_answer,
                 "confidence": result.confidence,
+            },
+        ).model_dump(),
+    )
+    await _store.append_event(
+        user.id,
+        task_id,
+        SSEEvent(
+            event="receipt_committed",
+            data={
+                "merkle_root": task.merkle_root,
+                "solana_tx_hash": task.solana_tx_hash,
+                "explorer_url": task.explorer_url,
             },
         ).model_dump(),
     )
@@ -215,11 +229,30 @@ async def release_payment(
     task.status = "paid"
     task.payment_status = "released"
 
+    try:
+        payment_tx = await bridge.record_payment_release(
+            task_id=task_id,
+            payment_amount_lamports=int(task.payment_amount * 1_000_000_000),
+        )
+    except Exception as exc:
+        logger.error("task_payment_release_failed", task_id=task_id, error=str(exc))
+        raise HTTPException(status_code=502, detail="Failed to record payment on Solana") from exc
+
+    task.solana_tx_hash = str(payment_tx.get("tx_hash", "")) or task.solana_tx_hash
+    task.explorer_url = str(payment_tx.get("explorer_url", "")) or task.explorer_url
+
     await _store.save_task(user.id, task_id, task.model_dump(mode="json"))
     await _store.append_event(
         user.id,
         task_id,
-        SSEEvent(event="receipt_committed", data={"task_id": task_id}).model_dump(),
+        SSEEvent(
+            event="receipt_committed",
+            data={
+                "task_id": task_id,
+                "solana_tx_hash": task.solana_tx_hash,
+                "explorer_url": task.explorer_url,
+            },
+        ).model_dump(),
     )
 
-    return {"released": True, "tx_hash": task.solana_tx_hash or "mock_hash"}
+    return {"released": True, "tx_hash": task.solana_tx_hash or ""}
