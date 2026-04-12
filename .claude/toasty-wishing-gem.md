@@ -112,8 +112,8 @@ Coverage added:
 
 ### Python
 - `ruff check api tests`: passed
-- `pytest -q tests/test_api_infra_routes.py tests/test_solana_bridge.py`: 11 passed
-- `pytest -q` (full): 45 passed
+- `pytest -q tests/test_api_infra_routes.py tests/test_solana_bridge.py`: 14 passed
+- `pytest -q` (full): 48 passed
 
 ### Anchor / Solana
 - `anchor build`: passed
@@ -134,7 +134,7 @@ Cloud Run deployment completed:
 - Service: `agora-api`
 - Region: `us-central1`
 - URL: `https://agora-api-202872251304.us-central1.run.app`
-- Ready revision: `agora-api-00003-kpg`
+- Ready revision: `agora-api-00007-b5v`
 - Traffic: 100%
 
 Artifact Registry repo `agora` was created in `us-central1` to unblock image push.
@@ -168,26 +168,29 @@ Cloud Run env now includes:
 - `SOLANA_KEYPAIR_SECRET_VERSION=latest`
 - `PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd`
 - `SOLANA_NETWORK=devnet`
+- `HELIUS_RPC_URL` from Secret Manager secret `agora-helius-rpc-url`
 
-Note:
+Hosted E2E verification completed via Cloud Run API:
 
-- `HELIUS_RPC_URL` is currently set to an explicit placeholder marker value in Cloud Run and must be replaced with a real Helius API-key URL before hosted on-chain writes are enabled.
+- `POST /tasks/` -> 200
+- `POST /tasks/{task_id}/run` -> 200
+- `POST /tasks/{task_id}/pay` -> 200
+- final status transitioned to `paid`
+- run tx hash: `5SZRCsymSgwvbnqC2b8TY2WqhomUPkmy8PdiQ9DiZHAGKAiJv4g5mmJVgMfBBBa8DZjcjnVuxoHY3C6m94Y2GUy4`
+- pay tx hash: `21DAs52BH4X22BiUxtaJo2jm3a7PJdw95nHgDzkjDB81XBNbV3ErG7W2rWFrn7b6kRuDLXHoqXFGsmaGdP8c2Fps`
 
 ## 8. Remaining Operational Caveat
 
-Cloud Run runtime Solana writes require deployment-time secrets/config that are not yet provisioned in GCP:
+No open runtime blockers remain for hosted Week 1 writes.
 
-- real `HELIUS_RPC_URL` (still required)
+Operational note:
 
-Resolved:
-
-- signing key material is now available via Secret Manager and bound to the Cloud Run service account.
-
-Current code is ready and enforces this correctly (fails closed if misconfigured), but production runtime must be provided these values through secure env/secret wiring.
+- Min instances is intentionally set to 0 for cost control (cold starts).
+- If faster startup is desired later, set `min-instances=1`.
 
 ## 9. Week 1 Checklist Verdict
 
-Overall: Week 1 infra implementation is complete and validated end-to-end for code + contract + devnet testing + service deployment, with the expected runtime-secret caveat for live Cloud Run on-chain writes.
+Overall: Week 1 infra implementation is complete and validated end-to-end for code + contract + devnet testing + Cloud Run hosted writes.
 
 Key acceptance points met:
 - Anchor build/test/deploy on devnet
