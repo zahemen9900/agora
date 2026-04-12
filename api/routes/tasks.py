@@ -20,7 +20,7 @@ from api.models import (
     TaskCreateResponse,
     TaskStatusResponse,
 )
-from api.solana_bridge import bridge
+from api.solana_bridge import LAMPORTS_PER_SOL, bridge
 from api.store import TaskStore, get_store
 from api.store_local import LocalTaskStore
 
@@ -34,7 +34,11 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 
 
 def _build_task_id(task_text: str) -> str:
-    return hashlib.sha256(task_text.encode()).hexdigest()[:32]
+    return hashlib.sha256(task_text.encode()).hexdigest()
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _mock_result(task_id: str, mechanism: str) -> DeliberationResultResponse:
@@ -68,20 +72,49 @@ async def create_task(
     user: CurrentUser,
 ) -> TaskCreateResponse:
     task_id = _build_task_id(request.task)
+    task_hash = _hash_text(request.task)
     mechanism = "debate" if request.agent_count >= 5 else "vote"
+    selector_reasoning = "Mock selection from Week 1 API scaffold."
+    selector_reasoning_hash = _hash_text(selector_reasoning)
+    payment_amount_lamports = int(request.stakes * LAMPORTS_PER_SOL)
 
     await _store.upsert_user(user.id, user.email, user.display_name)
+
+    init_tx_hash: str | None = None
+    init_explorer_url: str | None = None
+    if bridge.is_configured():
+        try:
+            init_result = await bridge.initialize_task(
+                task_id=task_id,
+                mechanism=mechanism,
+                task_hash=task_hash,
+                consensus_threshold=60,
+                agent_count=request.agent_count,
+                payment_amount_lamports=payment_amount_lamports,
+            )
+            init_tx_hash = str(init_result.get("tx_hash", "")) or None
+            init_explorer_url = str(init_result.get("explorer_url", "")) or None
+        except Exception as exc:
+            logger.error("task_initialize_failed", task_id=task_id, error=str(exc))
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to initialize task on Solana",
+            ) from exc
+    else:
+        logger.warning("solana_bridge_not_configured", task_id=task_id)
 
     task_status = TaskStatusResponse(
         task_id=task_id,
         task_text=request.task,
         mechanism=mechanism,
         status="pending",
-        selector_reasoning="Mock selection from Week 1 API scaffold.",
-        selector_reasoning_hash=hashlib.sha256(f"{task_id}:selector".encode()).hexdigest(),
+        selector_reasoning=selector_reasoning,
+        selector_reasoning_hash=selector_reasoning_hash,
         agent_count=request.agent_count,
         payment_amount=request.stakes,
         payment_status="locked" if request.stakes > 0 else "none",
+        solana_tx_hash=init_tx_hash,
+        explorer_url=init_explorer_url,
         created_at=datetime.now(UTC),
     )
 
@@ -95,6 +128,7 @@ async def create_task(
                 "task_id": task_id,
                 "mechanism": mechanism,
                 "confidence": 0.73,
+                "reasoning": selector_reasoning,
             },
         ).model_dump(),
     )
@@ -117,25 +151,54 @@ async def run_task(
         raise HTTPException(status_code=404, detail="Task not found")
 
     task = _to_status_response(raw_task)
+    if task.status in {"completed", "paid"} and task.result is not None:
+        return task.result
+
+    if task.status not in {"pending", "in_progress"}:
+        raise HTTPException(status_code=409, detail=f"Task cannot be run from status={task.status}")
+
+    if task.status == "pending":
+        if bridge.is_configured():
+            try:
+                await bridge.record_selection(
+                    task_id=task_id,
+                    selector_reasoning_hash=task.selector_reasoning_hash,
+                )
+            except Exception as exc:
+                logger.error("task_selection_record_failed", task_id=task_id, error=str(exc))
+                raise HTTPException(
+                    status_code=502,
+                    detail="Failed to record mechanism selection on Solana",
+                ) from exc
+        task.status = "in_progress"
+        await _store.save_task(user.id, task_id, task.model_dump(mode="json"))
 
     result = _mock_result(task_id, task.mechanism)
-    try:
-        receipt = await bridge.submit_receipt(
-            task_id,
-            result.merkle_root or "",
-            result.decision_hash or "",
-        )
-    except Exception as exc:
-        logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
-        raise HTTPException(status_code=502, detail="Failed to submit receipt on Solana") from exc
+    receipt: dict[str, Any] = {}
+    if bridge.is_configured():
+        try:
+            receipt = await bridge.submit_receipt(
+                task_id=task_id,
+                merkle_root=result.merkle_root or "",
+                decision_hash=result.decision_hash or "",
+                quorum_reached=result.quorum_reached,
+                final_mechanism=task.mechanism,
+            )
+        except Exception as exc:
+            logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to submit receipt on Solana",
+            ) from exc
 
     task.status = "completed"
     task.quorum_reached = result.quorum_reached
     task.merkle_root = result.merkle_root
     task.decision_hash = result.decision_hash
     task.completed_at = datetime.now(UTC)
-    task.solana_tx_hash = str(receipt.get("tx_hash", ""))
-    task.explorer_url = str(receipt.get("explorer_url", "")) or None
+    if receipt:
+        task.solana_tx_hash = str(receipt.get("tx_hash", "")) or task.solana_tx_hash
+        task.explorer_url = str(receipt.get("explorer_url", "")) or task.explorer_url
     task.result = result
 
     await _store.save_task(user.id, task_id, task.model_dump(mode="json"))
@@ -143,26 +206,28 @@ async def run_task(
         user.id,
         task_id,
         SSEEvent(
-            event="quorum_reached" if result.quorum_reached else "error",
+            event="quorum_reached" if result.quorum_reached else "quorum_not_reached",
             data={
                 "task_id": task_id,
                 "final_answer": result.final_answer,
                 "confidence": result.confidence,
+                "mechanism": task.mechanism,
             },
         ).model_dump(),
     )
-    await _store.append_event(
-        user.id,
-        task_id,
-        SSEEvent(
-            event="receipt_committed",
-            data={
-                "merkle_root": task.merkle_root,
-                "solana_tx_hash": task.solana_tx_hash,
-                "explorer_url": task.explorer_url,
-            },
-        ).model_dump(),
-    )
+    if task.solana_tx_hash:
+        await _store.append_event(
+            user.id,
+            task_id,
+            SSEEvent(
+                event="receipt_committed",
+                data={
+                    "merkle_root": task.merkle_root,
+                    "solana_tx_hash": task.solana_tx_hash,
+                    "explorer_url": task.explorer_url,
+                },
+            ).model_dump(),
+        )
     await _store.append_event(user.id, task_id, SSEEvent(event="complete", data={}).model_dump())
 
     return result
@@ -226,18 +291,29 @@ async def release_payment(
 
     task = _to_status_response(raw_task)
 
-    task.status = "paid"
-    task.payment_status = "released"
+    if task.status not in {"completed", "paid"}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Task status is {task.status}; expected completed",
+        )
+    if task.status == "paid" or task.payment_status == "released":
+        raise HTTPException(status_code=409, detail="Payment already released")
+    if not task.quorum_reached:
+        raise HTTPException(status_code=409, detail="Quorum not reached")
+
+    if not bridge.is_configured():
+        raise HTTPException(status_code=503, detail="Solana bridge is not configured")
 
     try:
-        payment_tx = await bridge.record_payment_release(
+        payment_tx = await bridge.release_payment(
             task_id=task_id,
-            payment_amount_lamports=int(task.payment_amount * 1_000_000_000),
         )
     except Exception as exc:
         logger.error("task_payment_release_failed", task_id=task_id, error=str(exc))
         raise HTTPException(status_code=502, detail="Failed to record payment on Solana") from exc
 
+    task.status = "paid"
+    task.payment_status = "released"
     task.solana_tx_hash = str(payment_tx.get("tx_hash", "")) or task.solana_tx_hash
     task.explorer_url = str(payment_tx.get("explorer_url", "")) or task.explorer_url
 
