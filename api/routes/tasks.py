@@ -27,10 +27,19 @@ from api.store_local import LocalTaskStore
 router = APIRouter()
 logger = structlog.get_logger(__name__)
 
-_store: TaskStore | LocalTaskStore = get_store(
-    settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None
-)
+_store: TaskStore | LocalTaskStore | None = None
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+
+
+def get_task_store() -> TaskStore | LocalTaskStore:
+    """Resolve task storage lazily so imports do not require cloud credentials."""
+
+    global _store
+    if _store is None:
+        _store = get_store(
+            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None
+        )
+    return _store
 
 
 def _build_task_id(task_text: str) -> str:
@@ -71,6 +80,7 @@ async def create_task(
     request: TaskCreateRequest,
     user: CurrentUser,
 ) -> TaskCreateResponse:
+    store = get_task_store()
     task_id = _build_task_id(request.task)
     task_hash = _hash_text(request.task)
     mechanism = "debate" if request.agent_count >= 5 else "vote"
@@ -78,7 +88,7 @@ async def create_task(
     selector_reasoning_hash = _hash_text(selector_reasoning)
     payment_amount_lamports = int(request.stakes * LAMPORTS_PER_SOL)
 
-    await _store.upsert_user(user.id, user.email, user.display_name)
+    await store.upsert_user(user.id, user.email, user.display_name)
 
     init_tx_hash: str | None = None
     init_explorer_url: str | None = None
@@ -118,8 +128,8 @@ async def create_task(
         created_at=datetime.now(UTC),
     )
 
-    await _store.save_task(user.id, task_id, task_status.model_dump(mode="json"))
-    await _store.append_event(
+    await store.save_task(user.id, task_id, task_status.model_dump(mode="json"))
+    await store.append_event(
         user.id,
         task_id,
         SSEEvent(
@@ -146,7 +156,8 @@ async def run_task(
     task_id: str,
     user: CurrentUser,
 ) -> DeliberationResultResponse:
-    raw_task = await _store.get_task(user.id, task_id)
+    store = get_task_store()
+    raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -171,7 +182,7 @@ async def run_task(
                     detail="Failed to record mechanism selection on Solana",
                 ) from exc
         task.status = "in_progress"
-        await _store.save_task(user.id, task_id, task.model_dump(mode="json"))
+        await store.save_task(user.id, task_id, task.model_dump(mode="json"))
 
     result = _mock_result(task_id, task.mechanism)
     receipt: dict[str, Any] = {}
@@ -201,8 +212,8 @@ async def run_task(
         task.explorer_url = str(receipt.get("explorer_url", "")) or task.explorer_url
     task.result = result
 
-    await _store.save_task(user.id, task_id, task.model_dump(mode="json"))
-    await _store.append_event(
+    await store.save_task(user.id, task_id, task.model_dump(mode="json"))
+    await store.append_event(
         user.id,
         task_id,
         SSEEvent(
@@ -216,7 +227,7 @@ async def run_task(
         ).model_dump(),
     )
     if task.solana_tx_hash:
-        await _store.append_event(
+        await store.append_event(
             user.id,
             task_id,
             SSEEvent(
@@ -228,7 +239,7 @@ async def run_task(
                 },
             ).model_dump(),
         )
-    await _store.append_event(user.id, task_id, SSEEvent(event="complete", data={}).model_dump())
+    await store.append_event(user.id, task_id, SSEEvent(event="complete", data={}).model_dump())
 
     return result
 
@@ -237,7 +248,8 @@ async def run_task(
 async def list_tasks(
     user: CurrentUser,
 ) -> list[TaskStatusResponse]:
-    rows = await _store.list_user_tasks(user.id)
+    store = get_task_store()
+    rows = await store.list_user_tasks(user.id)
     return [_to_status_response(row) for row in rows]
 
 
@@ -246,7 +258,8 @@ async def get_task_status(
     task_id: str,
     user: CurrentUser,
 ) -> TaskStatusResponse:
-    raw_task = await _store.get_task(user.id, task_id)
+    store = get_task_store()
+    raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return _to_status_response(raw_task)
@@ -257,12 +270,13 @@ async def stream_task(
     task_id: str,
     user: CurrentUser,
 ) -> EventSourceResponse:
-    raw_task = await _store.get_task(user.id, task_id)
+    store = get_task_store()
+    raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
     async def event_generator() -> Any:
-        events = await _store.get_events(user.id, task_id)
+        events = await store.get_events(user.id, task_id)
         if not events:
             task = _to_status_response(raw_task)
             events = [
@@ -285,7 +299,8 @@ async def release_payment(
     task_id: str,
     user: CurrentUser,
 ) -> dict[str, str | bool]:
-    raw_task = await _store.get_task(user.id, task_id)
+    store = get_task_store()
+    raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
@@ -317,8 +332,8 @@ async def release_payment(
     task.solana_tx_hash = str(payment_tx.get("tx_hash", "")) or task.solana_tx_hash
     task.explorer_url = str(payment_tx.get("explorer_url", "")) or task.explorer_url
 
-    await _store.save_task(user.id, task_id, task.model_dump(mode="json"))
-    await _store.append_event(
+    await store.save_task(user.id, task_id, task.model_dump(mode="json"))
+    await store.append_event(
         user.id,
         task_id,
         SSEEvent(

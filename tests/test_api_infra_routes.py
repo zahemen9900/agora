@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
@@ -55,6 +59,29 @@ def test_health_route_is_public(client: TestClient) -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["service"] == "agora-api"
+
+
+def test_task_routes_import_without_gcs_credentials() -> None:
+    env = os.environ.copy()
+    env["GOOGLE_CLOUD_PROJECT"] = "test-project"
+    env["GOOGLE_APPLICATION_CREDENTIALS"] = "/tmp/nonexistent-agora-creds.json"
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from api.routes import tasks; print(tasks._store is None)",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True"
 
 
 def test_create_list_get_task_with_local_store(

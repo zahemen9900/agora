@@ -63,7 +63,7 @@ log_step "Running lint checks (core + API + tests)"
 "$PYTHON_BIN" -m ruff check agora api tests
 
 log_step "Running all Python tests (your core + Josh infra)"
-"$PYTHON_BIN" -m pytest -q
+"$PYTHON_BIN" -m pytest -s -q
 
 log_step "Running orchestrator smoke test (core runtime path)"
 "$PYTHON_BIN" - <<'PY'

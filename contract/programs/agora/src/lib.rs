@@ -4,18 +4,14 @@ pub mod errors;
 pub mod instructions;
 pub mod state;
 
-use instructions::{
-    InitializeTask,
-    RecordMechanismSwitch,
-    RecordSelection,
-    ReleasePayment,
-    SubmitReceipt,
-};
 pub(crate) use instructions::initialize_task::__client_accounts_initialize_task;
 pub(crate) use instructions::record_selection::__client_accounts_record_selection;
 pub(crate) use instructions::record_switch::__client_accounts_record_mechanism_switch;
 pub(crate) use instructions::release_payment::__client_accounts_release_payment;
 pub(crate) use instructions::submit_receipt::__client_accounts_submit_receipt;
+use instructions::{
+    InitializeTask, RecordMechanismSwitch, RecordSelection, ReleasePayment, SubmitReceipt,
+};
 
 declare_id!("82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd");
 

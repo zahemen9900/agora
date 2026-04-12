@@ -62,15 +62,53 @@ pub fn handler(ctx: Context<ReleasePayment>, _task_id: [u8; 32]) -> Result<()> {
         let recipient_info = ctx.accounts.recipient.to_account_info();
 
         let available = vault_info.lamports();
-        require!(available > 0, AgoraError::NoPayment);
-        let transfer_amount = payment_amount.min(available);
+        validate_vault_balance(available, payment_amount)?;
 
-        **vault_info.try_borrow_mut_lamports()? -= transfer_amount;
-        **recipient_info.try_borrow_mut_lamports()? += transfer_amount;
+        **vault_info.try_borrow_mut_lamports()? -= payment_amount;
+        **recipient_info.try_borrow_mut_lamports()? += payment_amount;
     }
 
     task_account.payment_amount = 0;
     task_account.status = TaskStatus::Paid;
 
     Ok(())
+}
+
+fn validate_vault_balance(available: u64, payment_amount: u64) -> Result<()> {
+    require!(available > 0, AgoraError::NoPayment);
+    require!(
+        available >= payment_amount,
+        AgoraError::InsufficientVaultBalance
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use anchor_lang::error::Error;
+
+    use super::*;
+
+    fn assert_anchor_error_name(result: Result<()>, expected_name: &str) {
+        match result.expect_err("expected Anchor error") {
+            Error::AnchorError(error) => assert_eq!(error.error_name, expected_name),
+            other => panic!("expected AnchorError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_empty_vault_balance() {
+        assert_anchor_error_name(validate_vault_balance(0, 10), "NoPayment");
+    }
+
+    #[test]
+    fn rejects_short_vault_balance() {
+        assert_anchor_error_name(validate_vault_balance(9, 10), "InsufficientVaultBalance");
+    }
+
+    #[test]
+    fn accepts_sufficient_vault_balance() {
+        assert!(validate_vault_balance(10, 10).is_ok());
+        assert!(validate_vault_balance(11, 10).is_ok());
+    }
 }

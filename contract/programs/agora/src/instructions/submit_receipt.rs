@@ -25,8 +25,15 @@ pub fn handler(
 ) -> Result<()> {
     let task_account = &mut ctx.accounts.task_account;
 
-    require_keys_eq!(ctx.accounts.authority.key(), task_account.payer, AgoraError::Unauthorized);
-    require!(matches!(task_account.status, TaskStatus::InProgress), AgoraError::InvalidTaskStatus);
+    require_keys_eq!(
+        ctx.accounts.authority.key(),
+        task_account.payer,
+        AgoraError::Unauthorized
+    );
+    require!(
+        matches!(task_account.status, TaskStatus::InProgress),
+        AgoraError::InvalidTaskStatus
+    );
 
     task_account.transcript_merkle_root = transcript_merkle_root;
     task_account.decision_hash = decision_hash;

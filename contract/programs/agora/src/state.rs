@@ -24,25 +24,8 @@ pub struct TaskAccount {
 }
 
 impl TaskAccount {
-    pub const LEN: usize = 32
-        + 32
-        + 1
-        + 2
-        + 32
-        + 32
-        + 32
-        + 1
-        + 1
-        + 1
-        + 8
-        + 32
-        + 32
-        + 1
-        + 1
-        + 8
-        + 9
-        + 1
-        + 1;
+    pub const LEN: usize =
+        32 + 32 + 1 + 2 + 32 + 32 + 32 + 1 + 1 + 1 + 8 + 32 + 32 + 1 + 1 + 8 + 9 + 1 + 1;
 }
 
 #[account]
