@@ -33,12 +33,33 @@
   --shadow-lg: var(--shadow-lg);
   --shadow-glow: var(--shadow-glow);
   
-  --font-sans: 'Plus Jakarta Sans', sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font-sans: 'Roboto Mono', monospace;
+  --font-mono: 'Roboto Mono', monospace;
   --font-display: 'Space Grotesk', sans-serif;
+
+  --text-xs: var(--text-xs);
+  --text-sm: var(--text-sm);
+  --text-base: var(--text-base);
+  --text-lg: var(--text-lg);
+  --text-xl: var(--text-xl);
+  --text-2xl: var(--text-2xl);
+  --text-3xl: var(--text-3xl);
+  --text-4xl: var(--text-4xl);
+  --text-5xl: var(--text-5xl);
 }
 
 :root {
+  /* Typography Scale (Major Third 1.25) */
+  --text-xs: 0.625rem;   /* 10px */
+  --text-sm: 0.813rem;   /* 13px */
+  --text-base: 1.000rem; /* 16px */
+  --text-lg: 1.250rem;   /* 20px */
+  --text-xl: 1.563rem;   /* 25px */
+  --text-2xl: 1.938rem;  /* 31px */
+  --text-3xl: 2.438rem;  /* 39px */
+  --text-4xl: 3.063rem;  /* 49px */
+  --text-5xl: 3.813rem;  /* 61px */
+
   /* Backgrounds */
   --bg-void: #000000;
   --bg-surface: #0a0a0a;
@@ -87,7 +108,7 @@ html, body {
   padding: 0;
   background-color: var(--bg-void);
   color: var(--text-primary);
-  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-family: 'Roboto Mono', monospace;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
@@ -105,18 +126,49 @@ body::before {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
 }
 
-/* Typography Scale */
-h1, h2, h3, h4, h5, h6 {
-  font-family: 'Plus Jakarta Sans', sans-serif;
-  font-weight: 600;
-  margin: 0;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
+/* ─── Structural Grid & Border System ─────────────────────────── */
+
+/* Repeating dot-grid background — hero texture */
+.grid-bg {
+  background-image: radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+  background-size: 32px 32px;
 }
 
-h1 { font-size: 3rem; line-height: 1.1; }
-h2 { font-size: 1.5rem; line-height: 1.2; }
-h3 { font-size: 1.125rem; }
+/* Full-width 1px section divider */
+.section-divider {
+  width: 100%;
+  height: 1px;
+  background: rgba(255,255,255,0.06);
+}
+
+/* Content rail — vertical 1px side borders on the content column */
+.content-rail {
+  border-left:  1px solid rgba(255,255,255,0.06);
+  border-right: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Bordered section — top + bottom 1px lines */
+.bordered-section {
+  border-top:    1px solid rgba(255,255,255,0.06);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Typography Scale */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Roboto Mono', monospace;
+  font-weight: 600;
+  margin: 0 0 8px 0;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+h1 { font-size: var(--text-5xl); line-height: 1.1; }  /* 61px */
+h2 { font-size: var(--text-4xl); line-height: 1.15; } /* 49px */
+h3 { font-size: var(--text-3xl); line-height: 1.2; }  /* 39px */
+h4 { font-size: var(--text-2xl); line-height: 1.3; }  /* 31px */
+h5 { font-size: var(--text-xl);  line-height: 1.4; }  /* 25px */
+h6 { font-size: var(--text-lg);  line-height: 1.5; }  /* 20px */
 
 .wordmark {
   font-family: 'Space Grotesk', sans-serif;
@@ -125,13 +177,14 @@ h3 { font-size: 1.125rem; }
 }
 
 .mono, code, .hash, .agent-id, .data-value {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Roboto Mono', monospace;
 }
 
 p {
   color: var(--text-secondary);
   line-height: 1.6;
   margin-top: 0;
+  font-size: var(--text-sm); /* Using 13px from the scale instead of 14px as previously set to maintain scale harmony */
 }
 
 a {
@@ -165,7 +218,10 @@ button {
   background: var(--accent);
   color: var(--text-inverse);
   padding: 12px 24px;
-  border-radius: 8px;
+  border-radius: 0;
+  clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+  text-transform: uppercase;
+  font-family: var(--font-mono);
   font-weight: 600;
   transition: all 0.15s ease;
   display: inline-flex;
@@ -180,13 +236,20 @@ button {
 }
 
 .btn-secondary {
-  background: transparent;
+  background: var(--bg-elevated);
   color: var(--text-primary);
-  border: 1px solid var(--border-muted);
+  border: none;
   padding: 12px 24px;
-  border-radius: 8px;
+  border-radius: 0;
+  clip-path: polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px);
+  text-transform: uppercase;
+  font-family: var(--font-mono);
   font-weight: 500;
   transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .btn-secondary:hover {
