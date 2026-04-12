@@ -77,3 +77,18 @@ class LocalTaskStore:
         if task is None:
             return []
         return task.get("events", [])
+
+    async def get_all_completed_tasks(self, user_id: str) -> list[dict[str, Any]]:
+        tasks = await self.list_user_tasks(user_id, limit=500)
+        return [task for task in tasks if task.get("status") == "completed"]
+
+    async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
+        path = self.root / "benchmarks" / "summary.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(summary, default=str), encoding="utf-8")
+
+    async def get_benchmark_summary(self) -> dict[str, Any] | None:
+        path = self.root / "benchmarks" / "summary.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))

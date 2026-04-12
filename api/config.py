@@ -13,10 +13,10 @@ class Settings(BaseSettings):
     helius_rpc_url: str = "https://devnet.helius-rpc.com/?api-key=YOUR_KEY"
     solana_keypair_path: str = "~/.config/solana/devnet-keypair.json"
     solana_network: str = "devnet"
-    program_id: str = "8QujRWcvR318hQFQmWB3P6epBPBMKdY4c5tHLpshvZDu"
+    program_id: str = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 
     google_cloud_project: str = ""
-    gcs_bucket: str = ""
+    gcs_bucket: str = "agora-data"
 
     workos_client_id: str = ""
 

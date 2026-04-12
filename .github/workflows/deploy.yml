@@ -2,16 +2,47 @@ name: Deploy
 
 on:
   push:
-    branches: ["main"]
+    branches: [main]
 
 jobs:
   deploy-api:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SERVICE_NAME: agora-api
+      REGION: us-central1
+      REPOSITORY: agora
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Placeholder deploy step
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push image
         run: |
-          echo "Configure Cloud Run deployment credentials/secrets first."
-          echo "This workflow is scaffolded for Josh's Week 1 infra track."
+          IMAGE="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/${SERVICE_NAME}:${{ github.sha }}"
+          gcloud builds submit --tag "$IMAGE" -f api/Dockerfile .
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --image "$IMAGE" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --region "$REGION" \
+            --platform managed \
+            --allow-unauthenticated

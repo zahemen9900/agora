@@ -6,9 +6,12 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
 from google.cloud import storage
 
 from api.store_local import LocalTaskStore
+
+logger = structlog.get_logger(__name__)
 
 
 class TaskStore:
@@ -51,6 +54,7 @@ class TaskStore:
         try:
             return json.loads(blob.download_as_text())
         except Exception:
+            logger.debug("task_not_found_or_unreadable", user_id=user_id, task_id=task_id)
             return None
 
     async def list_user_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
@@ -85,6 +89,22 @@ class TaskStore:
         if task is None:
             return []
         return task.get("events", [])
+
+    async def get_all_completed_tasks(self, user_id: str) -> list[dict[str, Any]]:
+        tasks = await self.list_user_tasks(user_id, limit=500)
+        return [task for task in tasks if task.get("status") == "completed"]
+
+    async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
+        blob = self.bucket.blob("benchmarks/summary.json")
+        blob.upload_from_string(json.dumps(summary, default=str), content_type="application/json")
+
+    async def get_benchmark_summary(self) -> dict[str, Any] | None:
+        blob = self.bucket.blob("benchmarks/summary.json")
+        try:
+            return json.loads(blob.download_as_text())
+        except Exception:
+            logger.debug("benchmark_summary_not_found")
+            return None
 
 
 def get_store(bucket_name: str | None) -> TaskStore | LocalTaskStore:

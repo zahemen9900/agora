@@ -32,24 +32,15 @@ class SolanaBridge:
 
     memo_program_id: Pubkey = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 
-    def _fallback_rpc_url(self) -> str:
-        if self.network == "mainnet":
-            return "https://api.mainnet-beta.solana.com"
-        if self.network == "testnet":
-            return "https://api.testnet.solana.com"
-        return "https://api.devnet.solana.com"
-
     def _rpc_candidates(self) -> list[str]:
-        candidates: list[str] = []
         configured = self.rpc_url.strip()
-        if configured:
-            candidates.append(configured)
-
-        fallback = self._fallback_rpc_url()
-        if fallback not in candidates:
-            candidates.append(fallback)
-
-        return candidates
+        if not configured or "YOUR_KEY" in configured:
+            raise RuntimeError(
+                "Helius RPC URL is not configured. Set HELIUS_RPC_URL with a real api-key."
+            )
+        if "helius-rpc.com" not in configured:
+            raise RuntimeError("helius_rpc_url must point to a Helius RPC endpoint")
+        return [configured]
 
     def _load_keypair(self) -> Keypair:
         keypair_file = Path(self.keypair_path).expanduser()
