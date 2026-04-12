@@ -123,6 +123,41 @@ ruff check .
 pytest -q
 ```
 
+### One-Command Week 1 Demo (Core + Josh Infra)
+
+Use this script to validate Week 1 end-to-end without requiring local Solana tooling:
+
+```bash
+./scripts/week1_demo.sh
+```
+
+What it covers:
+
+- Runs lint checks for `agora`, `api`, and `tests`
+- Runs all Python tests (core modules + API/infra tests)
+- Runs a local orchestrator smoke task (your side)
+- Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
+- Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
+
+Optional controls:
+
+- `AGORA_API_URL`: override hosted API base URL
+- `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
+- `PYTHON_BIN`: custom Python executable path
+
+Examples:
+
+```bash
+# Use default hosted URL, auto-detect local Solana tools
+./scripts/week1_demo.sh
+
+# Force local contract checks if you installed Anchor/Solana
+RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+
+# Point to a different deployed API
+AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
+```
+
 ## Quick Usage
 
 ```python

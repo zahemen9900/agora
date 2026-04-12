@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Environment-driven API settings."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     helius_rpc_url: str = "https://devnet.helius-rpc.com/?api-key=YOUR_KEY"
     solana_keypair_path: str = "~/.config/solana/devnet-keypair.json"
