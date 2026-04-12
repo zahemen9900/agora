@@ -174,6 +174,48 @@ Anthropic Secret Manager fetch controls:
 - AGORA_ANTHROPIC_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
 - AGORA_ANTHROPIC_SECRET_VERSION (default: latest)
 
+Solana/Week 1 API runtime variables:
+
+- HELIUS_RPC_URL: required real Helius endpoint for on-chain writes
+- PROGRAM_ID: deployed Agora program id
+- SOLANA_NETWORK: cluster name, default devnet
+- SOLANA_KEYPAIR_PATH: local keypair file path (default ~/.config/solana/devnet-keypair.json)
+- SOLANA_KEYPAIR_SECRET_NAME: optional Secret Manager secret containing keypair bytes/json
+- SOLANA_KEYPAIR_SECRET_PROJECT: optional secret project, falls back to GOOGLE_CLOUD_PROJECT
+- SOLANA_KEYPAIR_SECRET_VERSION: optional secret version, default latest
+
+Secret-backed keypair payload formats accepted by the API bridge:
+
+- JSON byte array (recommended): `[12,34,...]`
+- JSON object with one of: `secret_key`, `keypair`, `bytes`
+- raw hex string or base64 string
+
+Week 1 bridge behavior:
+
+- Local/dev shell uses SOLANA_KEYPAIR_PATH when the file exists.
+- Cloud Run can omit local keypair files and load keypair material from Secret Manager.
+- If neither source is configured, on-chain write endpoints fail closed with a clear runtime error.
+
+Cloud Run keypair setup example:
+
+```bash
+PROJECT_ID="even-ally-480821-f3"
+SERVICE_ACCOUNT="202872251304-compute@developer.gserviceaccount.com"
+SECRET_NAME="agora-solana-devnet-keypair"
+
+gcloud secrets create "$SECRET_NAME" --replication-policy=automatic --project "$PROJECT_ID"
+gcloud secrets versions add "$SECRET_NAME" --data-file "$HOME/.config/solana/devnet-keypair.json" --project "$PROJECT_ID"
+gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
+  --member "serviceAccount:${SERVICE_ACCOUNT}" \
+  --role "roles/secretmanager.secretAccessor" \
+  --project "$PROJECT_ID"
+
+gcloud run services update agora-api \
+  --region us-central1 \
+  --project "$PROJECT_ID" \
+  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY"
+```
+
 The Claude caller uses a shared async sliding-window throttle to reduce Anthropic
 429s in multi-agent runs. Tune the throttle variables above to match your org limits.
 

@@ -8,4 +8,5 @@ solders>=0.21
 anchorpy>=0.20
 sse-starlette>=2.0
 google-cloud-storage>=2.18
+google-cloud-secret-manager>=2.20
 PyJWT>=2.9

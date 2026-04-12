@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -40,8 +41,12 @@ class SolanaBridge:
     program_id: str
     network: str
     keypair_path: str
+    keypair_secret_name: str = ""
+    keypair_secret_project: str = ""
+    keypair_secret_version: str = "latest"
 
     program_pubkey: Pubkey = field(init=False)
+    _cached_signer: Keypair | None = field(init=False, default=None, repr=False)
 
     def __post_init__(self) -> None:
         self.program_pubkey = Pubkey.from_string(self.program_id)
@@ -56,23 +61,134 @@ class SolanaBridge:
             raise RuntimeError("helius_rpc_url must point to a Helius RPC endpoint")
         return [configured]
 
+    def _has_keypair_source(self) -> bool:
+        keypair_file = Path(self.keypair_path).expanduser()
+        if keypair_file.exists():
+            return True
+
+        secret_name = self.keypair_secret_name.strip()
+        if not secret_name:
+            return False
+
+        secret_project = (
+            self.keypair_secret_project.strip() or settings.google_cloud_project.strip()
+        )
+        return bool(secret_project)
+
     def is_configured(self) -> bool:
         configured = self.rpc_url.strip()
-        keypair_path = Path(self.keypair_path).expanduser()
         return (
             bool(configured)
             and "YOUR_KEY" not in configured
             and "helius-rpc.com" in configured
-            and keypair_path.exists()
+            and self._has_keypair_source()
         )
 
     def _load_keypair(self) -> Keypair:
-        keypair_file = Path(self.keypair_path).expanduser()
-        if not keypair_file.exists():
-            raise RuntimeError(f"Solana keypair file not found: {keypair_file}")
+        if self._cached_signer is not None:
+            return self._cached_signer
 
-        secret_key = json.loads(keypair_file.read_text(encoding="utf-8"))
-        return Keypair.from_bytes(bytes(secret_key))
+        keypair_file = Path(self.keypair_path).expanduser()
+        if keypair_file.exists():
+            secret_key = json.loads(keypair_file.read_text(encoding="utf-8"))
+            signer = Keypair.from_bytes(bytes(secret_key))
+            self._cached_signer = signer
+            return signer
+
+        if self.keypair_secret_name.strip():
+            signer = self._load_keypair_from_secret()
+            self._cached_signer = signer
+            return signer
+
+        raise RuntimeError(
+            f"Solana keypair file not found: {keypair_file}, "
+            "and no Secret Manager source configured"
+        )
+
+    def _keypair_secret_resource_name(self) -> str:
+        secret_name = self.keypair_secret_name.strip()
+        if not secret_name:
+            raise RuntimeError("SOLANA_KEYPAIR_SECRET_NAME is not configured")
+
+        secret_project = (
+            self.keypair_secret_project.strip() or settings.google_cloud_project.strip()
+        )
+        if not secret_project:
+            raise RuntimeError(
+                "Set SOLANA_KEYPAIR_SECRET_PROJECT or GOOGLE_CLOUD_PROJECT to use keypair secrets"
+            )
+
+        secret_version = self.keypair_secret_version.strip() or "latest"
+        return f"projects/{secret_project}/secrets/{secret_name}/versions/{secret_version}"
+
+    @staticmethod
+    def _parse_keypair_secret_payload(secret_payload: bytes) -> Keypair:
+        raw = secret_payload.decode("utf-8").strip()
+
+        def parse_bytes(value: str) -> bytes:
+            candidate = value.strip()
+            if candidate.startswith("0x"):
+                candidate = candidate[2:]
+
+            if candidate.startswith("["):
+                parsed = json.loads(candidate)
+                if isinstance(parsed, list):
+                    return bytes(parsed)
+
+            is_hex = len(candidate) % 2 == 0 and all(
+                ch in "0123456789abcdefABCDEF" for ch in candidate
+            )
+            if is_hex:
+                return bytes.fromhex(candidate)
+
+            return base64.b64decode(candidate, validate=True)
+
+        parsed: Any
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = raw
+
+        material: bytes | None = None
+        if isinstance(parsed, list):
+            material = bytes(parsed)
+        elif isinstance(parsed, dict):
+            for key in ("secret_key", "keypair", "bytes"):
+                value = parsed.get(key)
+                if isinstance(value, list):
+                    material = bytes(value)
+                    break
+                if isinstance(value, str):
+                    material = parse_bytes(value)
+                    break
+        elif isinstance(parsed, str):
+            material = parse_bytes(parsed)
+
+        if material is None:
+            raise RuntimeError("Unable to parse keypair bytes from secret payload")
+
+        try:
+            return Keypair.from_bytes(material)
+        except ValueError as exc:
+            raise RuntimeError("Secret payload is not a valid 64-byte Solana keypair") from exc
+
+    def _load_keypair_from_secret(self) -> Keypair:
+        try:
+            from google.cloud import secretmanager
+        except ImportError as exc:
+            raise RuntimeError(
+                "google-cloud-secret-manager is required for secret-backed keypair loading"
+            ) from exc
+
+        resource_name = self._keypair_secret_resource_name()
+        client = secretmanager.SecretManagerServiceClient()
+
+        try:
+            response = client.access_secret_version(request={"name": resource_name})
+        except Exception as exc:  # pragma: no cover - network and auth dependent
+            raise RuntimeError(f"Failed to read keypair secret: {resource_name}") from exc
+
+        return self._parse_keypair_secret_payload(response.payload.data)
 
     def _build_explorer_url(self, signature: str) -> str:
         cluster = "mainnet" if self.network == "mainnet" else self.network
@@ -552,4 +668,7 @@ bridge = SolanaBridge(
     program_id=settings.program_id,
     network=settings.solana_network,
     keypair_path=settings.solana_keypair_path,
+    keypair_secret_name=settings.solana_keypair_secret_name,
+    keypair_secret_project=settings.solana_keypair_secret_project,
+    keypair_secret_version=settings.solana_keypair_secret_version,
 )

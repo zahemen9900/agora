@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
 from solders.keypair import Keypair
@@ -125,3 +126,41 @@ def test_missing_keypair_raises_clear_error() -> None:
 
     with pytest.raises(RuntimeError, match="keypair file not found"):
         bridge._load_keypair()
+
+
+def test_secret_keypair_source_counts_as_configured() -> None:
+    bridge = SolanaBridge(
+        rpc_url="https://devnet.helius-rpc.com/?api-key=test",
+        program_id="82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd",
+        network="devnet",
+        keypair_path="/tmp/does-not-exist-keypair.json",
+        keypair_secret_name="agora-devnet-keypair",
+        keypair_secret_project="test-project",
+    )
+
+    assert bridge.is_configured() is True
+
+
+def test_load_keypair_uses_secret_when_file_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = Keypair()
+    bridge = SolanaBridge(
+        rpc_url="https://devnet.helius-rpc.com/?api-key=test",
+        program_id="82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd",
+        network="devnet",
+        keypair_path="/tmp/does-not-exist-keypair.json",
+        keypair_secret_name="agora-devnet-keypair",
+        keypair_secret_project="test-project",
+    )
+
+    monkeypatch.setattr(bridge, "_load_keypair_from_secret", lambda: expected)
+    loaded = bridge._load_keypair()
+
+    assert loaded.pubkey() == expected.pubkey()
+
+
+def test_parse_keypair_secret_payload_from_json_list() -> None:
+    keypair = Keypair()
+    payload = json.dumps(list(bytes(keypair))).encode("utf-8")
+
+    loaded = SolanaBridge._parse_keypair_secret_payload(payload)
+    assert loaded.pubkey() == keypair.pubkey()

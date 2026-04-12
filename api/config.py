@@ -12,6 +12,9 @@ class Settings(BaseSettings):
 
     helius_rpc_url: str = "https://devnet.helius-rpc.com/?api-key=YOUR_KEY"
     solana_keypair_path: str = "~/.config/solana/devnet-keypair.json"
+    solana_keypair_secret_name: str = ""
+    solana_keypair_secret_project: str = ""
+    solana_keypair_secret_version: str = "latest"
     solana_network: str = "devnet"
     program_id: str = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 

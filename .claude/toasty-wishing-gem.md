@@ -134,16 +134,54 @@ Cloud Run deployment completed:
 - Service: `agora-api`
 - Region: `us-central1`
 - URL: `https://agora-api-202872251304.us-central1.run.app`
-- Ready revision: `agora-api-00001-fbm`
+- Ready revision: `agora-api-00003-kpg`
 - Traffic: 100%
 
 Artifact Registry repo `agora` was created in `us-central1` to unblock image push.
 
+### Secret Manager Runtime Keypair Loading (Update)
+
+Implemented on 2026-04-12:
+
+- `api/solana_bridge.py` now supports signer loading from either:
+  - local file (`SOLANA_KEYPAIR_PATH`), or
+  - Google Secret Manager (`SOLANA_KEYPAIR_SECRET_NAME` + project/version)
+- Secret payload parsing supports:
+  - JSON byte array (recommended),
+  - JSON object with `secret_key` / `keypair` / `bytes`,
+  - hex or base64 string payloads.
+- Loaded signer is cached in-process to avoid repeated secret fetches.
+- Configuration is considered valid when Helius is configured and at least one keypair source is available.
+
+Cloud wiring completed:
+
+- Secret created: `agora-solana-devnet-keypair`
+- Secret version added from `~/.config/solana/devnet-keypair.json`
+- IAM binding added:
+  - member: `serviceAccount:202872251304-compute@developer.gserviceaccount.com`
+  - role: `roles/secretmanager.secretAccessor`
+
+Cloud Run env now includes:
+
+- `SOLANA_KEYPAIR_SECRET_NAME=agora-solana-devnet-keypair`
+- `SOLANA_KEYPAIR_SECRET_PROJECT=even-ally-480821-f3`
+- `SOLANA_KEYPAIR_SECRET_VERSION=latest`
+- `PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd`
+- `SOLANA_NETWORK=devnet`
+
+Note:
+
+- `HELIUS_RPC_URL` is currently set to an explicit placeholder marker value in Cloud Run and must be replaced with a real Helius API-key URL before hosted on-chain writes are enabled.
+
 ## 8. Remaining Operational Caveat
 
 Cloud Run runtime Solana writes require deployment-time secrets/config that are not yet provisioned in GCP:
-- real `HELIUS_RPC_URL`
-- signing key material accessible in-container
+
+- real `HELIUS_RPC_URL` (still required)
+
+Resolved:
+
+- signing key material is now available via Secret Manager and bound to the Cloud Run service account.
 
 Current code is ready and enforces this correctly (fails closed if misconfigured), but production runtime must be provided these values through secure env/secret wiring.
 
