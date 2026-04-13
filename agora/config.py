@@ -24,6 +24,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def _env_optional_str(name: str, default: str | None = None) -> str | None:
+    """Read a stripped string value, treating empty strings as unset."""
+
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    return value or None
+
+
 def _parse_env_assignment(line: str) -> tuple[str, str] | None:
     """Parse one dotenv-style assignment line."""
 
@@ -115,6 +125,36 @@ def _resolve_anthropic_api_key() -> str | None:
     )
 
 
+def _resolve_gemini_api_key() -> str | None:
+    """Resolve Gemini API key from env first, then Secret Manager fallback."""
+
+    explicit_key = (
+        os.getenv("AGORA_GEMINI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("AGORA_GOOGLE_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+    )
+    if explicit_key:
+        return explicit_key
+
+    secret_name = os.getenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key").strip()
+    if not secret_name:
+        return None
+
+    project_id = (
+        os.getenv("AGORA_GEMINI_SECRET_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+    ).strip()
+    if not project_id:
+        return None
+
+    version = (os.getenv("AGORA_GEMINI_SECRET_VERSION") or "latest").strip() or "latest"
+    return _load_secret_manager_value(
+        project_id=project_id,
+        secret_name=secret_name,
+        version=version,
+    )
+
+
 class AgoraConfig(BaseModel):
     """Typed runtime configuration for model routing and thresholds."""
 
@@ -123,15 +163,25 @@ class AgoraConfig(BaseModel):
     google_cloud_project: str | None = Field(
         default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT")
     )
+    gemini_api_key: str | None = Field(default_factory=_resolve_gemini_api_key)
+    gemini_secret_name: str = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")
+    )
+    gemini_secret_project: str | None = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_PROJECT")
+    )
+    gemini_secret_version: str = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_VERSION", "latest")
+    )
     google_cloud_location: str = Field(
         default_factory=lambda: os.getenv("AGORA_GOOGLE_CLOUD_LOCATION", "us-central1")
     )
 
     flash_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-2.5-flash")
+        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-3-flash-preview")
     )
     pro_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-2.5-pro")
+        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-3.1-pro-preview")
     )
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -166,6 +216,12 @@ class AgoraConfig(BaseModel):
     gemini_enable_streaming: bool = True
     gemini_enable_thinking: bool = True
     gemini_thinking_budget: int = Field(default=1024, ge=0)
+    gemini_flash_thinking_level: str | None = Field(
+        default_factory=lambda: _env_optional_str(
+            "AGORA_GEMINI_FLASH_THINKING_LEVEL",
+            "minimal",
+        )
+    )
 
     max_rounds: int = 4
     quorum_threshold: float = 0.6

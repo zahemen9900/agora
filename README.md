@@ -59,10 +59,10 @@ Not implemented yet:
 
 Model calls route through the shared AgentCaller abstraction with provider-specific backends.
 
-- Gemini models use the latest langchain-google-genai client (ChatGoogleGenerativeAI) in Vertex mode.
+- Gemini models use the direct Google GenAI SDK (`google-genai`) against Gemini Developer API (ai.google.dev).
 - Claude models use Anthropic's direct Python SDK (AsyncAnthropic).
 
-- If GOOGLE_CLOUD_PROJECT and credentials are configured, AGORA attempts live Gemini Vertex calls.
+- If `AGORA_GEMINI_API_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`) is configured, AGORA attempts live Gemini calls.
 - If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls through Anthropic API.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
 - If AgentCaller cannot initialize due to missing credentials, that is surfaced clearly in model-layer errors.
@@ -71,7 +71,7 @@ Model calls route through the shared AgentCaller abstraction with provider-speci
 
 ```
 agora/
-  agent.py               # Unified caller (Gemini via Vertex + Claude via Anthropic SDK)
+  agent.py               # Unified caller (Gemini via google-genai + Claude via Anthropic SDK)
   config.py              # Runtime config (models, thresholds, GCP project)
   types.py               # Shared pydantic models and enums
   selector/
@@ -120,7 +120,7 @@ pip install -e ".[dev]"
 
 ```bash
 ruff check .
-pytest -q
+pytest -s -q
 ```
 
 ### One-Command Week 1 Demo (Core + Josh Infra)
@@ -136,13 +136,20 @@ What it covers:
 - Runs lint checks for `agora`, `api`, and `tests`
 - Runs all Python tests (core modules + API/infra tests)
 - Runs a local orchestrator smoke task (your side)
+- Runs direct Gemini GenAI SDK smoke checks on configured Flash/Pro models
 - Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
 - Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
+- Isolates Gemini API keys from the test phase so `pytest` stays deterministic and fast
 
 Optional controls:
 
 - `AGORA_API_URL`: override hosted API base URL
+- `--query "text"`: pass the exact deliberation prompt used in orchestrator + hosted API task
+- `--api-url "url"`: override hosted API base URL via CLI (same effect as `AGORA_API_URL`)
 - `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
+- `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
+- `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3-flash-preview`)
+- `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3.1-pro-preview`)
 - `PYTHON_BIN`: custom Python executable path
 
 Examples:
@@ -156,6 +163,64 @@ RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 
 # Point to a different deployed API
 AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
+
+# Enforce direct Gemini 3-series validation in demo
+RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh
+
+# Pass custom deliberation query from CLI
+./scripts/week1_demo.sh --query "Should our team choose debate or vote for incident response decisions?"
+```
+
+### Validation Runbook (Recommended)
+
+Use this sequence to verify the migrated stack concretely:
+
+```bash
+cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-gemini-genai-migration
+
+# 1) Code quality and tests
+python -m ruff check agora api tests
+python -m pytest -s -q
+
+# 2) Strict model, Anchor, and hosted Week 1 E2E demo
+export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
+export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
+RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+```
+
+Expected demo summary:
+
+- `Python lint/tests`: `PASS`
+- `Gemini 3 SDK smoke`: `PASS`
+- `Claude SDK smoke`: `PASS`
+- `Local Anchor checks`: `PASS`
+- `Hosted API E2E`: `PASS`
+
+### Fixing IAM For Non-Interactive gcloud Auth
+
+If you authenticate with a service-account key file (for example
+`/home/zahemen/projects/dl-lib/agora/.credentials/even-ally-480821-f3-be2827895913.json`),
+that identity must have Secret Manager access.
+
+Run this once with a privileged principal (Owner or Secret Admin):
+
+```bash
+PROJECT_ID="even-ally-480821-f3"
+SA_EMAIL="ghsl-storage-accessor@even-ally-480821-f3.iam.gserviceaccount.com"
+
+for SECRET in agora-gemini-api-key agora-anthropic-api-key; do
+  gcloud secrets add-iam-policy-binding "$SECRET" \
+    --project "$PROJECT_ID" \
+    --member "serviceAccount:${SA_EMAIL}" \
+    --role "roles/secretmanager.secretAccessor"
+done
+```
+
+Verification:
+
+```bash
+gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3 >/dev/null
+gcloud secrets versions access latest --secret agora-anthropic-api-key --project even-ally-480821-f3 >/dev/null
 ```
 
 ## Quick Usage
@@ -185,17 +250,20 @@ Required for live Claude calls (choose one):
 - ANTHROPIC_API_KEY: your Anthropic API key
 - Secret Manager access to the shared secret (default name: agora-anthropic-api-key)
 
-Required for live Gemini Vertex calls:
+Required for live Gemini Developer API calls:
 
-- GOOGLE_CLOUD_PROJECT: your Google Cloud Project ID (string project identifier)
+- AGORA_GEMINI_API_KEY: preferred Gemini API key env var
+- GEMINI_API_KEY: fallback key env var
+- GOOGLE_API_KEY: fallback key env var
 
 AGORA loads `.env` from the current working directory or repository root if present,
 without overriding environment variables already exported in your shell.
 
 Optional model overrides:
 
-- AGORA_FLASH_MODEL (default: gemini-2.5-flash)
-- AGORA_PRO_MODEL (default: gemini-2.5-pro)
+- AGORA_FLASH_MODEL (default: gemini-3-flash-preview)
+- AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
+- AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
@@ -208,6 +276,20 @@ Anthropic Secret Manager fetch controls:
 - AGORA_ANTHROPIC_SECRET_NAME (default: agora-anthropic-api-key)
 - AGORA_ANTHROPIC_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
 - AGORA_ANTHROPIC_SECRET_VERSION (default: latest)
+
+Gemini Secret Manager fetch controls:
+
+- AGORA_GEMINI_SECRET_NAME (default: agora-gemini-api-key)
+- AGORA_GEMINI_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
+- AGORA_GEMINI_SECRET_VERSION (default: latest)
+
+To let AGORA fetch Gemini key directly from Secret Manager (no local API key export):
+
+```bash
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export AGORA_GEMINI_SECRET_NAME="agora-gemini-api-key"
+unset AGORA_GEMINI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY
+```
 
 Solana/Week 1 API runtime variables:
 
@@ -256,7 +338,7 @@ The Claude caller uses a shared async sliding-window throttle to reduce Anthropi
 
 Not required in the current setup:
 
-- GOOGLE_API_KEY (only needed if you choose non-Vertex Gemini usage later)
+- GOOGLE_CLOUD_PROJECT for Gemini API calls (still useful for Secret Manager flows)
 
 Set in shell before running:
 
@@ -298,14 +380,8 @@ If you enable Claude in vote routing, ensure your Anthropic account has access t
 selected Claude model configured in AGORA_CLAUDE_MODEL, or AGORA will log the model
 error and fall back for that voter.
 
-Current code defaults location to us-central1; set AGORA_GOOGLE_CLOUD_LOCATION to
-route Gemini calls to a different Vertex region.
-
-Also ensure ADC credentials are available, for example via:
-
-```bash
-gcloud auth application-default login
-```
+Gemini API keys are managed from ai.google.dev. If needed, you can keep the key in
+Secret Manager and export it before running AGORA.
 
 ## Next Tasks for Josh
 

@@ -8,9 +8,6 @@ skip-lint = false
 [programs.devnet]
 agora = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 
-[registry]
-url = "https://api.apr.dev"
-
 [provider]
 cluster = "devnet"
 wallet = "~/.config/solana/devnet-keypair.json"

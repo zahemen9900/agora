@@ -31,6 +31,7 @@ def client(monkeypatch: pytest.MonkeyPatch, tmp_path: pytest.TempPathFactory) ->
     yield TestClient(app)
 
     app.dependency_overrides.clear()
+    task_routes._store = None
 
 
 @pytest.mark.asyncio
