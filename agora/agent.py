@@ -117,7 +117,7 @@ class AgentCaller:
 
     def __init__(
         self,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-3-flash-preview",
         temperature: float = 0.7,
         project: str | None = None,
         location: str | None = None,
