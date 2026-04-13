@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 use anchor_lang::prelude::*;
 
 pub mod errors;
@@ -17,7 +19,7 @@ pub(crate) use instructions::record_switch::__client_accounts_record_mechanism_s
 pub(crate) use instructions::release_payment::__client_accounts_release_payment;
 pub(crate) use instructions::submit_receipt::__client_accounts_submit_receipt;
 
-declare_id!("82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd");
+declare_id!("7XyyHB6ih5MxStBkyYWjbfKUXJTv2sSiecM5XR3ftP3f");
 
 #[program]
 pub mod agora {

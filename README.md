@@ -136,13 +136,18 @@ What it covers:
 - Runs lint checks for `agora`, `api`, and `tests`
 - Runs all Python tests (core modules + API/infra tests)
 - Runs a local orchestrator smoke task (your side)
+- Runs direct Gemini GenAI SDK smoke checks on configured Flash/Pro models
 - Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
 - Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
+- Isolates Gemini API keys from the test phase so `pytest` stays deterministic and fast
 
 Optional controls:
 
 - `AGORA_API_URL`: override hosted API base URL
 - `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
+- `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
+- `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3-flash-preview`)
+- `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3.1-pro-preview`)
 - `PYTHON_BIN`: custom Python executable path
 
 Examples:
@@ -156,6 +161,59 @@ RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 
 # Point to a different deployed API
 AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
+
+# Enforce direct Gemini 3-series validation in demo
+RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh
+```
+
+### Validation Runbook (Recommended)
+
+Use this sequence to verify the migrated stack concretely:
+
+```bash
+cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-gemini-genai-migration
+
+# 1) Code quality and tests
+python -m ruff check agora tests
+python -m pytest -q
+
+# 2) Strict Gemini + hosted Week 1 E2E demo
+export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
+export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
+RUN_GEMINI_SMOKE=always RUN_ANCHOR_CHECKS=never ./scripts/week1_demo.sh
+```
+
+Expected demo summary:
+
+- `Python lint/tests`: `PASS`
+- `Gemini 3 SDK smoke`: `PASS`
+- `Hosted API E2E`: `PASS`
+
+### Fixing IAM For Non-Interactive gcloud Auth
+
+If you authenticate with a service-account key file (for example
+`/home/zahemen/projects/dl-lib/agora/.credentials/even-ally-480821-f3-be2827895913.json`),
+that identity must have Secret Manager access.
+
+Run this once with a privileged principal (Owner or Secret Admin):
+
+```bash
+PROJECT_ID="even-ally-480821-f3"
+SA_EMAIL="ghsl-storage-accessor@even-ally-480821-f3.iam.gserviceaccount.com"
+
+for SECRET in agora-gemini-api-key agora-anthropic-api-key; do
+  gcloud secrets add-iam-policy-binding "$SECRET" \
+    --project "$PROJECT_ID" \
+    --member "serviceAccount:${SA_EMAIL}" \
+    --role "roles/secretmanager.secretAccessor"
+done
+```
+
+Verification:
+
+```bash
+gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3 >/dev/null
+gcloud secrets versions access latest --secret agora-anthropic-api-key --project even-ally-480821-f3 >/dev/null
 ```
 
 ## Quick Usage
@@ -196,8 +254,8 @@ without overriding environment variables already exported in your shell.
 
 Optional model overrides:
 
-- AGORA_FLASH_MODEL (default: gemini-2.5-flash)
-- AGORA_PRO_MODEL (default: gemini-2.5-pro)
+- AGORA_FLASH_MODEL (default: gemini-3-flash-preview)
+- AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
