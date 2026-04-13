@@ -30,14 +30,13 @@ except ImportError:  # pragma: no cover
     AnthropicRateLimitError = RuntimeError  # type: ignore[assignment]
 
 try:
-    from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, TooManyRequests
+    from google import genai
+    from google.genai import types as genai_types
+    from google.genai.errors import APIError as GeminiAPIError
 except ImportError:  # pragma: no cover
-    ResourceExhausted = ServiceUnavailable = TooManyRequests = RuntimeError  # type: ignore[assignment]
-
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:  # pragma: no cover
-    ChatGoogleGenerativeAI = None  # type: ignore[assignment]
+    genai = None  # type: ignore[assignment]
+    genai_types = None  # type: ignore[assignment]
+    GeminiAPIError = RuntimeError  # type: ignore[assignment]
 
 logger = structlog.get_logger(__name__)
 
@@ -125,13 +124,13 @@ class AgentCaller:
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
     ) -> None:
-        """Initialize caller and underlying LangChain model.
+        """Initialize caller and underlying model SDK client.
 
         Args:
             model: Model identifier.
             temperature: Default sampling temperature for calls.
-            project: Google Cloud project id; defaults to environment value.
-            location: Vertex AI location; defaults to configured runtime location.
+            project: Reserved for backward compatibility.
+            location: Reserved for backward compatibility.
 
         Raises:
             ValueError: If the model prefix is unsupported.
@@ -143,6 +142,7 @@ class AgentCaller:
         self.temperature = temperature
         self.project = project or os.getenv("GOOGLE_CLOUD_PROJECT") or config.google_cloud_project
         self.location = location or config.google_cloud_location
+        self.gemini_api_key = config.gemini_api_key
         self.enable_streaming = (
             config.gemini_enable_streaming if enable_streaming is None else enable_streaming
         )
@@ -158,55 +158,27 @@ class AgentCaller:
         self._anthropic_requests_per_minute = config.anthropic_requests_per_minute
         self._anthropic_throttle_window_seconds = config.anthropic_throttle_window_seconds
         self._anthropic_throttle: _AsyncSlidingWindowRateLimiter | None = None
-        self._chat_model: Any | None = None
+        self._gemini_client: Any | None = None
         self._anthropic_client: Any | None = None
 
         if model.startswith("gemini"):
             self.provider = "gemini"
-            if not self.project:
+            if not self.gemini_api_key:
                 raise AgentCallError(
-                    "GOOGLE_CLOUD_PROJECT is not set. Configure Vertex AI project or use "
+                    "Gemini API key is not set. Configure AGORA_GEMINI_API_KEY "
+                    "(or GEMINI_API_KEY/GOOGLE_API_KEY) or use "
                     "fallback-capable runtime paths."
                 )
-            if ChatGoogleGenerativeAI is None:
+            if genai is None:
                 raise AgentCallError(
-                    "langchain-google-genai is not installed; ChatGoogleGenerativeAI "
-                    "unavailable"
+                    "google-genai SDK is not installed; direct Gemini API client unavailable"
                 )
-            base_kwargs = {
-                "model": model,
-                "vertexai": True,
-                "project": self.project,
-                "location": self.location,
-                "temperature": temperature,
-            }
-            optional_kwargs: dict[str, Any] = {
-                "streaming": self.enable_streaming,
-            }
-            if self.enable_thinking:
-                optional_kwargs["include_thoughts"] = True
-                if self.thinking_budget is not None:
-                    optional_kwargs["thinking_budget"] = self.thinking_budget
             try:
-                self._chat_model = ChatGoogleGenerativeAI(**base_kwargs, **optional_kwargs)
-            except TypeError as exc:
-                logger.warning(
-                    "gemini_optional_features_unsupported",
-                    model=model,
-                    unsupported=list(optional_kwargs.keys()),
-                    error=str(exc),
-                )
-                try:
-                    self._chat_model = ChatGoogleGenerativeAI(**base_kwargs)
-                except TypeError as init_exc:
-                    raise AgentCallError(
-                        "Installed langchain-google-genai is too old for Vertex mode. "
-                        "Upgrade langchain-google-genai to a recent version."
-                    ) from init_exc
+                self._gemini_client = genai.Client(api_key=self.gemini_api_key)
             except Exception as exc:
                 raise AgentCallError(
-                    "Failed to initialize ChatGoogleGenerativeAI in Vertex mode. Ensure "
-                    "GOOGLE_CLOUD_PROJECT and application default credentials are configured."
+                    "Failed to initialize google-genai Gemini client. Ensure the configured "
+                    "Gemini API key is valid for ai.google.dev Gemini API access."
                 ) from exc
         elif model.startswith("claude"):
             self.provider = "claude"
@@ -277,50 +249,80 @@ class AgentCaller:
                 stream_callback=stream_callback,
             )
 
-        messages: list[tuple[str, str]] = [("system", system_prompt), ("human", user_prompt)]
-        model = (
-            self._chat_model.bind(temperature=temperature)
-            if temperature is not None
-            else self._chat_model
+        return await self._call_gemini(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_format=response_format,
+            temperature=temperature,
+            stream=stream,
+            stream_callback=stream_callback,
         )
 
+    async def _call_gemini(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None,
+        temperature: float | None,
+        stream: bool,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str | BaseModel, dict[str, Any]]:
+        """Execute one Gemini call via the direct google-genai SDK."""
+
+        if self._gemini_client is None:
+            raise AgentCallError("Gemini client was not initialized.")
+        if genai_types is None:
+            raise AgentCallError("google-genai types are unavailable.")
+
+        effective_temperature = self.temperature if temperature is None else temperature
         backoff_seconds = 0.5
         max_retries = 3
-        retryable_errors: tuple[type[BaseException], ...] = (
-            ResourceExhausted,
-            ServiceUnavailable,
-            TooManyRequests,
-            TimeoutError,
-        )
 
         for attempt in range(1, max_retries + 1):
             start = time.perf_counter()
             try:
+                config_kwargs: dict[str, Any] = {
+                    "temperature": effective_temperature,
+                    "system_instruction": system_prompt,
+                }
+                if self.enable_thinking:
+                    thinking_kwargs: dict[str, Any] = {}
+                    if self.thinking_budget is not None:
+                        thinking_kwargs["thinking_budget"] = self.thinking_budget
+                    if thinking_kwargs:
+                        config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                            **thinking_kwargs
+                        )
+
                 raw_message: Any | None = None
                 if response_format is not None:
-                    runnable, include_raw = self._get_structured_runnable(model, response_format)
-                    result = await runnable.ainvoke(messages)
-                    if include_raw and isinstance(result, dict) and "parsed" in result:
-                        response = result["parsed"]
-                        raw_message = result.get("raw")
-                    else:
-                        response = result
-
-                    if not isinstance(response, response_format):
-                        raise AgentCallError(
-                            "Structured response did not match expected format "
-                            f"{response_format.__name__}."
-                        )
-                    response_content: str | BaseModel = response
+                    config_kwargs["response_mime_type"] = "application/json"
+                    config_kwargs["response_schema"] = response_format
+                    response_config = genai_types.GenerateContentConfig(**config_kwargs)
+                    raw_message = await self._gemini_client.aio.models.generate_content(
+                        model=self.model,
+                        contents=user_prompt,
+                        config=response_config,
+                    )
+                    response_content = self._parse_gemini_structured_response(
+                        raw_message=raw_message,
+                        response_format=response_format,
+                    )
                 elif stream:
-                    response_content, raw_message = await self._stream_text(
-                        model=model,
-                        messages=messages,
+                    stream_config = genai_types.GenerateContentConfig(**config_kwargs)
+                    response_content, raw_message = await self._stream_gemini_text(
+                        user_prompt=user_prompt,
+                        stream_config=stream_config,
                         stream_callback=stream_callback,
                     )
                 else:
-                    raw_message = await model.ainvoke(messages)
-                    content = getattr(raw_message, "content", "")
+                    response_config = genai_types.GenerateContentConfig(**config_kwargs)
+                    raw_message = await self._gemini_client.aio.models.generate_content(
+                        model=self.model,
+                        contents=user_prompt,
+                        config=response_config,
+                    )
+                    content = getattr(raw_message, "text", "")
                     response_content = content if isinstance(content, str) else str(content)
 
                 elapsed_ms = (time.perf_counter() - start) * 1000.0
@@ -337,7 +339,7 @@ class AgentCaller:
                     thinking_trace_present=usage.get("thinking_trace_present", False),
                 )
                 return response_content, usage
-            except retryable_errors as exc:
+            except (TimeoutError, ConnectionError) as exc:
                 if attempt >= max_retries:
                     logger.error(
                         "agent_call_retry_exhausted",
@@ -359,6 +361,50 @@ class AgentCaller:
                 )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2.0
+            except GeminiAPIError as exc:
+                status_code = self._extract_status_code(exc)
+                retryable_status = isinstance(status_code, int) and (
+                    status_code in {408, 409, 429} or status_code >= 500
+                )
+
+                if retryable_status and attempt < max_retries:
+                    logger.warning(
+                        "agent_call_retrying",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        backoff_seconds=backoff_seconds,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    backoff_seconds *= 2.0
+                    continue
+
+                if retryable_status:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    status_code=status_code,
+                    error=str(exc),
+                )
+                raise AgentCallError(
+                    f"Gemini API returned status {status_code} for model {self.model}."
+                ) from exc
             except AgentCallError:
                 raise
             except Exception as exc:
@@ -372,6 +418,80 @@ class AgentCaller:
                 raise AgentCallError(f"Non-retryable failure for model {self.model}.") from exc
 
         raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
+
+    @staticmethod
+    def _extract_status_code(error: Exception) -> int | None:
+        """Extract HTTP-like status code from provider exceptions when available."""
+
+        status_code = getattr(error, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+
+        code = getattr(error, "code", None)
+        if isinstance(code, int):
+            return code
+
+        response = getattr(error, "response", None)
+        if response is not None:
+            nested_code = getattr(response, "status_code", None)
+            if isinstance(nested_code, int):
+                return nested_code
+
+        return None
+
+    async def _stream_gemini_text(
+        self,
+        user_prompt: str,
+        stream_config: Any,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str, Any | None]:
+        """Stream Gemini text chunks and return full text plus last chunk metadata."""
+
+        if self._gemini_client is None:
+            raise AgentCallError("Gemini client was not initialized.")
+
+        chunks: list[str] = []
+        last_chunk: Any | None = None
+
+        stream_response = self._gemini_client.aio.models.generate_content_stream(
+            model=self.model,
+            contents=user_prompt,
+            config=stream_config,
+        )
+        async for chunk in stream_response:
+            last_chunk = chunk
+            chunk_text = getattr(chunk, "text", None)
+            if isinstance(chunk_text, str) and chunk_text:
+                chunks.append(chunk_text)
+                if stream_callback is not None:
+                    try:
+                        stream_callback(chunk_text)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("stream_callback_error", error=str(exc))
+
+        return "".join(chunks), last_chunk
+
+    def _parse_gemini_structured_response(
+        self,
+        raw_message: Any,
+        response_format: type[BaseModel],
+    ) -> BaseModel:
+        """Parse and validate Gemini JSON output into a Pydantic model."""
+
+        raw_text = getattr(raw_message, "text", "")
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            raise AgentCallError("Gemini structured response was empty.")
+
+        json_payload = self._extract_json_payload(raw_text)
+        try:
+            return response_format.model_validate_json(json_payload)
+        except ValidationError as exc:
+            raise AgentCallError(
+                "Gemini structured response did not match expected format "
+                f"{response_format.__name__}."
+            ) from exc
+        except Exception as exc:
+            raise AgentCallError("Gemini structured response was not valid JSON.") from exc
 
     async def _call_claude(
         self,
@@ -722,66 +842,6 @@ class AgentCaller:
 
         return "".join(text_parts)
 
-    async def _stream_text(
-        self,
-        model: Any,
-        messages: list[tuple[str, str]],
-        stream_callback: Callable[[str], None] | None,
-    ) -> tuple[str, Any | None]:
-        """Stream text chunks and return final concatenated content."""
-
-        chunks: list[str] = []
-        raw_message: Any | None = None
-
-        async for chunk in model.astream(messages):
-            raw_message = chunk
-            content = self._extract_chunk_text(chunk)
-            if not content:
-                continue
-            chunks.append(content)
-            if stream_callback is not None:
-                try:
-                    stream_callback(content)
-                except Exception as exc:  # pragma: no cover
-                    logger.warning("stream_callback_error", error=str(exc))
-
-        return "".join(chunks), raw_message
-
-    @staticmethod
-    def _extract_chunk_text(chunk: Any) -> str:
-        """Extract plain text from a streamed LangChain chunk payload."""
-
-        content = getattr(chunk, "content", "")
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if isinstance(text, str):
-                        parts.append(text)
-                else:
-                    text = getattr(item, "text", None)
-                    if isinstance(text, str):
-                        parts.append(text)
-            return "".join(parts)
-        return str(content) if content else ""
-
-    def _get_structured_runnable(
-        self,
-        model: Any,
-        response_format: type[BaseModel],
-    ) -> tuple[Any, bool]:
-        """Create a structured-output runnable and indicate raw payload availability."""
-
-        try:
-            runnable = model.with_structured_output(response_format, include_raw=True)
-            return runnable, True
-        except TypeError:
-            runnable = model.with_structured_output(response_format)
-            return runnable, False
-
     def _normalize_usage(self, raw_message: Any | None, latency_ms: float) -> dict[str, Any]:
         """Normalize token usage metadata across provider response formats."""
 
@@ -801,6 +861,19 @@ class AgentCaller:
                     usage_metadata.get("output_tokens")
                     or usage_metadata.get("candidates_token_count")
                     or usage_metadata.get("completion_tokens")
+                    or 0
+                )
+            elif usage_metadata is not None:
+                input_tokens = int(
+                    getattr(usage_metadata, "input_tokens", None)
+                    or getattr(usage_metadata, "prompt_token_count", None)
+                    or getattr(usage_metadata, "prompt_tokens", None)
+                    or 0
+                )
+                output_tokens = int(
+                    getattr(usage_metadata, "output_tokens", None)
+                    or getattr(usage_metadata, "candidates_token_count", None)
+                    or getattr(usage_metadata, "completion_tokens", None)
                     or 0
                 )
 
@@ -878,6 +951,20 @@ class AgentCaller:
                             thinking_trace_chars += len(payload)
                         else:
                             thinking_trace_chars += len(json.dumps(payload, default=str))
+
+            candidates = getattr(raw_message, "candidates", None)
+            if isinstance(candidates, list):
+                for candidate in candidates:
+                    candidate_content = getattr(candidate, "content", None)
+                    parts = getattr(candidate_content, "parts", None)
+                    if not isinstance(parts, list):
+                        continue
+                    for part in parts:
+                        if getattr(part, "thought", False):
+                            thinking_trace_present = True
+                            text = getattr(part, "text", None)
+                            if isinstance(text, str):
+                                thinking_trace_chars += len(text)
 
         return {
             "input_tokens": input_tokens,

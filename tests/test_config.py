@@ -11,6 +11,13 @@ from agora.config import get_config
 
 _CONFIG_ENV_KEYS = (
     "ANTHROPIC_API_KEY",
+    "AGORA_GEMINI_API_KEY",
+    "GEMINI_API_KEY",
+    "AGORA_GOOGLE_API_KEY",
+    "GOOGLE_API_KEY",
+    "AGORA_GEMINI_SECRET_NAME",
+    "AGORA_GEMINI_SECRET_PROJECT",
+    "AGORA_GEMINI_SECRET_VERSION",
     "AGORA_CLAUDE_MODEL",
     "AGORA_ANTHROPIC_THROTTLE_ENABLED",
     "AGORA_ANTHROPIC_REQUESTS_PER_MINUTE",
@@ -122,3 +129,63 @@ def test_explicit_api_key_wins_over_secret_manager(monkeypatch: pytest.MonkeyPat
     config = get_config()
 
     assert config.anthropic_api_key == "explicit-key"
+
+
+def test_gemini_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini key should resolve from AGORA_GEMINI_API_KEY first, then fallbacks."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "primary-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "secondary-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "tertiary-key")
+
+    config = get_config()
+    assert config.gemini_api_key == "primary-key"
+
+    get_config.cache_clear()
+    monkeypatch.delenv("AGORA_GEMINI_API_KEY", raising=False)
+    config = get_config()
+    assert config.gemini_api_key == "secondary-key"
+
+    get_config.cache_clear()
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    config = get_config()
+    assert config.gemini_api_key == "tertiary-key"
+
+
+def test_gemini_api_key_falls_back_to_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini key should resolve from Secret Manager when env key is absent."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("AGORA_GOOGLE_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "gemini-sm-key",
+    )
+
+    config = get_config()
+
+    assert config.gemini_api_key == "gemini-sm-key"
+
+
+def test_explicit_gemini_key_wins_over_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit Gemini key should bypass Secret Manager lookup."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "explicit-gemini-key")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_PROJECT", "demo-project")
+
+    def _unexpected(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("Secret Manager should not be called when Gemini key is explicit")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value", _unexpected)
+
+    config = get_config()
+
+    assert config.gemini_api_key == "explicit-gemini-key"

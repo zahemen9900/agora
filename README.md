@@ -59,10 +59,10 @@ Not implemented yet:
 
 Model calls route through the shared AgentCaller abstraction with provider-specific backends.
 
-- Gemini models use the latest langchain-google-genai client (ChatGoogleGenerativeAI) in Vertex mode.
+- Gemini models use the direct Google GenAI SDK (`google-genai`) against Gemini Developer API (ai.google.dev).
 - Claude models use Anthropic's direct Python SDK (AsyncAnthropic).
 
-- If GOOGLE_CLOUD_PROJECT and credentials are configured, AGORA attempts live Gemini Vertex calls.
+- If `AGORA_GEMINI_API_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`) is configured, AGORA attempts live Gemini calls.
 - If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls through Anthropic API.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
 - If AgentCaller cannot initialize due to missing credentials, that is surfaced clearly in model-layer errors.
@@ -71,7 +71,7 @@ Model calls route through the shared AgentCaller abstraction with provider-speci
 
 ```
 agora/
-  agent.py               # Unified caller (Gemini via Vertex + Claude via Anthropic SDK)
+  agent.py               # Unified caller (Gemini via google-genai + Claude via Anthropic SDK)
   config.py              # Runtime config (models, thresholds, GCP project)
   types.py               # Shared pydantic models and enums
   selector/
@@ -185,9 +185,11 @@ Required for live Claude calls (choose one):
 - ANTHROPIC_API_KEY: your Anthropic API key
 - Secret Manager access to the shared secret (default name: agora-anthropic-api-key)
 
-Required for live Gemini Vertex calls:
+Required for live Gemini Developer API calls:
 
-- GOOGLE_CLOUD_PROJECT: your Google Cloud Project ID (string project identifier)
+- AGORA_GEMINI_API_KEY: preferred Gemini API key env var
+- GEMINI_API_KEY: fallback key env var
+- GOOGLE_API_KEY: fallback key env var
 
 AGORA loads `.env` from the current working directory or repository root if present,
 without overriding environment variables already exported in your shell.
@@ -208,6 +210,20 @@ Anthropic Secret Manager fetch controls:
 - AGORA_ANTHROPIC_SECRET_NAME (default: agora-anthropic-api-key)
 - AGORA_ANTHROPIC_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
 - AGORA_ANTHROPIC_SECRET_VERSION (default: latest)
+
+Gemini Secret Manager fetch controls:
+
+- AGORA_GEMINI_SECRET_NAME (default: agora-gemini-api-key)
+- AGORA_GEMINI_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
+- AGORA_GEMINI_SECRET_VERSION (default: latest)
+
+To let AGORA fetch Gemini key directly from Secret Manager (no local API key export):
+
+```bash
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export AGORA_GEMINI_SECRET_NAME="agora-gemini-api-key"
+unset AGORA_GEMINI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY
+```
 
 Solana/Week 1 API runtime variables:
 
@@ -256,7 +272,7 @@ The Claude caller uses a shared async sliding-window throttle to reduce Anthropi
 
 Not required in the current setup:
 
-- GOOGLE_API_KEY (only needed if you choose non-Vertex Gemini usage later)
+- GOOGLE_CLOUD_PROJECT for Gemini API calls (still useful for Secret Manager flows)
 
 Set in shell before running:
 
@@ -298,14 +314,8 @@ If you enable Claude in vote routing, ensure your Anthropic account has access t
 selected Claude model configured in AGORA_CLAUDE_MODEL, or AGORA will log the model
 error and fall back for that voter.
 
-Current code defaults location to us-central1; set AGORA_GOOGLE_CLOUD_LOCATION to
-route Gemini calls to a different Vertex region.
-
-Also ensure ADC credentials are available, for example via:
-
-```bash
-gcloud auth application-default login
-```
+Gemini API keys are managed from ai.google.dev. If needed, you can keep the key in
+Secret Manager and export it before running AGORA.
 
 ## Next Tasks for Josh
 

@@ -115,6 +115,36 @@ def _resolve_anthropic_api_key() -> str | None:
     )
 
 
+def _resolve_gemini_api_key() -> str | None:
+    """Resolve Gemini API key from env first, then Secret Manager fallback."""
+
+    explicit_key = (
+        os.getenv("AGORA_GEMINI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("AGORA_GOOGLE_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+    )
+    if explicit_key:
+        return explicit_key
+
+    secret_name = os.getenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key").strip()
+    if not secret_name:
+        return None
+
+    project_id = (
+        os.getenv("AGORA_GEMINI_SECRET_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+    ).strip()
+    if not project_id:
+        return None
+
+    version = (os.getenv("AGORA_GEMINI_SECRET_VERSION") or "latest").strip() or "latest"
+    return _load_secret_manager_value(
+        project_id=project_id,
+        secret_name=secret_name,
+        version=version,
+    )
+
+
 class AgoraConfig(BaseModel):
     """Typed runtime configuration for model routing and thresholds."""
 
@@ -122,6 +152,16 @@ class AgoraConfig(BaseModel):
 
     google_cloud_project: str | None = Field(
         default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT")
+    )
+    gemini_api_key: str | None = Field(default_factory=_resolve_gemini_api_key)
+    gemini_secret_name: str = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")
+    )
+    gemini_secret_project: str | None = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_PROJECT")
+    )
+    gemini_secret_version: str = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_VERSION", "latest")
     )
     google_cloud_location: str = Field(
         default_factory=lambda: os.getenv("AGORA_GOOGLE_CLOUD_LOCATION", "us-central1")
