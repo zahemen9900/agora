@@ -89,7 +89,7 @@ export function SystemFlowMock() {
 
         {/* Nodes using foreignObject mapped to HTML chunks */}
         {nodes.map((node) => {
-          const { Icon } = node;
+          const Icon = node.icon;
           return (
             <foreignObject
               key={node.id}
