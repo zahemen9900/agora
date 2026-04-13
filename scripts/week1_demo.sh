@@ -9,6 +9,8 @@ RUN_CLAUDE_SMOKE="${RUN_CLAUDE_SMOKE:-auto}"
 AGORA_GCLOUD_CREDENTIALS_FILE="${AGORA_GCLOUD_CREDENTIALS_FILE:-}"
 DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3-flash-preview}"
 DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3.1-pro-preview}"
+DEMO_QUERY_DEFAULT="Week 1 demo: should teams use debate or vote?"
+DEMO_QUERY="${DEMO_QUERY:-$DEMO_QUERY_DEFAULT}"
 
 ORIG_AGORA_GEMINI_API_KEY="${AGORA_GEMINI_API_KEY-}"
 ORIG_GEMINI_API_KEY="${GEMINI_API_KEY-}"
@@ -23,6 +25,67 @@ COLOR_YELLOW=$'\033[0;33m'
 COLOR_RED=$'\033[0;31m'
 COLOR_RESET=$'\033[0m'
 GCLOUD_PROMPTLESS=("CLOUDSDK_CORE_DISABLE_PROMPTS=1")
+
+print_usage() {
+  cat <<'EOF'
+Usage: ./scripts/week1_demo.sh [options]
+
+Options:
+  --query "text"            Set deliberation query used by orchestrator + hosted API create call
+  --query="text"            Same as above
+  --api-url "url"           Override hosted API URL for E2E checks
+  --api-url="url"           Same as above
+  --help                     Show this help
+
+Environment controls still supported:
+  RUN_GEMINI_SMOKE=always|auto|never
+  RUN_CLAUDE_SMOKE=always|auto|never
+  RUN_ANCHOR_CHECKS=always|auto|never
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --query)
+      if [[ $# -lt 2 ]]; then
+        echo "[error] Missing value for --query" >&2
+        exit 1
+      fi
+      DEMO_QUERY="$2"
+      shift 2
+      ;;
+    --query=*)
+      DEMO_QUERY="${1#*=}"
+      shift
+      ;;
+    --api-url)
+      if [[ $# -lt 2 ]]; then
+        echo "[error] Missing value for --api-url" >&2
+        exit 1
+      fi
+      API_URL="$2"
+      shift 2
+      ;;
+    --api-url=*)
+      API_URL="${1#*=}"
+      shift
+      ;;
+    --help|-h)
+      print_usage
+      exit 0
+      ;;
+    *)
+      echo "[error] Unknown option: $1" >&2
+      print_usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "${DEMO_QUERY// }" ]]; then
+  echo "[error] Deliberation query is empty. Use --query \"text\"." >&2
+  exit 1
+fi
 
 if [[ -z "${PYTHON_BIN:-}" ]]; then
   PYTHON_CANDIDATES=(
@@ -89,6 +152,7 @@ export AGORA_PRO_MODEL="${AGORA_PRO_MODEL:-$DEMO_PRO_MODEL}"
 log_step "Configured Gemini models"
 printf "flash=%s\n" "$AGORA_FLASH_MODEL"
 printf "pro=%s\n" "$AGORA_PRO_MODEL"
+printf "query=%s\n" "$DEMO_QUERY"
 
 setup_gcloud_auth() {
   if ! command -v gcloud >/dev/null 2>&1; then
@@ -330,22 +394,26 @@ log_step "Running lint checks (core + API + tests)"
 "$PYTHON_BIN" -m ruff check agora api tests
 
 log_step "Running all Python tests (your core + Josh infra)"
-"$PYTHON_BIN" -m pytest -q
+"$PYTHON_BIN" -m pytest -s -q
 
 setup_gcloud_auth
 prepare_model_credentials
+export AGORA_DEMO_QUERY="$DEMO_QUERY"
 
 log_step "Running orchestrator smoke test (core runtime path)"
 "$PYTHON_BIN" - <<'PY'
 import asyncio
+import os
 
 from agora.runtime.orchestrator import AgoraOrchestrator
 
 
 async def main() -> None:
+    query = os.environ["AGORA_DEMO_QUERY"]
     orchestrator = AgoraOrchestrator(agent_count=3)
-    result = await orchestrator.run("Week 1 demo: should teams use debate or vote?")
+    result = await orchestrator.run(query)
     print("mechanism_used:", result.mechanism_used.value)
+    print("query:", query)
     print("final_answer:", result.final_answer)
     print("confidence:", result.confidence)
     print("merkle_root:", result.merkle_root)
@@ -469,23 +537,32 @@ fi
 run_anchor_checks() {
   log_step "Running Anchor/Solana checks (optional, local tooling path)"
 
+  if [[ -f "$HOME/.cargo/env" ]]; then
+    # shellcheck disable=SC1090
+    source "$HOME/.cargo/env"
+  fi
+  if [[ -d "$HOME/.local/share/solana/install/active_release/bin" ]]; then
+    export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+  fi
+
   local anchor_bin
   local solana_bin
   anchor_bin="$(command -v anchor || true)"
   solana_bin="$(command -v solana || true)"
 
   if [[ -z "$anchor_bin" || -z "$solana_bin" ]]; then
+    if [[ "$RUN_ANCHOR_CHECKS" == "always" ]]; then
+      log_error "anchor/solana CLI not found locally, but RUN_ANCHOR_CHECKS=always was requested."
+      return 1
+    fi
     log_warn "anchor/solana CLI not found locally. Skipping local contract checks."
     ANCHOR_STATUS="SKIPPED"
     return 0
   fi
 
+  local anchor_exit=0
   (
     cd "$ROOT_DIR/contract"
-    if [[ -f "$HOME/.cargo/env" ]]; then
-      # shellcheck disable=SC1090
-      source "$HOME/.cargo/env"
-    fi
 
     anchor --version
     solana --version
@@ -496,30 +573,43 @@ run_anchor_checks() {
         npm ci --silent
       fi
     else
+      if [[ "$RUN_ANCHOR_CHECKS" == "always" ]]; then
+        log_error "npm is unavailable, but RUN_ANCHOR_CHECKS=always requires the Anchor TS harness."
+        exit 1
+      fi
       log_warn "npm is unavailable; skipping Anchor TS harness and running Rust fallback only."
       cargo test --manifest-path "$ROOT_DIR/contract/programs/agora/Cargo.toml" --release
-      ANCHOR_STATUS="PASS (fallback)"
-      return 0
+      exit 2
     fi
 
     anchor build
     if ! anchor test --provider.cluster localnet --validator legacy; then
-      if command -v npm >/dev/null 2>&1; then
-        log_warn "anchor test failed; reinstalling JS deps and retrying once."
-        npm ci --silent
-        if anchor test --provider.cluster localnet --validator legacy; then
-          ANCHOR_STATUS="PASS"
-          return 0
-        fi
+      log_warn "anchor test failed; reinstalling JS deps and retrying once."
+      npm ci --silent
+      if anchor test --provider.cluster localnet --validator legacy; then
+        exit 0
+      fi
+      if [[ "$RUN_ANCHOR_CHECKS" == "always" ]]; then
+        log_error "anchor test failed after retry, and RUN_ANCHOR_CHECKS=always forbids fallback."
+        exit 1
       fi
       log_warn "anchor test failed; running Rust contract tests as fallback."
       cargo test --manifest-path "$ROOT_DIR/contract/programs/agora/Cargo.toml" --release
-      ANCHOR_STATUS="PASS (fallback)"
-      return 0
+      exit 2
     fi
-  )
+  ) || anchor_exit=$?
 
-  ANCHOR_STATUS="PASS"
+  case "$anchor_exit" in
+    0)
+      ANCHOR_STATUS="PASS"
+      ;;
+    2)
+      ANCHOR_STATUS="PASS (fallback)"
+      ;;
+    *)
+      return "$anchor_exit"
+      ;;
+  esac
 }
 
 if [[ "$RUN_ANCHOR_CHECKS" == "always" ]]; then
@@ -608,11 +698,12 @@ def request_json(
 
 def main() -> None:
     token = make_token()
+    query = os.environ["AGORA_DEMO_QUERY"]
 
     health_status, health_payload = request_json("GET", "/health", token=None)
     print("health:", health_status, health_payload)
 
-    task_text = f"Week1 hosted demo task {time.time_ns()}"
+    task_text = query
     create_status, create_data = request_json(
         "POST",
         "/tasks/",

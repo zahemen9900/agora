@@ -120,7 +120,7 @@ pip install -e ".[dev]"
 
 ```bash
 ruff check .
-pytest -q
+pytest -s -q
 ```
 
 ### One-Command Week 1 Demo (Core + Josh Infra)
@@ -144,6 +144,8 @@ What it covers:
 Optional controls:
 
 - `AGORA_API_URL`: override hosted API base URL
+- `--query "text"`: pass the exact deliberation prompt used in orchestrator + hosted API task
+- `--api-url "url"`: override hosted API base URL via CLI (same effect as `AGORA_API_URL`)
 - `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
 - `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
 - `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3-flash-preview`)
@@ -164,6 +166,9 @@ AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
 
 # Enforce direct Gemini 3-series validation in demo
 RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh
+
+# Pass custom deliberation query from CLI
+./scripts/week1_demo.sh --query "Should our team choose debate or vote for incident response decisions?"
 ```
 
 ### Validation Runbook (Recommended)
@@ -175,7 +180,7 @@ cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-gemini-genai-migration
 
 # 1) Code quality and tests
 python -m ruff check agora tests
-python -m pytest -q
+python -m pytest -s -q
 
 # 2) Strict Gemini + hosted Week 1 E2E demo
 export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
@@ -256,6 +261,7 @@ Optional model overrides:
 
 - AGORA_FLASH_MODEL (default: gemini-3-flash-preview)
 - AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
+- AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
@@ -322,7 +328,7 @@ gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
 gcloud run services update agora-api \
   --region us-central1 \
   --project "$PROJECT_ID" \
-  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY"
+  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=7XyyHB6ih5MxStBkyYWjbfKUXJTv2sSiecM5XR3ftP3f,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY"
 ```
 
 The Claude caller uses a shared async sliding-window throttle to reduce Anthropic

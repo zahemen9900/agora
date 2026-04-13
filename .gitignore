@@ -214,3 +214,6 @@ marimo/_lsp/
 __marimo__/
 .qodo
 
+# Local speaking notes / teleprompter artifacts
+scripts/week1_teleprompt_1min.txt
+
