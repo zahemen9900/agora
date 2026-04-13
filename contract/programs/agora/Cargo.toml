@@ -1,0 +1,20 @@
+[package]
+name = "agora"
+version = "0.1.0"
+description = "Agora on-chain orchestration primitives"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "agora"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "1.0.0"

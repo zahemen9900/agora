@@ -10,11 +10,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "langgraph>=0.3.0",
-    "langchain-google-vertexai>=2.0",
-    "langchain-google-genai>=2.0",
-    "langchain-core>=0.3.0",
+    "google-genai>=1.33.0",
     "anthropic>=0.40",
-    "google-cloud-aiplatform>=1.70",
     "pydantic>=2.0",
     "structlog>=24.0",
     "numpy>=1.26",
@@ -35,6 +32,7 @@ include = ["agora*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+addopts = "-p no:pytest_anchorpy"
 
 [tool.ruff]
 line-length = 100
