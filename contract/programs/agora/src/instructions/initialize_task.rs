@@ -40,8 +40,14 @@ pub fn handler(
     payment_amount: u64,
     recipient: Pubkey,
 ) -> Result<()> {
-    require!(consensus_threshold > 0 && consensus_threshold <= 100, AgoraError::InvalidThreshold);
-    require!(agent_count > 0 && agent_count <= 10, AgoraError::InvalidAgentCount);
+    require!(
+        consensus_threshold > 0 && consensus_threshold <= 100,
+        AgoraError::InvalidThreshold
+    );
+    require!(
+        agent_count > 0 && agent_count <= 10,
+        AgoraError::InvalidAgentCount
+    );
 
     let now = Clock::get()?.unix_timestamp;
 

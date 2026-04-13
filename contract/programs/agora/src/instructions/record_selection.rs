@@ -15,11 +15,22 @@ pub struct RecordSelection<'info> {
     pub authority: Signer<'info>,
 }
 
-pub fn handler(ctx: Context<RecordSelection>, _task_id: [u8; 32], selector_reasoning_hash: [u8; 32]) -> Result<()> {
+pub fn handler(
+    ctx: Context<RecordSelection>,
+    _task_id: [u8; 32],
+    selector_reasoning_hash: [u8; 32],
+) -> Result<()> {
     let task_account = &mut ctx.accounts.task_account;
 
-    require_keys_eq!(ctx.accounts.authority.key(), task_account.payer, AgoraError::Unauthorized);
-    require!(matches!(task_account.status, TaskStatus::Pending), AgoraError::InvalidTaskStatus);
+    require_keys_eq!(
+        ctx.accounts.authority.key(),
+        task_account.payer,
+        AgoraError::Unauthorized
+    );
+    require!(
+        matches!(task_account.status, TaskStatus::Pending),
+        AgoraError::InvalidTaskStatus
+    );
 
     task_account.selector_reasoning_hash = selector_reasoning_hash;
     task_account.status = TaskStatus::InProgress;

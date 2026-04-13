@@ -24,6 +24,16 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def _env_optional_str(name: str, default: str | None = None) -> str | None:
+    """Read a stripped string value, treating empty strings as unset."""
+
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    return value or None
+
+
 def _parse_env_assignment(line: str) -> tuple[str, str] | None:
     """Parse one dotenv-style assignment line."""
 
@@ -206,6 +216,12 @@ class AgoraConfig(BaseModel):
     gemini_enable_streaming: bool = True
     gemini_enable_thinking: bool = True
     gemini_thinking_budget: int = Field(default=1024, ge=0)
+    gemini_flash_thinking_level: str | None = Field(
+        default_factory=lambda: _env_optional_str(
+            "AGORA_GEMINI_FLASH_THINKING_LEVEL",
+            "minimal",
+        )
+    )
 
     max_rounds: int = 4
     quorum_threshold: float = 0.6

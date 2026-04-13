@@ -199,3 +199,109 @@ Key acceptance points met:
 - Persistence/auth/SSE/webhook scaffold retained and validated
 - Docker/CI/deploy pipeline in place and working
 - Plan gaps closed and tested
+
+## 10. Gemini GenAI Migration Update (2026-04-13)
+
+Scope:
+
+- Migrated Gemini model calls from Vertex/LangChain path to direct `google-genai` SDK path.
+- Added Gemini API key Secret Manager fallback in runtime config.
+- Preserved Anthropic direct SDK behavior and existing throttling.
+
+Code/Config updates:
+
+- `agora/agent.py`: Gemini provider now initializes `google.genai.Client` and calls `generate_content` / `generate_content_stream`.
+- `agora/config.py`: Gemini key resolution now supports:
+  - explicit env (`AGORA_GEMINI_API_KEY`, `GEMINI_API_KEY`, `AGORA_GOOGLE_API_KEY`, `GOOGLE_API_KEY`)
+  - Secret Manager fallback (`AGORA_GEMINI_SECRET_NAME`, `AGORA_GEMINI_SECRET_PROJECT`, `AGORA_GEMINI_SECRET_VERSION`)
+- `pyproject.toml`: Gemini dependency stack moved to `google-genai`.
+- `tests/test_agent.py`, `tests/test_config.py`: Added Gemini migration-specific coverage.
+
+Model defaults updated:
+
+- `AGORA_FLASH_MODEL` default: `gemini-3-flash-preview`
+- `AGORA_PRO_MODEL` default: `gemini-3.1-pro-preview`
+
+Cloud deployment and runtime evidence:
+
+- Branch deployed: `codex/gemini-genai-migration`
+- Service: `agora-api`
+- Ready revision: `agora-api-00009-fqs`
+- URL: `https://agora-api-rztfxer7ra-uc.a.run.app`
+- Runtime env includes:
+  - `AGORA_FLASH_MODEL=gemini-3-flash-preview`
+  - `AGORA_PRO_MODEL=gemini-3.1-pro-preview`
+  - `AGORA_GEMINI_SECRET_NAME=agora-gemini-api-key`
+  - `AGORA_GEMINI_SECRET_PROJECT=even-ally-480821-f3`
+  - `AGORA_GEMINI_SECRET_VERSION=latest`
+
+Secret Manager evidence:
+
+- Gemini secret: `agora-gemini-api-key`
+- Version: `1` enabled
+- Cloud Run service account has `roles/secretmanager.secretAccessor` on this secret.
+
+Validation evidence:
+
+- `ruff check agora api tests`: passed
+- `pytest -s -q`: 58 passed
+- Hosted API E2E (`create -> run -> pay`): passed against deployed revision
+- Direct Gemini SDK checks:
+  - `gemini-3-flash-preview`: success (with retry handling observed on transient 503)
+  - `gemini-3.1-pro-preview`: success
+
+Demo script updates:
+
+- `scripts/week1_demo.sh` now includes:
+  - explicit Gemini 3-series model defaults
+  - direct Gemini GenAI SDK smoke validation section
+  - `RUN_GEMINI_SMOKE=always|auto|never` control
+  - transport retry handling for hosted API smoke calls (to tolerate transient TLS/network EOFs)
+  - Gemini key isolation during test phase so pytest remains deterministic
+  - summary line for Gemini SDK validation status
+
+Earlier script run evidence (`RUN_GEMINI_SMOKE=always RUN_ANCHOR_CHECKS=never`):
+
+- `Python lint/tests`: PASS
+- `Gemini 3 SDK smoke`: PASS
+  - flash model: `gemini-3-flash-preview`
+  - pro model: `gemini-3.1-pro-preview`
+- `Hosted API E2E`: PASS
+  - create task: 200
+  - run task: 200
+  - pay task: 200
+  - final status: `paid`
+  - pay tx hash: `2rKkkzqVWdra8gwDLnSeVpngg9RCRnLJFijVr2PrgwjeeVTYyryTpJtWKo3Sj9HYUhFAkimTd15iGEmQcCEVkcnR`
+
+Week 1 verification mapping (concrete):
+
+- Core selector/debate/vote/orchestrator path: covered by full Python test suite + orchestrator smoke in script.
+- API + Solana bridge path: covered by hosted `POST /tasks`, `/run`, `/pay` E2E and persisted tx hashes.
+- Deployment/runtime hardening: confirmed via Cloud Run revision/env/secret bindings.
+
+## 11. GenAI Migration Hardening Follow-Up (2026-04-13)
+
+Scope:
+
+- Preserved the deployed Week 1 Solana program ID as `82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd`; `7XyyHB6ih5MxStBkyYWjbfKUXJTv2sSiecM5XR3ftP3f` was not found on devnet.
+- Re-applied fail-closed payment release semantics so short escrow vault balances return `InsufficientVaultBalance` instead of underpaying and marking paid.
+- Re-applied lazy FastAPI task-store initialization so route imports do not require ADC/GCS credentials.
+- Tightened Gemini Flash caller behavior so Gemini 3 Flash uses explicit minimal thinking rather than falling through to dynamic thinking defaults.
+- Hardened the demo script strict mode so Anchor failures stay fatal under `RUN_ANCHOR_CHECKS=always`, local Node/Solana tool paths are discovered, hosted HTTP 5xx responses are retried, and hosted demo tasks include a run nonce to avoid deterministic task-PDA collisions.
+
+Validation evidence:
+
+- `bash -n scripts/week1_demo.sh`: passed
+- `git diff --check`: passed
+- `python -m ruff check agora api tests`: passed
+- `python -m pytest -s -q`: 58 passed
+- `cargo test --manifest-path contract/programs/agora/Cargo.toml --release`: 4 passed
+- `anchor build && anchor test --provider.cluster localnet --validator legacy`: 12 passed
+- Exact strict demo command passed: `RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_ANCHOR_CHECKS=always AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app" ./scripts/week1_demo.sh --query="Should I buy Solana or BTC?"`
+  - Python lint/tests: passed
+  - Gemini 3 SDK smoke: passed
+  - Claude Sonnet SDK smoke: passed
+  - Anchor TS/localnet integration: 12 passed
+  - Hosted API E2E (`create -> run -> pay -> paid`): passed
+  - Hosted receipt tx: `2p64ddV9hCxkUGx2eS3jMEghJ4NqkhdZddieZHW6zBk7pb7nvsuRJDjKoh1rfAjwLqq5QQRqA5DCGTvu7YwqZAQD`
+  - Hosted payment tx: `4Sb2VjXHN7QLaVQjsRVVx2xBzjo5udBFiLmz1khDi1q9jWAifxFxBevFQCzj2ZZoaPRgRVimrVQRW48MN4vhZT7i`

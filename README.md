@@ -179,19 +179,21 @@ Use this sequence to verify the migrated stack concretely:
 cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-gemini-genai-migration
 
 # 1) Code quality and tests
-python -m ruff check agora tests
+python -m ruff check agora api tests
 python -m pytest -s -q
 
-# 2) Strict Gemini + hosted Week 1 E2E demo
+# 2) Strict model, Anchor, and hosted Week 1 E2E demo
 export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
-RUN_GEMINI_SMOKE=always RUN_ANCHOR_CHECKS=never ./scripts/week1_demo.sh
+RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 ```
 
 Expected demo summary:
 
 - `Python lint/tests`: `PASS`
 - `Gemini 3 SDK smoke`: `PASS`
+- `Claude SDK smoke`: `PASS`
+- `Local Anchor checks`: `PASS`
 - `Hosted API E2E`: `PASS`
 
 ### Fixing IAM For Non-Interactive gcloud Auth
@@ -328,7 +330,7 @@ gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
 gcloud run services update agora-api \
   --region us-central1 \
   --project "$PROJECT_ID" \
-  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=7XyyHB6ih5MxStBkyYWjbfKUXJTv2sSiecM5XR3ftP3f,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY"
+  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY"
 ```
 
 The Claude caller uses a shared async sliding-window throttle to reduce Anthropic

@@ -38,10 +38,20 @@ pub fn handler(
 ) -> Result<()> {
     let task_account = &mut ctx.accounts.task_account;
 
-    require_keys_eq!(ctx.accounts.authority.key(), task_account.payer, AgoraError::Unauthorized);
-    require!(matches!(task_account.status, TaskStatus::InProgress), AgoraError::InvalidTaskStatus);
+    require_keys_eq!(
+        ctx.accounts.authority.key(),
+        task_account.payer,
+        AgoraError::Unauthorized
+    );
+    require!(
+        matches!(task_account.status, TaskStatus::InProgress),
+        AgoraError::InvalidTaskStatus
+    );
     require!(from_mechanism != to_mechanism, AgoraError::SameMechanism);
-    require!(switch_index == task_account.mechanism_switches, AgoraError::InvalidSwitchIndex);
+    require!(
+        switch_index == task_account.mechanism_switches,
+        AgoraError::InvalidSwitchIndex
+    );
 
     let log_account = &mut ctx.accounts.switch_log;
     log_account.task_id = task_id;

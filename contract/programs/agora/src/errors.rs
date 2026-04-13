@@ -31,4 +31,7 @@ pub enum AgoraError {
 
     #[msg("No payment to release: payment amount is zero")]
     NoPayment,
+
+    #[msg("Insufficient vault balance for requested payment amount")]
+    InsufficientVaultBalance,
 }

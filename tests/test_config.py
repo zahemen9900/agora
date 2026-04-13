@@ -18,6 +18,7 @@ _CONFIG_ENV_KEYS = (
     "AGORA_GEMINI_SECRET_NAME",
     "AGORA_GEMINI_SECRET_PROJECT",
     "AGORA_GEMINI_SECRET_VERSION",
+    "AGORA_GEMINI_FLASH_THINKING_LEVEL",
     "AGORA_CLAUDE_MODEL",
     "AGORA_ANTHROPIC_THROTTLE_ENABLED",
     "AGORA_ANTHROPIC_REQUESTS_PER_MINUTE",
@@ -189,3 +190,19 @@ def test_explicit_gemini_key_wins_over_secret_manager(monkeypatch: pytest.Monkey
     config = get_config()
 
     assert config.gemini_api_key == "explicit-gemini-key"
+
+
+def test_gemini_flash_thinking_level_defaults_and_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flash callers should default to minimal thinking, with an explicit opt-out."""
+
+    monkeypatch.delenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", raising=False)
+    get_config.cache_clear()
+    config = get_config()
+    assert config.gemini_flash_thinking_level == "minimal"
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", "")
+    config = get_config()
+    assert config.gemini_flash_thinking_level is None

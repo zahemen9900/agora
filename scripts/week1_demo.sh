@@ -6,6 +6,7 @@ API_URL="${AGORA_API_URL:-https://agora-api-rztfxer7ra-uc.a.run.app}"
 RUN_ANCHOR_CHECKS="${RUN_ANCHOR_CHECKS:-auto}"
 RUN_GEMINI_SMOKE="${RUN_GEMINI_SMOKE:-auto}"
 RUN_CLAUDE_SMOKE="${RUN_CLAUDE_SMOKE:-auto}"
+DEMO_VERBOSE_TEST_LOGS="${DEMO_VERBOSE_TEST_LOGS:-0}"
 AGORA_GCLOUD_CREDENTIALS_FILE="${AGORA_GCLOUD_CREDENTIALS_FILE:-}"
 DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3-flash-preview}"
 DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3.1-pro-preview}"
@@ -41,6 +42,7 @@ Environment controls still supported:
   RUN_GEMINI_SMOKE=always|auto|never
   RUN_CLAUDE_SMOKE=always|auto|never
   RUN_ANCHOR_CHECKS=always|auto|never
+  DEMO_VERBOSE_TEST_LOGS=1
 EOF
 }
 
@@ -393,8 +395,50 @@ prepare_model_credentials() {
 log_step "Running lint checks (core + API + tests)"
 "$PYTHON_BIN" -m ruff check agora api tests
 
-log_step "Running all Python tests (your core + Josh infra)"
-"$PYTHON_BIN" -m pytest -s -q
+run_python_tests() {
+  log_step "Running all Python tests (your core + Josh infra)"
+  printf "test_model_keys=disabled; fallback warnings in this pytest section are expected.\n"
+
+  if [[ "$DEMO_VERBOSE_TEST_LOGS" == "1" ]]; then
+    printf "test_runtime_logs=verbose\n"
+    "$PYTHON_BIN" -m pytest -s -q
+    return
+  fi
+
+  printf "test_runtime_logs=filtered; set DEMO_VERBOSE_TEST_LOGS=1 to show raw runtime logs.\n"
+  "$PYTHON_BIN" - <<'PY'
+import re
+import subprocess
+import sys
+
+timestamped_log = re.compile(r"^(\.*)(\d{4}-\d{2}-\d{2} )")
+cmd = [sys.executable, "-m", "pytest", "-s", "-q"]
+
+proc = subprocess.Popen(
+    cmd,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    text=True,
+    bufsize=1,
+)
+assert proc.stdout is not None
+
+for line in proc.stdout:
+    match = timestamped_log.match(line)
+    if match:
+        progress_prefix = match.group(1)
+        if progress_prefix:
+            sys.stdout.write(progress_prefix)
+            sys.stdout.flush()
+        continue
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+sys.exit(proc.wait())
+PY
+}
+
+run_python_tests
 
 setup_gcloud_auth
 prepare_model_credentials
@@ -405,11 +449,22 @@ log_step "Running orchestrator smoke test (core runtime path)"
 import asyncio
 import os
 
+from agora.config import get_config
 from agora.runtime.orchestrator import AgoraOrchestrator
 
 
 async def main() -> None:
     query = os.environ["AGORA_DEMO_QUERY"]
+    cfg = get_config()
+    gemini_key_loaded = bool(cfg.gemini_api_key)
+    claude_key_loaded = bool(cfg.anthropic_api_key)
+    print("orchestrator_gemini_key_loaded:", gemini_key_loaded)
+    print("orchestrator_claude_key_loaded:", claude_key_loaded)
+    if os.environ.get("RUN_GEMINI_SMOKE") == "always" and not gemini_key_loaded:
+        raise RuntimeError("Gemini key did not propagate to orchestrator smoke.")
+    if os.environ.get("RUN_CLAUDE_SMOKE") == "always" and not claude_key_loaded:
+        raise RuntimeError("Claude key did not propagate to orchestrator smoke.")
+
     orchestrator = AgoraOrchestrator(agent_count=3)
     result = await orchestrator.run(query)
     print("mechanism_used:", result.mechanism_used.value)
@@ -544,6 +599,16 @@ run_anchor_checks() {
   if [[ -d "$HOME/.local/share/solana/install/active_release/bin" ]]; then
     export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
   fi
+  local node_bin_dir=""
+  local candidate
+  for candidate in "$HOME"/.nvm/versions/node/*/bin; do
+    if [[ -x "$candidate/node" ]]; then
+      node_bin_dir="$candidate"
+    fi
+  done
+  if [[ -n "$node_bin_dir" ]]; then
+    export PATH="$node_bin_dir:$PATH"
+  fi
 
   local anchor_bin
   local solana_bin
@@ -568,7 +633,7 @@ run_anchor_checks() {
     solana --version
 
     if command -v npm >/dev/null 2>&1; then
-      if [[ ! -d node_modules/@coral-xyz/anchor ]]; then
+      if [[ ! -f node_modules/@coral-xyz/anchor/package.json || ! -x node_modules/.bin/ts-mocha ]]; then
         log_warn "Installing contract JS dependencies for Anchor TS tests (npm ci)."
         npm ci --silent
       fi
@@ -680,6 +745,14 @@ def request_json(
                 return resp.status, data
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
+            if 500 <= exc.code < 600 and attempt < max_attempts:
+                print(
+                    f"retrying {method} {path} after HTTP {exc.code} "
+                    f"(attempt {attempt}/{max_attempts}): {raw}"
+                )
+                time.sleep(backoff)
+                backoff *= 2.0
+                continue
             raise RuntimeError(f"{method} {path} failed: {exc.code} {raw}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             if attempt >= max_attempts:
@@ -703,7 +776,7 @@ def main() -> None:
     health_status, health_payload = request_json("GET", "/health", token=None)
     print("health:", health_status, health_payload)
 
-    task_text = query
+    task_text = f"{query}\n\n[week1-demo-run-id:{time.time_ns()}]"
     create_status, create_data = request_json(
         "POST",
         "/tasks/",

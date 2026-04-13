@@ -123,6 +123,7 @@ class AgentCaller:
         enable_streaming: bool | None = None,
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
+        thinking_level: str | None = None,
     ) -> None:
         """Initialize caller and underlying model SDK client.
 
@@ -142,7 +143,13 @@ class AgentCaller:
         self.temperature = temperature
         self.project = project or os.getenv("GOOGLE_CLOUD_PROJECT") or config.google_cloud_project
         self.location = location or config.google_cloud_location
-        self.gemini_api_key = config.gemini_api_key
+        self.gemini_api_key = (
+            os.getenv("AGORA_GEMINI_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("AGORA_GOOGLE_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or config.gemini_api_key
+        )
         self.enable_streaming = (
             config.gemini_enable_streaming if enable_streaming is None else enable_streaming
         )
@@ -152,6 +159,7 @@ class AgentCaller:
         self.thinking_budget = (
             config.gemini_thinking_budget if thinking_budget is None else thinking_budget
         )
+        self.thinking_level = thinking_level
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or config.anthropic_api_key
         self._anthropic_max_tokens = config.anthropic_max_tokens
         self._anthropic_throttle_enabled = config.anthropic_throttle_enabled
@@ -285,14 +293,15 @@ class AgentCaller:
                     "temperature": effective_temperature,
                     "system_instruction": system_prompt,
                 }
-                if self.enable_thinking:
-                    thinking_kwargs: dict[str, Any] = {}
-                    if self.thinking_budget is not None:
-                        thinking_kwargs["thinking_budget"] = self.thinking_budget
-                    if thinking_kwargs:
-                        config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
-                            **thinking_kwargs
-                        )
+                thinking_kwargs: dict[str, Any] = {}
+                if self.thinking_level:
+                    thinking_kwargs["thinking_level"] = self.thinking_level
+                elif self.enable_thinking and self.thinking_budget is not None:
+                    thinking_kwargs["thinking_budget"] = self.thinking_budget
+                if thinking_kwargs:
+                    config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+                        **thinking_kwargs
+                    )
 
                 raw_message: Any | None = None
                 if response_format is not None:
@@ -986,6 +995,8 @@ def flash_caller() -> AgentCaller:
         temperature=0.7,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=False,
+        thinking_budget=None,
+        thinking_level=config.gemini_flash_thinking_level,
     )
 
 
