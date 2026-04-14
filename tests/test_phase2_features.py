@@ -1,0 +1,383 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+
+from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.sdk import AgoraArbitrator, ReceiptVerificationError
+from api.main import app
+from api.routes import benchmarks as benchmark_routes
+from api.routes import tasks as task_routes
+from api.store_local import LocalTaskStore
+from benchmarks.runner import BenchmarkRunner
+
+
+def test_benchmark_runner_loads_curated_dataset() -> None:
+    dataset = BenchmarkRunner.load_dataset("math")
+    dataset_by_spec_name = BenchmarkRunner.load_dataset("math_tasks")
+
+    assert len(dataset) == 20
+    assert dataset == dataset_by_spec_name
+    assert {item["category"] for item in dataset} == {"math"}
+    assert all("task" in item for item in dataset)
+    assert all("source" in item for item in dataset)
+
+
+def test_benchmark_runner_builds_default_phase2_split() -> None:
+    training, holdout = BenchmarkRunner.build_phase2_task_split()
+
+    assert len(training) == 30
+    assert len(holdout) == 10
+    assert {item["category"] for item in training} == {
+        "math",
+        "factual",
+        "reasoning",
+        "code",
+        "creative",
+    }
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_reads_store_summary(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-data"))
+    task_routes._store = store
+    summary = {
+        "summary": {
+            "per_mode": {"selector": {"accuracy": 0.8}},
+            "per_category": {"reasoning": {"selector": {"accuracy": 0.75}}},
+        }
+    }
+
+    try:
+        await store.save_benchmark_summary(summary)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/benchmarks")
+
+        assert response.status_code == 200
+        assert response.json() == summary
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_falls_back_to_completed_tasks(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-tasks"))
+    original_results_path = benchmark_routes._RESULTS_PATH
+    task_routes._store = store
+    benchmark_routes._RESULTS_PATH = tmp_path / "missing-phase2-validation.json"
+    task_payload = {
+        "task_id": "task-1",
+        "task_text": "Should we use a monolith?",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Low disagreement, force vote.",
+        "selector_reasoning_hash": "hash-1",
+        "selector_confidence": 0.91,
+        "result": {
+            "task_id": "task-1",
+            "mechanism": "vote",
+            "final_answer": "Use a monolith first.",
+            "confidence": 0.88,
+            "quorum_reached": True,
+            "merkle_root": "root-1",
+            "decision_hash": "decision-1",
+            "total_tokens_used": 120,
+            "latency_ms": 45.0,
+            "round_count": 1,
+            "mechanism_switches": 0,
+            "transcript_hashes": ["leaf-1"],
+            "convergence_history": [],
+            "locked_claims": [],
+        },
+    }
+
+    try:
+        await store.save_task("user-1", "task-1", task_payload)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/benchmarks")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["metadata"]["accuracy_is_proxy"] is True
+        assert payload["summary"]["per_mode"]["vote"]["avg_tokens"] == 120.0
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_PATH = original_results_path
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_prefers_completed_tasks_before_file_fallback(
+    tmp_path: Path,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-order"))
+    original_results_path = benchmark_routes._RESULTS_PATH
+    task_routes._store = store
+    benchmark_routes._RESULTS_PATH = tmp_path / "phase2-validation-file.json"
+
+    file_payload = {
+        "summary": {
+            "per_mode": {"selector": {"accuracy": 0.11}},
+            "per_category": {"math": {"selector": {"accuracy": 0.22}}},
+        },
+        "metadata": {"source": "file_artifact"},
+    }
+    benchmark_routes._RESULTS_PATH.write_text(json.dumps(file_payload), encoding="utf-8")
+
+    task_payload = {
+        "task_id": "task-2",
+        "task_text": "Should we split this service now?",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Use vote for low disagreement.",
+        "selector_reasoning_hash": "hash-2",
+        "selector_confidence": 0.83,
+        "result": {
+            "task_id": "task-2",
+            "mechanism": "vote",
+            "final_answer": "No, keep it together.",
+            "confidence": 0.9,
+            "quorum_reached": True,
+            "merkle_root": "root-2",
+            "decision_hash": "decision-2",
+            "total_tokens_used": 98,
+            "latency_ms": 30.0,
+            "round_count": 1,
+            "mechanism_switches": 0,
+            "transcript_hashes": ["leaf-2"],
+            "convergence_history": [],
+            "locked_claims": [],
+        },
+    }
+
+    try:
+        await store.save_task("user-1", "task-2", task_payload)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/benchmarks")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["metadata"]["source"] == "completed_task_records"
+        assert payload["summary"]["per_mode"]["vote"]["avg_tokens"] == 98.0
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_PATH = original_results_path
+
+
+@pytest.mark.asyncio
+async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path) -> None:
+    async def deterministic_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "Option A",
+            "confidence": 0.84,
+            "predicted_group_answer": "Option A",
+            "reasoning": "Deterministic test agent.",
+        }
+
+    training, holdout = BenchmarkRunner.build_phase2_task_split(
+        training_per_category=1,
+        holdout_per_category=1,
+    )
+    orchestrator = AgoraOrchestrator(agent_count=3)
+    runner = BenchmarkRunner(orchestrator, agents=[deterministic_agent] * 3)
+
+    payload = await runner.run_phase2_validation(
+        training_tasks=training,
+        holdout_tasks=holdout,
+        output_path=str(tmp_path / "phase2_validation_test.json"),
+        seed=7,
+    )
+
+    assert payload["pre_learning"]["runs"]
+    assert all(run["merkle_deterministic"] is True for run in payload["pre_learning"]["runs"])
+
+
+@pytest.mark.asyncio
+async def test_sdk_local_mode_supports_custom_agents() -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.92,
+            "predicted_group_answer": "BTC",
+            "reasoning": "All agents independently prefer BTC here.",
+        }
+
+    arbitrator = AgoraArbitrator(mechanism="vote", agent_count=3)
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    verification = await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+    assert result.mechanism_used.value == "vote"
+    assert result.quorum_reached is True
+    assert result.final_answer == "BTC"
+    assert verification["valid"] is True
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_receipt_strict_raises_without_task_mapping() -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+    )
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    with pytest.raises(ReceiptVerificationError):
+        await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_receipt_lenient_allows_missing_task_mapping() -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+        strict_verification=False,
+    )
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    verification = await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+    assert verification["valid"] is True
+    assert verification["on_chain_match"] is None
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_receipt_strict_hosted_payload_mismatch_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+    )
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    arbitrator._result_task_ids[result.merkle_root] = "task-verify-1"
+
+    decision_hash = TranscriptHasher().hash_content(result.final_answer)
+    mismatched_payload: dict[str, Any] = {
+        "merkle_root": result.merkle_root,
+        "decision_hash": decision_hash,
+        "solana_tx_hash": "",
+        "result": {
+            "merkle_root": result.merkle_root,
+            "decision_hash": decision_hash,
+            "final_answer": result.final_answer,
+            "transcript_hashes": result.transcript_hashes,
+        },
+    }
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(mismatched_payload)
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+    with pytest.raises(ReceiptVerificationError):
+        await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_receipt_strict_hosted_payload_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+    )
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    arbitrator._result_task_ids[result.merkle_root] = "task-verify-2"
+
+    decision_hash = TranscriptHasher().hash_content(result.final_answer)
+    payload: dict[str, Any] = {
+        "merkle_root": result.merkle_root,
+        "decision_hash": decision_hash,
+        "solana_tx_hash": "tx-123",
+        "result": {
+            "merkle_root": result.merkle_root,
+            "decision_hash": decision_hash,
+            "final_answer": result.final_answer,
+            "transcript_hashes": result.transcript_hashes,
+        },
+    }
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+    verification = await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+    assert verification["valid"] is True
+    assert verification["on_chain_match"] is True
