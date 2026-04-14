@@ -201,6 +201,8 @@ async def test_full_debate_run_on_simple_math_task() -> None:
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
+        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
         kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
@@ -220,6 +222,8 @@ async def test_adaptive_termination_fires_on_plateau() -> None:
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
+        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
         kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
@@ -238,6 +242,8 @@ async def test_mechanism_switch_triggers_when_monitor_requests(monkeypatch) -> N
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
+        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
         kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
