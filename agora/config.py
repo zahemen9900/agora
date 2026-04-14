@@ -155,6 +155,31 @@ def _resolve_gemini_api_key() -> str | None:
     )
 
 
+def _resolve_openrouter_api_key() -> str | None:
+    """Resolve OpenRouter API key from env first, then Secret Manager fallback."""
+
+    explicit_key = os.getenv("AGORA_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+    if explicit_key:
+        return explicit_key
+
+    secret_name = os.getenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key").strip()
+    if not secret_name:
+        return None
+
+    project_id = (
+        os.getenv("AGORA_OPENROUTER_SECRET_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+    ).strip()
+    if not project_id:
+        return None
+
+    version = (os.getenv("AGORA_OPENROUTER_SECRET_VERSION") or "latest").strip() or "latest"
+    return _load_secret_manager_value(
+        project_id=project_id,
+        secret_name=secret_name,
+        version=version,
+    )
+
+
 class AgoraConfig(BaseModel):
     """Typed runtime configuration for model routing and thresholds."""
 
@@ -186,6 +211,9 @@ class AgoraConfig(BaseModel):
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
     )
+    kimi_model: str = Field(
+        default_factory=lambda: os.getenv("AGORA_KIMI_MODEL", "moonshotai/kimi-k2-thinking")
+    )
     anthropic_api_key: str | None = Field(default_factory=_resolve_anthropic_api_key)
     anthropic_secret_name: str = Field(
         default_factory=lambda: os.getenv("AGORA_ANTHROPIC_SECRET_NAME", "agora-anthropic-api-key")
@@ -210,6 +238,44 @@ class AgoraConfig(BaseModel):
     anthropic_throttle_window_seconds: float = Field(
         default_factory=lambda: float(os.getenv("AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS", "60")),
         gt=0,
+    )
+    openrouter_api_key: str | None = Field(default_factory=_resolve_openrouter_api_key)
+    openrouter_secret_name: str = Field(
+        default_factory=lambda: os.getenv(
+            "AGORA_OPENROUTER_SECRET_NAME",
+            "agora-openrouter-api-key",
+        )
+    )
+    openrouter_secret_project: str | None = Field(
+        default_factory=lambda: os.getenv("AGORA_OPENROUTER_SECRET_PROJECT")
+    )
+    openrouter_secret_version: str = Field(
+        default_factory=lambda: os.getenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")
+    )
+    openrouter_base_url: str = Field(
+        default_factory=lambda: os.getenv(
+            "AGORA_OPENROUTER_BASE_URL",
+            "https://openrouter.ai/api/v1",
+        )
+    )
+    openrouter_http_referer: str | None = Field(
+        default_factory=lambda: _env_optional_str("AGORA_OPENROUTER_HTTP_REFERER")
+    )
+    openrouter_app_title: str | None = Field(
+        default_factory=lambda: _env_optional_str("AGORA_OPENROUTER_APP_TITLE", "Agora Protocol")
+    )
+    openrouter_legacy_x_title_enabled: bool = Field(
+        default_factory=lambda: _env_bool("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", True)
+    )
+    kimi_reasoning_effort: str | None = Field(
+        default_factory=lambda: _env_optional_str("AGORA_KIMI_REASONING_EFFORT", "low")
+    )
+    kimi_reasoning_exclude: bool = Field(
+        default_factory=lambda: _env_bool("AGORA_KIMI_REASONING_EXCLUDE", True)
+    )
+    kimi_max_tokens: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_KIMI_MAX_TOKENS", "512")),
+        ge=1,
     )
 
     # Gemini runtime feature controls.

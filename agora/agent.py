@@ -1,4 +1,4 @@
-"""Unified LLM caller abstraction for Gemini and Claude model backends."""
+"""Unified LLM caller abstraction for Gemini, Claude, and OpenRouter backends."""
 
 from __future__ import annotations
 
@@ -37,6 +37,19 @@ except ImportError:  # pragma: no cover
     genai = None  # type: ignore[assignment]
     genai_types = None  # type: ignore[assignment]
     GeminiAPIError = RuntimeError  # type: ignore[assignment]
+
+try:
+    from openai import APIConnectionError as OpenAIAPIConnectionError
+    from openai import APIStatusError as OpenAIAPIStatusError
+    from openai import APITimeoutError as OpenAIAPITimeoutError
+    from openai import AsyncOpenAI
+    from openai import RateLimitError as OpenAIRateLimitError
+except ImportError:  # pragma: no cover
+    OpenAIAPIConnectionError = RuntimeError  # type: ignore[assignment]
+    OpenAIAPIStatusError = RuntimeError  # type: ignore[assignment]
+    OpenAIAPITimeoutError = TimeoutError  # type: ignore[assignment]
+    AsyncOpenAI = None  # type: ignore[assignment]
+    OpenAIRateLimitError = RuntimeError  # type: ignore[assignment]
 
 logger = structlog.get_logger(__name__)
 
@@ -111,7 +124,7 @@ class AgentCaller:
     """Async abstraction over chat models.
 
     This wrapper normalizes model routing, retries, and token usage metadata across
-    Gemini and Claude providers.
+    Gemini, Claude, and OpenRouter providers.
     """
 
     def __init__(
@@ -161,6 +174,16 @@ class AgentCaller:
         )
         self.thinking_level = thinking_level
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or config.anthropic_api_key
+        self.openrouter_api_key = (
+            os.getenv("AGORA_OPENROUTER_API_KEY")
+            or os.getenv("OPENROUTER_API_KEY")
+            or config.openrouter_api_key
+        )
+        self.openrouter_base_url = config.openrouter_base_url
+        self._openrouter_default_headers = self._build_openrouter_headers(config)
+        self._kimi_reasoning_effort = config.kimi_reasoning_effort
+        self._kimi_reasoning_exclude = config.kimi_reasoning_exclude
+        self._kimi_max_tokens = config.kimi_max_tokens
         self._anthropic_max_tokens = config.anthropic_max_tokens
         self._anthropic_throttle_enabled = config.anthropic_throttle_enabled
         self._anthropic_requests_per_minute = config.anthropic_requests_per_minute
@@ -168,6 +191,7 @@ class AgentCaller:
         self._anthropic_throttle: _AsyncSlidingWindowRateLimiter | None = None
         self._gemini_client: Any | None = None
         self._anthropic_client: Any | None = None
+        self._openrouter_client: Any | None = None
 
         if model.startswith("gemini"):
             self.provider = "gemini"
@@ -215,9 +239,32 @@ class AgentCaller:
                 raise AgentCallError(
                     "Failed to initialize AsyncAnthropic. Ensure ANTHROPIC_API_KEY is valid."
                 ) from exc
+        elif model.startswith("moonshotai/") or model.startswith("openrouter/"):
+            self.provider = "openrouter"
+            if AsyncOpenAI is None:
+                raise AgentCallError("openai SDK is not installed; AsyncOpenAI unavailable")
+            if not self.openrouter_api_key:
+                raise AgentCallError(
+                    "OPENROUTER_API_KEY is not set. Configure AGORA_OPENROUTER_API_KEY "
+                    "or OPENROUTER_API_KEY for Kimi access."
+                )
+            try:
+                # Keep SDK retries disabled because AGORA applies its own retry policy.
+                self._openrouter_client = AsyncOpenAI(
+                    api_key=self.openrouter_api_key,
+                    base_url=self.openrouter_base_url,
+                    max_retries=0,
+                    default_headers=self._openrouter_default_headers or None,
+                )
+            except Exception as exc:
+                raise AgentCallError(
+                    "Failed to initialize AsyncOpenAI for OpenRouter. "
+                    "Ensure OPENROUTER_API_KEY is valid."
+                ) from exc
         else:
             raise ValueError(
-                "Unsupported model name. Expected a model beginning with 'gemini' or 'claude'."
+                "Unsupported model name. Expected a model beginning with "
+                "'gemini', 'claude', or an OpenRouter-compatible prefix."
             )
 
     async def call(
@@ -249,6 +296,16 @@ class AgentCaller:
 
         if self.provider == "claude":
             return await self._call_claude(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_format=response_format,
+                temperature=temperature,
+                stream=stream,
+                stream_callback=stream_callback,
+            )
+
+        if self.provider == "openrouter":
+            return await self._call_openrouter(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_format=response_format,
@@ -702,6 +759,244 @@ class AgentCaller:
 
         raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
 
+    async def _call_openrouter(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None,
+        temperature: float | None,
+        stream: bool,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str | BaseModel, dict[str, Any]]:
+        """Execute one OpenRouter call via OpenAI-compatible chat completions."""
+
+        if self._openrouter_client is None:
+            raise AgentCallError("OpenRouter client was not initialized.")
+
+        effective_temperature = self.temperature if temperature is None else temperature
+        backoff_seconds = 0.5
+        max_retries = 3
+
+        for attempt in range(1, max_retries + 1):
+            start = time.perf_counter()
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+
+                request_kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": effective_temperature,
+                    "max_tokens": self._kimi_max_tokens,
+                    "extra_body": {"reasoning": self._build_openrouter_reasoning_payload()},
+                }
+
+                if response_format is not None:
+                    messages[1] = {
+                        "role": "user",
+                        "content": self._with_structured_json_instructions(
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                        ),
+                    }
+                    request_kwargs["response_format"] = {"type": "json_object"}
+
+                raw_message: Any | None = None
+                if stream:
+                    request_kwargs["stream"] = True
+                    stream_response = await self._openrouter_client.chat.completions.create(
+                        **request_kwargs
+                    )
+                    response_content, raw_message = await self._stream_openrouter_text(
+                        stream_response=stream_response,
+                        stream_callback=stream_callback,
+                    )
+                else:
+                    raw_message = await self._openrouter_client.chat.completions.create(
+                        **request_kwargs
+                    )
+                    if response_format is not None:
+                        response_content = self._parse_openrouter_structured_response(
+                            raw_message=raw_message,
+                            response_format=response_format,
+                        )
+                    else:
+                        response_content = self._extract_openrouter_text(raw_message)
+
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                usage = self._normalize_usage(raw_message, elapsed_ms)
+
+                logger.info(
+                    "agent_call_success",
+                    model=self.model,
+                    provider=self.provider,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    reasoning_tokens=usage.get("reasoning_tokens", 0),
+                    latency_ms=usage["latency_ms"],
+                    streamed=stream,
+                    thinking_trace_present=usage.get("thinking_trace_present", False),
+                )
+                return response_content, usage
+            except OpenAIRateLimitError as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except (OpenAIAPIConnectionError, OpenAIAPITimeoutError, TimeoutError) as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except OpenAIAPIStatusError as exc:
+                status_code = getattr(exc, "status_code", None)
+                retryable_status = isinstance(status_code, int) and (
+                    status_code in {408, 409, 429} or status_code >= 500
+                )
+
+                if retryable_status and attempt < max_retries:
+                    logger.warning(
+                        "agent_call_retrying",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        backoff_seconds=backoff_seconds,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    backoff_seconds *= 2.0
+                    continue
+
+                if retryable_status:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    status_code=status_code,
+                    error=str(exc),
+                )
+                raise AgentCallError(
+                    f"OpenRouter API returned status {status_code} for model {self.model}."
+                ) from exc
+            except AgentCallError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                raise AgentCallError(f"Non-retryable failure for model {self.model}.") from exc
+
+        raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
+
+    async def _stream_openrouter_text(
+        self,
+        stream_response: Any,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str, Any | None]:
+        """Stream OpenRouter text chunks and return full text plus last chunk metadata."""
+
+        chunks: list[str] = []
+        last_chunk: Any | None = None
+
+        async for chunk in stream_response:
+            last_chunk = chunk
+            chunk_text: str | None = None
+            choices = getattr(chunk, "choices", None)
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0]
+                delta = getattr(first_choice, "delta", None)
+                if delta is not None:
+                    chunk_text = getattr(delta, "content", None)
+                elif isinstance(first_choice, dict):
+                    delta_dict = first_choice.get("delta")
+                    if isinstance(delta_dict, dict):
+                        chunk_text = delta_dict.get("content")
+
+            if isinstance(chunk_text, str) and chunk_text:
+                chunks.append(chunk_text)
+                if stream_callback is not None:
+                    try:
+                        stream_callback(chunk_text)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("stream_callback_error", error=str(exc))
+
+        return "".join(chunks), last_chunk
+
+    @staticmethod
+    def _build_openrouter_headers(config: Any) -> dict[str, str]:
+        """Build optional OpenRouter app attribution headers."""
+
+        headers: dict[str, str] = {}
+        if config.openrouter_http_referer:
+            headers["HTTP-Referer"] = config.openrouter_http_referer
+        if config.openrouter_app_title:
+            headers["X-OpenRouter-Title"] = config.openrouter_app_title
+            if config.openrouter_legacy_x_title_enabled:
+                headers["X-Title"] = config.openrouter_app_title
+        return headers
+
+    def _build_openrouter_reasoning_payload(self) -> dict[str, Any]:
+        """Return explicit Kimi reasoning controls to avoid provider defaults."""
+
+        reasoning: dict[str, Any] = {"exclude": self._kimi_reasoning_exclude}
+        if self._kimi_reasoning_effort:
+            reasoning["effort"] = self._kimi_reasoning_effort
+        return reasoning
+
     async def _acquire_anthropic_slot(self, request_kind: str) -> None:
         """Throttle Anthropic requests to reduce server-side rate-limit failures."""
 
@@ -810,6 +1105,30 @@ class AgentCaller:
                 f"{response_format.__name__}."
             ) from exc
 
+    def _parse_openrouter_structured_response(
+        self,
+        raw_message: Any,
+        response_format: type[BaseModel],
+    ) -> BaseModel:
+        """Parse and validate structured OpenRouter JSON output into a Pydantic model."""
+
+        raw_text = self._extract_openrouter_text(raw_message)
+        json_payload = self._extract_json_payload(raw_text)
+        try:
+            parsed = json.loads(json_payload)
+        except json.JSONDecodeError as exc:
+            raise AgentCallError("OpenRouter structured response was not valid JSON.") from exc
+        if isinstance(parsed, list) and "analyses" in response_format.model_fields:
+            parsed = {"analyses": parsed}
+
+        try:
+            return response_format.model_validate(parsed)
+        except ValidationError as exc:
+            raise AgentCallError(
+                "OpenRouter structured response did not match expected format "
+                f"{response_format.__name__}."
+            ) from exc
+
     @staticmethod
     def _extract_json_payload(text: str) -> str:
         """Extract a JSON object payload from model text, tolerating wrapped output."""
@@ -820,10 +1139,24 @@ class AgentCaller:
             if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].strip() == "```":
                 cleaned = "\n".join(lines[1:-1]).strip()
 
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start != -1 and end != -1 and start < end:
-            return cleaned[start : end + 1]
+        decoder = json.JSONDecoder()
+        starts: list[int] = []
+        for char in ("{", "["):
+            search_from = 0
+            while True:
+                idx = cleaned.find(char, search_from)
+                if idx == -1:
+                    break
+                starts.append(idx)
+                search_from = idx + len(char)
+
+        starts = sorted(set(starts))
+        for start in starts:
+            try:
+                _parsed, end = decoder.raw_decode(cleaned[start:])
+                return cleaned[start : start + end]
+            except json.JSONDecodeError:
+                continue
         return cleaned
 
     @staticmethod
@@ -851,11 +1184,44 @@ class AgentCaller:
 
         return "".join(text_parts)
 
+    @staticmethod
+    def _extract_openrouter_text(raw_message: Any) -> str:
+        """Extract plain text from OpenRouter/OpenAI chat completion payloads."""
+
+        choices = getattr(raw_message, "choices", None)
+        if not isinstance(choices, list) or not choices:
+            return ""
+
+        first_choice = choices[0]
+        message = getattr(first_choice, "message", None)
+        if message is None and isinstance(first_choice, dict):
+            message = first_choice.get("message")
+
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", None)
+
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text")
+                else:
+                    text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+            return "".join(parts)
+        return ""
+
     def _normalize_usage(self, raw_message: Any | None, latency_ms: float) -> dict[str, Any]:
         """Normalize token usage metadata across provider response formats."""
 
         input_tokens = 0
         output_tokens = 0
+        reasoning_tokens = 0
 
         if raw_message is not None:
             usage_metadata = getattr(raw_message, "usage_metadata", None)
@@ -914,6 +1280,16 @@ class AgentCaller:
                 output_tokens = output_tokens or int(
                     usage.get("output_tokens") or usage.get("completion_tokens") or 0
                 )
+                reasoning_tokens = reasoning_tokens or int(
+                    usage.get("reasoning_tokens")
+                    or usage.get("reasoningTokens")
+                    or (
+                        usage.get("completion_tokens_details", {}).get("reasoning_tokens")
+                        if isinstance(usage.get("completion_tokens_details"), dict)
+                        else 0
+                    )
+                    or 0
+                )
             elif usage is not None:
                 input_tokens = input_tokens or int(
                     getattr(usage, "input_tokens", None)
@@ -923,6 +1299,13 @@ class AgentCaller:
                 output_tokens = output_tokens or int(
                     getattr(usage, "output_tokens", None)
                     or getattr(usage, "completion_tokens", None)
+                    or 0
+                )
+                completion_details = getattr(usage, "completion_tokens_details", None)
+                reasoning_tokens = reasoning_tokens or int(
+                    getattr(usage, "reasoning_tokens", None)
+                    or getattr(usage, "reasoningTokens", None)
+                    or getattr(completion_details, "reasoning_tokens", None)
                     or 0
                 )
 
@@ -975,9 +1358,26 @@ class AgentCaller:
                             if isinstance(text, str):
                                 thinking_trace_chars += len(text)
 
+            choices = getattr(raw_message, "choices", None)
+            if isinstance(choices, list):
+                for choice in choices:
+                    message = getattr(choice, "message", None)
+                    if message is None and isinstance(choice, dict):
+                        message = choice.get("message")
+
+                    if isinstance(message, dict):
+                        reasoning_details = message.get("reasoning_details")
+                    else:
+                        reasoning_details = getattr(message, "reasoning_details", None)
+
+                    if reasoning_details:
+                        thinking_trace_present = True
+                        thinking_trace_chars += len(json.dumps(reasoning_details, default=str))
+
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "reasoning_tokens": reasoning_tokens,
             "model": self.model,
             "latency_ms": latency_ms,
             "provider": self.provider,
@@ -1018,3 +1418,10 @@ def claude_caller() -> AgentCaller:
 
     config = get_config()
     return AgentCaller(model=config.claude_model, temperature=0.5)
+
+
+def kimi_caller() -> AgentCaller:
+    """Return OpenRouter Kimi caller for vote-tier fallback diversity routing."""
+
+    config = get_config()
+    return AgentCaller(model=config.kimi_model, temperature=0.5)

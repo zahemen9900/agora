@@ -26,6 +26,18 @@ _CONFIG_ENV_KEYS = (
     "AGORA_ANTHROPIC_SECRET_NAME",
     "AGORA_ANTHROPIC_SECRET_PROJECT",
     "AGORA_ANTHROPIC_SECRET_VERSION",
+    "AGORA_OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AGORA_OPENROUTER_SECRET_NAME",
+    "AGORA_OPENROUTER_SECRET_PROJECT",
+    "AGORA_OPENROUTER_SECRET_VERSION",
+    "AGORA_KIMI_MODEL",
+    "AGORA_KIMI_REASONING_EFFORT",
+    "AGORA_KIMI_REASONING_EXCLUDE",
+    "AGORA_KIMI_MAX_TOKENS",
+    "AGORA_OPENROUTER_HTTP_REFERER",
+    "AGORA_OPENROUTER_APP_TITLE",
+    "AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED",
     "GOOGLE_CLOUD_PROJECT",
 )
 
@@ -206,3 +218,83 @@ def test_gemini_flash_thinking_level_defaults_and_can_be_disabled(
     monkeypatch.setenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", "")
     config = get_config()
     assert config.gemini_flash_thinking_level is None
+
+
+def test_openrouter_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenRouter key should resolve from AGORA_OPENROUTER_API_KEY first."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "agora-openrouter-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "plain-openrouter-key")
+
+    config = get_config()
+    assert config.openrouter_api_key == "agora-openrouter-key"
+
+    get_config.cache_clear()
+    monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
+    config = get_config()
+    assert config.openrouter_api_key == "plain-openrouter-key"
+
+
+def test_openrouter_api_key_falls_back_to_secret_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter key should resolve from Secret Manager when env keys are absent."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "openrouter-sm-key",
+    )
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "openrouter-sm-key"
+
+
+def test_kimi_reasoning_defaults_and_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kimi reasoning controls should default to low/excluded and be overrideable."""
+
+    monkeypatch.delenv("AGORA_KIMI_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("AGORA_KIMI_REASONING_EXCLUDE", raising=False)
+    monkeypatch.delenv("AGORA_KIMI_MAX_TOKENS", raising=False)
+
+    config = get_config()
+    assert config.kimi_reasoning_effort == "low"
+    assert config.kimi_reasoning_exclude is True
+    assert config.kimi_max_tokens == 512
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_KIMI_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("AGORA_KIMI_REASONING_EXCLUDE", "false")
+    monkeypatch.setenv("AGORA_KIMI_MAX_TOKENS", "256")
+
+    config = get_config()
+    assert config.kimi_reasoning_effort == "medium"
+    assert config.kimi_reasoning_exclude is False
+    assert config.kimi_max_tokens == 256
+
+
+def test_openrouter_legacy_x_title_toggle_parses_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy OpenRouter title header compatibility should be configurable."""
+
+    monkeypatch.delenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", raising=False)
+    config = get_config()
+    assert config.openrouter_legacy_x_title_enabled is True
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "false")
+    config = get_config()
+    assert config.openrouter_legacy_x_title_enabled is False
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "true")
+    config = get_config()
+    assert config.openrouter_legacy_x_title_enabled is True

@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agora.agent import AgentCaller, AgentCallError, claude_caller, flash_caller, pro_caller
+from agora.agent import (
+    AgentCaller,
+    AgentCallError,
+    claude_caller,
+    flash_caller,
+    kimi_caller,
+    pro_caller,
+)
 from agora.config import get_config
 from agora.runtime.hasher import TranscriptHasher
 from agora.types import (
@@ -61,6 +69,7 @@ class VoteEngine:
         flash_agent: AgentCaller | None = None,
         pro_agent: AgentCaller | None = None,
         claude_agent: AgentCaller | None = None,
+        kimi_agent: AgentCaller | None = None,
         hasher: TranscriptHasher | None = None,
         temperature_scaling: float = 1.5,
     ) -> None:
@@ -80,6 +89,7 @@ class VoteEngine:
         self._flash_agent = flash_agent
         self._pro_agent = pro_agent
         self._claude_agent = claude_agent
+        self._kimi_agent = kimi_agent
         self.hasher = hasher or TranscriptHasher()
         self.graph = self._build_graph() if StateGraph is not None else None
 
@@ -129,6 +139,7 @@ class VoteEngine:
             mechanism_switches=0,
             merkle_root=state.merkle_root,
             transcript_hashes=state.transcript_hashes,
+            agent_models_used=list(dict.fromkeys(output.agent_model for output in vote_outputs)),
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=token_counter,
@@ -287,6 +298,18 @@ class VoteEngine:
     ) -> tuple[BaseModel, dict[str, Any]]:
         """Call selected tier with structured output and fallback on failure."""
 
+        if tier == "kimi" and response_model is _VoteResponse:
+            assert isinstance(fallback, _VoteResponse)
+            try:
+                return await self._call_kimi_vote(system_prompt, user_prompt, fallback)
+            except AgentCallError as exc:
+                logger.warning(
+                    "vote_agent_fallback",
+                    error=str(exc),
+                    response_model=response_model.__name__,
+                )
+                return fallback, {"tokens": 0, "latency_ms": 0.0}
+
         try:
             caller = self._get_caller(tier)
             response, usage = await caller.call(
@@ -308,7 +331,78 @@ class VoteEngine:
                 "vote_agent_fallback", error=str(exc), response_model=response_model.__name__
             )
 
+            if tier == "claude":
+                try:
+                    assert isinstance(fallback, _VoteResponse)
+                    kimi_response, kimi_usage = await self._call_kimi_vote(
+                        system_prompt,
+                        user_prompt,
+                        fallback,
+                    )
+                    logger.info(
+                        "vote_agent_fallback_to_kimi_success",
+                        response_model=response_model.__name__,
+                    )
+                    return kimi_response, kimi_usage
+                except AgentCallError as kimi_exc:
+                    logger.warning(
+                        "vote_kimi_fallback_failed",
+                        error=str(kimi_exc),
+                        response_model=response_model.__name__,
+                    )
+
         return fallback, {"tokens": 0, "latency_ms": 0.0}
+
+    async def _call_kimi_vote(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: _VoteResponse,
+    ) -> tuple[_VoteResponse, dict[str, Any]]:
+        """Call Kimi as a raw voter and coerce output into vote schema."""
+
+        caller = self._get_caller("kimi")
+        response, usage = await caller.call(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+        if isinstance(response, _VoteResponse):
+            vote = response
+        else:
+            vote = self._coerce_vote_response(str(response), fallback)
+
+        return vote, {
+            "tokens": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
+            "latency_ms": float(usage.get("latency_ms", 0.0)),
+        }
+
+    @staticmethod
+    def _coerce_vote_response(response_text: str, fallback: _VoteResponse) -> _VoteResponse:
+        """Parse Kimi JSON when present; otherwise use its raw answer text."""
+
+        cleaned = response_text.strip()
+        if not cleaned:
+            return fallback
+
+        try:
+            parsed = json.loads(AgentCaller._extract_json_payload(cleaned))
+            if isinstance(parsed, dict):
+                if "answer" not in parsed and "final_answer" in parsed:
+                    parsed["answer"] = parsed["final_answer"]
+                parsed.setdefault("predicted_group_answer", parsed.get("answer", cleaned))
+                parsed.setdefault("reasoning", cleaned)
+                parsed.setdefault("confidence", fallback.confidence)
+                return _VoteResponse.model_validate(parsed)
+        except (json.JSONDecodeError, ValidationError):
+            pass
+
+        clipped = cleaned[:1200]
+        return _VoteResponse(
+            answer=clipped,
+            confidence=fallback.confidence,
+            predicted_group_answer=clipped,
+            reasoning=cleaned,
+        )
 
     def _get_caller(self, tier: str) -> AgentCaller:
         """Return lazy caller instance for a tier."""
@@ -323,6 +417,11 @@ class VoteEngine:
                 self._claude_agent = claude_caller()
             return self._claude_agent
 
+        if tier == "kimi":
+            if self._kimi_agent is None:
+                self._kimi_agent = kimi_caller()
+            return self._kimi_agent
+
         if self._flash_agent is None:
             self._flash_agent = flash_caller()
         return self._flash_agent
@@ -336,6 +435,8 @@ class VoteEngine:
             config = get_config()
             if tier == "claude":
                 return config.claude_model
+            if tier == "kimi":
+                return config.kimi_model
             if tier == "pro":
                 return config.pro_model
             return config.flash_model
@@ -344,7 +445,7 @@ class VoteEngine:
         """Route voters across model tiers for diversity.
 
         Strategy:
-            - 4+ agents: 1 pro, 1 claude, remaining flash.
+            - 4+ agents: 1 pro, 1 Kimi, 1 Claude, remaining flash.
             - 3 agents: 1 pro, 1 claude, 1 flash.
             - <3 agents: flash only.
         """
@@ -352,6 +453,8 @@ class VoteEngine:
         if self.agent_count >= 4:
             if agent_idx == 0:
                 return "pro"
+            if agent_idx == 1:
+                return "kimi"
             if agent_idx == self.agent_count - 1:
                 return "claude"
             return "flash"
