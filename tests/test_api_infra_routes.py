@@ -55,14 +55,14 @@ async def client(
 
 @pytest.mark.asyncio
 async def test_jwt_auth_extracts_claims(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_decode(*_args: object, **_kwargs: object) -> dict[str, str]:
+    def fake_decode(_raw_token: str) -> dict[str, str]:
         return {
             "sub": "user-123",
             "email": "josh@example.com",
             "name": "Josh",
         }
 
-    monkeypatch.setattr(auth.jwt, "decode", fake_decode)
+    monkeypatch.setattr(auth, "_decode_verified_token", fake_decode)
 
     creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="dummy")
     user = await auth.get_current_user(creds)
@@ -95,6 +95,25 @@ async def test_auth_requires_token_when_auth_required(
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail == "Missing bearer token"
+
+
+@pytest.mark.asyncio
+async def test_auth_surfaces_misconfiguration_when_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_required", True)
+
+    def fail_decode(_raw_token: str) -> dict[str, str]:
+        raise RuntimeError("Auth verification is not configured")
+
+    monkeypatch.setattr(auth, "_decode_verified_token", fail_decode)
+
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="dummy")
+    with pytest.raises(HTTPException) as exc_info:
+        await auth.get_current_user(creds)
+
+    assert exc_info.value.status_code == 500
+    assert "Auth verification is not configured" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

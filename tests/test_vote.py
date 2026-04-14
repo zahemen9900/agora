@@ -7,6 +7,7 @@ import os
 import pytest
 
 from agora.agent import AgentCallError
+from agora.config import get_config
 from agora.engines.vote import VoteEngine, _VoteResponse
 from agora.types import MechanismType, VoteState
 from tests.helpers import make_agent_output, make_features, make_selection
@@ -17,9 +18,19 @@ _PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in 
     "yes",
     "on",
 }
-_OPENROUTER_KEY_PRESENT = bool(
-    os.getenv("AGORA_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-)
+
+
+def _has_openrouter_key() -> bool:
+    """Detect OpenRouter key availability through env or Secret Manager-backed config."""
+
+    try:
+        get_config.cache_clear()
+        return bool(get_config().openrouter_api_key)
+    except Exception:
+        return False
+
+
+_OPENROUTER_KEY_PRESENT = _has_openrouter_key()
 
 
 class _FailingCaller:

@@ -15,18 +15,12 @@ interface AuthContextType {
   signIn: () => void;
   signUp: () => void;
   signOut: () => void;
-  getAccessToken: () => Promise<string>;
-  /** Synchronous token accessor - returns null if not authenticated */
-  token: string | null;
+  getAccessToken: () => Promise<string | null>;
 }
 
 // Custom hook that wraps WorkOS useAuth to match existing interface
 export function useAuth(): AuthContextType {
   const workosAuth = useWorkOSAuth();
-
-  // Create a synchronous token accessor for backward compatibility
-  // This uses the internal accessToken from WorkOS when available
-  const token = workosAuth.user ? (workosAuth as unknown as { accessToken?: string }).accessToken ?? null : null;
 
   return {
     user: workosAuth.user ?? null,
@@ -34,14 +28,24 @@ export function useAuth(): AuthContextType {
     signIn: () => workosAuth.signIn(),
     signUp: () => workosAuth.signUp(),
     signOut: () => workosAuth.signOut(),
-    getAccessToken: workosAuth.getAccessToken,
-    token,
+    getAccessToken: async () => {
+      if (!workosAuth.user) {
+        return null;
+      }
+      try {
+        const token = await workosAuth.getAccessToken();
+        return token ?? null;
+      } catch {
+        return null;
+      }
+    },
   };
 }
 
 // AuthProvider wraps WorkOS AuthKitProvider with correct configuration
 export function AuthProvider({ children }: { children: ReactNode }) {
   const clientId = import.meta.env.VITE_WORKOS_CLIENT_ID;
+  const redirectUri = import.meta.env.VITE_WORKOS_REDIRECT_URI || `${window.location.origin}/callback`;
 
   if (!clientId) {
     throw new Error(
@@ -53,6 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthKitProvider
       clientId={clientId}
+      redirectUri={redirectUri}
       // Optional: redirect after successful auth
       onRedirectCallback={() => {
         // Clear any OAuth params from URL after successful auth

@@ -24,7 +24,7 @@ interface RenderEvent {
 export function LiveDeliberation() {
   const { taskId } = useParams();
   const navigate = useNavigate();
-  const { token } = useAuth();
+  const { getAccessToken } = useAuth();
 
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [events, setEvents] = useState<RenderEvent[]>([]);
@@ -50,6 +50,7 @@ export function LiveDeliberation() {
     let cancelled = false;
 
     async function bootstrap() {
+      const token = await getAccessToken();
       const status = await getTask(resolvedTaskId, token, true);
       if (cancelled) return;
       setTask(status);
@@ -67,7 +68,10 @@ export function LiveDeliberation() {
       });
 
       if (status.status === "pending") {
-        void runTask(resolvedTaskId, token).catch((error: unknown) => {
+        void (async () => {
+          const runToken = await getAccessToken();
+          await runTask(resolvedTaskId, runToken);
+        })().catch((error: unknown) => {
           setErrorMessage(error instanceof Error ? error.message : "Run failed");
         });
       }
@@ -81,7 +85,7 @@ export function LiveDeliberation() {
       cancelled = true;
       streamHandle?.close();
     };
-  }, [taskId, token]);
+  }, [taskId, getAccessToken]);
 
   function handleStreamEvent(event: TaskEvent) {
     const data = event.data as Record<string, unknown>;
@@ -154,9 +158,11 @@ export function LiveDeliberation() {
 
     if (event.event === "complete" && taskId) {
       const resolvedTaskId = taskId;
-      void getTask(resolvedTaskId, token, true)
-        .then((status) => setTask(status))
-        .catch(() => undefined);
+      void (async () => {
+        const token = await getAccessToken();
+        const status = await getTask(resolvedTaskId, token, true);
+        setTask(status);
+      })().catch(() => undefined);
     }
   }
 

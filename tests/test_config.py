@@ -10,6 +10,7 @@ import agora.config as config_module
 from agora.config import get_config
 
 _CONFIG_ENV_KEYS = (
+    "AGORA_ENV_FILE",
     "ANTHROPIC_API_KEY",
     "AGORA_GEMINI_API_KEY",
     "GEMINI_API_KEY",
@@ -70,6 +71,24 @@ def test_get_config_loads_dotenv_from_current_working_directory(
 
     assert config.anthropic_api_key == "file-key"
     assert config.claude_model == "claude-haiku-test"
+
+
+def test_get_config_loads_dotenv_from_explicit_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Config should load dotenv from AGORA_ENV_FILE when provided."""
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("OPENROUTER_API_KEY=shared-openrouter-key\n", encoding="utf-8")
+
+    monkeypatch.setenv("AGORA_ENV_FILE", str(shared_env))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "shared-openrouter-key"
 
 
 def test_exported_environment_wins_over_dotenv(
@@ -230,6 +249,17 @@ def test_openrouter_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch)
     assert config.openrouter_api_key == "secondary-or-key"
 
 
+def test_openrouter_api_key_deduplicates_repeated_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated identical OpenRouter token should collapse to one valid key."""
+
+    valid = "sk-or-v1-abc123"
+    monkeypatch.setenv("OPENROUTER_API_KEY", valid + valid)
+
+    config = get_config()
+
+    assert config.openrouter_api_key == valid
+
+
 def test_openrouter_api_key_falls_back_to_secret_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -237,6 +267,28 @@ def test_openrouter_api_key_falls_back_to_secret_manager(
 
     monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "openrouter-sm-key",
+    )
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "openrouter-sm-key"
+
+
+def test_malformed_openrouter_env_key_falls_back_to_secret_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Duplicated-prefix OpenRouter env values should defer to Secret Manager."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-sk-or-v1-corrupted")
     monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
     monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
     monkeypatch.setenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")

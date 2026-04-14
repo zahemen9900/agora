@@ -14,7 +14,7 @@ import { useAuth } from "../lib/auth";
 
 export function OnChainReceipt() {
   const { taskId } = useParams();
-  const { token } = useAuth();
+  const { getAccessToken } = useAuth();
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [isVerified, setIsVerified] = useState<boolean | null>(null);
@@ -22,10 +22,12 @@ export function OnChainReceipt() {
 
   useEffect(() => {
     if (!taskId) return;
-    void getTask(taskId, token, true)
-      .then((status) => setTask(status))
-      .catch((error) => console.error(error));
-  }, [taskId, token]);
+    void (async () => {
+      const token = await getAccessToken();
+      const status = await getTask(taskId, token, true);
+      setTask(status);
+    })().catch((error) => console.error(error));
+  }, [taskId, getAccessToken]);
 
   const handleVerify = async () => {
     if (!task?.result) return;
@@ -42,6 +44,7 @@ export function OnChainReceipt() {
     if (!taskId) return;
     setIsPaying(true);
     try {
+      const token = await getAccessToken();
       await releaseTaskPayment(taskId, token);
       const refreshed = await getTask(taskId, token, true);
       setTask(refreshed);

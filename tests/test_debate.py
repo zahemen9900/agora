@@ -8,6 +8,7 @@ import os
 import pytest
 
 from agora.agent import AgentCallError
+from agora.config import get_config
 from agora.engines.debate import (
     DebateEngine,
     _CrossExamResponse,
@@ -22,9 +23,19 @@ _PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in 
     "yes",
     "on",
 }
-_OPENROUTER_KEY_PRESENT = bool(
-    os.getenv("AGORA_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-)
+
+
+def _has_openrouter_key() -> bool:
+    """Detect OpenRouter key availability through env or Secret Manager-backed config."""
+
+    try:
+        get_config.cache_clear()
+        return bool(get_config().openrouter_api_key)
+    except Exception:
+        return False
+
+
+_OPENROUTER_KEY_PRESENT = _has_openrouter_key()
 
 
 class _FakeDebateCaller:
@@ -251,3 +262,8 @@ async def test_debate_paid_integration_hits_kimi_cross_exam() -> None:
 
     assert outcome.result is not None
     assert outcome.result.total_tokens_used > 0
+    assert any(
+        output.role == "devil_advocate"
+        and output.agent_model == "moonshotai/kimi-k2-thinking"
+        for output in outcome.state.cross_examinations
+    )

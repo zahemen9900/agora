@@ -41,7 +41,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
 
 export function TaskSubmit() {
   const navigate = useNavigate();
-  const { token } = useAuth();
+  const { getAccessToken } = useAuth();
   const [taskText, setTaskText] = useState("");
   const [agentCount, setAgentCount] = useState(3);
   const [stakes, setStakes] = useState("0.00");
@@ -55,10 +55,11 @@ export function TaskSubmit() {
 
   useEffect(() => {
     void loadRecentTasks();
-  }, [token]);
+  }, []);
 
   async function loadRecentTasks() {
     try {
+      const token = await getAccessToken();
       const tasks = await listTasks(token);
       setRecentTasks(tasks);
     } catch (error) {
@@ -72,6 +73,7 @@ export function TaskSubmit() {
     setIsSubmitting(true);
     setMechanismReveal(null);
     try {
+      const token = await getAccessToken();
       const response = await submitTask(
         taskText,
         agentCount,

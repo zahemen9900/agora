@@ -77,7 +77,12 @@ export default defineConfig([
 - Development default API URL: `http://localhost:8000`
 - Production default API URL: `/api`
 - Override in any environment with `VITE_AGORA_API_URL`
-- Auth bypass default: enabled (auto demo sign-in)
-- Disable bypass by setting `VITE_AUTH_BYPASS=false`
+
+## WorkOS AuthKit Setup
+
+- Set `VITE_WORKOS_CLIENT_ID` in your frontend env file (for example `.env.local`).
+- Use `/login` to initiate sign-in and `/callback` as the AuthKit redirect target.
+- API requests fetch access tokens on-demand through `getAccessToken()` before sending
+  `Authorization: Bearer <token>` to the backend.
 
 When deploying on Vercel, `vercel.json` rewrites `/api/*` to the hosted Cloud Run API endpoint so browser calls remain same-origin and avoid CORS preflight failures.

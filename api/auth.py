@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Annotated
 
 import jwt
@@ -18,6 +19,76 @@ class AuthenticatedUser(BaseModel):
     id: str
     email: str
     display_name: str
+
+
+def _normalize_url(value: str) -> str:
+    """Normalize URL-like settings while tolerating host-only values."""
+
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    if "://" not in normalized:
+        normalized = f"https://{normalized}"
+    return normalized.rstrip("/")
+
+
+def _auth_issuer() -> str:
+    """Resolve issuer from explicit setting or AuthKit domain."""
+
+    explicit = _normalize_url(settings.auth_issuer)
+    if explicit:
+        return explicit
+    return _normalize_url(settings.workos_authkit_domain)
+
+
+def _auth_audience() -> str:
+    """Resolve expected JWT audience."""
+
+    return (settings.auth_audience or settings.workos_client_id).strip()
+
+
+def _auth_jwks_url(issuer: str) -> str:
+    """Resolve JWKS URL from explicit setting or issuer convention."""
+
+    explicit = _normalize_url(settings.auth_jwks_url)
+    if explicit:
+        return explicit
+    if not issuer:
+        return ""
+    return f"{issuer}/oauth2/jwks"
+
+
+@lru_cache(maxsize=4)
+def _jwks_client(jwks_url: str) -> jwt.PyJWKClient:
+    """Create cached JWKS client for signature verification."""
+
+    return jwt.PyJWKClient(jwks_url)
+
+
+def _decode_verified_token(raw_token: str) -> dict[str, object]:
+    """Decode and verify a WorkOS access token."""
+
+    issuer = _auth_issuer()
+    audience = _auth_audience()
+    jwks_url = _auth_jwks_url(issuer)
+
+    if not issuer or not audience or not jwks_url:
+        raise RuntimeError(
+            "Auth verification is not configured. Set AUTH_ISSUER (or WORKOS_AUTHKIT_DOMAIN), "
+            "AUTH_AUDIENCE (or WORKOS_CLIENT_ID), and AUTH_JWKS_URL (optional override)."
+        )
+
+    signing_key = _jwks_client(jwks_url).get_signing_key_from_jwt(raw_token).key
+    payload = jwt.decode(
+        raw_token,
+        key=signing_key,
+        algorithms=["RS256"],
+        issuer=issuer,
+        audience=audience,
+    )
+    if not isinstance(payload, dict):  # pragma: no cover - defensive typing guard
+        raise jwt.PyJWTError("Token payload is not an object")
+    return payload
 
 
 def _demo_user() -> AuthenticatedUser:
@@ -41,15 +112,15 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
     try:
-        payload = jwt.decode(
-            raw_token,
-            options={"verify_signature": False},
-            algorithms=["RS256"],
-        )
-    except jwt.PyJWTError as exc:  # pragma: no cover - simple scaffold
+        payload = _decode_verified_token(raw_token)
+    except RuntimeError as exc:
         if not settings.auth_required:
             return _demo_user()
-        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except jwt.PyJWTError as exc:
+        if not settings.auth_required:
+            return _demo_user()
+        raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
 
     user_id = payload.get("sub")
     if not user_id:
@@ -57,8 +128,21 @@ async def get_current_user(
             return _demo_user()
         raise HTTPException(status_code=401, detail="Token missing sub claim")
 
+    if not isinstance(user_id, str):
+        if not settings.auth_required:
+            return _demo_user()
+        raise HTTPException(status_code=401, detail="Token missing sub claim")
+
+    email = payload.get("email")
+    if not isinstance(email, str):
+        email = ""
+
+    display_name = payload.get("first_name") or payload.get("name") or email or user_id
+    if not isinstance(display_name, str):  # pragma: no cover - defensive typing guard
+        display_name = user_id
+
     return AuthenticatedUser(
         id=user_id,
-        email=payload.get("email", ""),
-        display_name=payload.get("first_name") or payload.get("name") or "Unknown",
+        email=email,
+        display_name=display_name,
     )

@@ -21,9 +21,13 @@ class Settings(BaseSettings):
     google_cloud_project: str = ""
     gcs_bucket: str = "agora-data"
 
-    auth_required: bool = False
+    auth_required: bool = True
     strict_chain_writes: bool = False
     workos_client_id: str = ""
+    workos_authkit_domain: str = ""
+    auth_issuer: str = ""
+    auth_audience: str = ""
+    auth_jwks_url: str = ""
 
 
 settings = Settings()

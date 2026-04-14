@@ -286,6 +286,22 @@ Required for live Kimi/OpenRouter calls:
 AGORA loads `.env` from the current working directory or repository root if present,
 without overriding environment variables already exported in your shell.
 
+To load a dotenv file from another path (for example a sibling worktree), set:
+
+- AGORA_ENV_FILE=/absolute/path/to/.env
+
+If Secret Manager client credentials are not configured as ADC, AGORA also attempts
+`gcloud secrets versions access ...` as a fallback for secret-backed key resolution.
+
+API auth verification settings (WorkOS/AuthKit):
+
+- AUTH_REQUIRED (default: true)
+- WORKOS_CLIENT_ID (used as default audience when AUTH_AUDIENCE is unset)
+- WORKOS_AUTHKIT_DOMAIN (for example your-subdomain.authkit.app)
+- AUTH_ISSUER (optional explicit override)
+- AUTH_AUDIENCE (optional explicit override)
+- AUTH_JWKS_URL (optional explicit override; default: `${AUTH_ISSUER}/oauth2/jwks`)
+
 Optional model overrides:
 
 - AGORA_FLASH_MODEL (default: gemini-3-flash-preview)
