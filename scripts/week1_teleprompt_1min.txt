@@ -12,7 +12,7 @@ On my side, I focused on the core reasoning path: the orchestrator can select a 
 On the infra side, the team wired the API and Solana path far enough that the demo can create a task, run it, submit the receipt, and release payment through the hosted flow and local Anchor checks.
 
 0:31-0:43
-On the model side, we also migrated Gemini off Vertex and onto the direct GenAI SDK, kept Claude on Anthropic's direct SDK, and the demo now proves both providers are actually reachable at runtime.
+On the model side, we also migrated Gemini off Vertex and onto the direct GenAI SDK, kept Claude on Anthropic's direct SDK, added Kimi through OpenRouter, and the demo now proves all four model roles can run in one arbitration pass.
 
 0:43-0:54
 On the frontend side, the separate frontend worktree now has real product motion: authentication scaffolding, a Tailwind-based design system, animated floating elements, an interactive landing page, and dedicated pages for task submit, live deliberation, on-chain receipts, and benchmarks.
@@ -25,7 +25,7 @@ WHAT TO POINT AT DURING THE DEMO
 
 - When the script prints `orchestrator_gemini_key_loaded: True` and `orchestrator_claude_key_loaded: True`, say: "This proves the runtime arbitration layer is actually getting both model credentials."
 - When it prints `mechanism_used`, `final_answer`, and `merkle_root`, say: "This is the core reasoning engine producing an auditable output."
-- When Gemini and Claude smoke checks pass, say: "Both provider integrations are live, not mocked."
+- When the all-model E2E smoke passes, say: "This is Gemini Pro, Kimi, Gemini Flash, and Claude all participating in the same vote ensemble, not separate mocked checks."
 - When Anchor finishes with `12 passing`, say: "This is the local contract path validating the escrow and task-state logic."
 - When hosted API prints `create`, `run`, `pay`, and final status `paid`, say: "This is the end-to-end API plus Solana flow."
 
@@ -49,7 +49,7 @@ OPTIONAL TIGHTER VERSION
 
 IF YOU GET ASKED WHAT IS REAL TODAY
 
-- "Real today means the orchestrator runs, the providers are called directly, the API flow executes, the Anchor suite passes locally, and the hosted path reaches paid state."
+- "Real today means the orchestrator runs, Gemini/Claude/Kimi providers are called directly, the API flow executes, the Anchor suite passes locally, and the hosted path reaches paid state."
 - "What is not claimed yet is production completeness. This is a Week 1 prototype with real moving parts."
 
 
