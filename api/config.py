@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,17 @@ class Settings(BaseSettings):
 
     google_cloud_project: str = ""
     gcs_bucket: str = "agora-data"
+    api_use_real_orchestrator: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "AGORA_API_USE_REAL_ORCHESTRATOR",
+            "API_USE_REAL_ORCHESTRATOR",
+        ),
+    )
+    api_force_mechanism: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_API_FORCE_MECHANISM", "API_FORCE_MECHANISM"),
+    )
 
     workos_client_id: str = ""
 

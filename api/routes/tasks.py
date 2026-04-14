@@ -11,6 +11,8 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
+from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.types import DeliberationResult, MechanismType
 from api.auth import AuthenticatedUser, get_current_user
 from api.config import settings
 from api.models import (
@@ -50,7 +52,7 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _mock_result(task_id: str, mechanism: str) -> DeliberationResultResponse:
+def _mock_result(task_id: str, mechanism: str, agent_count: int) -> DeliberationResultResponse:
     return DeliberationResultResponse(
         task_id=task_id,
         mechanism=mechanism,
@@ -59,8 +61,65 @@ def _mock_result(task_id: str, mechanism: str) -> DeliberationResultResponse:
         quorum_reached=True,
         merkle_root=hashlib.sha256(f"{task_id}:merkle".encode()).hexdigest(),
         decision_hash=hashlib.sha256(f"{task_id}:decision".encode()).hexdigest(),
+        agent_count=agent_count,
+        mechanism_switches=0,
+        agent_models_used=[],
         total_tokens_used=321,
         latency_ms=980.0,
+    )
+
+
+def _forced_mechanism() -> MechanismType | None:
+    configured = settings.api_force_mechanism.strip().lower()
+    if not configured:
+        return None
+    try:
+        return MechanismType(configured)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unsupported AGORA_API_FORCE_MECHANISM={settings.api_force_mechanism!r}",
+        ) from exc
+
+
+def _create_mechanism(agent_count: int) -> str:
+    if settings.api_use_real_orchestrator:
+        forced = _forced_mechanism()
+        if forced is not None:
+            return forced.value
+    return "debate" if agent_count >= 5 else "vote"
+
+
+async def _run_orchestrator_result(
+    task_id: str,
+    task: TaskStatusResponse,
+) -> DeliberationResultResponse:
+    orchestrator = AgoraOrchestrator(agent_count=task.agent_count)
+    result = await orchestrator.run(
+        task=task.task_text,
+        stakes=task.payment_amount,
+        forced_mechanism=_forced_mechanism(),
+    )
+    return _runtime_result_to_response(task_id, result)
+
+
+def _runtime_result_to_response(
+    task_id: str,
+    result: DeliberationResult,
+) -> DeliberationResultResponse:
+    return DeliberationResultResponse(
+        task_id=task_id,
+        mechanism=result.mechanism_used.value,
+        final_answer=result.final_answer,
+        confidence=result.confidence,
+        quorum_reached=result.quorum_reached,
+        merkle_root=result.merkle_root,
+        decision_hash=_hash_text(f"{result.merkle_root}:{result.final_answer}"),
+        agent_count=result.agent_count,
+        mechanism_switches=result.mechanism_switches,
+        agent_models_used=result.agent_models_used,
+        total_tokens_used=result.total_tokens_used,
+        latency_ms=result.total_latency_ms,
     )
 
 
@@ -83,7 +142,7 @@ async def create_task(
     store = get_task_store()
     task_id = _build_task_id(request.task)
     task_hash = _hash_text(request.task)
-    mechanism = "debate" if request.agent_count >= 5 else "vote"
+    mechanism = _create_mechanism(request.agent_count)
     selector_reasoning = "Mock selection from Week 1 API scaffold."
     selector_reasoning_hash = _hash_text(selector_reasoning)
     payment_amount_lamports = int(request.stakes * LAMPORTS_PER_SOL)
@@ -184,7 +243,16 @@ async def run_task(
         task.status = "in_progress"
         await store.save_task(user.id, task_id, task.model_dump(mode="json"))
 
-    result = _mock_result(task_id, task.mechanism)
+    if settings.api_use_real_orchestrator:
+        try:
+            result = await _run_orchestrator_result(task_id, task)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("task_orchestrator_run_failed", task_id=task_id, error=str(exc))
+            raise HTTPException(status_code=502, detail="Failed to run orchestrator") from exc
+    else:
+        result = _mock_result(task_id, task.mechanism, task.agent_count)
     receipt: dict[str, Any] = {}
     if bridge.is_configured():
         try:
@@ -193,7 +261,7 @@ async def run_task(
                 merkle_root=result.merkle_root or "",
                 decision_hash=result.decision_hash or "",
                 quorum_reached=result.quorum_reached,
-                final_mechanism=task.mechanism,
+                final_mechanism=result.mechanism,
             )
         except Exception as exc:
             logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
@@ -203,6 +271,7 @@ async def run_task(
             ) from exc
 
     task.status = "completed"
+    task.mechanism = result.mechanism
     task.quorum_reached = result.quorum_reached
     task.merkle_root = result.merkle_root
     task.decision_hash = result.decision_hash
@@ -222,7 +291,8 @@ async def run_task(
                 "task_id": task_id,
                 "final_answer": result.final_answer,
                 "confidence": result.confidence,
-                "mechanism": task.mechanism,
+                "mechanism": result.mechanism,
+                "agent_models_used": result.agent_models_used,
             },
         ).model_dump(),
     )

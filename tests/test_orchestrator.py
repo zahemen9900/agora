@@ -178,6 +178,69 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_forced_vote_executes_without_auto_switch(monkeypatch) -> None:
+    """Forced demo/API runs should execute the requested mechanism exactly once."""
+
+    orchestrator = AgoraOrchestrator(agent_count=4)
+
+    async def fake_select(task_text: str, agent_count: int, stakes: float):
+        del task_text, agent_count, stakes
+        raise AssertionError("forced vote should not call the selector")
+
+    async def fail_debate_run(task: str, selection):
+        del task, selection
+        raise AssertionError("forced vote should not execute debate")
+
+    async def fake_vote_run(task: str, selection):
+        del task
+        vote_state = VoteState(task="forced vote", task_features=make_features("reasoning"))
+        result = DeliberationResult(
+            task="forced vote",
+            mechanism_used=MechanismType.VOTE,
+            mechanism_selection=selection,
+            final_answer="Option A",
+            confidence=0.4,
+            quorum_reached=False,
+            round_count=1,
+            agent_count=4,
+            mechanism_switches=0,
+            merkle_root="vote-root",
+            transcript_hashes=["v1", "v2", "v3", "v4"],
+            agent_models_used=[
+                "gemini-3.1-pro-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3-flash-preview",
+                "claude-sonnet-4-6",
+            ],
+            convergence_history=[],
+            locked_claims=[],
+            total_tokens_used=20,
+            total_latency_ms=10.0,
+            timestamp=datetime.now(UTC),
+        )
+        return VoteEngineOutcome(
+            state=vote_state,
+            result=result,
+            switch_to_debate=True,
+            reason="quorum_not_reached",
+        )
+
+    monkeypatch.setattr(orchestrator.selector, "select", fake_select)
+    monkeypatch.setattr(orchestrator.debate_engine, "run", fail_debate_run)
+    monkeypatch.setattr(orchestrator.vote_engine, "run", fake_vote_run)
+
+    result = await orchestrator.run("force vote", forced_mechanism=MechanismType.VOTE)
+
+    assert result.mechanism_used == MechanismType.VOTE
+    assert result.mechanism_selection.mechanism == MechanismType.VOTE
+    assert result.mechanism_selection.confidence == 1.0
+    assert result.mechanism_selection.task_features.agent_count == 4
+    assert "Forced mechanism override" in result.mechanism_selection.reasoning
+    assert result.mechanism_switches == 0
+    assert "moonshotai/kimi-k2-thinking" in result.agent_models_used
+
+
+@pytest.mark.asyncio
 async def test_run_and_learn_credits_final_mechanism(monkeypatch) -> None:
     """Bandit updates should credit the mechanism that produced the final answer."""
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 class TaskCreateRequest(BaseModel):
     task: str = Field(min_length=1)
-    agent_count: int = Field(default=3, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=10)
     stakes: float = Field(default=0.0, ge=0.0)
 
 
@@ -29,6 +29,9 @@ class DeliberationResultResponse(BaseModel):
     quorum_reached: bool
     merkle_root: str | None = None
     decision_hash: str | None = None
+    agent_count: int = Field(ge=1, default=4)
+    mechanism_switches: int = Field(ge=0, default=0)
+    agent_models_used: list[str] = Field(default_factory=list)
     total_tokens_used: int = Field(ge=0, default=0)
     latency_ms: float = Field(ge=0.0, default=0.0)
 

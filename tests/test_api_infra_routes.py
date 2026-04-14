@@ -11,11 +11,13 @@ import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
+from agora.types import DeliberationResult, MechanismType
 from api import auth
 from api.auth import AuthenticatedUser
 from api.main import app
 from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
+from tests.helpers import make_selection
 
 
 def _override_user() -> AuthenticatedUser:
@@ -164,6 +166,77 @@ def test_run_and_pay_use_bridge_and_surface_errors(
     monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_fail)
     run_fail = client.post(f"/tasks/{task_id_fail}/run")
     assert run_fail.status_code == 502
+
+
+def test_run_task_can_use_real_orchestrator_mode(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hosted demo mode should run the real orchestrator with four model slots."""
+
+    captured: dict[str, object] = {}
+
+    class FakeOrchestrator:
+        def __init__(self, agent_count: int) -> None:
+            captured["agent_count"] = agent_count
+
+        async def run(
+            self,
+            *,
+            task: str,
+            stakes: float | None = None,
+            forced_mechanism: MechanismType | None = None,
+        ) -> DeliberationResult:
+            captured["task"] = task
+            captured["stakes"] = stakes
+            captured["forced_mechanism"] = forced_mechanism
+            return DeliberationResult(
+                task=task,
+                mechanism_used=MechanismType.VOTE,
+                mechanism_selection=make_selection(mechanism=MechanismType.DEBATE),
+                final_answer="four-model answer",
+                confidence=0.88,
+                quorum_reached=True,
+                round_count=1,
+                agent_count=4,
+                mechanism_switches=0,
+                merkle_root="real-root",
+                transcript_hashes=["h1", "h2", "h3", "h4"],
+                agent_models_used=[
+                    "gemini-3.1-pro-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3-flash-preview",
+                    "claude-sonnet-4-6",
+                ],
+                total_tokens_used=44,
+                total_latency_ms=123.0,
+            )
+
+    monkeypatch.setattr(task_routes.settings, "api_use_real_orchestrator", True)
+    monkeypatch.setattr(task_routes.settings, "api_force_mechanism", "vote")
+    monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+    monkeypatch.setattr(task_routes, "AgoraOrchestrator", FakeOrchestrator)
+
+    create = client.post("/tasks/", json={"task": "run real mode", "stakes": 0.0})
+    assert create.status_code == 200
+    assert create.json()["mechanism"] == "vote"
+    task_id = create.json()["task_id"]
+
+    run_resp = client.post(f"/tasks/{task_id}/run")
+
+    assert run_resp.status_code == 200
+    payload = run_resp.json()
+    assert captured["agent_count"] == 4
+    assert captured["forced_mechanism"] == MechanismType.VOTE
+    assert payload["mechanism"] == "vote"
+    assert payload["agent_count"] == 4
+    assert payload["agent_models_used"] == [
+        "gemini-3.1-pro-preview",
+        "moonshotai/kimi-k2-thinking",
+        "gemini-3-flash-preview",
+        "claude-sonnet-4-6",
+    ]
+    assert payload["total_tokens_used"] == 44
 
 
 def test_pay_validates_quorum_and_status(
