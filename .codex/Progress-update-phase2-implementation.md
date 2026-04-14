@@ -7,6 +7,11 @@ This update captures two layers of work now present in the repository:
 1. Initial Phase 2 implementation across backend, SDK, benchmarks, API/SSE, infra, and frontend live wiring.
 2. Follow-up hardening pass to align benchmark precedence, enforce deterministic validation, and make SDK receipt verification strict by default.
 
+## Commit Log for This Delivery
+
+1. 8b94de6 - Implement Phase 2 core API, runtime, frontend, and infra wiring.
+2. daee6a9 - Harden benchmarks and SDK verification; add phase2 reports.
+
 ## What Works Right Now
 
 ### Backend API and Runtime
