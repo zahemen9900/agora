@@ -78,10 +78,13 @@ class TaskStore:
         if task is None:
             return
 
-        task.setdefault("events", []).append({
-            **event,
-            "timestamp": datetime.now(UTC).isoformat(),
-        })
+        timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
+        task.setdefault("events", []).append(
+            {
+                **event,
+                "timestamp": timestamp,
+            }
+        )
         await self.save_task(user_id, task_id, task)
 
     async def get_events(self, user_id: str, task_id: str) -> list[dict[str, Any]]:

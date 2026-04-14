@@ -110,7 +110,7 @@ async def persist_and_emit(
 
     payload = _event_payload(event_type, event_data)
     await store.append_event(user_id, task_id, payload)
-    await stream.emit(task_id, event_type, event_data)
+    await stream.emit(task_id, payload)
 
 
 @router.post("/", response_model=TaskCreateResponse)
@@ -425,6 +425,7 @@ async def stream_task(
             yield {
                 "event": event.get("event", "update"),
                 "data": event.get("data", {}),
+                "timestamp": event.get("timestamp"),
             }
 
         if any(event.get("event") == "complete" for event in events):

@@ -424,6 +424,74 @@ async def test_sdk_verify_receipt_strict_hosted_payload_success(
 
 
 @pytest.mark.asyncio
+async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(mechanism="vote", agent_count=3)
+    hasher = TranscriptHasher()
+    final_answer = "BTC"
+    transcript_hashes = [
+        hasher.hash_content("agent-1: BTC"),
+        hasher.hash_content("agent-2: BTC"),
+        hasher.hash_content("agent-3: BTC"),
+    ]
+    merkle_root = hasher.build_merkle_tree(transcript_hashes)
+    decision_hash = hasher.hash_content(final_answer)
+
+    status_payload: dict[str, Any] = {
+        "task_id": "task-hosted-verify",
+        "task_text": "Should I buy Solana or BTC?",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Low disagreement, use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.91,
+        "merkle_root": merkle_root,
+        "decision_hash": decision_hash,
+        "solana_tx_hash": "tx-123",
+        "payment_amount": 0.0,
+        "result": {
+            "mechanism": "vote",
+            "final_answer": final_answer,
+            "confidence": 0.93,
+            "quorum_reached": True,
+            "round_count": 1,
+            "mechanism_switches": 0,
+            "merkle_root": merkle_root,
+            "decision_hash": decision_hash,
+            "transcript_hashes": transcript_hashes,
+            "convergence_history": [],
+            "locked_claims": [],
+            "total_tokens_used": 24,
+            "latency_ms": 12.0,
+        },
+    }
+
+    async def fake_post(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        if url == "/tasks/":
+            return _FakeResponse({"task_id": "task-hosted-verify"})
+        if url == "/tasks/task-hosted-verify/run":
+            return _FakeResponse({"ok": True})
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+    async def fake_get(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        if url != "/tasks/task-hosted-verify":
+            raise AssertionError(f"Unexpected GET url: {url}")
+        return _FakeResponse(status_payload)
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    result = await arbitrator.arbitrate("Should I buy Solana or BTC?")
+    verification = await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+    assert verification["valid"] is True
+    assert verification["merkle_match"] is True
+    assert verification["on_chain_match"] is True
+
+
+@pytest.mark.asyncio
 async def test_agora_node_passes_strict_and_wallet_config() -> None:
     node = AgoraNode(
         mechanism="vote",

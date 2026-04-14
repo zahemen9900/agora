@@ -109,7 +109,11 @@ class AgoraArbitrator:
         *,
         strict: bool | None = None,
     ) -> dict[str, bool | None]:
-        """Verify receipt root locally and, when configured, against hosted receipt metadata."""
+        """Verify receipt root locally and, when available, against hosted receipt metadata.
+
+        ``on_chain_match`` currently reports whether the hosted API's stored receipt
+        metadata matches the local result. It is not yet a direct Solana RPC lookup.
+        """
 
         strict_mode = self.config.strict_verification if strict is None else strict
 
@@ -119,36 +123,34 @@ class AgoraArbitrator:
             raise ReceiptVerificationError("Local Merkle verification failed")
 
         on_chain_match: bool | None = None
-        if self.config.solana_wallet:
-            task_id = self._result_task_ids.get(result.merkle_root)
-            if not task_id:
+        task_id = self._result_task_ids.get(result.merkle_root)
+        if task_id:
+            try:
+                status_response = await self._client.get(
+                    f"/tasks/{task_id}",
+                    params={"detailed": "true"},
+                    headers=self._headers(),
+                )
+                status_response.raise_for_status()
+                payload = status_response.json()
+            except Exception as exc:
                 if strict_mode:
                     raise ReceiptVerificationError(
-                        "Hosted verification requires a known task_id for this result"
-                    )
+                        f"Hosted receipt fetch failed: {exc}"
+                    ) from exc
             else:
-                try:
-                    status_response = await self._client.get(
-                        f"/tasks/{task_id}",
-                        params={"detailed": "true"},
-                        headers=self._headers(),
+                on_chain_match = self._hosted_receipt_matches(payload, result)
+                if strict_mode and not on_chain_match:
+                    raise ReceiptVerificationError(
+                        "Hosted receipt verification failed: stored receipt fields mismatch"
                     )
-                    status_response.raise_for_status()
-                    payload = status_response.json()
-                except Exception as exc:
-                    if strict_mode:
-                        raise ReceiptVerificationError(
-                            f"Hosted receipt fetch failed: {exc}"
-                        ) from exc
-                else:
-                    on_chain_match = self._hosted_receipt_matches(payload, result)
-                    if strict_mode and not on_chain_match:
-                        raise ReceiptVerificationError(
-                            "Hosted receipt verification failed: stored receipt fields mismatch"
-                        )
+        elif strict_mode and self.config.solana_wallet:
+            raise ReceiptVerificationError(
+                "Hosted verification requires a known task_id for this result"
+            )
 
         valid = merkle_match and (on_chain_match in {True, None})
-        if strict_mode and self.config.solana_wallet:
+        if strict_mode and task_id:
             valid = merkle_match and on_chain_match is True
         return {
             "valid": valid,

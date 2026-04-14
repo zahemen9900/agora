@@ -64,10 +64,11 @@ class LocalTaskStore:
         task = await self.get_task(user_id, task_id)
         if task is None:
             return
+        timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
         task.setdefault("events", []).append(
             {
                 **event,
-                "timestamp": datetime.now(UTC).isoformat(),
+                "timestamp": timestamp,
             }
         )
         await self.save_task(user_id, task_id, task)

@@ -20,10 +20,9 @@ class DeliberationStream:
         self._subscribers[task_id].append(queue)
         return queue
 
-    async def emit(self, task_id: str, event_type: str, data: dict[str, Any]) -> None:
-        """Emit an event to all live subscribers for a task."""
+    async def emit(self, task_id: str, payload: dict[str, Any]) -> None:
+        """Emit a fully-formed event envelope to all live subscribers for a task."""
 
-        payload = {"event": event_type, "data": data}
         for queue in list(self._subscribers.get(task_id, [])):
             await queue.put(payload)
 

@@ -19,6 +19,7 @@ from api.main import app
 from api.models import TaskCreateRequest
 from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
+from api.streaming import DeliberationStream
 from tests.helpers import make_selection
 
 
@@ -329,6 +330,108 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         assert exc_info.value.status_code == 502
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_persist_and_emit_preserves_full_timestamped_envelope(
+    tmp_path: Path,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "stream-data"))
+    stream = DeliberationStream()
+    user = _override_user()
+    task_id = "task-stream-live"
+    task_payload = {
+        "task_id": task_id,
+        "task_text": "Stream this task",
+        "mechanism": "vote",
+        "status": "pending",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [],
+    }
+    await store.upsert_user(user.id, user.email, user.display_name)
+    await store.save_task(user.id, task_id, task_payload)
+
+    queue = stream.subscribe(task_id)
+    try:
+        await task_routes.persist_and_emit(
+            store=store,
+            stream=stream,
+            user_id=user.id,
+            task_id=task_id,
+            event_type="agent_output",
+            event_data={"agent_id": "agent-1", "content": "BTC"},
+        )
+
+        live_payload = await queue.get()
+        stored_events = await store.get_events(user.id, task_id)
+    finally:
+        stream.unsubscribe(task_id, queue)
+
+    assert set(live_payload) == {"event", "data", "timestamp"}
+    assert stored_events == [live_payload]
+    assert live_payload["event"] == "agent_output"
+    assert live_payload["data"]["content"] == "BTC"
+    assert live_payload["timestamp"] is not None
+
+
+@pytest.mark.asyncio
+async def test_stream_task_replays_timestamped_event_envelopes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "stream-replay"))
+    user = _override_user()
+    task_id = "task-stream-replay"
+    task_payload = {
+        "task_id": task_id,
+        "task_text": "Replay this task",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [],
+    }
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content):
+            self.content = content
+
+    task_routes._store = store
+    await store.upsert_user(user.id, user.email, user.display_name)
+    await store.save_task(user.id, task_id, task_payload)
+    first_event = {
+        "event": "agent_output",
+        "data": {"agent_id": "agent-1", "content": "BTC"},
+        "timestamp": "2026-04-14T13:00:00+00:00",
+    }
+    second_event = {
+        "event": "complete",
+        "data": {"task_id": task_id, "status": "completed"},
+        "timestamp": "2026-04-14T13:00:01+00:00",
+    }
+    await store.append_event(user.id, task_id, first_event)
+    await store.append_event(user.id, task_id, second_event)
+    monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+
+    try:
+        response = await task_routes.stream_task(task_id, user)
+        replayed_events = [item async for item in response.content]
+    finally:
+        task_routes._store = None
+
+    assert replayed_events == [first_event, second_event]
+    assert all(set(item) == {"event", "data", "timestamp"} for item in replayed_events)
 
 
 @pytest.mark.asyncio
