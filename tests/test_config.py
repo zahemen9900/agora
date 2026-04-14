@@ -149,18 +149,19 @@ def test_gemini_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setenv("AGORA_GEMINI_API_KEY", "primary-key")
     monkeypatch.setenv("GEMINI_API_KEY", "secondary-key")
+    monkeypatch.setenv("AGORA_GOOGLE_API_KEY", "")
     monkeypatch.setenv("GOOGLE_API_KEY", "tertiary-key")
 
     config = get_config()
     assert config.gemini_api_key == "primary-key"
 
     get_config.cache_clear()
-    monkeypatch.delenv("AGORA_GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "")
     config = get_config()
     assert config.gemini_api_key == "secondary-key"
 
     get_config.cache_clear()
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "")
     config = get_config()
     assert config.gemini_api_key == "tertiary-key"
 
@@ -230,7 +231,7 @@ def test_openrouter_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch)
     assert config.openrouter_api_key == "agora-openrouter-key"
 
     get_config.cache_clear()
-    monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
     config = get_config()
     assert config.openrouter_api_key == "plain-openrouter-key"
 
