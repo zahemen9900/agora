@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   python-lint-test:
     runs-on: ubuntu-latest
@@ -23,7 +27,7 @@ jobs:
           uv pip install --system -r api/requirements.txt
 
       - name: Lint
-        run: ruff check agora/ api/ tests/
+        run: ruff check agora/ api/ benchmarks/ tests/ scripts/
 
       - name: Test
         run: pytest tests/ -v
@@ -55,4 +59,47 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build -f api/Dockerfile -t agora-api .
+        run: |
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}/agora-api"
+          docker build -f api/Dockerfile -t "$IMAGE_NAME:${GITHUB_SHA}" -t "$IMAGE_NAME:latest" .
+
+      - name: Push Docker image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}/agora-api"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE_NAME:${GITHUB_SHA}"
+          docker push "$IMAGE_NAME:latest"
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: agora-web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: agora-web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: agora-web
+        run: npm run build
+
+  sdk-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build SDK package
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build sdk

@@ -35,7 +35,7 @@ jobs:
       - name: Build and push image
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/${SERVICE_NAME}:${{ github.sha }}"
-          gcloud builds submit --tag "$IMAGE" -f api/Dockerfile .
+          gcloud builds submit --config api/cloudbuild.yaml --substitutions "_IMAGE=$IMAGE" .
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Deploy to Cloud Run

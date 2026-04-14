@@ -1,0 +1,22 @@
+[
+  {"category":"math","task":"What is 17 * 19?","ground_truth":"323","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"Solve for x: 3x + 7 = 22.","ground_truth":"5","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"A rectangle has length 12 and width 5. What is its area?","ground_truth":"60","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"Compute the mean of 4, 8, 10, and 18.","ground_truth":"10","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"If a price rises from 80 to 100, what is the percentage increase?","ground_truth":"25%","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is 2^8?","ground_truth":"256","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is the derivative of x^3 with respect to x?","ground_truth":"3x^2","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"Integrate 2x with respect to x.","ground_truth":"x^2 + C","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is 15% of 260?","ground_truth":"39","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"Solve for y: 2y - 9 = 13.","ground_truth":"11","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is the hypotenuse of a right triangle with legs 3 and 4?","ground_truth":"5","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"Evaluate 7!","ground_truth":"5040","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is the slope of the line through (1,2) and (5,10)?","ground_truth":"2","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"Convert 0.125 to a fraction in simplest form.","ground_truth":"1/8","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is the median of 2, 3, 9, 10, 14?","ground_truth":"9","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"A circle has radius 3. What is its area in terms of pi?","ground_truth":"9pi","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"Solve: 5(x - 2) = 35.","ground_truth":"9","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is log10(1000)?","ground_truth":"3","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"If a train travels 180 miles in 3 hours, what is its average speed?","ground_truth":"60 mph","source":"curated_math_v2","stakes":0.0},
+  {"category":"math","task":"What is the sum of the interior angles of a triangle?","ground_truth":"180 degrees","source":"curated_math_v2","stakes":0.0}
+]

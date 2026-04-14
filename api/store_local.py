@@ -82,6 +82,23 @@ class LocalTaskStore:
         tasks = await self.list_user_tasks(user_id, limit=500)
         return [task for task in tasks if task.get("status") == "completed"]
 
+    async def get_completed_tasks_for_benchmarks(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return completed tasks across all users for benchmark aggregation."""
+
+        task_files = sorted(
+            self.root.glob("users/*/tasks/*.json"),
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        tasks: list[dict[str, Any]] = []
+        for file in task_files:
+            task = json.loads(file.read_text(encoding="utf-8"))
+            if task.get("status") in {"completed", "paid"}:
+                tasks.append(task)
+            if len(tasks) >= limit:
+                break
+        return tasks
+
     async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
         path = self.root / "benchmarks" / "summary.json"
         path.parent.mkdir(parents=True, exist_ok=True)

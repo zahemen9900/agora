@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 
 class AuthenticatedUser(BaseModel):
@@ -19,15 +19,18 @@ class AuthenticatedUser(BaseModel):
 
 
 async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+    token: str | None = Query(default=None),
 ) -> AuthenticatedUser:
     """Decode bearer token and return normalized user claims."""
 
-    token = credentials.credentials
+    raw_token = credentials.credentials if credentials is not None else token
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Missing bearer token")
 
     try:
         payload = jwt.decode(
-            token,
+            raw_token,
             options={"verify_signature": False},
             algorithms=["RS256"],
         )

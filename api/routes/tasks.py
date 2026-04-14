@@ -1,28 +1,30 @@
-"""Task API endpoints with Week 1 mock behavior."""
+"""Task API endpoints for persisted orchestration, streaming, and receipts."""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
+from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.types import DeliberationResult
 from api.auth import AuthenticatedUser, get_current_user
 from api.config import settings
 from api.models import (
     DeliberationResultResponse,
-    SSEEvent,
     TaskCreateRequest,
     TaskCreateResponse,
+    TaskEvent,
     TaskStatusResponse,
 )
 from api.solana_bridge import LAMPORTS_PER_SOL, bridge
 from api.store import TaskStore, get_store
 from api.store_local import LocalTaskStore
+from api.streaming import DeliberationStream, get_stream_manager
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -43,36 +45,72 @@ def get_task_store() -> TaskStore | LocalTaskStore:
 
 
 def _build_task_id(task_text: str) -> str:
-    return hashlib.sha256(task_text.encode()).hexdigest()
+    """Build a unique task identifier from content and creation time."""
+
+    payload = f"{task_text}\n{datetime.now(UTC).isoformat()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _hash_text(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _mock_result(task_id: str, mechanism: str) -> DeliberationResultResponse:
+def _result_to_response(task_id: str, result: DeliberationResult) -> DeliberationResultResponse:
+    """Convert runtime result into API response shape."""
+
     return DeliberationResultResponse(
         task_id=task_id,
-        mechanism=mechanism,
-        final_answer="mock_final_answer",
-        confidence=0.82,
-        quorum_reached=True,
-        merkle_root=hashlib.sha256(f"{task_id}:merkle".encode()).hexdigest(),
-        decision_hash=hashlib.sha256(f"{task_id}:decision".encode()).hexdigest(),
-        total_tokens_used=321,
-        latency_ms=980.0,
+        mechanism=result.mechanism_used.value,
+        final_answer=result.final_answer,
+        confidence=result.confidence,
+        quorum_reached=result.quorum_reached,
+        merkle_root=result.merkle_root,
+        decision_hash=_hash_text(result.final_answer),
+        total_tokens_used=result.total_tokens_used,
+        latency_ms=result.total_latency_ms,
+        round_count=result.round_count,
+        mechanism_switches=result.mechanism_switches,
+        transcript_hashes=result.transcript_hashes,
+        convergence_history=[
+            metric.model_dump(mode="json") for metric in result.convergence_history
+        ],
+        locked_claims=[claim.model_dump(mode="json") for claim in result.locked_claims],
     )
 
 
-def _to_status_response(raw_task: dict[str, Any]) -> TaskStatusResponse:
-    return TaskStatusResponse.model_validate(raw_task)
+def _to_status_response(raw_task: dict[str, Any], *, detailed: bool = False) -> TaskStatusResponse:
+    """Normalize stored task payload into API response shape."""
+
+    normalized = dict(raw_task)
+    if not detailed:
+        normalized["events"] = []
+    return TaskStatusResponse.model_validate(normalized)
 
 
-def _to_event(event: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "event": event.get("event", "update"),
-        "data": event.get("data", {}),
-    }
+def _event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any]:
+    """Build a persisted event envelope."""
+
+    return TaskEvent(
+        event=event_type,
+        data=event_data,
+        timestamp=datetime.now(UTC),
+    ).model_dump(mode="json")
+
+
+async def persist_and_emit(
+    *,
+    store: TaskStore | LocalTaskStore,
+    stream: DeliberationStream,
+    user_id: str,
+    task_id: str,
+    event_type: str,
+    event_data: dict[str, Any],
+) -> None:
+    """Persist an event and emit it to live SSE listeners."""
+
+    payload = _event_payload(event_type, event_data)
+    await store.append_event(user_id, task_id, payload)
+    await stream.emit(task_id, event_type, event_data)
 
 
 @router.post("/", response_model=TaskCreateResponse)
@@ -80,15 +118,21 @@ async def create_task(
     request: TaskCreateRequest,
     user: CurrentUser,
 ) -> TaskCreateResponse:
+    """Create a task, run selector, and initialize its on-chain metadata."""
+
     store = get_task_store()
     task_id = _build_task_id(request.task)
     task_hash = _hash_text(request.task)
-    mechanism = "debate" if request.agent_count >= 5 else "vote"
-    selector_reasoning = "Mock selection from Week 1 API scaffold."
-    selector_reasoning_hash = _hash_text(selector_reasoning)
     payment_amount_lamports = int(request.stakes * LAMPORTS_PER_SOL)
 
     await store.upsert_user(user.id, user.email, user.display_name)
+
+    orchestrator = AgoraOrchestrator(agent_count=request.agent_count)
+    selection = await orchestrator.selector.select(
+        task_text=request.task,
+        agent_count=request.agent_count,
+        stakes=request.stakes,
+    )
 
     init_tx_hash: str | None = None
     init_explorer_url: str | None = None
@@ -96,7 +140,7 @@ async def create_task(
         try:
             init_result = await bridge.initialize_task(
                 task_id=task_id,
-                mechanism=mechanism,
+                mechanism=selection.mechanism.value,
                 task_hash=task_hash,
                 consensus_threshold=60,
                 agent_count=request.agent_count,
@@ -104,8 +148,13 @@ async def create_task(
             )
             init_tx_hash = str(init_result.get("tx_hash", "")) or None
             init_explorer_url = str(init_result.get("explorer_url", "")) or None
+
+            await bridge.record_selection(
+                task_id=task_id,
+                selector_reasoning_hash=selection.reasoning_hash,
+            )
         except Exception as exc:
-            logger.error("task_initialize_failed", task_id=task_id, error=str(exc))
+            logger.error("task_create_chain_setup_failed", task_id=task_id, error=str(exc))
             raise HTTPException(
                 status_code=502,
                 detail="Failed to initialize task on Solana",
@@ -116,38 +165,41 @@ async def create_task(
     task_status = TaskStatusResponse(
         task_id=task_id,
         task_text=request.task,
-        mechanism=mechanism,
+        mechanism=selection.mechanism.value,
         status="pending",
-        selector_reasoning=selector_reasoning,
-        selector_reasoning_hash=selector_reasoning_hash,
+        selector_reasoning=selection.reasoning,
+        selector_reasoning_hash=selection.reasoning_hash,
+        selector_confidence=selection.confidence,
         agent_count=request.agent_count,
         payment_amount=request.stakes,
         payment_status="locked" if request.stakes > 0 else "none",
         solana_tx_hash=init_tx_hash,
         explorer_url=init_explorer_url,
-        created_at=datetime.now(UTC),
     )
-
     await store.save_task(user.id, task_id, task_status.model_dump(mode="json"))
-    await store.append_event(
-        user.id,
-        task_id,
-        SSEEvent(
-            event="mechanism_selected",
-            data={
-                "task_id": task_id,
-                "mechanism": mechanism,
-                "confidence": 0.73,
-                "reasoning": selector_reasoning,
-            },
-        ).model_dump(),
+
+    await persist_and_emit(
+        store=store,
+        stream=get_stream_manager(),
+        user_id=user.id,
+        task_id=task_id,
+        event_type="mechanism_selected",
+        event_data={
+            "task_id": task_id,
+            "mechanism": selection.mechanism.value,
+            "confidence": selection.confidence,
+            "reasoning": selection.reasoning,
+            "selector_reasoning_hash": selection.reasoning_hash,
+        },
     )
 
     return TaskCreateResponse(
         task_id=task_id,
-        mechanism=mechanism,
-        confidence=0.73,
-        reasoning="Task was routed to a mock Week 1 mechanism path.",
+        mechanism=selection.mechanism.value,
+        confidence=selection.confidence,
+        reasoning=selection.reasoning,
+        selector_reasoning_hash=selection.reasoning_hash,
+        status="pending",
     )
 
 
@@ -156,45 +208,69 @@ async def run_task(
     task_id: str,
     user: CurrentUser,
 ) -> DeliberationResultResponse:
+    """Execute the stored mechanism and persist the resulting receipt."""
+
     store = get_task_store()
+    stream = get_stream_manager()
     raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task = _to_status_response(raw_task)
+    task = _to_status_response(raw_task, detailed=True)
     if task.status in {"completed", "paid"} and task.result is not None:
         return task.result
-
     if task.status not in {"pending", "in_progress"}:
-        raise HTTPException(status_code=409, detail=f"Task cannot be run from status={task.status}")
+        raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
 
-    if task.status == "pending":
-        if bridge.is_configured():
-            try:
-                await bridge.record_selection(
-                    task_id=task_id,
-                    selector_reasoning_hash=task.selector_reasoning_hash,
-                )
-            except Exception as exc:
-                logger.error("task_selection_record_failed", task_id=task_id, error=str(exc))
-                raise HTTPException(
-                    status_code=502,
-                    detail="Failed to record mechanism selection on Solana",
-                ) from exc
-        task.status = "in_progress"
+    task.status = "in_progress"
+    await store.save_task(user.id, task_id, task.model_dump(mode="json"))
+
+    async def runtime_event_sink(event_type: str, data: dict[str, Any]) -> None:
+        await persist_and_emit(
+            store=store,
+            stream=stream,
+            user_id=user.id,
+            task_id=task_id,
+            event_type=event_type,
+            event_data=data,
+        )
+
+    orchestrator = AgoraOrchestrator(agent_count=task.agent_count)
+    try:
+        result = await orchestrator.run(
+            task=task.task_text,
+            stakes=task.payment_amount,
+            mechanism_override=task.mechanism,
+            event_sink=runtime_event_sink,
+        )
+    except Exception as exc:
+        task.status = "failed"
         await store.save_task(user.id, task_id, task.model_dump(mode="json"))
+        await persist_and_emit(
+            store=store,
+            stream=stream,
+            user_id=user.id,
+            task_id=task_id,
+            event_type="error",
+            event_data={"message": str(exc)},
+        )
+        await stream.close(task_id)
+        logger.exception("task_execution_failed", task_id=task_id)
+        raise HTTPException(status_code=500, detail="Task execution failed") from exc
 
-    result = _mock_result(task_id, task.mechanism)
-    receipt: dict[str, Any] = {}
+    result_response = _result_to_response(task_id, result)
+
     if bridge.is_configured():
         try:
             receipt = await bridge.submit_receipt(
                 task_id=task_id,
-                merkle_root=result.merkle_root or "",
-                decision_hash=result.decision_hash or "",
+                merkle_root=result_response.merkle_root or "",
+                decision_hash=result_response.decision_hash or "",
                 quorum_reached=result.quorum_reached,
-                final_mechanism=task.mechanism,
+                final_mechanism=result.mechanism_used.value,
             )
+            task.solana_tx_hash = str(receipt.get("tx_hash", "")) or task.solana_tx_hash
+            task.explorer_url = str(receipt.get("explorer_url", "")) or task.explorer_url
         except Exception as exc:
             logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
             raise HTTPException(
@@ -202,67 +278,113 @@ async def run_task(
                 detail="Failed to submit receipt on Solana",
             ) from exc
 
+        if result.mechanism_switches > 0:
+            refreshed_events = [
+                TaskEvent.model_validate(event)
+                for event in await store.get_events(user.id, task_id)
+            ]
+            switch_events = [
+                event for event in refreshed_events if event.event == "mechanism_switch"
+            ]
+            for switch_index, switch_event in enumerate(switch_events):
+                data = switch_event.data
+                try:
+                    await bridge.record_mechanism_switch(
+                        task_id=task_id,
+                        switch_index=switch_index,
+                        from_mechanism=str(data.get("from_mechanism", task.mechanism)),
+                        to_mechanism=str(data.get("to_mechanism", result.mechanism_used.value)),
+                        reason_hash=_hash_text(str(data.get("reason", "mechanism switch"))),
+                        round_number=int(data.get("round_number", result.round_count)),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "task_switch_record_failed",
+                        task_id=task_id,
+                        switch_index=switch_index,
+                        error=str(exc),
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Failed to record mechanism switch on Solana",
+                    ) from exc
+
     task.status = "completed"
-    task.quorum_reached = result.quorum_reached
-    task.merkle_root = result.merkle_root
-    task.decision_hash = result.decision_hash
+    task.quorum_reached = result_response.quorum_reached
+    task.merkle_root = result_response.merkle_root
+    task.decision_hash = result_response.decision_hash
+    task.round_count = result_response.round_count
+    task.mechanism_switches = result_response.mechanism_switches
+    task.transcript_hashes = result_response.transcript_hashes
     task.completed_at = datetime.now(UTC)
-    if receipt:
-        task.solana_tx_hash = str(receipt.get("tx_hash", "")) or task.solana_tx_hash
-        task.explorer_url = str(receipt.get("explorer_url", "")) or task.explorer_url
-    task.result = result
+    task.result = result_response
 
     await store.save_task(user.id, task_id, task.model_dump(mode="json"))
-    await store.append_event(
-        user.id,
-        task_id,
-        SSEEvent(
-            event="quorum_reached" if result.quorum_reached else "quorum_not_reached",
-            data={
-                "task_id": task_id,
-                "final_answer": result.final_answer,
-                "confidence": result.confidence,
-                "mechanism": task.mechanism,
-            },
-        ).model_dump(),
+    await persist_and_emit(
+        store=store,
+        stream=stream,
+        user_id=user.id,
+        task_id=task_id,
+        event_type="quorum_reached",
+        event_data={
+            "task_id": task_id,
+            "final_answer": result_response.final_answer,
+            "confidence": result_response.confidence,
+            "mechanism": result_response.mechanism,
+            "quorum_reached": result_response.quorum_reached,
+        },
     )
     if task.solana_tx_hash:
-        await store.append_event(
-            user.id,
-            task_id,
-            SSEEvent(
-                event="receipt_committed",
-                data={
-                    "merkle_root": task.merkle_root,
-                    "solana_tx_hash": task.solana_tx_hash,
-                    "explorer_url": task.explorer_url,
-                },
-            ).model_dump(),
+        await persist_and_emit(
+            store=store,
+            stream=stream,
+            user_id=user.id,
+            task_id=task_id,
+            event_type="receipt_committed",
+            event_data={
+                "task_id": task_id,
+                "merkle_root": task.merkle_root,
+                "solana_tx_hash": task.solana_tx_hash,
+                "explorer_url": task.explorer_url,
+            },
         )
-    await store.append_event(user.id, task_id, SSEEvent(event="complete", data={}).model_dump())
 
-    return result
+    await persist_and_emit(
+        store=store,
+        stream=stream,
+        user_id=user.id,
+        task_id=task_id,
+        event_type="complete",
+        event_data={"task_id": task_id, "status": task.status},
+    )
+    await stream.close(task_id)
+    return result_response
 
 
 @router.get("/", response_model=list[TaskStatusResponse])
 async def list_tasks(
     user: CurrentUser,
 ) -> list[TaskStatusResponse]:
+    """List recent tasks for the current user."""
+
     store = get_task_store()
     rows = await store.list_user_tasks(user.id)
-    return [_to_status_response(row) for row in rows]
+    return [_to_status_response(row, detailed=False) for row in rows]
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)
 async def get_task_status(
     task_id: str,
     user: CurrentUser,
+    detailed: bool = Query(default=False),
 ) -> TaskStatusResponse:
+    """Fetch one task by id."""
+
     store = get_task_store()
     raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    return _to_status_response(raw_task)
+    return _to_status_response(raw_task, detailed=detailed)
 
 
 @router.get("/{task_id}/stream")
@@ -270,26 +392,34 @@ async def stream_task(
     task_id: str,
     user: CurrentUser,
 ) -> EventSourceResponse:
+    """Replay persisted events, then continue with live SSE updates."""
+
     store = get_task_store()
+    stream = get_stream_manager()
     raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
     async def event_generator() -> Any:
         events = await store.get_events(user.id, task_id)
-        if not events:
-            task = _to_status_response(raw_task)
-            events = [
-                SSEEvent(
-                    event="mechanism_selected",
-                    data={"mechanism": task.mechanism, "confidence": 0.73},
-                ).model_dump(),
-                SSEEvent(event="complete", data={}).model_dump(),
-            ]
-
         for event in events:
-            await asyncio.sleep(0.2)
-            yield _to_event(event)
+            yield {
+                "event": event.get("event", "update"),
+                "data": event.get("data", {}),
+            }
+
+        if any(event.get("event") == "complete" for event in events):
+            return
+
+        queue = stream.subscribe(task_id)
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            stream.unsubscribe(task_id, queue)
 
     return EventSourceResponse(event_generator())
 
@@ -299,13 +429,15 @@ async def release_payment(
     task_id: str,
     user: CurrentUser,
 ) -> dict[str, str | bool]:
+    """Release escrow payment for a completed task."""
+
     store = get_task_store()
+    stream = get_stream_manager()
     raw_task = await store.get_task(user.id, task_id)
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task = _to_status_response(raw_task)
-
+    task = _to_status_response(raw_task, detailed=True)
     if task.status not in {"completed", "paid"}:
         raise HTTPException(
             status_code=409,
@@ -315,14 +447,11 @@ async def release_payment(
         raise HTTPException(status_code=409, detail="Payment already released")
     if not task.quorum_reached:
         raise HTTPException(status_code=409, detail="Quorum not reached")
-
     if not bridge.is_configured():
         raise HTTPException(status_code=503, detail="Solana bridge is not configured")
 
     try:
-        payment_tx = await bridge.release_payment(
-            task_id=task_id,
-        )
+        payment_tx = await bridge.release_payment(task_id=task_id)
     except Exception as exc:
         logger.error("task_payment_release_failed", task_id=task_id, error=str(exc))
         raise HTTPException(status_code=502, detail="Failed to record payment on Solana") from exc
@@ -333,17 +462,17 @@ async def release_payment(
     task.explorer_url = str(payment_tx.get("explorer_url", "")) or task.explorer_url
 
     await store.save_task(user.id, task_id, task.model_dump(mode="json"))
-    await store.append_event(
-        user.id,
-        task_id,
-        SSEEvent(
-            event="receipt_committed",
-            data={
-                "task_id": task_id,
-                "solana_tx_hash": task.solana_tx_hash,
-                "explorer_url": task.explorer_url,
-            },
-        ).model_dump(),
+    await persist_and_emit(
+        store=store,
+        stream=stream,
+        user_id=user.id,
+        task_id=task_id,
+        event_type="payment_released",
+        event_data={
+            "task_id": task_id,
+            "tx_hash": task.solana_tx_hash,
+            "explorer_url": task.explorer_url,
+        },
     )
 
     return {"released": True, "tx_hash": task.solana_tx_hash or ""}

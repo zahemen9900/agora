@@ -62,7 +62,20 @@ async def test_quorum_check_threshold_works() -> None:
     engine = VoteEngine(agent_count=3, quorum_threshold=0.6)
     selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
 
-    outcome = await engine.run("What is the capital of France?", selection)
+    async def paris_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "Paris",
+            "confidence": 0.9,
+            "predicted_group_answer": "Paris",
+            "reasoning": "Deterministic local test agent.",
+        }
+
+    outcome = await engine.run(
+        "What is the capital of France?",
+        selection,
+        custom_agents=[paris_agent, paris_agent, paris_agent],
+    )
 
     assert outcome.state.quorum_reached is True
     assert outcome.result.quorum_reached is True

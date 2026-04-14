@@ -94,6 +94,29 @@ class TaskStore:
         tasks = await self.list_user_tasks(user_id, limit=500)
         return [task for task in tasks if task.get("status") == "completed"]
 
+    async def get_completed_tasks_for_benchmarks(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return completed tasks across all users for benchmark aggregation."""
+
+        blobs = list(self.bucket.list_blobs(prefix="users/"))
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        tasks: list[dict[str, Any]] = []
+        for blob in blobs:
+            if not blob.name.endswith(".json") or "/tasks/" not in blob.name:
+                continue
+            try:
+                task = json.loads(blob.download_as_text())
+            except Exception:
+                continue
+            if task.get("status") in {"completed", "paid"}:
+                tasks.append(task)
+            if len(tasks) >= limit:
+                break
+        return tasks
+
     async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
         blob = self.bucket.blob("benchmarks/summary.json")
         blob.upload_from_string(json.dumps(summary, default=str), content_type="application/json")

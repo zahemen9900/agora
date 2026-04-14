@@ -18,7 +18,21 @@ async def test_full_pipeline_returns_populated_result() -> None:
     """End-to-end orchestration should produce a complete result object."""
 
     orchestrator = AgoraOrchestrator(agent_count=3)
-    result = await orchestrator.run("What is the capital of France?")
+
+    async def paris_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "Paris",
+            "confidence": 0.9,
+            "predicted_group_answer": "Paris",
+            "reasoning": "Deterministic local test agent.",
+        }
+
+    result = await orchestrator.run(
+        "What is the capital of France?",
+        mechanism_override=MechanismType.VOTE,
+        agents=[paris_agent, paris_agent, paris_agent],
+    )
 
     assert result.task != ""
     assert result.final_answer != ""

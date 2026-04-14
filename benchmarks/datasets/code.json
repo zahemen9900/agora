@@ -1,0 +1,44 @@
+[
+  {
+    "category": "code",
+    "task": "In Python, which built-in data structure guarantees unique items and fast membership tests?",
+    "ground_truth": "set",
+    "source": "curated_code_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "code",
+    "task": "Which HTTP status code should an API return for a missing resource?",
+    "ground_truth": "404",
+    "source": "curated_code_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "code",
+    "task": "What Git command updates your current branch with remote changes while creating a merge commit by default?",
+    "ground_truth": "git pull",
+    "source": "curated_code_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "code",
+    "task": "In JavaScript, which array method creates a new array by transforming each element?",
+    "ground_truth": "map",
+    "source": "curated_code_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "code",
+    "task": "What SQL keyword is used to remove duplicate rows from a query result?",
+    "ground_truth": "DISTINCT",
+    "source": "curated_code_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "code",
+    "task": "Which Python tool is commonly used for isolated project environments: venv or pickle?",
+    "ground_truth": "venv",
+    "source": "curated_code_v1",
+    "stakes": 0.0
+  }
+]
