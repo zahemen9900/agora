@@ -244,15 +244,19 @@ class AgoraNode:
     def __init__(
         self,
         api_url: str = "http://localhost:8000",
+        solana_wallet: str | None = None,
         mechanism: str | None = None,
         agent_count: int = 3,
         auth_token: str | None = None,
+        strict_verification: bool = True,
     ) -> None:
         self.arbitrator = AgoraArbitrator(
             api_url=api_url,
+            solana_wallet=solana_wallet,
             mechanism=mechanism,
             agent_count=agent_count,
             auth_token=auth_token,
+            strict_verification=strict_verification,
         )
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:

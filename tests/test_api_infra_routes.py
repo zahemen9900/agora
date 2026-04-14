@@ -73,6 +73,31 @@ async def test_jwt_auth_extracts_claims(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_auth_allows_demo_fallback_when_auth_not_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_required", False)
+
+    user = await auth.get_current_user(None, None)
+
+    assert user.id == "demo-user"
+    assert user.email == "demo@example.com"
+
+
+@pytest.mark.asyncio
+async def test_auth_requires_token_when_auth_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_required", True)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth.get_current_user(None, None)
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Missing bearer token"
+
+
+@pytest.mark.asyncio
 async def test_health_route_is_public(client: httpx.AsyncClient) -> None:
     response = await client.get("/health")
 
@@ -80,6 +105,39 @@ async def test_health_route_is_public(client: httpx.AsyncClient) -> None:
     payload = response.json()
     assert payload["status"] == "ok"
     assert payload["service"] == "agora-api"
+
+
+@pytest.mark.asyncio
+async def test_cors_allows_vercel_and_localhost_origins(client: httpx.AsyncClient) -> None:
+    for origin in (
+        "https://agora-bay-seven.vercel.app",
+        "http://localhost:4173",
+    ):
+        response = await client.options(
+            "/tasks/",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == origin
+
+
+@pytest.mark.asyncio
+async def test_cors_denies_unlisted_origin(client: httpx.AsyncClient) -> None:
+    response = await client.options(
+        "/tasks/",
+        headers={
+            "Origin": "https://evil.example",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
 
 
 def test_task_routes_import_without_gcs_credentials() -> None:
@@ -212,6 +270,7 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         return {"tx_hash": "pay_tx", "explorer_url": "https://explorer/pay_tx"}
 
     try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", True)
         monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
         monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
         monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
@@ -249,6 +308,38 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         with pytest.raises(HTTPException) as exc_info:
             await task_routes.run_task(task_id_fail, _override_user())
         assert exc_info.value.status_code == 502
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_create_task_continues_when_chain_init_fails_in_non_strict_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "data"))
+
+    async def init_fail(**_kwargs: object) -> dict[str, str]:
+        raise RuntimeError("bridge unavailable")
+
+    async def record_selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_fail)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", record_selection_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="allow soft chain failure", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+
+        fetched = await task_routes.get_task_status(create.task_id, _override_user())
+        assert fetched.status == "pending"
+        assert fetched.solana_tx_hash is None
     finally:
         task_routes._store = None
 

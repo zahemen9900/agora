@@ -9,6 +9,8 @@ from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from api.config import settings
+
 security = HTTPBearer(auto_error=False)
 
 
@@ -16,6 +18,14 @@ class AuthenticatedUser(BaseModel):
     id: str
     email: str
     display_name: str
+
+
+def _demo_user() -> AuthenticatedUser:
+    return AuthenticatedUser(
+        id="demo-user",
+        email="demo@example.com",
+        display_name="Demo User",
+    )
 
 
 async def get_current_user(
@@ -26,6 +36,8 @@ async def get_current_user(
 
     raw_token = credentials.credentials if credentials is not None else token
     if not raw_token:
+        if not settings.auth_required:
+            return _demo_user()
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
     try:
@@ -35,10 +47,14 @@ async def get_current_user(
             algorithms=["RS256"],
         )
     except jwt.PyJWTError as exc:  # pragma: no cover - simple scaffold
+        if not settings.auth_required:
+            return _demo_user()
         raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
 
     user_id = payload.get("sub")
     if not user_id:
+        if not settings.auth_required:
+            return _demo_user()
         raise HTTPException(status_code=401, detail="Token missing sub claim")
 
     return AuthenticatedUser(

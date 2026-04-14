@@ -46,10 +46,20 @@ export function NavBar() {
 
       <div className="flex items-center justify-end w-auto md:w-[200px] gap-4">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-full bg-elevated border border-border-subtle flex items-center justify-center">
-            <UserIcon size={14} className="text-text-secondary" />
-          </div>
-          <span className="mono text-xs text-text-secondary hidden sm:inline">{user?.name}</span>
+          {user?.profilePictureUrl ? (
+            <img
+              src={user.profilePictureUrl}
+              alt={user.firstName ?? "User"}
+              className="w-7 h-7 rounded-full border border-border-subtle object-cover"
+            />
+          ) : (
+            <div className="w-7 h-7 rounded-full bg-elevated border border-border-subtle flex items-center justify-center">
+              <UserIcon size={14} className="text-text-secondary" />
+            </div>
+          )}
+          <span className="mono text-xs text-text-secondary hidden sm:inline">
+            {user?.firstName ?? user?.email ?? "User"}
+          </span>
         </div>
         
         <button 

@@ -12,6 +12,7 @@ dependencies = [
     "langgraph>=0.3.0",
     "google-genai>=1.33.0",
     "anthropic>=0.40",
+    "openai>=1.0",
     "pydantic>=2.0",
     "structlog>=24.0",
     "numpy>=1.26",
@@ -33,6 +34,9 @@ include = ["agora*"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 addopts = "-p no:pytest_anchorpy"
+markers = [
+    "paid_integration: requires live paid-provider credentials and explicit opt-in",
+]
 
 [tool.ruff]
 line-length = 100

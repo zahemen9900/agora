@@ -71,3 +71,13 @@ export default defineConfig([
   },
 ])
 ```
+
+## API Base URL and Vercel Proxy
+
+- Development default API URL: `http://localhost:8000`
+- Production default API URL: `/api`
+- Override in any environment with `VITE_AGORA_API_URL`
+- Auth bypass default: enabled (auto demo sign-in)
+- Disable bypass by setting `VITE_AUTH_BYPASS=false`
+
+When deploying on Vercel, `vercel.json` rewrites `/api/*` to the hosted Cloud Run API endpoint so browser calls remain same-origin and avoid CORS preflight failures.

@@ -6,18 +6,30 @@ API_URL="${AGORA_API_URL:-https://agora-api-rztfxer7ra-uc.a.run.app}"
 RUN_ANCHOR_CHECKS="${RUN_ANCHOR_CHECKS:-auto}"
 RUN_GEMINI_SMOKE="${RUN_GEMINI_SMOKE:-auto}"
 RUN_CLAUDE_SMOKE="${RUN_CLAUDE_SMOKE:-auto}"
+RUN_KIMI_SMOKE="${RUN_KIMI_SMOKE:-auto}"
 DEMO_VERBOSE_TEST_LOGS="${DEMO_VERBOSE_TEST_LOGS:-0}"
 AGORA_GCLOUD_CREDENTIALS_FILE="${AGORA_GCLOUD_CREDENTIALS_FILE:-}"
 DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3-flash-preview}"
 DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3.1-pro-preview}"
+DEMO_KIMI_MODEL="${DEMO_KIMI_MODEL:-moonshotai/kimi-k2-thinking}"
 DEMO_QUERY_DEFAULT="Week 1 demo: should teams use debate or vote?"
 DEMO_QUERY="${DEMO_QUERY:-$DEMO_QUERY_DEFAULT}"
+
+if [[ -z "${DEMO_AGENT_COUNT:-}" ]]; then
+  if [[ "$RUN_KIMI_SMOKE" == "never" ]]; then
+    DEMO_AGENT_COUNT=3
+  else
+    DEMO_AGENT_COUNT=4
+  fi
+fi
 
 ORIG_AGORA_GEMINI_API_KEY="${AGORA_GEMINI_API_KEY-}"
 ORIG_GEMINI_API_KEY="${GEMINI_API_KEY-}"
 ORIG_AGORA_GOOGLE_API_KEY="${AGORA_GOOGLE_API_KEY-}"
 ORIG_GOOGLE_API_KEY="${GOOGLE_API_KEY-}"
 ORIG_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY-}"
+ORIG_AGORA_OPENROUTER_API_KEY="${AGORA_OPENROUTER_API_KEY-}"
+ORIG_OPENROUTER_API_KEY="${OPENROUTER_API_KEY-}"
 ORIG_GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT-}"
 ORIG_GOOGLE_APPLICATION_CREDENTIALS="${GOOGLE_APPLICATION_CREDENTIALS-}"
 
@@ -41,7 +53,9 @@ Options:
 Environment controls still supported:
   RUN_GEMINI_SMOKE=always|auto|never
   RUN_CLAUDE_SMOKE=always|auto|never
+  RUN_KIMI_SMOKE=always|auto|never
   RUN_ANCHOR_CHECKS=always|auto|never
+  DEMO_AGENT_COUNT=4
   DEMO_VERBOSE_TEST_LOGS=1
 EOF
 }
@@ -135,25 +149,37 @@ fi
 assert_cmd curl
 
 # Keep lint/tests deterministic by default, even when shell exports live API keys.
-unset AGORA_GEMINI_API_KEY GEMINI_API_KEY AGORA_GOOGLE_API_KEY GOOGLE_API_KEY ANTHROPIC_API_KEY
+unset AGORA_GEMINI_API_KEY GEMINI_API_KEY AGORA_GOOGLE_API_KEY GOOGLE_API_KEY
+unset ANTHROPIC_API_KEY AGORA_OPENROUTER_API_KEY OPENROUTER_API_KEY
 
 CORE_STATUS="PASS"
 ANCHOR_STATUS="SKIPPED"
 API_E2E_STATUS="PASS"
 GEMINI_SDK_STATUS="SKIPPED"
 CLAUDE_SDK_STATUS="SKIPPED"
+KIMI_SDK_STATUS="SKIPPED"
 GEMINI_KEY_SOURCE="none"
 CLAUDE_KEY_SOURCE="none"
+OPENROUTER_KEY_SOURCE="none"
 GCLOUD_AUTH_SOURCE="none"
 GCLOUD_AUTH_STATUS="unknown"
 GCLOUD_ACTIVE_ACCOUNT="unknown"
 
 export AGORA_FLASH_MODEL="${AGORA_FLASH_MODEL:-$DEMO_FLASH_MODEL}"
 export AGORA_PRO_MODEL="${AGORA_PRO_MODEL:-$DEMO_PRO_MODEL}"
+export AGORA_KIMI_MODEL="${AGORA_KIMI_MODEL:-$DEMO_KIMI_MODEL}"
+export AGORA_KIMI_REASONING_EFFORT="${AGORA_KIMI_REASONING_EFFORT:-low}"
+export AGORA_KIMI_REASONING_EXCLUDE="${AGORA_KIMI_REASONING_EXCLUDE:-true}"
+export AGORA_KIMI_MAX_TOKENS="${AGORA_KIMI_MAX_TOKENS:-512}"
+export DEMO_AGENT_COUNT
 
 log_step "Configured Gemini models"
 printf "flash=%s\n" "$AGORA_FLASH_MODEL"
 printf "pro=%s\n" "$AGORA_PRO_MODEL"
+printf "kimi=%s\n" "$AGORA_KIMI_MODEL"
+printf "agent_count=%s\n" "$DEMO_AGENT_COUNT"
+printf "kimi_reasoning_effort=%s\n" "$AGORA_KIMI_REASONING_EFFORT"
+printf "kimi_reasoning_exclude=%s\n" "$AGORA_KIMI_REASONING_EXCLUDE"
 printf "query=%s\n" "$DEMO_QUERY"
 
 setup_gcloud_auth() {
@@ -317,6 +343,9 @@ prepare_model_credentials() {
   export AGORA_ANTHROPIC_SECRET_NAME="${AGORA_ANTHROPIC_SECRET_NAME:-agora-anthropic-api-key}"
   export AGORA_ANTHROPIC_SECRET_PROJECT="${AGORA_ANTHROPIC_SECRET_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}"
   export AGORA_ANTHROPIC_SECRET_VERSION="${AGORA_ANTHROPIC_SECRET_VERSION:-latest}"
+  export AGORA_OPENROUTER_SECRET_NAME="${AGORA_OPENROUTER_SECRET_NAME:-agora-openrouter-api-key}"
+  export AGORA_OPENROUTER_SECRET_PROJECT="${AGORA_OPENROUTER_SECRET_PROJECT:-${GOOGLE_CLOUD_PROJECT:-}}"
+  export AGORA_OPENROUTER_SECRET_VERSION="${AGORA_OPENROUTER_SECRET_VERSION:-latest}"
 
   # Prefer cloud secret lookup first so demo validates the intended runtime path.
   if [[ -n "${GOOGLE_CLOUD_PROJECT:-}" && "$gcloud_auth_ok" == "true" ]]; then
@@ -345,6 +374,19 @@ prepare_model_credentials() {
       log_warn "Grant roles/secretmanager.secretAccessor on ${AGORA_ANTHROPIC_SECRET_NAME} to serviceAccount:${GCLOUD_ACTIVE_ACCOUNT}."
     fi
     rm -f "$anthropic_err_file"
+
+    local fetched_openrouter
+    local openrouter_err_file
+    openrouter_err_file="$(mktemp)"
+    fetched_openrouter="$(env "${GCLOUD_PROMPTLESS[@]}" gcloud secrets versions access "${AGORA_OPENROUTER_SECRET_VERSION}" --secret "${AGORA_OPENROUTER_SECRET_NAME}" --project "${AGORA_OPENROUTER_SECRET_PROJECT}" 2>"$openrouter_err_file" || true)"
+    if [[ -n "$fetched_openrouter" ]]; then
+      export AGORA_OPENROUTER_API_KEY="$fetched_openrouter"
+      OPENROUTER_KEY_SOURCE="${AGORA_OPENROUTER_SECRET_NAME}(secret-manager)"
+    elif grep -q "PERMISSION_DENIED" "$openrouter_err_file"; then
+      log_warn "OpenRouter secret fetch denied for current gcloud identity; check secret IAM access."
+      log_warn "Grant roles/secretmanager.secretAccessor on ${AGORA_OPENROUTER_SECRET_NAME} to serviceAccount:${GCLOUD_ACTIVE_ACCOUNT}."
+    fi
+    rm -f "$openrouter_err_file"
   fi
 
   if [[ "$GEMINI_KEY_SOURCE" == "none" && -n "$ORIG_AGORA_GEMINI_API_KEY" ]]; then
@@ -364,6 +406,14 @@ prepare_model_credentials() {
   if [[ "$CLAUDE_KEY_SOURCE" == "none" && -n "$ORIG_ANTHROPIC_API_KEY" ]]; then
     export ANTHROPIC_API_KEY="$ORIG_ANTHROPIC_API_KEY"
     CLAUDE_KEY_SOURCE="ANTHROPIC_API_KEY(env)"
+  fi
+
+  if [[ "$OPENROUTER_KEY_SOURCE" == "none" && -n "$ORIG_AGORA_OPENROUTER_API_KEY" ]]; then
+    export AGORA_OPENROUTER_API_KEY="$ORIG_AGORA_OPENROUTER_API_KEY"
+    OPENROUTER_KEY_SOURCE="AGORA_OPENROUTER_API_KEY(env)"
+  elif [[ "$OPENROUTER_KEY_SOURCE" == "none" && -n "$ORIG_OPENROUTER_API_KEY" ]]; then
+    export OPENROUTER_API_KEY="$ORIG_OPENROUTER_API_KEY"
+    OPENROUTER_KEY_SOURCE="OPENROUTER_API_KEY(env)"
   fi
 
   if [[ "$GEMINI_KEY_SOURCE" == "none" ]]; then
@@ -388,8 +438,20 @@ prepare_model_credentials() {
     fi
   fi
 
+  if [[ "$OPENROUTER_KEY_SOURCE" == "none" ]]; then
+    local o
+    if o="$(dotenv_lookup "AGORA_OPENROUTER_API_KEY" 2>/dev/null)" && [[ -n "$o" ]]; then
+      export AGORA_OPENROUTER_API_KEY="$o"
+      OPENROUTER_KEY_SOURCE="AGORA_OPENROUTER_API_KEY(.env)"
+    elif o="$(dotenv_lookup "OPENROUTER_API_KEY" 2>/dev/null)" && [[ -n "$o" ]]; then
+      export OPENROUTER_API_KEY="$o"
+      OPENROUTER_KEY_SOURCE="OPENROUTER_API_KEY(.env)"
+    fi
+  fi
+
   printf "gemini_key_source=%s\n" "$GEMINI_KEY_SOURCE"
   printf "claude_key_source=%s\n" "$CLAUDE_KEY_SOURCE"
+  printf "openrouter_key_source=%s\n" "$OPENROUTER_KEY_SOURCE"
 }
 
 log_step "Running lint checks (core + API + tests)"
@@ -455,17 +517,27 @@ from agora.runtime.orchestrator import AgoraOrchestrator
 
 async def main() -> None:
     query = os.environ["AGORA_DEMO_QUERY"]
+    agent_count = int(os.environ["DEMO_AGENT_COUNT"])
     cfg = get_config()
     gemini_key_loaded = bool(cfg.gemini_api_key)
     claude_key_loaded = bool(cfg.anthropic_api_key)
+    kimi_key_loaded = bool(cfg.openrouter_api_key)
     print("orchestrator_gemini_key_loaded:", gemini_key_loaded)
     print("orchestrator_claude_key_loaded:", claude_key_loaded)
+    print("orchestrator_kimi_key_loaded:", kimi_key_loaded)
     if os.environ.get("RUN_GEMINI_SMOKE") == "always" and not gemini_key_loaded:
         raise RuntimeError("Gemini key did not propagate to orchestrator smoke.")
     if os.environ.get("RUN_CLAUDE_SMOKE") == "always" and not claude_key_loaded:
         raise RuntimeError("Claude key did not propagate to orchestrator smoke.")
+    if os.environ.get("RUN_KIMI_SMOKE") == "always" and not kimi_key_loaded:
+        raise RuntimeError("OpenRouter key did not propagate to orchestrator smoke.")
 
-    orchestrator = AgoraOrchestrator(agent_count=3)
+    orchestrator = AgoraOrchestrator(agent_count=agent_count)
+    vote_tiers = [orchestrator.vote_engine._tier_for_agent(i) for i in range(agent_count)]
+    print("orchestrator_agent_count:", agent_count)
+    print("orchestrator_vote_tiers:", ",".join(vote_tiers))
+    print("orchestrator_kimi_active_vote_tier:", "kimi" in vote_tiers)
+    print("orchestrator_kimi_debate_challenger_model:", cfg.kimi_model)
     result = await orchestrator.run(query)
     print("mechanism_used:", result.mechanism_used.value)
     print("query:", query)
@@ -561,6 +633,48 @@ PY
   CLAUDE_SDK_STATUS="PASS"
 }
 
+run_kimi_sdk_smoke() {
+  log_step "Running Kimi K2 Thinking via OpenRouter SDK smoke"
+
+  if [[ -z "${AGORA_OPENROUTER_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" ]]; then
+    log_warn "OpenRouter key unavailable for Kimi smoke test."
+    return 1
+  fi
+
+  "$PYTHON_BIN" - <<'PY'
+import asyncio
+
+from agora.agent import AgentCaller
+from agora.config import get_config
+
+cfg = get_config()
+print("kimi_model:", cfg.kimi_model)
+print("kimi_reasoning_effort:", cfg.kimi_reasoning_effort)
+print("kimi_reasoning_exclude:", cfg.kimi_reasoning_exclude)
+print("kimi_max_tokens:", cfg.kimi_max_tokens)
+
+
+async def main() -> None:
+    kimi = AgentCaller(model=cfg.kimi_model, temperature=0.1)
+    response, usage = await kimi.call(
+        system_prompt="Respond with one short token.",
+        user_prompt="Reply with KIMI",
+    )
+    print("kimi_response:", str(response)[:80])
+    print(
+        "kimi_usage:",
+        usage.get("input_tokens"),
+        usage.get("output_tokens"),
+        usage.get("reasoning_tokens"),
+    )
+
+
+asyncio.run(main())
+PY
+
+  KIMI_SDK_STATUS="PASS"
+}
+
 if [[ "$RUN_GEMINI_SMOKE" == "always" ]]; then
   run_gemini_sdk_smoke
 elif [[ "$RUN_GEMINI_SMOKE" == "never" ]]; then
@@ -586,6 +700,20 @@ else
   else
     log_warn "Claude SDK smoke failed in auto mode. Continuing with remaining checks."
     CLAUDE_SDK_STATUS="SKIPPED"
+  fi
+fi
+
+if [[ "$RUN_KIMI_SMOKE" == "always" ]]; then
+  run_kimi_sdk_smoke
+elif [[ "$RUN_KIMI_SMOKE" == "never" ]]; then
+  log_warn "RUN_KIMI_SMOKE=never set. Skipping Kimi SDK smoke."
+  KIMI_SDK_STATUS="SKIPPED"
+else
+  if run_kimi_sdk_smoke; then
+    :
+  else
+    log_warn "Kimi SDK smoke failed in auto mode. Continuing with remaining checks."
+    KIMI_SDK_STATUS="SKIPPED"
   fi
 fi
 
@@ -816,8 +944,11 @@ printf "  %-28s %s\n" "Gemini key source" "$GEMINI_KEY_SOURCE"
 printf "  %-28s %s\n" "Gemini 3 SDK smoke" "$GEMINI_SDK_STATUS"
 printf "  %-28s %s\n" "Claude key source" "$CLAUDE_KEY_SOURCE"
 printf "  %-28s %s\n" "Claude Sonnet SDK smoke" "$CLAUDE_SDK_STATUS"
+printf "  %-28s %s\n" "OpenRouter key source" "$OPENROUTER_KEY_SOURCE"
+printf "  %-28s %s\n" "Kimi K2 SDK smoke" "$KIMI_SDK_STATUS"
 printf "  %-28s %s\n" "Local Anchor checks" "$ANCHOR_STATUS"
 printf "  %-28s %s\n" "Hosted API E2E" "$API_E2E_STATUS"
 printf "\nDemo complete.\n"
 printf "If you later install Solana/Anchor locally, rerun with RUN_ANCHOR_CHECKS=always to force local contract verification.\n"
 printf "If you want strict Gemini validation, run with RUN_GEMINI_SMOKE=always and a configured Gemini key source.\n"
+printf "If you want strict Kimi validation, run with RUN_KIMI_SMOKE=always and a configured OpenRouter key source.\n"

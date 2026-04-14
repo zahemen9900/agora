@@ -11,6 +11,7 @@ This update captures two layers of work now present in the repository:
 
 1. 8b94de6 - Implement Phase 2 core API, runtime, frontend, and infra wiring.
 2. daee6a9 - Harden benchmarks and SDK verification; add phase2 reports.
+3. c2f3fd1 - Add commit traceability section to phase2 progress report.
 
 ## What Works Right Now
 
@@ -46,6 +47,10 @@ This update captures two layers of work now present in the repository:
    - hosted receipt verification validates stored fields, not tx hash presence alone
    - strict mode raises ReceiptVerificationError on incomplete or mismatched hosted verification
    - optional lenient override remains available
+
+4. Residual independent-review hardening gaps are now closed:
+   - explicit negative determinism-failure test path added
+   - AgoraNode now passes through strict_verification and solana_wallet configuration for parity with AgoraArbitrator
 
 ### SDK Installability Status
 
@@ -95,11 +100,23 @@ Recent verification passes in this implementation cycle include:
 5. SDK supports local and hosted arbitration modes.
 6. SDK verification now defaults to strict proof expectations, with optional lenient mode when intentionally requested.
 
-## What Is Still Next
+## Current Status and Remaining Blockers
 
-1. Resolve residual review gaps from independent reviewer output (documented in .codex/Review-phase2-hardening-explore.md), especially:
+Completed in this continuation pass:
+
+1. Residual review-gap implementation is complete and test-verified:
    - explicit negative determinism-failure test path
-   - optional strict/lenient pass-through on AgoraNode for parity with AgoraArbitrator
-2. Run and document full manual frontend acceptance for all five Week 2 demo flows.
-3. Decide release process for publishing agora-sdk 0.1.0a1 to PyPI (code is release-ready, publication remains manual).
-4. Finalize deploy-path preference (Artifact Registry vs GHCR) in release operations docs.
+   - AgoraNode strict/lenient pass-through parity with wallet pass-through
+2. Manual frontend acceptance was executed and documented with browser observations plus API traces:
+   - report: `.codex/Week2-frontend-acceptance.md`
+   - trace artifact: `.codex/week2_acceptance_api_trace.json`
+3. Release and deploy process decisions are finalized and documented:
+   - runbook: `docs/release-operations.md`
+   - SDK release policy: hybrid (manual publish runbook now, automation plan documented for next cycle)
+   - deploy policy: Artifact Registry canonical, GHCR kept as CI/reference mirror
+
+Open blockers for full green manual flow acceptance:
+
+1. Hosted API CORS for localhost-origin frontend validation.
+2. Primary hosted API task creation currently fails with `Failed to initialize task on Solana` (HTTP 502), which blocks real devnet-backed payment acceptance.
+3. Alternate hosted endpoint task creation timed out in this environment during acceptance probing.

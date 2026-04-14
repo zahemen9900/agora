@@ -61,17 +61,19 @@ Model calls route through the shared AgentCaller abstraction with provider-speci
 
 - Gemini models use the direct Google GenAI SDK (`google-genai`) against Gemini Developer API (ai.google.dev).
 - Claude models use Anthropic's direct Python SDK (AsyncAnthropic).
+- Kimi models use OpenRouter via OpenAI-compatible AsyncOpenAI client.
 
 - If `AGORA_GEMINI_API_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`) is configured, AGORA attempts live Gemini calls.
 - If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls through Anthropic API.
+- If `AGORA_OPENROUTER_API_KEY` (or `OPENROUTER_API_KEY`) is configured, AGORA attempts live Kimi calls through OpenRouter.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
 - If AgentCaller cannot initialize due to missing credentials, that is surfaced clearly in model-layer errors.
 
 ## Project Structure
 
-```
+```text
 agora/
-  agent.py               # Unified caller (Gemini via google-genai + Claude via Anthropic SDK)
+  agent.py               # Unified caller (Gemini + Claude + OpenRouter/Kimi)
   config.py              # Runtime config (models, thresholds, GCP project)
   types.py               # Shared pydantic models and enums
   selector/
@@ -123,6 +125,18 @@ ruff check .
 pytest -s -q
 ```
 
+### Paid-Provider Integration Tests (Opt-In)
+
+Some vote/debate tests are marked as paid-provider integration checks and require explicit opt-in:
+
+```bash
+export RUN_PAID_PROVIDER_TESTS=1
+export AGORA_OPENROUTER_API_KEY="..."
+pytest -s -q -m paid_integration
+```
+
+By default, these tests are skipped to avoid accidental provider spend in routine local and CI runs.
+
 ### One-Command Week 1 Demo (Core + Josh Infra)
 
 Use this script to validate Week 1 end-to-end without requiring local Solana tooling:
@@ -137,6 +151,7 @@ What it covers:
 - Runs all Python tests (core modules + API/infra tests)
 - Runs a local orchestrator smoke task (your side)
 - Runs direct Gemini GenAI SDK smoke checks on configured Flash/Pro models
+- Runs direct Kimi/OpenRouter SDK smoke checks on configured Kimi model
 - Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
 - Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
 - Isolates Gemini API keys from the test phase so `pytest` stays deterministic and fast
@@ -148,8 +163,12 @@ Optional controls:
 - `--api-url "url"`: override hosted API base URL via CLI (same effect as `AGORA_API_URL`)
 - `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
 - `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
+- `RUN_CLAUDE_SMOKE=always|auto|never`: force or skip Claude SDK smoke checks
+- `RUN_KIMI_SMOKE=always|auto|never`: force or skip Kimi/OpenRouter SDK smoke checks
+- `DEMO_AGENT_COUNT`: orchestrator smoke agent count (defaults to 4 when Kimi smoke is enabled)
 - `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3-flash-preview`)
 - `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3.1-pro-preview`)
+- `DEMO_KIMI_MODEL`: default Kimi model used by script (defaults to `moonshotai/kimi-k2-thinking`)
 - `PYTHON_BIN`: custom Python executable path
 
 Examples:
@@ -185,7 +204,8 @@ python -m pytest -s -q
 # 2) Strict model, Anchor, and hosted Week 1 E2E demo
 export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
-RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3)"
+RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_KIMI_SMOKE=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 ```
 
 Expected demo summary:
@@ -193,6 +213,7 @@ Expected demo summary:
 - `Python lint/tests`: `PASS`
 - `Gemini 3 SDK smoke`: `PASS`
 - `Claude SDK smoke`: `PASS`
+- `Kimi K2 SDK smoke`: `PASS`
 - `Local Anchor checks`: `PASS`
 - `Hosted API E2E`: `PASS`
 
@@ -208,7 +229,7 @@ Run this once with a privileged principal (Owner or Secret Admin):
 PROJECT_ID="even-ally-480821-f3"
 SA_EMAIL="ghsl-storage-accessor@even-ally-480821-f3.iam.gserviceaccount.com"
 
-for SECRET in agora-gemini-api-key agora-anthropic-api-key; do
+for SECRET in agora-gemini-api-key agora-anthropic-api-key agora-openrouter-api-key; do
   gcloud secrets add-iam-policy-binding "$SECRET" \
     --project "$PROJECT_ID" \
     --member "serviceAccount:${SA_EMAIL}" \
@@ -221,6 +242,7 @@ Verification:
 ```bash
 gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3 >/dev/null
 gcloud secrets versions access latest --secret agora-anthropic-api-key --project even-ally-480821-f3 >/dev/null
+gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3 >/dev/null
 ```
 
 ## Quick Usage
@@ -256,6 +278,11 @@ Required for live Gemini Developer API calls:
 - GEMINI_API_KEY: fallback key env var
 - GOOGLE_API_KEY: fallback key env var
 
+Required for live Kimi/OpenRouter calls:
+
+- AGORA_OPENROUTER_API_KEY: preferred OpenRouter API key env var
+- OPENROUTER_API_KEY: fallback key env var
+
 AGORA loads `.env` from the current working directory or repository root if present,
 without overriding environment variables already exported in your shell.
 
@@ -265,17 +292,30 @@ Optional model overrides:
 - AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
 - AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
+- AGORA_KIMI_MODEL (default: moonshotai/kimi-k2-thinking)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
 - AGORA_ANTHROPIC_THROTTLE_ENABLED (default: true)
 - AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
 - AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS (default: 60)
+- AGORA_KIMI_MAX_TOKENS (default: 512)
+- AGORA_KIMI_REASONING_EFFORT (default: low)
+- AGORA_KIMI_REASONING_EXCLUDE (default: true)
+- AGORA_OPENROUTER_HTTP_REFERER (optional attribution header)
+- AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
+- AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; keeps compatibility with legacy X-Title)
 
 Anthropic Secret Manager fetch controls:
 
 - AGORA_ANTHROPIC_SECRET_NAME (default: agora-anthropic-api-key)
 - AGORA_ANTHROPIC_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
 - AGORA_ANTHROPIC_SECRET_VERSION (default: latest)
+
+OpenRouter Secret Manager fetch controls:
+
+- AGORA_OPENROUTER_SECRET_NAME (default: agora-openrouter-api-key)
+- AGORA_OPENROUTER_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
+- AGORA_OPENROUTER_SECRET_VERSION (default: latest)
 
 Gemini Secret Manager fetch controls:
 
@@ -406,6 +446,12 @@ The codebase already marks the Solana responsibilities as Josh-owned in the clie
    - Submit task
    - Query task status
    - Fetch finalized receipt and tx signature
+
+## Operations Runbooks
+
+- Release and deploy operations: `docs/release-operations.md`
+- Week 2 frontend acceptance report: `.codex/Week2-frontend-acceptance.md`
+- Week 2 API acceptance trace artifact: `.codex/week2_acceptance_api_trace.json`
 
 ## Notes
 

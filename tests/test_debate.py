@@ -2,11 +2,48 @@
 
 from __future__ import annotations
 
+import json
+import os
+
 import pytest
 
-from agora.engines.debate import DebateEngine
-from agora.types import MechanismType
+from agora.agent import AgentCallError
+from agora.engines.debate import (
+    DebateEngine,
+    _CrossExamResponse,
+    _SynthesisResponse,
+)
+from agora.types import DebateState, MechanismType
 from tests.helpers import make_agent_output, make_selection
+
+_PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_OPENROUTER_KEY_PRESENT = bool(
+    os.getenv("AGORA_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+)
+
+
+class _FakeDebateCaller:
+    def __init__(self, model: str, response) -> None:
+        self.model = model
+        self.response = response
+        self.calls = []
+
+    async def call(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response, {"input_tokens": 5, "output_tokens": 7, "latency_ms": 11.0}
+
+
+class _FailingCaller:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    async def call(self, **_kwargs):
+        raise AgentCallError("forced failure")
 
 
 def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
@@ -59,6 +96,92 @@ def test_verify_claims_extracts_arithmetic_equalities_from_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cross_examination_uses_kimi_devil_advocate() -> None:
+    """Devil's Advocate cross-examination should use Kimi rather than Gemini Pro."""
+
+    kimi_response = (
+        '[{"faction":"pro","weakest_claim":"claim A","flaw":"unsupported",'
+        '"question":"What evidence supports claim A?"}]'
+    )
+    kimi = _FakeDebateCaller("moonshotai/kimi-k2-thinking", kimi_response)
+    pro = _FakeDebateCaller(
+        "gemini-3.1-pro-preview",
+        _SynthesisResponse(final_answer="unused", confidence=0.5, summary="unused"),
+    )
+    engine = DebateEngine(agent_count=3, kimi_agent=kimi, pro_agent=pro)
+
+    output, usage = await engine._cross_examination(
+        task="Which architecture is more robust?",
+        round_number=1,
+        devil_advocate_id="agent-3",
+        pro_outputs=[make_agent_output("agent-1", "Answer A", role="pro_opening")],
+        opp_outputs=[make_agent_output("agent-2", "Answer B", role="opp_opening")],
+    )
+
+    assert output.role == "devil_advocate"
+    assert output.agent_model == "moonshotai/kimi-k2-thinking"
+    assert usage["tokens"] == 12
+    assert json.loads(output.content)["analyses"][0]["flaw"] == "unsupported"
+    assert "response_format" not in kimi.calls[0]
+    assert pro.calls == []
+
+
+@pytest.mark.asyncio
+async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
+    """Final synthesis should stay on Gemini Pro after Kimi challenges the debate."""
+
+    pro_response = _SynthesisResponse(
+        final_answer="Use the reliability-first architecture.",
+        confidence=0.82,
+        summary="The pro faction had stronger operational evidence.",
+    )
+    pro = _FakeDebateCaller("gemini-3.1-pro-preview", pro_response)
+    kimi = _FakeDebateCaller(
+        "moonshotai/kimi-k2-thinking",
+        _CrossExamResponse(analyses=[]),
+    )
+    engine = DebateEngine(agent_count=3, pro_agent=pro, kimi_agent=kimi)
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    pro_output = make_agent_output(
+        "agent-1",
+        "Use architecture A because it isolates failures.",
+        confidence=0.8,
+        role="pro_opening",
+    )
+    opp_output = make_agent_output(
+        "agent-2",
+        "Use architecture B because it is simpler.",
+        confidence=0.6,
+        role="opp_opening",
+    )
+    state = DebateState(
+        task="Choose an architecture.",
+        task_features=selection.task_features,
+        round=1,
+        max_rounds=4,
+        factions={"pro": [pro_output], "opp": [opp_output]},
+        rebuttals={"pro": [], "opp": []},
+        transcript_hashes=[pro_output.content_hash, opp_output.content_hash],
+    )
+
+    result, usage = await engine._final_aggregation(
+        state=state,
+        selection=selection,
+        pro_answer="Architecture A",
+        opp_answer="Architecture B",
+        prior_tokens=3,
+        prior_latency_ms=4.0,
+    )
+
+    assert result.final_answer == "Use the reliability-first architecture."
+    assert result.mechanism_used is MechanismType.DEBATE
+    assert result.total_tokens_used == 15
+    assert usage["tokens"] == 12
+    assert pro.calls[0]["response_format"] is _SynthesisResponse
+    assert kimi.calls == []
+
+
+@pytest.mark.asyncio
 async def test_full_debate_run_on_simple_math_task() -> None:
     """Debate run should complete and produce a populated result artifact."""
 
@@ -106,3 +229,25 @@ async def test_mechanism_switch_triggers_when_monitor_requests(monkeypatch) -> N
     assert outcome.switch_to_vote is True
     assert outcome.suggested_mechanism == MechanismType.VOTE
     assert outcome.result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.paid_integration
+@pytest.mark.skipif(
+    not _PAID_INTEGRATION_ENABLED or not _OPENROUTER_KEY_PRESENT,
+    reason="Paid-provider debate integration is opt-in and requires OpenRouter key.",
+)
+async def test_debate_paid_integration_hits_kimi_cross_exam() -> None:
+    """Opt-in integration test should perform a live Kimi cross-exam call."""
+
+    engine = DebateEngine(
+        agent_count=3,
+        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
+    )
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
+
+    outcome = await engine.run("What is the derivative of x^3 * sin(x)?", selection)
+
+    assert outcome.result is not None
+    assert outcome.result.total_tokens_used > 0

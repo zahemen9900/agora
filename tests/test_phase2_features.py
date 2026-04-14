@@ -9,7 +9,7 @@ import pytest
 
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
-from agora.sdk import AgoraArbitrator, ReceiptVerificationError
+from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 from api.main import app
 from api.routes import benchmarks as benchmark_routes
 from api.routes import tasks as task_routes
@@ -201,6 +201,46 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_phase2_validation_seeded_mode_raises_on_merkle_divergence(
+    tmp_path: Path,
+) -> None:
+    call_counter = {"value": 0}
+
+    async def changing_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        call_counter["value"] += 1
+        answer = f"Option {call_counter['value']}"
+        return {
+            "answer": answer,
+            "confidence": 0.55,
+            "predicted_group_answer": answer,
+            "reasoning": "Intentional non-deterministic test agent.",
+        }
+
+    orchestrator = AgoraOrchestrator(agent_count=3)
+    runner = BenchmarkRunner(orchestrator, agents=[changing_agent] * 3)
+
+    training_tasks = [
+        {
+            "task": "Is 2+2 equal to 4?",
+            "category": "math",
+            "ground_truth": "4",
+        }
+    ]
+
+    with pytest.raises(
+        RuntimeError,
+        match="Determinism check failed for training task index=0 category=math",
+    ):
+        await runner.run_phase2_validation(
+            training_tasks=training_tasks,
+            holdout_tasks=[],
+            output_path=str(tmp_path / "phase2_validation_failure.json"),
+            seed=11,
+        )
+
+
+@pytest.mark.asyncio
 async def test_sdk_local_mode_supports_custom_agents() -> None:
     async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
@@ -381,3 +421,75 @@ async def test_sdk_verify_receipt_strict_hosted_payload_success(
 
     assert verification["valid"] is True
     assert verification["on_chain_match"] is True
+
+
+@pytest.mark.asyncio
+async def test_agora_node_passes_strict_and_wallet_config() -> None:
+    node = AgoraNode(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+        strict_verification=False,
+    )
+    try:
+        assert node.arbitrator.config.strict_verification is False
+        assert node.arbitrator.config.solana_wallet == "wallet-test"
+    finally:
+        await node.arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agora_node_lenient_verification_allows_missing_task_mapping() -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    node = AgoraNode(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+        strict_verification=False,
+    )
+    try:
+        result = await node.arbitrator.arbitrate(
+            "Should I buy Solana or BTC?",
+            agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+        )
+        verification = await node.arbitrator.verify_receipt(result)
+    finally:
+        await node.arbitrator.aclose()
+
+    assert verification["valid"] is True
+    assert verification["on_chain_match"] is None
+
+
+@pytest.mark.asyncio
+async def test_agora_node_strict_verification_raises_without_task_mapping() -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    node = AgoraNode(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+    )
+    try:
+        result = await node.arbitrator.arbitrate(
+            "Should I buy Solana or BTC?",
+            agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+        )
+        with pytest.raises(ReceiptVerificationError):
+            await node.arbitrator.verify_receipt(result)
+    finally:
+        await node.arbitrator.aclose()

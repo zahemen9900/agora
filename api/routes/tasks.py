@@ -155,10 +155,16 @@ async def create_task(
             )
         except Exception as exc:
             logger.error("task_create_chain_setup_failed", task_id=task_id, error=str(exc))
-            raise HTTPException(
-                status_code=502,
-                detail="Failed to initialize task on Solana",
-            ) from exc
+            if settings.strict_chain_writes:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Failed to initialize task on Solana",
+                ) from exc
+            logger.warning(
+                "task_create_chain_setup_soft_failed",
+                task_id=task_id,
+                error=str(exc),
+            )
     else:
         logger.warning("solana_bridge_not_configured", task_id=task_id)
 
@@ -273,10 +279,16 @@ async def run_task(
             task.explorer_url = str(receipt.get("explorer_url", "")) or task.explorer_url
         except Exception as exc:
             logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
-            raise HTTPException(
-                status_code=502,
-                detail="Failed to submit receipt on Solana",
-            ) from exc
+            if settings.strict_chain_writes:
+                raise HTTPException(
+                    status_code=502,
+                    detail="Failed to submit receipt on Solana",
+                ) from exc
+            logger.warning(
+                "task_receipt_submission_soft_failed",
+                task_id=task_id,
+                error=str(exc),
+            )
 
         if result.mechanism_switches > 0:
             refreshed_events = [
@@ -304,10 +316,17 @@ async def run_task(
                         switch_index=switch_index,
                         error=str(exc),
                     )
-                    raise HTTPException(
-                        status_code=502,
-                        detail="Failed to record mechanism switch on Solana",
-                    ) from exc
+                    if settings.strict_chain_writes:
+                        raise HTTPException(
+                            status_code=502,
+                            detail="Failed to record mechanism switch on Solana",
+                        ) from exc
+                    logger.warning(
+                        "task_switch_record_soft_failed",
+                        task_id=task_id,
+                        switch_index=switch_index,
+                        error=str(exc),
+                    )
 
     task.status = "completed"
     task.quorum_reached = result_response.quorum_reached

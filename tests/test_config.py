@@ -26,6 +26,13 @@ _CONFIG_ENV_KEYS = (
     "AGORA_ANTHROPIC_SECRET_NAME",
     "AGORA_ANTHROPIC_SECRET_PROJECT",
     "AGORA_ANTHROPIC_SECRET_VERSION",
+    "AGORA_OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AGORA_OPENROUTER_SECRET_NAME",
+    "AGORA_OPENROUTER_SECRET_PROJECT",
+    "AGORA_OPENROUTER_SECRET_VERSION",
+    "AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED",
+    "AGORA_KIMI_MODEL",
     "GOOGLE_CLOUD_PROJECT",
 )
 
@@ -206,3 +213,72 @@ def test_gemini_flash_thinking_level_defaults_and_can_be_disabled(
     monkeypatch.setenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", "")
     config = get_config()
     assert config.gemini_flash_thinking_level is None
+
+
+def test_openrouter_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenRouter key should resolve from AGORA_OPENROUTER_API_KEY first."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "primary-or-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secondary-or-key")
+
+    config = get_config()
+    assert config.openrouter_api_key == "primary-or-key"
+
+    get_config.cache_clear()
+    monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
+    config = get_config()
+    assert config.openrouter_api_key == "secondary-or-key"
+
+
+def test_openrouter_api_key_falls_back_to_secret_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter key should resolve from Secret Manager when env key is absent."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "openrouter-sm-key",
+    )
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "openrouter-sm-key"
+
+
+def test_explicit_openrouter_key_wins_over_secret_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit OpenRouter key should bypass Secret Manager lookup."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "explicit-openrouter-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
+
+    def _unexpected(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("Secret Manager should not be called when OpenRouter key is explicit")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value", _unexpected)
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "explicit-openrouter-key"
+
+
+def test_openrouter_legacy_x_title_toggle_parses_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Header compatibility toggle should parse standard boolean env values."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "false")
+    config = get_config()
+    assert config.openrouter_legacy_x_title_enabled is False
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "true")
+    config = get_config()
+    assert config.openrouter_legacy_x_title_enabled is True

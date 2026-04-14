@@ -12,9 +12,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agora.agent import AgentCaller, AgentCallError, flash_caller, pro_caller
+from agora.agent import AgentCaller, AgentCallError, flash_caller, kimi_caller, pro_caller
 from agora.config import get_config
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
@@ -109,6 +109,7 @@ class DebateEngine:
         max_rounds: int = 4,
         flash_agent: AgentCaller | None = None,
         pro_agent: AgentCaller | None = None,
+        kimi_agent: AgentCaller | None = None,
         monitor: StateMonitor | None = None,
         hasher: TranscriptHasher | None = None,
         enable_devils_advocate: bool = True,
@@ -129,6 +130,7 @@ class DebateEngine:
         self.max_rounds = max(1, max_rounds)
         self._flash_agent = flash_agent
         self._pro_agent = pro_agent
+        self._kimi_agent = kimi_agent
         self.monitor = monitor or StateMonitor()
         self.hasher = hasher or TranscriptHasher()
         self.enable_devils_advocate = enable_devils_advocate
@@ -599,21 +601,29 @@ class DebateEngine:
             if custom_agents is not None
             else None
         )
-        response, usage = await self._call_structured(
-            tier="pro",
+        if custom_agent is not None:
+            response, usage = await self._call_structured(
+                tier="pro",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_model=_CrossExamResponse,
+                fallback=fallback,
+                temperature=0.2,
+                custom_agent=custom_agent,
+            )
+            assert isinstance(response, _CrossExamResponse)
+        else:
+            response, usage = await self._call_cross_exam(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            response_model=_CrossExamResponse,
             fallback=fallback,
             temperature=0.2,
-            custom_agent=custom_agent,
-        )
-        assert isinstance(response, _CrossExamResponse)
+            )
         content = json.dumps(response.model_dump(mode="json"), sort_keys=True)
 
         output = AgentOutput(
             agent_id=devil_advocate_id,
-            agent_model=self._model_name("pro"),
+            agent_model=self._model_name("kimi"),
             role="devil_advocate",
             round_number=round_number,
             content=content,
@@ -830,6 +840,74 @@ class DebateEngine:
 
         return fallback, {"tokens": 0, "latency_ms": 0.0}
 
+    async def _call_cross_exam(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: _CrossExamResponse,
+        temperature: float | None,
+    ) -> tuple[_CrossExamResponse, dict[str, Any]]:
+        """Call Kimi as a raw challenger and coerce output into transcript schema."""
+
+        try:
+            caller = self._get_caller("kimi")
+            response, usage = await caller.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+            )
+            response_text = (
+                response.model_dump_json() if isinstance(response, BaseModel) else str(response)
+            )
+            return self._coerce_cross_exam_response(response_text, fallback), {
+                "tokens": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
+                "latency_ms": float(usage.get("latency_ms", 0.0)),
+            }
+        except AgentCallError as exc:
+            logger.warning(
+                "debate_agent_fallback",
+                tier="kimi",
+                response_model=_CrossExamResponse.__name__,
+                error=str(exc),
+            )
+
+        return fallback, {"tokens": 0, "latency_ms": 0.0}
+
+    @staticmethod
+    def _coerce_cross_exam_response(
+        response_text: str,
+        fallback: _CrossExamResponse,
+    ) -> _CrossExamResponse:
+        """Parse Kimi JSON when available, otherwise preserve its raw critique."""
+
+        cleaned = response_text.strip()
+        if not cleaned:
+            return fallback
+
+        try:
+            parsed = json.loads(AgentCaller._extract_json_payload(cleaned))
+            if isinstance(parsed, list):
+                parsed = {"analyses": parsed}
+            return _CrossExamResponse.model_validate(parsed)
+        except (json.JSONDecodeError, ValidationError):
+            clipped = cleaned[:1200]
+            return _CrossExamResponse(
+                analyses=[
+                    _CrossExamItem(
+                        faction="pro",
+                        weakest_claim="kimi_unstructured_challenge",
+                        flaw=clipped,
+                        question="Which evidence most directly answers Kimi's challenge?",
+                    ),
+                    _CrossExamItem(
+                        faction="opp",
+                        weakest_claim="kimi_unstructured_challenge",
+                        flaw=clipped,
+                        question="Which assumption survives Kimi's challenge?",
+                    ),
+                ]
+            )
+
     @staticmethod
     def _agent_index(agent_id: str) -> int:
         """Convert canonical agent id into zero-based index."""
@@ -943,6 +1021,10 @@ class DebateEngine:
             if self._flash_agent is None:
                 self._flash_agent = flash_caller()
             return self._flash_agent
+        if tier == "kimi":
+            if self._kimi_agent is None:
+                self._kimi_agent = kimi_caller()
+            return self._kimi_agent
         if self._pro_agent is None:
             self._pro_agent = pro_caller()
         return self._pro_agent
@@ -955,7 +1037,11 @@ class DebateEngine:
             return caller.model
         except AgentCallError:
             config = get_config()
-            return config.flash_model if tier == "flash" else config.pro_model
+            if tier == "flash":
+                return config.flash_model
+            if tier == "kimi":
+                return config.kimi_model
+            return config.pro_model
 
     @staticmethod
     def _extract_targeted_question(cross_exam_content: str, side: str) -> str:

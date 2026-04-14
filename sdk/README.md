@@ -69,7 +69,13 @@ from langgraph.graph import StateGraph
 
 
 graph = StateGraph(dict)
-graph.add_node("deliberate", AgoraNode(api_url="https://your-agora-api.example.com"))
+graph.add_node(
+    "deliberate",
+    AgoraNode(
+        api_url="https://your-agora-api.example.com",
+        strict_verification=True,
+    ),
+)
 ```
 
 ## Features
@@ -79,3 +85,15 @@ graph.add_node("deliberate", AgoraNode(api_url="https://your-agora-api.example.c
 - Confidence-calibrated vote aggregation with ISP weighting
 - Merkle-verifiable transcript receipts
 - Optional hosted API mode and local callable mode
+
+## Verification Controls
+
+- `AgoraArbitrator` defaults to strict receipt verification.
+- `AgoraNode` now supports `strict_verification` and `solana_wallet` pass-through for parity with `AgoraArbitrator`.
+- Set `strict_verification=False` only when intentionally opting into lenient verification behavior.
+
+## Maintainer Release Notes
+
+- Current release process is documented in `../docs/release-operations.md`.
+- Current package target is `agora-sdk==0.1.0a1`.
+- This cycle keeps PyPI publish manual while documenting the next-cycle automation plan.

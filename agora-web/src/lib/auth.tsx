@@ -1,87 +1,65 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  AuthKitProvider,
+  useAuth as useWorkOSAuth,
+  type User as WorkOSUser,
+} from "@workos-inc/authkit-react";
+import { type ReactNode } from "react";
 
-interface DemoUser {
-  name: string;
-  email: string;
-  token: string;
-}
+// Re-export user type for consumers
+export type User = WorkOSUser;
 
+// Wrapper interface matching the app's existing auth contract
 interface AuthContextType {
-  user: DemoUser | null;
-  token: string | null;
+  user: User | null;
   isLoading: boolean;
-  signIn: () => Promise<void>;
+  signIn: () => void;
+  signUp: () => void;
   signOut: () => void;
+  getAccessToken: () => Promise<string>;
+  /** Synchronous token accessor - returns null if not authenticated */
+  token: string | null;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-const STORAGE_KEY = "agora.demo.user";
+// Custom hook that wraps WorkOS useAuth to match existing interface
+export function useAuth(): AuthContextType {
+  const workosAuth = useWorkOSAuth();
 
-function base64UrlEncode(value: string): string {
-  return window.btoa(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
+  // Create a synchronous token accessor for backward compatibility
+  // This uses the internal accessToken from WorkOS when available
+  const token = workosAuth.user ? (workosAuth as unknown as { accessToken?: string }).accessToken ?? null : null;
 
-function createDemoToken(): string {
-  const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = base64UrlEncode(
-    JSON.stringify({
-      sub: "demo-user",
-      email: "demo@example.com",
-      name: "Demo User",
-    }),
-  );
-  return `${header}.${payload}.demo-signature`;
-}
-
-function buildDemoUser(): DemoUser {
   return {
-    name: "Demo User",
-    email: "demo@example.com",
-    token: createDemoToken(),
+    user: workosAuth.user ?? null,
+    isLoading: workosAuth.isLoading,
+    signIn: () => workosAuth.signIn(),
+    signUp: () => workosAuth.signUp(),
+    signOut: () => workosAuth.signOut(),
+    getAccessToken: workosAuth.getAccessToken,
+    token,
   };
 }
 
+// AuthProvider wraps WorkOS AuthKitProvider with correct configuration
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<DemoUser | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const clientId = import.meta.env.VITE_WORKOS_CLIENT_ID;
 
-  useEffect(() => {
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        setUser(JSON.parse(stored) as DemoUser);
-      } catch {
-        window.localStorage.removeItem(STORAGE_KEY);
-      }
-    }
-    setIsLoading(false);
-  }, []);
-
-  const signIn = async () => {
-    setIsLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    const demoUser = buildDemoUser();
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(demoUser));
-    setUser(demoUser);
-    setIsLoading(false);
-  };
-
-  const signOut = () => {
-    window.localStorage.removeItem(STORAGE_KEY);
-    setUser(null);
-  };
+  if (!clientId) {
+    throw new Error(
+      "Missing VITE_WORKOS_CLIENT_ID environment variable. " +
+      "Ensure it is set in .env.local with the VITE_ prefix for Vite to expose it."
+    );
+  }
 
   return (
-    <AuthContext.Provider value={{ user, token: user?.token ?? null, isLoading, signIn, signOut }}>
+    <AuthKitProvider
+      clientId={clientId}
+      // Optional: redirect after successful auth
+      onRedirectCallback={() => {
+        // Clear any OAuth params from URL after successful auth
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }}
+    >
       {children}
-    </AuthContext.Provider>
+    </AuthKitProvider>
   );
-}
-
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
 }

@@ -220,3 +220,4 @@ support/
 agora-web/read_pdf.js
 docs/*.pdf
 node_modules
+.env.local
