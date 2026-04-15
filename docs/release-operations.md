@@ -86,6 +86,7 @@ gcloud run deploy "${SERVICE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
   --platform managed \
+  --update-env-vars "AUTH_REQUIRED=true,AGORA_API_KEY_PEPPER=<secret>,AUTH_ISSUER=<issuer>,AUTH_AUDIENCE=<audience>,AUTH_JWKS_URL=<jwks-url>" \
   --allow-unauthenticated
 ```
 

@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 MechanismName = Literal["debate", "vote", "delphi", "moa"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 PaymentStatusName = Literal["locked", "released", "none"]
+AuthMethodName = Literal["jwt", "api_key"]
+ApiKeyScopeName = Literal["tasks:read", "tasks:write", "api_keys:read", "api_keys:write"]
 
 
 class TaskCreateRequest(BaseModel):
@@ -66,6 +68,7 @@ class TaskStatusResponse(BaseModel):
 
     task_id: str
     task_text: str
+    workspace_id: str = ""
     created_by: str = ""
     mechanism: str
     mechanism_override: MechanismName | None = None
@@ -88,3 +91,68 @@ class TaskStatusResponse(BaseModel):
     completed_at: datetime | None = None
     result: DeliberationResultResponse | None = None
     events: list[TaskEvent] = Field(default_factory=list)
+
+
+class PrincipalResponse(BaseModel):
+    """Normalized authenticated principal returned to frontend callers."""
+
+    auth_method: AuthMethodName
+    workspace_id: str
+    user_id: str | None = None
+    display_name: str
+    email: str
+    scopes: list[ApiKeyScopeName] = Field(default_factory=list)
+    api_key_id: str | None = None
+
+
+class WorkspaceResponse(BaseModel):
+    """Workspace metadata exposed to dashboard clients."""
+
+    id: str
+    display_name: str
+    kind: Literal["personal"] = "personal"
+    owner_user_id: str
+    created_at: datetime
+
+
+class FeatureFlagsResponse(BaseModel):
+    """Simple frontend feature flags for gated UI surfaces."""
+
+    benchmarks_visible: bool = False
+    api_keys_visible: bool = True
+
+
+class AuthMeResponse(BaseModel):
+    """Dashboard bootstrap payload for authenticated callers."""
+
+    principal: PrincipalResponse
+    workspace: WorkspaceResponse
+    feature_flags: FeatureFlagsResponse
+
+
+class ApiKeyCreateRequest(BaseModel):
+    """Request payload for issuing a new workspace API key."""
+
+    name: str = Field(min_length=1, max_length=100)
+
+
+class ApiKeyMetadataResponse(BaseModel):
+    """Safe API key metadata returned by list and revoke endpoints."""
+
+    key_id: str
+    workspace_id: str
+    name: str
+    public_id: str
+    scopes: list[ApiKeyScopeName] = Field(default_factory=list)
+    created_by_user_id: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+
+class ApiKeyCreateResponse(BaseModel):
+    """One-time API key reveal payload."""
+
+    api_key: str
+    metadata: ApiKeyMetadataResponse

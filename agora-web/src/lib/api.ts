@@ -5,6 +5,8 @@ const API_URL =
 export type MechanismName = "debate" | "vote" | "delphi" | "moa";
 export type TaskStatusName = "pending" | "in_progress" | "completed" | "failed" | "paid";
 export type PaymentStatusName = "locked" | "released" | "none";
+export type AuthMethodName = "jwt" | "api_key";
+export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "api_keys:read" | "api_keys:write";
 
 export interface TaskCreateResponse {
   task_id: string;
@@ -43,6 +45,7 @@ export interface DeliberationResultResponse {
 export interface TaskStatusResponse {
   task_id: string;
   task_text: string;
+  workspace_id: string;
   mechanism: MechanismName;
   mechanism_override: MechanismName | null;
   status: TaskStatusName;
@@ -64,6 +67,53 @@ export interface TaskStatusResponse {
   completed_at: string | null;
   result: DeliberationResultResponse | null;
   events: TaskEvent[];
+}
+
+export interface PrincipalResponse {
+  auth_method: AuthMethodName;
+  workspace_id: string;
+  user_id: string | null;
+  display_name: string;
+  email: string;
+  scopes: ApiKeyScopeName[];
+  api_key_id: string | null;
+}
+
+export interface WorkspaceResponse {
+  id: string;
+  display_name: string;
+  kind: "personal";
+  owner_user_id: string;
+  created_at: string;
+}
+
+export interface FeatureFlagsResponse {
+  benchmarks_visible: boolean;
+  api_keys_visible: boolean;
+}
+
+export interface AuthMeResponse {
+  principal: PrincipalResponse;
+  workspace: WorkspaceResponse;
+  feature_flags: FeatureFlagsResponse;
+}
+
+export interface ApiKeyMetadataResponse {
+  key_id: string;
+  workspace_id: string;
+  name: string;
+  public_id: string;
+  scopes: ApiKeyScopeName[];
+  created_by_user_id: string;
+  created_at: string;
+  last_used_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface ApiKeyCreateResponse {
+  api_key: string;
+  metadata: ApiKeyMetadataResponse;
 }
 
 interface StreamTicketResponse {
@@ -161,6 +211,42 @@ export async function releaseTaskPayment(
 
 export async function getBenchmarks(): Promise<BenchmarkPayload> {
   return requestJson<BenchmarkPayload>("/benchmarks");
+}
+
+export async function getAuthMe(token: string): Promise<AuthMeResponse> {
+  return requestJson<AuthMeResponse>("/auth/me", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function listApiKeys(token: string): Promise<ApiKeyMetadataResponse[]> {
+  return requestJson<ApiKeyMetadataResponse[]>("/api-keys/", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function createApiKey(
+  token: string,
+  name: string,
+): Promise<ApiKeyCreateResponse> {
+  return requestJson<ApiKeyCreateResponse>("/api-keys/", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function revokeApiKey(
+  token: string,
+  keyId: string,
+): Promise<ApiKeyMetadataResponse> {
+  return requestJson<ApiKeyMetadataResponse>(`/api-keys/${keyId}/revoke`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
 }
 
 export async function verifyMerkleRoot(

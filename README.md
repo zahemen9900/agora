@@ -56,7 +56,9 @@ Implemented on top of the Week 1 foundation:
   - `timestamp`
 - Benchmark runner, curated datasets, and validation artifact generation under `benchmarks/`.
 - SDK surface for local and hosted execution, plus strict receipt verification.
-- Auth-first backend/frontend integration with verified JWT flow and async access-token retrieval.
+- Dual auth for hosted usage:
+  - WorkOS JWTs for dashboard users
+  - first-party Agora API keys for SDK, CI, and server-to-server callers
 - Provider hardening for dotenv, Secret Manager fallback, and late-bound credential resolution.
 - 4-model ensemble support in hosted/demo flows with explicit `agent_models_used` reporting.
 - Kimi K2 Thinking integrated as an active ensemble participant:
@@ -155,6 +157,31 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+### Auth configuration
+
+Hosted deployments now use two credential types behind one bearer-token interface:
+
+- Dashboard/browser auth: WorkOS-issued JWTs
+- Programmatic auth: Agora API keys in the form `agora_live_<public_id>.<secret>` or `agora_test_<public_id>.<secret>`
+
+Backend auth env:
+
+```bash
+export AUTH_REQUIRED=true
+export WORKOS_CLIENT_ID="..."
+export WORKOS_AUTHKIT_DOMAIN="..."
+export AUTH_AUDIENCE="..."
+export AUTH_ISSUER="https://your-authkit-domain"
+export AUTH_JWKS_URL="https://your-authkit-domain/oauth2/jwks"
+export AGORA_API_KEY_PEPPER="replace-with-a-long-random-secret"
+```
+
+Optional API key policy env:
+
+```bash
+export AGORA_API_KEY_DEFAULT_TTL_DAYS=90
+```
+
 ### Lint and test
 
 ```bash
@@ -199,6 +226,7 @@ What it covers:
 Optional controls:
 
 - `AGORA_API_URL`: override hosted API base URL
+- `AGORA_TEST_API_KEY`: real staging API key used for hosted smoke and E2E against authenticated deployments
 - `--query "text"`: pass the exact deliberation prompt used in orchestrator + hosted API task
 - `--api-url "url"`: override hosted API base URL via CLI (same effect as `AGORA_API_URL`)
 - `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
@@ -231,6 +259,9 @@ RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 
 # Point to a different deployed API
 AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
+
+# Run hosted smoke against an authenticated deployment
+AGORA_TEST_API_KEY="agora_test_your_public_id.your_secret" ./scripts/week1_demo.sh
 
 # Enforce direct Gemini 3-series validation in demo
 RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh

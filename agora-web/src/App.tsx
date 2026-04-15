@@ -9,10 +9,10 @@ import { Callback } from "./pages/Callback";
 import { TaskSubmit } from "./pages/TaskSubmit";
 import { LiveDeliberation } from "./pages/LiveDeliberation";
 import { OnChainReceipt } from "./pages/OnChainReceipt";
-import { Benchmarks } from "./pages/Benchmarks";
+import { ApiKeys } from "./pages/ApiKeys";
 
 function AppRoutes() {
-  const { isLoading, user } = useAuth();
+  const { isLoading, authStatus } = useAuth();
 
   if (isLoading) {
     return (
@@ -29,15 +29,15 @@ function AppRoutes() {
       <Route path="/callback" element={<Callback />} />
 
       {/* Landing page for unauthenticated users */}
-      {!user && <Route path="*" element={<LoginPage />} />}
+      {authStatus !== "authenticated" && <Route path="*" element={<LoginPage />} />}
 
       {/* Protected routes - only accessible when authenticated */}
-      {user && (
+      {authStatus === "authenticated" && (
         <>
           <Route path="/" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
           <Route path="/task/:taskId" element={<DashboardLayout><LiveDeliberation /></DashboardLayout>} />
           <Route path="/task/:taskId/receipt" element={<DashboardLayout><OnChainReceipt /></DashboardLayout>} />
-          <Route path="/benchmarks" element={<DashboardLayout><Benchmarks /></DashboardLayout>} />
+          <Route path="/api-keys" element={<DashboardLayout><ApiKeys /></DashboardLayout>} />
           <Route path="*" element={<Navigate to="/" />} />
         </>
       )}

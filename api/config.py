@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     auth_issuer: str = ""
     auth_audience: str = ""
     auth_jwks_url: str = ""
+    api_key_pepper: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_API_KEY_PEPPER", "API_KEY_PEPPER"),
+    )
+    api_key_default_ttl_days: int = Field(
+        default=365,
+        ge=0,
+        validation_alias=AliasChoices("AGORA_API_KEY_DEFAULT_TTL_DAYS", "API_KEY_DEFAULT_TTL_DAYS"),
+    )
 
 
 settings = Settings()

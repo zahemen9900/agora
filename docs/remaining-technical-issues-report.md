@@ -2,11 +2,43 @@
 
 This report covers the highest-priority issues still present on the current branch after the recent security remediation work. The Python/API/SDK/contract test suites now pass in `agora-env`, but the items below remain open and should be treated as the next engineering backlog.
 
+## Dispatch Guidance Relative to API Key + Auth E2E Work
+
+This backlog should not be treated as one monolith. Some items are safe to dispatch immediately without waiting for WorkOS completion or a first-party API key system. A smaller set either materially should land before the machine-auth rollout, or depend on the auth model and should wait until that design exists.
+
+### Can be fixed immediately with no auth dependency
+
+- `#2` strict SDK receipt verification against real chain state
+- `#3` webhook replay resistance
+- `#6` fully locked deployment dependencies
+
+These are independent engineering problems. They do not require a final browser-auth or machine-auth design.
+
+### Should ideally be fixed before full API key + hosted auth E2E rollout
+
+- `#1` process-local run locking and SSE ticketing
+
+This is the main hosted-path correctness problem. Rolling out machine auth on top of a deployment model that still allows duplicate runs or cross-instance SSE breakage is backwards.
+
+### Should wait until the auth / API key model exists
+
+- `#4` benchmarks UI/backend auth mismatch
+- `#5` API-level abuse controls, quotas, and rate limits
+- `#7` benchmark access moving from static secret to real authorization
+
+These need a real caller identity model. They can be discussed now, but the durable implementation wants the API key / principal model in place first.
+
 ## Priority 0
 
 ### 1. Task execution and SSE auth are still process-local, not deployment-safe
 
+**Dispatch status**
+
+- Start now
+- Treat as a blocker before full machine-auth rollout
+
 **Files**
+
 - `api/routes/tasks.py:35-47`
 - `api/routes/tasks.py:107-133`
 - `api/routes/tasks.py:425-428`
@@ -44,7 +76,13 @@ Move both controls into shared storage:
 
 ### 2. Strict SDK receipt verification still cannot verify real on-chain state
 
+**Dispatch status**
+
+- Start now
+- Independent of WorkOS and API key design
+
 **Files**
+
 - `agora/sdk/arbitrator.py:110-167`
 - `sdk/agora/sdk/arbitrator.py:110-167`
 
@@ -75,7 +113,13 @@ Implement strict verification against Solana state:
 
 ### 3. Webhook verification is replayable
 
+**Dispatch status**
+
+- Start now
+- Independent of WorkOS and API key design
+
 **Files**
+
 - `api/routes/webhooks.py:17-76`
 
 **What remains**
@@ -104,7 +148,13 @@ Add replay resistance:
 
 ### 4. The benchmarks UI is now incompatible with the hardened backend
 
+**Dispatch status**
+
+- Defer durable implementation until auth/API key direction is chosen
+- Short-term option remains: remove or hide the public Benchmarks route
+
 **Files**
+
 - `api/routes/benchmarks.py:21-30`
 - `agora-web/src/lib/api.ts:162-163`
 - `agora-web/src/pages/Benchmarks.tsx:23-29`
@@ -127,7 +177,13 @@ Choose one of these paths:
 
 ### 5. There is still no API-level abuse control on task creation/execution
 
+**Dispatch status**
+
+- Design now if useful
+- Implement after caller identity is stable
+
 **Files**
+
 - `api/routes/tasks.py:293-403`
 - `api/routes/tasks.py:406-520`
 
@@ -156,7 +212,13 @@ Add explicit service-side controls:
 
 ### 6. Deployment reproducibility is only partially locked
 
+**Dispatch status**
+
+- Start now
+- Independent of WorkOS and API key design
+
 **Files**
+
 - `api/Dockerfile:9-11`
 - `api/constraints.txt:1-18`
 
@@ -182,7 +244,13 @@ Promote this to a real lock:
 
 ### 7. Benchmark access uses a single shared static secret, not real authorization
 
+**Dispatch status**
+
+- Defer until the auth principal / RBAC model exists
+- Keep the static secret only as a temporary internal control
+
 **Files**
+
 - `api/routes/benchmarks.py:21-30`
 
 **What remains**

@@ -21,7 +21,7 @@ from agora.sdk import AgoraArbitrator
 async def main() -> None:
     arbitrator = AgoraArbitrator(
         api_url="https://your-agora-api.example.com",
-        auth_token="your-demo-or-api-token",
+        auth_token="agora_live_your_public_id.your_secret",
     )
     result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
     print(result.mechanism_used.value)
@@ -85,6 +85,13 @@ graph.add_node(
 - Confidence-calibrated vote aggregation with ISP weighting
 - Merkle-verifiable transcript receipts
 - Optional hosted API mode and local callable mode
+
+## Authentication
+
+- Dashboard users authenticate with WorkOS-issued bearer tokens.
+- SDK, CI, notebooks, and server-side callers should use first-party Agora API keys.
+- Hosted mode keeps the same `auth_token=` interface, but the token should be an Agora API key such as `agora_live_<public_id>.<secret>` or `agora_test_<public_id>.<secret>` in non-production environments.
+- Strict hosted E2E should use a real staging API key, not a fabricated JWT.
 
 ## Verification Controls
 

@@ -15,7 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
 from agora.types import DeliberationResult, MechanismSelection, MechanismType
-from api.auth import AuthenticatedUser, get_current_user
+from api.auth import AuthenticatedUser, get_current_user, require_scope
 from api.config import settings
 from api.models import (
     DeliberationResultResponse,
@@ -39,7 +39,7 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 
 @dataclass(frozen=True)
 class _StreamTicket:
-    user_id: str
+    workspace_id: str
     task_id: str
     expires_at: datetime
 
@@ -69,49 +69,52 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _stream_key(user_id: str, task_id: str) -> str:
-    """Namespace live streams by user and task to avoid cross-tenant fan-out."""
+def _stream_key(workspace_id: str, task_id: str) -> str:
+    """Namespace live streams by workspace and task to avoid cross-tenant fan-out."""
 
-    return f"{user_id}:{task_id}"
-
-
-def _task_run_key(user_id: str, task_id: str) -> str:
-    return _stream_key(user_id, task_id)
+    return f"{workspace_id}:{task_id}"
 
 
-def _assert_task_owner(raw_task: dict[str, Any], user_id: str) -> None:
-    """Reject task records that are explicitly owned by another user."""
+def _task_run_key(workspace_id: str, task_id: str) -> str:
+    return _stream_key(workspace_id, task_id)
 
+
+def _assert_task_owner(raw_task: dict[str, Any], workspace_id: str) -> None:
+    """Reject task records that are explicitly owned by another workspace."""
+
+    task_workspace_id = raw_task.get("workspace_id")
+    if task_workspace_id and task_workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail="Task not found")
     created_by = raw_task.get("created_by")
-    if created_by and created_by != user_id:
+    if not task_workspace_id and created_by and created_by != workspace_id:
         raise HTTPException(status_code=404, detail="Task not found")
 
 
 async def _load_task_for_user(
     store: TaskStore | LocalTaskStore,
-    user_id: str,
+    workspace_id: str,
     task_id: str,
 ) -> dict[str, Any]:
     """Load a task while hiding unsafe IDs and cross-tenant records as not-found."""
 
     try:
-        raw_task = await store.get_task(user_id, task_id)
+        raw_task = await store.get_task(workspace_id, task_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Task not found") from exc
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    _assert_task_owner(raw_task, user_id)
+    _assert_task_owner(raw_task, workspace_id)
     return raw_task
 
 
-def _issue_stream_ticket(user_id: str, task_id: str) -> dict[str, str]:
+def _issue_stream_ticket(workspace_id: str, task_id: str) -> dict[str, str]:
     """Create a short-lived one-use ticket for EventSource auth."""
 
     _purge_expired_stream_tickets()
     ticket = secrets.token_urlsafe(32)
     expires_at = datetime.now(UTC) + timedelta(seconds=settings.stream_ticket_ttl_seconds)
     _stream_tickets[ticket] = _StreamTicket(
-        user_id=user_id,
+        workspace_id=workspace_id,
         task_id=task_id,
         expires_at=expires_at,
     )
@@ -250,7 +253,7 @@ async def persist_and_emit(
     *,
     store: TaskStore | LocalTaskStore,
     stream: DeliberationStream,
-    user_id: str,
+    workspace_id: str,
     task_id: str,
     event_type: str,
     event_data: dict[str, Any],
@@ -258,15 +261,15 @@ async def persist_and_emit(
     """Persist an event and emit it to live SSE listeners."""
 
     payload = _event_payload(event_type, event_data)
-    await store.append_event(user_id, task_id, payload)
-    await stream.emit(_stream_key(user_id, task_id), payload)
+    await store.append_event(workspace_id, task_id, payload)
+    await stream.emit(_stream_key(workspace_id, task_id), payload)
 
 
 async def _mark_task_failed(
     *,
     store: TaskStore | LocalTaskStore,
     stream: DeliberationStream,
-    user_id: str,
+    workspace_id: str,
     task_id: str,
     task: TaskStatusResponse,
     message: str,
@@ -276,18 +279,18 @@ async def _mark_task_failed(
     task.status = "failed"
     task.events = [
         TaskEvent.model_validate(event)
-        for event in await store.get_events(user_id, task_id)
+        for event in await store.get_events(workspace_id, task_id)
     ]
-    await store.save_task(user_id, task_id, task.model_dump(mode="json"))
+    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
     await persist_and_emit(
         store=store,
         stream=stream,
-        user_id=user_id,
+        workspace_id=workspace_id,
         task_id=task_id,
         event_type="error",
         event_data={"message": message},
     )
-    await stream.close(_stream_key(user_id, task_id))
+    await stream.close(_stream_key(workspace_id, task_id))
 
 
 @router.post("/", response_model=TaskCreateResponse)
@@ -297,12 +300,11 @@ async def create_task(
 ) -> TaskCreateResponse:
     """Create a task, run selector, and initialize its on-chain metadata."""
 
+    require_scope(user, "tasks:write")
     store = get_task_store()
     task_id = _build_task_id(request.task)
     task_hash = _hash_text(request.task)
     payment_amount_lamports = int(request.stakes * LAMPORTS_PER_SOL)
-
-    await store.upsert_user(user.id, user.email, user.display_name)
 
     requested_override = _request_mechanism_override(request)
     forced_override = _forced_mechanism()
@@ -360,7 +362,8 @@ async def create_task(
     task_status = TaskStatusResponse(
         task_id=task_id,
         task_text=request.task,
-        created_by=user.id,
+        workspace_id=user.workspace_id,
+        created_by=user.user_id or f"api_key:{user.api_key_id}",
         mechanism=selection.mechanism.value,
         mechanism_override=effective_override.value if effective_override is not None else None,
         status="pending",
@@ -373,12 +376,12 @@ async def create_task(
         solana_tx_hash=init_tx_hash,
         explorer_url=init_explorer_url,
     )
-    await store.save_task(user.id, task_id, task_status.model_dump(mode="json"))
+    await store.save_task(user.workspace_id, task_id, task_status.model_dump(mode="json"))
 
     await persist_and_emit(
         store=store,
         stream=get_stream_manager(),
-        user_id=user.id,
+        workspace_id=user.workspace_id,
         task_id=task_id,
         event_type="mechanism_selected",
         event_data={
@@ -410,9 +413,10 @@ async def run_task(
 ) -> DeliberationResultResponse:
     """Execute the stored mechanism and persist the resulting receipt."""
 
+    require_scope(user, "tasks:write")
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await _load_task_for_user(store, user.id, task_id)
+    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
     if task.status in {"completed", "paid"} and task.result is not None:
@@ -422,19 +426,19 @@ async def run_task(
     if task.status != "pending":
         raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
 
-    run_key = _task_run_key(user.id, task_id)
+    run_key = _task_run_key(user.workspace_id, task_id)
     if run_key in _running_task_keys:
         raise HTTPException(status_code=409, detail="Task is already in progress")
     _running_task_keys.add(run_key)
 
     task.status = "in_progress"
-    await store.save_task(user.id, task_id, task.model_dump(mode="json"))
+    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
 
     async def runtime_event_sink(event_type: str, data: dict[str, Any]) -> None:
         await persist_and_emit(
             store=store,
             stream=stream,
-            user_id=user.id,
+            workspace_id=user.workspace_id,
             task_id=task_id,
             event_type=event_type,
             event_data=data,
@@ -475,7 +479,7 @@ async def run_task(
             await _mark_task_failed(
                 store=store,
                 stream=stream,
-                user_id=user.id,
+                workspace_id=user.workspace_id,
                 task_id=task_id,
                 task=task,
                 message=str(exc),
@@ -505,7 +509,7 @@ async def run_task(
                     await _mark_task_failed(
                         store=store,
                         stream=stream,
-                        user_id=user.id,
+                        workspace_id=user.workspace_id,
                         task_id=task_id,
                         task=task,
                         message="Failed to submit receipt on Solana",
@@ -525,7 +529,7 @@ async def run_task(
         if result.mechanism_switches > 0:
             refreshed_events = [
                 TaskEvent.model_validate(event)
-                for event in await store.get_events(user.id, task_id)
+                for event in await store.get_events(user.workspace_id, task_id)
             ]
             switch_events = [
                 event for event in refreshed_events if event.event == "mechanism_switch"
@@ -553,7 +557,7 @@ async def run_task(
                             await _mark_task_failed(
                                 store=store,
                                 stream=stream,
-                                user_id=user.id,
+                                workspace_id=user.workspace_id,
                                 task_id=task_id,
                                 task=task,
                                 message="Failed to record mechanism switch on Solana",
@@ -583,14 +587,14 @@ async def run_task(
     task.result = result_response
     task.events = [
         TaskEvent.model_validate(event)
-        for event in await store.get_events(user.id, task_id)
+        for event in await store.get_events(user.workspace_id, task_id)
     ]
 
-    await store.save_task(user.id, task_id, task.model_dump(mode="json"))
+    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
     await persist_and_emit(
         store=store,
         stream=stream,
-        user_id=user.id,
+        workspace_id=user.workspace_id,
         task_id=task_id,
         event_type="quorum_reached",
         event_data={
@@ -605,7 +609,7 @@ async def run_task(
         await persist_and_emit(
             store=store,
             stream=stream,
-            user_id=user.id,
+            workspace_id=user.workspace_id,
             task_id=task_id,
             event_type="receipt_committed",
             event_data={
@@ -619,12 +623,12 @@ async def run_task(
     await persist_and_emit(
         store=store,
         stream=stream,
-        user_id=user.id,
+        workspace_id=user.workspace_id,
         task_id=task_id,
         event_type="complete",
         event_data={"task_id": task_id, "status": task.status},
     )
-    await stream.close(_stream_key(user.id, task_id))
+    await stream.close(_stream_key(user.workspace_id, task_id))
     _running_task_keys.discard(run_key)
     return result_response
 
@@ -635,9 +639,22 @@ async def list_tasks(
 ) -> list[TaskStatusResponse]:
     """List recent tasks for the current user."""
 
+    require_scope(user, "tasks:read")
     store = get_task_store()
-    rows = await store.list_user_tasks(user.id)
-    return [_to_status_response(row, detailed=False) for row in rows]
+    rows = await store.list_user_tasks(user.workspace_id)
+    visible_rows: list[TaskStatusResponse] = []
+    for row in rows:
+        try:
+            _assert_task_owner(row, user.workspace_id)
+        except HTTPException:
+            logger.warning(
+                "task_list_filtered_foreign_owner",
+                workspace_id=user.workspace_id,
+                task_id=row.get("task_id"),
+            )
+            continue
+        visible_rows.append(_to_status_response(row, detailed=False))
+    return visible_rows
 
 
 @router.get("/{task_id}", response_model=TaskStatusResponse)
@@ -648,8 +665,9 @@ async def get_task_status(
 ) -> TaskStatusResponse:
     """Fetch one task by id."""
 
+    require_scope(user, "tasks:read")
     store = get_task_store()
-    raw_task = await _load_task_for_user(store, user.id, task_id)
+    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
     return _to_status_response(raw_task, detailed=detailed)
 
 
@@ -660,9 +678,10 @@ async def create_stream_ticket(
 ) -> dict[str, str]:
     """Issue a short-lived ticket for browser EventSource authentication."""
 
+    require_scope(user, "tasks:read")
     store = get_task_store()
-    await _load_task_for_user(store, user.id, task_id)
-    return _issue_stream_ticket(user.id, task_id)
+    await _load_task_for_user(store, user.workspace_id, task_id)
+    return _issue_stream_ticket(user.workspace_id, task_id)
 
 
 @router.get("/{task_id}/stream")
@@ -673,13 +692,13 @@ async def stream_task(
     """Replay persisted events, then continue with live SSE updates."""
 
     stream_ticket = _consume_stream_ticket(ticket, task_id=task_id)
-    user_id = stream_ticket.user_id
+    workspace_id = stream_ticket.workspace_id
     store = get_task_store()
     stream = get_stream_manager()
-    await _load_task_for_user(store, user_id, task_id)
+    await _load_task_for_user(store, workspace_id, task_id)
 
     async def event_generator() -> Any:
-        events = await store.get_events(user_id, task_id)
+        events = await store.get_events(workspace_id, task_id)
         for event in events:
             yield {
                 "event": event.get("event", "update"),
@@ -690,7 +709,7 @@ async def stream_task(
         if any(event.get("event") == "complete" for event in events):
             return
 
-        stream_id = _stream_key(user_id, task_id)
+        stream_id = _stream_key(workspace_id, task_id)
         queue = stream.subscribe(stream_id)
         try:
             while True:
@@ -711,9 +730,10 @@ async def release_payment(
 ) -> dict[str, str | bool]:
     """Release escrow payment for a completed task."""
 
+    require_scope(user, "tasks:write")
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await _load_task_for_user(store, user.id, task_id)
+    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
     if task.status not in {"completed", "paid"}:
@@ -739,11 +759,11 @@ async def release_payment(
     task.solana_tx_hash = str(payment_tx.get("tx_hash", "")) or task.solana_tx_hash
     task.explorer_url = str(payment_tx.get("explorer_url", "")) or task.explorer_url
 
-    await store.save_task(user.id, task_id, task.model_dump(mode="json"))
+    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
     await persist_and_emit(
         store=store,
         stream=stream,
-        user_id=user.id,
+        workspace_id=user.workspace_id,
         task_id=task_id,
         event_type="payment_released",
         event_data={

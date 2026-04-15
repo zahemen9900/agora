@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import benchmarks, health, tasks, webhooks
+from api.routes import api_keys, auth_session, benchmarks, health, tasks, webhooks
 
 _CORS_ALLOWED_ORIGINS = [
     "https://agora-bay-seven.vercel.app",
@@ -32,6 +32,8 @@ app.add_middleware(
 )
 
 app.include_router(health.router, tags=["health"])
+app.include_router(auth_session.router, tags=["auth"])
+app.include_router(api_keys.router)
 app.include_router(benchmarks.router, tags=["benchmarks"])
 app.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
 app.include_router(webhooks.router, tags=["webhooks"])

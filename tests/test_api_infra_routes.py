@@ -7,7 +7,7 @@ import os
 import subprocess
 import sys
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -19,8 +19,11 @@ from pydantic import ValidationError
 from agora.types import DeliberationResult, MechanismType
 from api import auth
 from api.auth import AuthenticatedUser
+from api.auth_keys import DEFAULT_API_KEY_SCOPES, build_api_key_token, hash_api_key_secret
 from api.main import app
-from api.models import TaskCreateRequest
+from api.models import ApiKeyCreateRequest, TaskCreateRequest
+from api.routes import api_keys as api_key_routes
+from api.routes import auth_session
 from api.routes import tasks as task_routes
 from api.routes import webhooks as webhook_routes
 from api.store_local import LocalTaskStore
@@ -29,7 +32,23 @@ from tests.helpers import make_selection
 
 
 def _override_user() -> AuthenticatedUser:
-    return AuthenticatedUser(id="user-1", email="user1@example.com", display_name="User One")
+    return AuthenticatedUser(
+        auth_method="jwt",
+        workspace_id="user-1",
+        user_id="user-1",
+        email="user1@example.com",
+        display_name="User One",
+        scopes=list(DEFAULT_API_KEY_SCOPES),
+    )
+
+
+@pytest.fixture(autouse=True)
+def isolated_auth_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(auth.settings, "api_key_pepper", "test-pepper")
+    monkeypatch.setattr(auth, "_store", LocalTaskStore(data_dir=str(tmp_path / "auth-store")))
 
 
 class _FakeSelectionOnlyOrchestrator:
@@ -78,6 +97,7 @@ async def test_jwt_auth_extracts_claims(monkeypatch: pytest.MonkeyPatch) -> None
     user = await auth.get_current_user(creds)
 
     assert user.id == "user-123"
+    assert user.workspace_id == "user-123"
     assert user.email == "josh@example.com"
     assert user.display_name == "Josh"
 
@@ -93,6 +113,7 @@ async def test_auth_allows_demo_fallback_when_auth_not_required(
     user = await auth.get_current_user(None)
 
     assert user.id == "demo-user"
+    assert user.workspace_id == "demo-user"
     assert user.email == "demo@example.com"
 
 
@@ -102,6 +123,21 @@ async def test_auth_requires_token_when_auth_required(
 ) -> None:
     monkeypatch.setattr(auth.settings, "auth_required", True)
     monkeypatch.setattr(auth.settings, "demo_mode", False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth.get_current_user(None)
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Missing bearer token"
+
+
+@pytest.mark.asyncio
+async def test_auth_disables_demo_fallback_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_required", False)
+    monkeypatch.setattr(auth.settings, "demo_mode", True)
+    monkeypatch.setattr(auth.settings, "environment", "production")
 
     with pytest.raises(HTTPException) as exc_info:
         await auth.get_current_user(None)
@@ -219,6 +255,21 @@ def test_task_routes_import_without_gcs_credentials() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tasks_route_rejects_query_token_auth(tmp_path: Path) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "query-token-data"))
+    transport = httpx.ASGITransport(app=app)
+
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get("/tasks/?token=fake-query-token")
+    finally:
+        task_routes._store = None
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing bearer token"
+
+
+@pytest.mark.asyncio
 async def test_create_list_get_task_with_local_store(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -247,6 +298,41 @@ async def test_create_list_get_task_with_local_store(
         assert fetched.status == "pending"
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_filters_records_with_foreign_created_by(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "list-filter-data"))
+    user = _override_user()
+    task_routes._store = store
+
+    await store.upsert_user(user.id, user.email, user.display_name)
+    await store.save_task(
+        user.workspace_id,
+        "task-foreign",
+        {
+            "task_id": "task-foreign",
+            "task_text": "foreign record",
+            "created_by": "someone-else",
+            "mechanism": "vote",
+            "status": "pending",
+            "selector_reasoning": "Use vote.",
+            "selector_reasoning_hash": "selector-hash",
+            "selector_confidence": 0.9,
+            "agent_count": 3,
+            "payment_amount": 0.0,
+            "payment_status": "none",
+            "created_at": datetime.now(UTC).isoformat(),
+            "events": [],
+        },
+    )
+
+    try:
+        listing = await task_routes.list_tasks(user)
+    finally:
+        task_routes._store = None
+
+    assert listing == []
 
 
 def test_task_create_request_rejects_oversized_task() -> None:
@@ -445,22 +531,23 @@ async def test_persist_and_emit_preserves_full_timestamped_envelope(
         "events": [],
     }
     await store.upsert_user(user.id, user.email, user.display_name)
-    await store.save_task(user.id, task_id, task_payload)
+    task_payload["workspace_id"] = user.workspace_id
+    await store.save_task(user.workspace_id, task_id, task_payload)
 
-    stream_id = task_routes._stream_key(user.id, task_id)
+    stream_id = task_routes._stream_key(user.workspace_id, task_id)
     queue = stream.subscribe(stream_id)
     try:
         await task_routes.persist_and_emit(
             store=store,
             stream=stream,
-            user_id=user.id,
+            workspace_id=user.workspace_id,
             task_id=task_id,
             event_type="agent_output",
             event_data={"agent_id": "agent-1", "content": "BTC"},
         )
 
         live_payload = await queue.get()
-        stored_events = await store.get_events(user.id, task_id)
+        stored_events = await store.get_events(user.workspace_id, task_id)
     finally:
         stream.unsubscribe(stream_id, queue)
 
@@ -482,6 +569,7 @@ async def test_stream_task_replays_timestamped_event_envelopes(
     task_payload = {
         "task_id": task_id,
         "task_text": "Replay this task",
+        "workspace_id": user.workspace_id,
         "mechanism": "vote",
         "status": "completed",
         "selector_reasoning": "Use vote.",
@@ -500,7 +588,7 @@ async def test_stream_task_replays_timestamped_event_envelopes(
 
     task_routes._store = store
     await store.upsert_user(user.id, user.email, user.display_name)
-    await store.save_task(user.id, task_id, task_payload)
+    await store.save_task(user.workspace_id, task_id, task_payload)
     first_event = {
         "event": "agent_output",
         "data": {"agent_id": "agent-1", "content": "BTC"},
@@ -511,12 +599,12 @@ async def test_stream_task_replays_timestamped_event_envelopes(
         "data": {"task_id": task_id, "status": "completed"},
         "timestamp": "2026-04-14T13:00:01+00:00",
     }
-    await store.append_event(user.id, task_id, first_event)
-    await store.append_event(user.id, task_id, second_event)
+    await store.append_event(user.workspace_id, task_id, first_event)
+    await store.append_event(user.workspace_id, task_id, second_event)
     monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
 
     try:
-        ticket = task_routes._issue_stream_ticket(user.id, task_id)["ticket"]
+        ticket = task_routes._issue_stream_ticket(user.workspace_id, task_id)["ticket"]
         response = await task_routes.stream_task(task_id, ticket=ticket)
         replayed_events = [item async for item in response.content]
     finally:
@@ -538,6 +626,7 @@ async def test_stream_ticket_is_one_use_and_namespaced(
     task_payload = {
         "task_id": task_id,
         "task_text": "Ticket this task",
+        "workspace_id": user.workspace_id,
         "created_by": user.id,
         "mechanism": "vote",
         "status": "completed",
@@ -563,7 +652,7 @@ async def test_stream_ticket_is_one_use_and_namespaced(
 
     task_routes._store = store
     await store.upsert_user(user.id, user.email, user.display_name)
-    await store.save_task(user.id, task_id, task_payload)
+    await store.save_task(user.workspace_id, task_id, task_payload)
     ticket = await task_routes.create_stream_ticket(task_id, user)
 
     try:
@@ -581,13 +670,71 @@ async def test_stream_ticket_is_one_use_and_namespaced(
 
 
 @pytest.mark.asyncio
+async def test_stream_ticket_expiry_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "stream-ticket-expiry"))
+    user = _override_user()
+    task_id = "task-stream-expiry"
+    task_payload = {
+        "task_id": task_id,
+        "task_text": "Expiring ticket task",
+        "workspace_id": user.workspace_id,
+        "created_by": user.id,
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [],
+    }
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content):
+            self.content = content
+
+    task_routes._store = store
+    await store.upsert_user(user.id, user.email, user.display_name)
+    await store.save_task(user.workspace_id, task_id, task_payload)
+    issued = await task_routes.create_stream_ticket(task_id, user)
+    task_routes._stream_tickets[issued["ticket"]] = task_routes._StreamTicket(
+        workspace_id=user.workspace_id,
+        task_id=task_id,
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+
+    try:
+        monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.stream_task(task_id, ticket=issued["ticket"])
+    finally:
+        task_routes._store = None
+        task_routes._stream_tickets.clear()
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_task_routes_hide_cross_user_and_malformed_ids(tmp_path: Path) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "tenant-data"))
     owner = _override_user()
-    other = AuthenticatedUser(id="user-2", email="user2@example.com", display_name="User Two")
+    other = AuthenticatedUser(
+        auth_method="jwt",
+        workspace_id="user-2",
+        user_id="user-2",
+        email="user2@example.com",
+        display_name="User Two",
+        scopes=list(DEFAULT_API_KEY_SCOPES),
+    )
     task_payload = {
         "task_id": "task-owned",
         "task_text": "Owned task",
+        "workspace_id": owner.workspace_id,
         "created_by": owner.id,
         "mechanism": "vote",
         "status": "pending",
@@ -603,7 +750,7 @@ async def test_task_routes_hide_cross_user_and_malformed_ids(tmp_path: Path) -> 
 
     task_routes._store = store
     await store.upsert_user(owner.id, owner.email, owner.display_name)
-    await store.save_task(owner.id, "task-owned", task_payload)
+    await store.save_task(owner.workspace_id, "task-owned", task_payload)
     try:
         with pytest.raises(HTTPException) as cross_user:
             await task_routes.get_task_status("task-owned", other)
@@ -646,7 +793,7 @@ async def test_solana_webhook_emits_signed_namespaced_event(
     secret = "webhook-secret"
     monkeypatch.setattr(webhook_routes.settings, "webhook_secret", secret)
     body = json.dumps(
-        [{"task_id": "task-webhook", "user_id": "user-1", "signature": "tx-signature"}]
+        [{"task_id": "task-webhook", "workspace_id": "user-1", "signature": "tx-signature"}]
     ).encode("utf-8")
     signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
     manager = get_stream_manager()
@@ -918,3 +1065,141 @@ def test_task_id_to_bytes_is_32_bytes() -> None:
 
     assert len(task_id) == 64
     assert len(task_bytes) == 32
+
+
+@pytest.mark.asyncio
+async def test_api_key_auth_resolves_workspace_principal(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "api-key-auth"))
+    auth._store = store
+    await store.save_api_key(
+        "user-1",
+        "key-1",
+        {
+            "key_id": "key-1",
+            "workspace_id": "user-1",
+            "name": "ci",
+            "public_id": "public1",
+            "secret_hash": hash_api_key_secret("super-secret"),
+            "scopes": list(DEFAULT_API_KEY_SCOPES),
+            "created_by_user_id": "user-1",
+            "created_at": datetime.now(UTC).isoformat(),
+            "last_used_at": None,
+            "expires_at": None,
+            "revoked_at": None,
+        },
+    )
+
+    creds = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=build_api_key_token("public1", "super-secret"),
+    )
+    user = await auth.get_current_user(creds)
+
+    assert user.auth_method == "api_key"
+    assert user.workspace_id == "user-1"
+    assert user.user_id is None
+    assert user.api_key_id == "key-1"
+
+
+@pytest.mark.asyncio
+async def test_api_key_auth_rejects_revoked_expired_and_malformed_tokens(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "auth-api-key-invalid"))
+    auth._store = store
+    now = datetime.now(UTC)
+
+    await store.save_api_key(
+        "user-1",
+        "key-revoked",
+        {
+            "key_id": "key-revoked",
+            "workspace_id": "user-1",
+            "name": "revoked",
+            "public_id": "revoked1",
+            "secret_hash": hash_api_key_secret("revoked-secret"),
+            "scopes": list(DEFAULT_API_KEY_SCOPES),
+            "created_by_user_id": "user-1",
+            "created_at": now.isoformat(),
+            "last_used_at": None,
+            "expires_at": None,
+            "revoked_at": now.isoformat(),
+        },
+    )
+    await store.save_api_key(
+        "user-1",
+        "key-expired",
+        {
+            "key_id": "key-expired",
+            "workspace_id": "user-1",
+            "name": "expired",
+            "public_id": "expired1",
+            "secret_hash": hash_api_key_secret("expired-secret"),
+            "scopes": list(DEFAULT_API_KEY_SCOPES),
+            "created_by_user_id": "user-1",
+            "created_at": now.isoformat(),
+            "last_used_at": None,
+            "expires_at": (now - timedelta(days=1)).isoformat(),
+            "revoked_at": None,
+        },
+    )
+
+    revoked_creds = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=build_api_key_token("revoked1", "revoked-secret"),
+    )
+    with pytest.raises(HTTPException) as revoked_exc:
+        await auth.get_current_user(revoked_creds)
+    assert revoked_exc.value.status_code == 401
+
+    expired_creds = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=build_api_key_token("expired1", "expired-secret"),
+    )
+    with pytest.raises(HTTPException) as expired_exc:
+        await auth.get_current_user(expired_creds)
+    assert expired_exc.value.status_code == 401
+
+    malformed_creds = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials="agora_test_missingdot",
+    )
+    with pytest.raises(HTTPException) as malformed_exc:
+        await auth.get_current_user(malformed_creds)
+    assert malformed_exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_auth_me_returns_workspace_bootstrap_payload(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "auth-me"))
+    auth._store = store
+    user = _override_user()
+    await store.ensure_personal_workspace(user.id, user.email, user.display_name)
+
+    payload = await auth_session.auth_me(user)
+
+    assert payload.principal.workspace_id == user.workspace_id
+    assert payload.workspace.id == user.workspace_id
+    assert payload.feature_flags.api_keys_visible is True
+    assert payload.feature_flags.benchmarks_visible is False
+
+
+@pytest.mark.asyncio
+async def test_api_key_routes_create_list_and_revoke(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "api-keys-routes"))
+    auth._store = store
+    user = _override_user()
+    await store.ensure_personal_workspace(user.id, user.email, user.display_name)
+
+    created = await api_key_routes.create_api_key(
+        ApiKeyCreateRequest(name="ci"),
+        user,
+    )
+    assert created.api_key.startswith("agora_test_")
+    assert created.metadata.name == "ci"
+
+    listed = await api_key_routes.list_api_keys(user)
+    assert len(listed) == 1
+    assert listed[0].public_id == created.metadata.public_id
+    assert not hasattr(listed[0], "secret_hash")
+
+    revoked = await api_key_routes.revoke_api_key(created.metadata.key_id, user)
+    assert revoked.revoked_at is not None

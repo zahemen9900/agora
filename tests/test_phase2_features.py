@@ -302,6 +302,18 @@ async def test_sdk_verify_receipt_lenient_allows_missing_task_mapping() -> None:
     assert verification["on_chain_match"] is None
 
 
+def test_sdk_hosted_mode_keeps_bearer_auth_token_interface() -> None:
+    arbitrator = AgoraArbitrator(
+        api_url="https://example.invalid",
+        auth_token="agora_test_public.secret",
+        strict_verification=False,
+    )
+
+    assert arbitrator._headers() == {
+        "Authorization": "Bearer agora_test_public.secret",
+    }
+
+
 class _FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload

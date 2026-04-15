@@ -37,16 +37,30 @@ async def solana_webhook(
         if not isinstance(tx, dict):
             continue
         task_id = tx.get("task_id")
+        workspace_id = tx.get("workspace_id")
         user_id = tx.get("user_id")
         if not isinstance(task_id, str):
             continue
         try:
             validate_storage_id(task_id, field_name="task_id")
+            if isinstance(workspace_id, str) and workspace_id:
+                validate_storage_id(workspace_id, field_name="workspace_id")
             if isinstance(user_id, str) and user_id:
                 validate_storage_id(user_id, field_name="user_id")
         except ValueError:
             continue
-        stream_id = f"{user_id}:{task_id}" if isinstance(user_id, str) and user_id else task_id
+        resolved_workspace_id = (
+            workspace_id
+            if isinstance(workspace_id, str) and workspace_id
+            else user_id
+            if isinstance(user_id, str) and user_id
+            else None
+        )
+        stream_id = (
+            f"{resolved_workspace_id}:{task_id}"
+            if isinstance(resolved_workspace_id, str) and resolved_workspace_id
+            else task_id
+        )
         await manager.emit(
             stream_id,
             {

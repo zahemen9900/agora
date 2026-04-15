@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import base64
-import json
 import os
 from datetime import UTC, datetime
 
@@ -11,6 +9,7 @@ import pytest
 from agora.runtime.hasher import TranscriptHasher
 from agora.types import DeliberationResult, MechanismType
 from api.auth import AuthenticatedUser
+from api.auth_keys import DEFAULT_API_KEY_SCOPES
 from api.models import TaskCreateRequest
 from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
@@ -20,22 +19,14 @@ _DEFAULT_HOSTED_API_URL = "https://agora-api-rztfxer7ra-uc.a.run.app"
 
 
 def _override_user() -> AuthenticatedUser:
-    return AuthenticatedUser(id="user-1", email="user1@example.com", display_name="User One")
-
-
-def _fake_bearer_token() -> str:
-    def _b64(value: dict[str, object]) -> str:
-        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
-        return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
-
-    header = {"alg": "RS256", "typ": "JWT"}
-    payload = {
-        "sub": "phase2-demo-user",
-        "email": "phase2@example.com",
-        "name": "Phase Two",
-    }
-    signature = base64.urlsafe_b64encode(b"signature").decode("utf-8").rstrip("=")
-    return f"{_b64(header)}.{_b64(payload)}.{signature}"
+    return AuthenticatedUser(
+        auth_method="jwt",
+        workspace_id="user-1",
+        user_id="user-1",
+        email="user1@example.com",
+        display_name="User One",
+        scopes=list(DEFAULT_API_KEY_SCOPES),
+    )
 
 
 @pytest.mark.asyncio
@@ -179,7 +170,9 @@ async def test_local_api_e2e_flow(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
 )
 def test_hosted_cloud_run_devnet_e2e() -> None:
     api_url = os.getenv("AGORA_API_URL", _DEFAULT_HOSTED_API_URL).rstrip("/")
-    token = os.getenv("AGORA_TEST_BEARER_TOKEN", _fake_bearer_token())
+    token = os.getenv("AGORA_TEST_API_KEY")
+    if not token:
+        pytest.skip("Set AGORA_TEST_API_KEY to run hosted E2E against the deployed API.")
     unique_task = f"What is 15 * 23? run={datetime.now(UTC).isoformat()}"
     headers = {"Authorization": f"Bearer {token}"}
     hasher = TranscriptHasher()

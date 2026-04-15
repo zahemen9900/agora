@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useAuth } from "../lib/auth";
+import { consumeReturnTo, useAuth } from "../lib/auth";
 import { useNavigate } from "react-router-dom";
 
 /**
@@ -8,15 +8,15 @@ import { useNavigate } from "react-router-dom";
  * This component just shows a loading state during the process.
  */
 export function Callback() {
-  const { isLoading, user } = useAuth();
+  const { isLoading, authStatus } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
     // Once auth is resolved, redirect to home
-    if (!isLoading && user) {
-      navigate("/", { replace: true });
+    if (!isLoading && authStatus === "authenticated") {
+      navigate(consumeReturnTo(), { replace: true });
     }
-  }, [isLoading, user, navigate]);
+  }, [authStatus, isLoading, navigate]);
 
   return (
     <div

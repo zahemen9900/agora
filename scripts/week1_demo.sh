@@ -60,6 +60,7 @@ Options:
   --help                     Show this help
 
 Environment controls still supported:
+  AGORA_TEST_API_KEY=agora_test_<public_id>.<secret>
   RUN_GEMINI_SMOKE=always|auto|never
   RUN_CLAUDE_SMOKE=always|auto|never
   RUN_KIMI_SMOKE=always|auto|never
@@ -1053,7 +1054,6 @@ run_hosted_api_e2e() {
   export AGORA_DEMO_API_URL="$API_URL"
 
   if ! "$PYTHON_BIN" - <<'PY'
-import base64
 import json
 import os
 import sys
@@ -1062,26 +1062,6 @@ import urllib.error
 import urllib.request
 
 BASE_URL = os.environ["AGORA_DEMO_API_URL"].rstrip("/")
-
-
-def b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def make_token() -> str:
-    header = {"alg": "RS256", "typ": "JWT"}
-    payload = {
-        "sub": "week1-demo-user",
-        "email": "week1-demo@example.com",
-        "name": "Week1 Demo",
-    }
-    return ".".join(
-        [
-            b64url(json.dumps(header, separators=(",", ":")).encode("utf-8")),
-            b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
-            b64url(b"sig"),
-        ]
-    )
 
 
 def request_json(
@@ -1134,7 +1114,9 @@ def request_json(
 
 
 def main() -> None:
-    token = make_token()
+    token = os.environ.get("AGORA_TEST_API_KEY")
+    if not token:
+        raise RuntimeError("Set AGORA_TEST_API_KEY to run hosted API smoke against an authenticated deployment.")
     query = os.environ["AGORA_DEMO_QUERY"]
     agent_count = int(os.environ["DEMO_AGENT_COUNT"])
     strict_all_models = os.environ.get("RUN_HOSTED_ALL_MODELS_E2E") == "always"

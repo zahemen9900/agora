@@ -8,9 +8,50 @@ Scope notes:
 - This excludes the already-known frontend build blocker in the current mixed WSL/Windows Node environment.
 - These are issues I intentionally did not auto-fix because they were medium/high risk, architectural, or required a product decision.
 
+## Dispatch Guidance Relative to API Key + Auth E2E Work
+
+Unlike the technical-security backlog, almost everything in this document is independent of WorkOS completion and independent of a first-party API key system. In other words: another agent can start on these immediately.
+
+### Can be fixed immediately with no auth dependency
+
+- `#1` false public mechanism contract for `delphi` and `moa`
+- `#2` multi-worker / crash-unsafe task execution coordination
+- `#3` GCS store swallowing infrastructure errors
+- `#4` non-transactional Solana write flow
+- `#5` duplicated `agora/` and `sdk/agora/` package trees
+- `#6` manually duplicated backend/frontend schemas
+- `#7` placeholder public surfaces
+- `#8` selector import cycle
+- `#9` environment-fragile validation/tooling
+
+None of these require WorkOS to be finished. None require API keys to exist first.
+
+### Strongest candidates to do before machine-auth rollout
+
+- `#1` false public mechanism contract
+- `#2` multi-worker / crash-unsafe execution coordination
+- `#4` Solana write-flow reconciliation and idempotency
+- `#5` duplicated package trees
+
+Why these four first:
+
+- `#1` keeps the public API/SDK contract honest before external users depend on it.
+- `#2` is the biggest correctness problem in hosted execution.
+- `#4` determines whether hosted side effects are recoverable once more real users and credentials exist.
+- `#5` reduces the chance that auth/API-key work drifts between mirrored source trees.
+
+### Does not need to block auth work
+
+- `#3`, `#6`, `#7`, `#8`, and `#9` can run in parallel and should not hold up the API key design.
+
 ## Priority 0
 
 ### 1. Public mechanism contract is false for `delphi` and `moa`
+
+**Dispatch status**
+
+- Start now
+- Strongly recommended before external/authenticated hosted usage expands
 
 The public API, selector, and model schema all advertise `delphi` and `moa` as supported mechanisms, but the runtime does not implement them. Worse, the orchestrator silently falls back to debate instead of rejecting the request or surfacing a capability error.
 
@@ -46,6 +87,11 @@ Why I did not auto-fix it:
 - It requires a product decision: hide roadmap mechanisms vs keep them visible but unsupported.
 
 ### 2. Task execution coordination is not safe in multi-worker or crash scenarios
+
+**Dispatch status**
+
+- Start now
+- Treat as a blocker before full machine-auth rollout
 
 Task exclusivity, stream tickets, and live event fan-out are enforced with in-memory process-local state. That is fine for a single dev process, but it is not correct for a real deployment.
 
@@ -89,6 +135,11 @@ Why I did not auto-fix it:
 
 ### 3. GCS storage layer swallows infrastructure failures as missing data
 
+**Dispatch status**
+
+- Start now
+- Independent of WorkOS and API key design
+
 `TaskStore` catches broad `Exception` in read paths and converts many failures into `None`, empty lists, or silent skips.
 
 Why this matters:
@@ -117,6 +168,11 @@ Why I did not auto-fix it:
 - That is the correct long-term direction, but it needs an intentional reliability decision.
 
 ### 4. Solana write flow is not transactional and can leave local/chain state out of sync
+
+**Dispatch status**
+
+- Start now
+- Strongly recommended before higher-volume authenticated usage
 
 The task lifecycle performs multiple external side effects across chain writes and local persistence without a transactional model.
 
@@ -155,6 +211,11 @@ Why I did not auto-fix it:
 
 ### 5. The repo still has two mirrored Python package trees
 
+**Dispatch status**
+
+- Start now
+- Strongly recommended before nontrivial auth/API-key changes land in both SDK and backend
+
 `agora/` and `sdk/agora/` are effectively duplicated codebases. This is the biggest maintainability problem left in the repo.
 
 Why this matters:
@@ -190,6 +251,11 @@ Why I did not auto-fix it:
 
 ### 6. Backend and frontend API schemas are still manually duplicated
 
+**Dispatch status**
+
+- Start now
+- Independent of WorkOS and API key design
+
 I consolidated repeated unions inside each side, but the Python and TypeScript contracts are still hand-maintained in parallel.
 
 Why this matters:
@@ -216,6 +282,11 @@ Why I did not auto-fix it:
 
 ### 7. Public placeholder/stub surfaces still exist outside the main runtime path
 
+**Dispatch status**
+
+- Start now
+- Independent of WorkOS and API key design
+
 Some exported modules are still explicit placeholders. They are not all harmful, but they enlarge the apparent supported surface area.
 
 Evidence:
@@ -241,6 +312,11 @@ Why I did not auto-fix it:
 
 ### 8. Selector package layout has a benign but unnecessary import cycle
 
+**Dispatch status**
+
+- Start now if someone is already in the selector package
+- Otherwise keep behind the correctness work above
+
 The selector package re-export pattern creates a package-level cycle between `agora.selector` and `agora.selector.selector`.
 
 Evidence:
@@ -265,6 +341,11 @@ Why I did not auto-fix it:
 ## Priority 3
 
 ### 9. The current validation/tooling setup is still environment-fragile
+
+**Dispatch status**
+
+- Start now if someone can own dev-experience/tooling
+- Do not let this block API key/auth implementation
 
 This is not the same as the already-known frontend build blocker, but it is adjacent: validation depends on a mixed toolchain and some checks need non-default invocation to work reliably.
 
