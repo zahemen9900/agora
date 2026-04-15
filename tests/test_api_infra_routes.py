@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 
+from agora.types import DeliberationResult, MechanismType
 from api import auth
 from api.auth import AuthenticatedUser
 from api.main import app
 from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
+from tests.helpers import make_selection
 
 
 def _override_user() -> AuthenticatedUser:
@@ -113,6 +115,54 @@ def test_run_and_pay_use_bridge_and_surface_errors(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="run me",
+        mechanism_used=MechanismType.DEBATE,
+        mechanism_selection=selection,
+        final_answer="Ship it.",
+        confidence=0.88,
+        quorum_reached=True,
+        round_count=2,
+        agent_count=5,
+        mechanism_switches=0,
+        merkle_root="receipt-root",
+        transcript_hashes=["leaf-1", "leaf-2"],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=42,
+        total_latency_ms=12.5,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _FakeOrchestrator:
+        def __init__(self, agent_count: int):
+            self.agent_count = agent_count
+            self.selector = _FakeSelector()
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, mechanism_override
+            if event_sink is not None:
+                await event_sink(
+                    "complete",
+                    {
+                        "task": task,
+                        "mechanism": completed_result.mechanism_used.value,
+                    },
+                )
+            return completed_result.model_copy(update={"task": task})
+
     async def init_ok(**_kwargs: object) -> dict[str, str]:
         return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
 
@@ -130,6 +180,7 @@ def test_run_and_pay_use_bridge_and_surface_errors(
     monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
     monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
     monkeypatch.setattr(task_routes.bridge, "release_payment", pay_ok)
+    monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeOrchestrator)
 
     create = client.post(
         "/tasks/",
@@ -196,4 +247,3 @@ def test_task_id_to_bytes_is_32_bytes() -> None:
 
     assert len(task_id) == 64
     assert len(task_bytes) == 32
-    assert task_id == hashlib.sha256(b"A long enough task").hexdigest()

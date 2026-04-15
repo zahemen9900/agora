@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routes import health, tasks, webhooks
+from api.routes import benchmarks, health, tasks, webhooks
 
 app = FastAPI(
     title="Agora Protocol API",
@@ -26,5 +26,6 @@ app.add_middleware(
 )
 
 app.include_router(health.router, tags=["health"])
+app.include_router(benchmarks.router, tags=["benchmarks"])
 app.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
 app.include_router(webhooks.router, tags=["webhooks"])

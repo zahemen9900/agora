@@ -1,41 +1,57 @@
-"""In-memory SSE streaming manager for task events."""
+"""Async SSE stream manager for deliberation events."""
 
 from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import AsyncGenerator
 from typing import Any
 
 
-class SSEManager:
-    """Simple in-memory pub/sub manager keyed by task id."""
+class DeliberationStream:
+    """Fan-out event stream keyed by task id."""
 
     def __init__(self) -> None:
-        self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
+        self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any] | None]]] = defaultdict(list)
 
-    async def publish(self, task_id: str, event: dict[str, Any]) -> None:
-        for queue in self._subscribers.get(task_id, []):
-            await queue.put(event)
+    def subscribe(self, task_id: str) -> asyncio.Queue[dict[str, Any] | None]:
+        """Create a live queue subscription for a task."""
 
-    async def stream(self, task_id: str) -> AsyncGenerator[dict[str, Any], None]:
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._subscribers[task_id].append(queue)
+        return queue
 
-        try:
-            while True:
-                item = await queue.get()
-                yield item
-                if item.get("event") == "complete":
-                    return
-        finally:
-            subscribers = self._subscribers.get(task_id, [])
-            if queue in subscribers:
-                subscribers.remove(queue)
+    async def emit(self, task_id: str, event_type: str, data: dict[str, Any]) -> None:
+        """Emit an event to all live subscribers for a task."""
+
+        payload = {"event": event_type, "data": data}
+        for queue in list(self._subscribers.get(task_id, [])):
+            await queue.put(payload)
+
+    async def close(self, task_id: str) -> None:
+        """Close all live streams for a task."""
+
+        subscribers = self._subscribers.pop(task_id, [])
+        for queue in subscribers:
+            await queue.put(None)
+
+    def unsubscribe(
+        self,
+        task_id: str,
+        queue: asyncio.Queue[dict[str, Any] | None],
+    ) -> None:
+        """Remove an individual subscriber queue."""
+
+        subscribers = self._subscribers.get(task_id, [])
+        if queue in subscribers:
+            subscribers.remove(queue)
+        if not subscribers and task_id in self._subscribers:
+            del self._subscribers[task_id]
 
 
-_manager = SSEManager()
+_stream = DeliberationStream()
 
 
-def get_stream_manager() -> SSEManager:
-    return _manager
+def get_stream_manager() -> DeliberationStream:
+    """Return the singleton stream manager."""
+
+    return _stream

@@ -51,7 +51,6 @@ class TranscriptHasher:
             "content": output.content,
             "round_number": output.round_number,
             "role": output.role,
-            "timestamp": output.timestamp.astimezone(UTC).isoformat(),
         }
         serialized = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":"))
         return TranscriptHasher.hash_content(serialized)
