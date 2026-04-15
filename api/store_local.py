@@ -2,21 +2,88 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from api.security import safe_child_path, validate_storage_id
+from api.store_errors import TaskStoreNotFound, TaskStorePayloadError, TaskStoreUnavailable
+
 
 class LocalTaskStore:
-    def __init__(self, data_dir: str = "./data") -> None:
-        self.root = Path(data_dir)
+    def __init__(self, data_dir: str = "api/data") -> None:
+        self.root = Path(data_dir).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
-    async def save_task(self, user_id: str, task_id: str, data: dict[str, Any]) -> None:
-        path = self.root / "users" / user_id / "tasks" / f"{task_id}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(data, default=str), encoding="utf-8")
+    def _user_dir(self, user_id: str) -> Path:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        return safe_child_path(self.root, "users", safe_user_id)
+
+    def _workspace_dir(self, workspace_id: str) -> Path:
+        safe_workspace_id = validate_storage_id(workspace_id, field_name="workspace_id")
+        return safe_child_path(self.root, "workspaces", safe_workspace_id)
+
+    def _task_path(self, workspace_id: str, task_id: str) -> Path:
+        safe_task_id = validate_storage_id(task_id, field_name="task_id")
+        # Keep the users/ task layout for v1 compatibility while
+        # tenancy semantics shift to workspaces.
+        return self._user_dir(workspace_id) / "tasks" / f"{safe_task_id}.json"
+
+    def _workspace_profile_path(self, workspace_id: str) -> Path:
+        return self._workspace_dir(workspace_id) / "profile.json"
+
+    def _api_key_path(self, workspace_id: str, key_id: str) -> Path:
+        safe_key_id = validate_storage_id(key_id, field_name="key_id")
+        return self._workspace_dir(workspace_id) / "api_keys" / f"{safe_key_id}.json"
+
+    def _api_key_index_path(self, public_id: str) -> Path:
+        safe_public_id = validate_storage_id(public_id, field_name="public_id")
+        return safe_child_path(self.root, "api_keys", "by_public_id", f"{safe_public_id}.json")
+
+    @staticmethod
+    def _personal_workspace_id(user_id: str) -> str:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        return safe_user_id
+
+    @staticmethod
+    def _read_json(
+        path: Path,
+        *,
+        allow_missing: bool,
+        operation: str,
+    ) -> dict[str, Any] | None:
+        try:
+            payload = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            if allow_missing:
+                return None
+            raise TaskStoreNotFound(f"Missing file while {operation}: path={path}")
+        except OSError as exc:
+            raise TaskStoreUnavailable(f"Failed to read file while {operation}: path={path}") from exc
+
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise TaskStorePayloadError(f"Invalid JSON while {operation}: path={path}") from exc
+
+        if not isinstance(parsed, dict):
+            raise TaskStorePayloadError(f"Expected JSON object while {operation}: path={path}")
+        return parsed
+
+    @staticmethod
+    def _write_json(path: Path, data: dict[str, Any], *, operation: str) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, default=str), encoding="utf-8")
+        except OSError as exc:
+            raise TaskStoreUnavailable(f"Failed to write file while {operation}: path={path}") from exc
+
+    async def save_task(self, workspace_id: str, task_id: str, data: dict[str, Any]) -> None:
+        path = self._task_path(workspace_id, task_id)
+        self._write_json(path, data, operation="save_task")
 
     async def upsert_user(
         self,
@@ -24,11 +91,9 @@ class LocalTaskStore:
         email: str,
         name: str | None = None,
     ) -> dict[str, Any]:
-        path = self.root / "users" / user_id / "profile.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
+        path = self._user_dir(user_id) / "profile.json"
+        data = self._read_json(path, allow_missing=True, operation="upsert_user.read_profile")
+        if data is not None:
             data["last_seen_at"] = datetime.now(UTC).isoformat()
             data["email"] = email
             if name:
@@ -42,53 +107,231 @@ class LocalTaskStore:
                 "created_at": now,
                 "last_seen_at": now,
             }
-
-        path.write_text(json.dumps(data, default=str), encoding="utf-8")
+        self._write_json(path, data, operation="upsert_user.write_profile")
         return data
 
-    async def get_task(self, user_id: str, task_id: str) -> dict[str, Any] | None:
-        path = self.root / "users" / user_id / "tasks" / f"{task_id}.json"
-        if not path.exists():
-            return None
-        return json.loads(path.read_text(encoding="utf-8"))
+    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+        return self._read_json(
+            self._user_dir(user_id) / "profile.json",
+            allow_missing=True,
+            operation="get_user",
+        )
 
-    async def list_user_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        task_dir = self.root / "users" / user_id / "tasks"
+    async def ensure_personal_workspace(
+        self,
+        user_id: str,
+        email: str,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        user = await self.upsert_user(user_id, email, name)
+        workspace_id = str(user.get("workspace_id") or self._personal_workspace_id(user_id))
+        now = datetime.now(UTC).isoformat()
+        workspace_path = self._workspace_profile_path(workspace_id)
+        workspace = self._read_json(
+            workspace_path,
+            allow_missing=True,
+            operation="ensure_personal_workspace.read_workspace",
+        )
+        if workspace is None:
+            display_name = (name or email or user_id).strip() or user_id
+            workspace = {
+                "id": workspace_id,
+                "display_name": f"{display_name}'s Workspace",
+                "kind": "personal",
+                "owner_user_id": user_id,
+                "created_at": now,
+            }
+            self._write_json(
+                workspace_path,
+                workspace,
+                operation="ensure_personal_workspace.write_workspace",
+            )
+        if user.get("workspace_id") != workspace_id:
+            user["workspace_id"] = workspace_id
+            self._write_json(
+                self._user_dir(user_id) / "profile.json",
+                user,
+                operation="ensure_personal_workspace.write_user_profile",
+            )
+        return workspace
+
+    async def get_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        return self._read_json(
+            self._workspace_profile_path(workspace_id),
+            allow_missing=True,
+            operation="get_workspace",
+        )
+
+    async def get_task(self, workspace_id: str, task_id: str) -> dict[str, Any] | None:
+        return self._read_json(
+            self._task_path(workspace_id, task_id),
+            allow_missing=True,
+            operation="get_task",
+        )
+
+    async def list_user_tasks(self, workspace_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        task_dir = self._user_dir(workspace_id) / "tasks"
         if not task_dir.exists():
             return []
 
         files = sorted(task_dir.glob("*.json"), key=lambda file: file.stat().st_mtime, reverse=True)
-        return [json.loads(file.read_text(encoding="utf-8")) for file in files[:limit]]
+        tasks: list[dict[str, Any]] = []
+        for file in files[:limit]:
+            task = self._read_json(file, allow_missing=True, operation="list_user_tasks.read_task")
+            if task is None:
+                continue
+            tasks.append(task)
+        return tasks
 
-    async def append_event(self, user_id: str, task_id: str, event: dict[str, Any]) -> None:
-        task = await self.get_task(user_id, task_id)
-        if task is None:
-            return
-        task.setdefault("events", []).append(
-            {
-                **event,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
-        )
-        await self.save_task(user_id, task_id, task)
+    async def append_event(self, workspace_id: str, task_id: str, event: dict[str, Any]) -> None:
+        path = self._task_path(workspace_id, task_id)
+        timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
 
-    async def get_events(self, user_id: str, task_id: str) -> list[dict[str, Any]]:
-        task = await self.get_task(user_id, task_id)
+        try:
+            with path.open("r+", encoding="utf-8") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    raw = handle.read()
+                    try:
+                        task = json.loads(raw)
+                    except json.JSONDecodeError as exc:
+                        raise TaskStorePayloadError(
+                            f"Invalid JSON while append_event: path={path}"
+                        ) from exc
+
+                    if not isinstance(task, dict):
+                        raise TaskStorePayloadError(
+                            f"Expected JSON object while append_event: path={path}"
+                        )
+
+                    task.setdefault("events", []).append(
+                        {
+                            **event,
+                            "timestamp": timestamp,
+                        }
+                    )
+
+                    handle.seek(0)
+                    handle.truncate()
+                    handle.write(json.dumps(task, default=str))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                finally:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except FileNotFoundError as exc:
+            raise TaskStoreNotFound(
+                f"Cannot append event: task not found workspace_id={workspace_id} task_id={task_id}"
+            ) from exc
+        except OSError as exc:
+            raise TaskStoreUnavailable(
+                f"Failed to append event: workspace_id={workspace_id} task_id={task_id}"
+            ) from exc
+
+    async def get_events(self, workspace_id: str, task_id: str) -> list[dict[str, Any]]:
+        task = await self.get_task(workspace_id, task_id)
         if task is None:
             return []
         return task.get("events", [])
 
-    async def get_all_completed_tasks(self, user_id: str) -> list[dict[str, Any]]:
-        tasks = await self.list_user_tasks(user_id, limit=500)
+    async def get_all_completed_tasks(self, workspace_id: str) -> list[dict[str, Any]]:
+        tasks = await self.list_user_tasks(workspace_id, limit=500)
         return [task for task in tasks if task.get("status") == "completed"]
+
+    async def get_completed_tasks_for_benchmarks(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return completed tasks across all users for benchmark aggregation."""
+
+        task_files = sorted(
+            self.root.glob("users/*/tasks/*.json"),
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        tasks: list[dict[str, Any]] = []
+        for file in task_files:
+            task = self._read_json(
+                file,
+                allow_missing=True,
+                operation="get_completed_tasks_for_benchmarks.read_task",
+            )
+            if task is None:
+                continue
+            if task.get("status") in {"completed", "paid"}:
+                tasks.append(task)
+            if len(tasks) >= limit:
+                break
+        return tasks
 
     async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
         path = self.root / "benchmarks" / "summary.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(summary, default=str), encoding="utf-8")
+        self._write_json(path, summary, operation="save_benchmark_summary")
 
     async def get_benchmark_summary(self) -> dict[str, Any] | None:
         path = self.root / "benchmarks" / "summary.json"
-        if not path.exists():
+        return self._read_json(path, allow_missing=True, operation="get_benchmark_summary")
+
+    async def save_api_key(self, workspace_id: str, key_id: str, data: dict[str, Any]) -> None:
+        self._write_json(
+            self._api_key_path(workspace_id, key_id),
+            data,
+            operation="save_api_key.write_key",
+        )
+        self._write_json(
+            self._api_key_index_path(str(data["public_id"])),
+            {"workspace_id": workspace_id, "key_id": key_id},
+            operation="save_api_key.write_index",
+        )
+
+    async def get_api_key(self, workspace_id: str, key_id: str) -> dict[str, Any] | None:
+        return self._read_json(
+            self._api_key_path(workspace_id, key_id),
+            allow_missing=True,
+            operation="get_api_key",
+        )
+
+    async def list_api_keys(self, workspace_id: str) -> list[dict[str, Any]]:
+        api_key_dir = self._workspace_dir(workspace_id) / "api_keys"
+        if not api_key_dir.exists():
+            return []
+        files = sorted(
+            api_key_dir.glob("*.json"),
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        keys: list[dict[str, Any]] = []
+        for file in files:
+            key = self._read_json(file, allow_missing=True, operation="list_api_keys.read_key")
+            if key is None:
+                continue
+            keys.append(key)
+        return keys
+
+    async def get_api_key_by_public_id(self, public_id: str) -> dict[str, Any] | None:
+        index = self._read_json(
+            self._api_key_index_path(public_id),
+            allow_missing=True,
+            operation="get_api_key_by_public_id.read_index",
+        )
+        if index is None:
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+
+        try:
+            workspace_id = str(index["workspace_id"])
+            key_id = str(index["key_id"])
+        except KeyError as exc:
+            raise TaskStorePayloadError(
+                "API key public index payload missing required fields"
+            ) from exc
+
+        return await self.get_api_key(workspace_id, key_id)
+
+    async def update_api_key(
+        self,
+        workspace_id: str,
+        key_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        current = await self.get_api_key(workspace_id, key_id)
+        if current is None:
+            return None
+        current.update(updates)
+        await self.save_api_key(workspace_id, key_id, current)
+        return current

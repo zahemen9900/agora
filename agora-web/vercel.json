@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://agora-api-rztfxer7ra-uc.a.run.app/:path*"
+    }
+  ]
+}

@@ -6,16 +6,18 @@ resolution = true
 skip-lint = false
 
 [programs.devnet]
-agora = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
+agora = "Ha75TiGBNEYiygpDLFWBsSRwFXPX6uiGp6sbaUStJte8"
 
 [provider]
 cluster = "devnet"
 wallet = "~/.config/solana/devnet-keypair.json"
 
-[test]
-startup_wait = 30000
-
 [scripts]
 test = "npx ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [hooks]
+
+[test]
+startup_wait = 30000
+shutdown_wait = 2000
+upgradeable = false

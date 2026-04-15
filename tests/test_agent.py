@@ -20,6 +20,7 @@ def _clear_config_cache(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("AGORA_ANTHROPIC_THROTTLE_ENABLED", "0")
     monkeypatch.setenv("AGORA_ANTHROPIC_SECRET_NAME", "")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "")
     get_config.cache_clear()
     yield
     get_config.cache_clear()
@@ -43,6 +44,10 @@ async def test_sliding_window_rate_limiter_waits_after_limit() -> None:
 class _StructuredResponse(BaseModel):
     answer: str
     confidence: float
+
+
+class _AnalysisListResponse(BaseModel):
+    analyses: list[dict[str, str]]
 
 
 class _FakeGeminiGenerateContentConfig:
@@ -101,6 +106,51 @@ class _FakeGeminiClient:
         self.api_key = api_key
         self.models = _FakeGeminiModels(response=response, chunks=chunks)
         self.aio = SimpleNamespace(models=self.models)
+
+
+class _FakeOpenRouterResponse:
+    def __init__(
+        self,
+        text: str,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        reasoning_tokens: int = 0,
+    ) -> None:
+        self.choices = [SimpleNamespace(message=SimpleNamespace(content=text))]
+        completion_details = SimpleNamespace(reasoning_tokens=reasoning_tokens)
+        self.usage = SimpleNamespace(
+            prompt_tokens=input_tokens,
+            completion_tokens=output_tokens,
+            completion_tokens_details=completion_details,
+        )
+
+
+class _FakeOpenRouterCompletionsAPI:
+    def __init__(self, response: _FakeOpenRouterResponse) -> None:
+        self._response = response
+        self.last_kwargs: dict[str, Any] | None = None
+
+    async def create(self, **kwargs: Any) -> _FakeOpenRouterResponse:
+        self.last_kwargs = kwargs
+        return self._response
+
+
+class _FakeOpenRouterClient:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        max_retries: int,
+        default_headers: dict[str, str] | None,
+        response: _FakeOpenRouterResponse,
+    ) -> None:
+        self.api_key = api_key
+        self.base_url = base_url
+        self.max_retries = max_retries
+        self.default_headers = default_headers
+        self.chat = SimpleNamespace(completions=_FakeOpenRouterCompletionsAPI(response))
 
 
 def _patch_gemini_sdk(
@@ -282,6 +332,195 @@ async def test_gemini_streaming_returns_full_text_and_usage(
     assert usage["provider"] == "gemini"
     assert usage["input_tokens"] == 3
     assert usage["output_tokens"] == 4
+
+
+def test_openrouter_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenRouter caller should fail fast when API key is missing."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "")
+    monkeypatch.setattr(agent_module, "AsyncOpenAI", lambda **kwargs: object())
+
+    with pytest.raises(AgentCallError, match="OPENROUTER_API_KEY is not set"):
+        AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+
+
+@pytest.mark.asyncio
+async def test_openrouter_uses_agora_key_alias_and_optional_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter should honor AGORA_* key alias and attribution headers."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "agora-or-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "plain-or-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_HTTP_REFERER", "https://example.test/agora")
+    monkeypatch.setenv("AGORA_OPENROUTER_APP_TITLE", "Agora Test")
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "true")
+    fake_response = _FakeOpenRouterResponse(
+        "ok",
+        input_tokens=9,
+        output_tokens=5,
+        reasoning_tokens=3,
+    )
+    created: dict[str, _FakeOpenRouterClient] = {}
+
+    def _fake_async_openai_ctor(
+        *,
+        api_key: str,
+        base_url: str,
+        max_retries: int = 0,
+        default_headers: dict[str, str] | None = None,
+    ) -> _FakeOpenRouterClient:
+        client = _FakeOpenRouterClient(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            response=fake_response,
+        )
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
+
+    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+    response, usage = await caller.call(system_prompt="Be brief.", user_prompt="Say OK")
+
+    assert response == "ok"
+    assert usage["provider"] == "openrouter"
+    assert usage["input_tokens"] == 9
+    assert usage["output_tokens"] == 5
+    assert usage["reasoning_tokens"] == 3
+    assert created["client"].api_key == "agora-or-key"
+    assert created["client"].default_headers == {
+        "HTTP-Referer": "https://example.test/agora",
+        "X-OpenRouter-Title": "Agora Test",
+        "X-Title": "Agora Test",
+    }
+
+    kwargs = created["client"].chat.completions.last_kwargs
+    assert kwargs is not None
+    assert kwargs["max_tokens"] == get_config().kimi_max_tokens
+    assert kwargs["extra_body"] == {"reasoning": {"exclude": True, "effort": "low"}}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_disables_legacy_x_title_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy X-Title header should be disabled by config toggle."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "agora-or-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_APP_TITLE", "Agora Test")
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "false")
+    fake_response = _FakeOpenRouterResponse("ok")
+    created: dict[str, _FakeOpenRouterClient] = {}
+
+    def _fake_async_openai_ctor(
+        *,
+        api_key: str,
+        base_url: str,
+        max_retries: int = 0,
+        default_headers: dict[str, str] | None = None,
+    ) -> _FakeOpenRouterClient:
+        client = _FakeOpenRouterClient(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            response=fake_response,
+        )
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
+
+    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+    await caller.call(system_prompt="Be brief.", user_prompt="Say OK")
+
+    assert created["client"].default_headers == {"X-OpenRouter-Title": "Agora Test"}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_structured_output_wraps_analysis_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Kimi may return a top-level JSON array for cross-exam analyses."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    fake_response = _FakeOpenRouterResponse(
+        '[{"faction":"pro","flaw":"thin evidence"}]',
+        input_tokens=9,
+        output_tokens=5,
+        reasoning_tokens=3,
+    )
+    created: dict[str, _FakeOpenRouterClient] = {}
+
+    def _fake_async_openai_ctor(
+        *,
+        api_key: str,
+        base_url: str,
+        max_retries: int = 0,
+        default_headers: dict[str, str] | None = None,
+    ) -> _FakeOpenRouterClient:
+        client = _FakeOpenRouterClient(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            response=fake_response,
+        )
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
+
+    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+    parsed, usage = await caller.call(
+        system_prompt="Return structured JSON.",
+        user_prompt="Critique both sides.",
+        response_format=_AnalysisListResponse,
+    )
+
+    assert parsed == _AnalysisListResponse(
+        analyses=[{"faction": "pro", "flaw": "thin evidence"}]
+    )
+    assert usage["provider"] == "openrouter"
+    kwargs = created["client"].chat.completions.last_kwargs
+    assert kwargs is not None
+    assert kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_structured_output_rejects_trailing_decoy_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured parsing must fail unless the whole completion is JSON."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    fake_response = _FakeOpenRouterResponse(
+        '{"answer":"Paris","confidence":0.91}\n{"answer":"Lyon","confidence":1.0}',
+        input_tokens=9,
+        output_tokens=5,
+    )
+
+    monkeypatch.setattr(
+        agent_module,
+        "AsyncOpenAI",
+        lambda **kwargs: _FakeOpenRouterClient(
+            **kwargs,
+            response=fake_response,
+        ),
+    )
+
+    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+    with pytest.raises(AgentCallError, match="was not valid JSON"):
+        await caller.call(
+            system_prompt="Return structured JSON.",
+            user_prompt="Capital of France",
+            response_format=_StructuredResponse,
+        )
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,44 @@
+[
+  {
+    "category": "reasoning",
+    "task": "A project is late because reviews take too long. Is the better first intervention clearer review ownership or adding more meetings?",
+    "ground_truth": "clearer review ownership",
+    "source": "curated_reasoning_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "reasoning",
+    "task": "If a system must minimize blast radius and the team is small, should they prefer a monolith or microservices as the starting architecture?",
+    "ground_truth": "monolith",
+    "source": "curated_reasoning_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "reasoning",
+    "task": "A bug appears only after a cache warm-up and disappears when logging is enabled. Is the likelier issue deterministic logic or a race condition?",
+    "ground_truth": "race condition",
+    "source": "curated_reasoning_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "reasoning",
+    "task": "For a one-way door decision with high uncertainty, should the team optimize for reversibility or immediate local efficiency?",
+    "ground_truth": "reversibility",
+    "source": "curated_reasoning_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "reasoning",
+    "task": "If users are confused by too many options, is the better intervention more documentation or fewer defaults exposed initially?",
+    "ground_truth": "fewer defaults exposed initially",
+    "source": "curated_reasoning_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "reasoning",
+    "task": "A model is accurate but too slow for interactive use. Should the first optimization target retrieval quality or latency bottlenecks?",
+    "ground_truth": "latency bottlenecks",
+    "source": "curated_reasoning_v1",
+    "stakes": 0.0
+  }
+]

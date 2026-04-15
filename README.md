@@ -4,7 +4,13 @@ On-chain debate-or-vote arbitration for multi-agent LLM systems.
 
 AGORA takes a task, chooses a deliberation mechanism (Debate or Vote), runs multi-agent reasoning, computes convergence and quorum signals, and produces cryptographic transcript artifacts (hashes + Merkle root) that are ready for on-chain receipt submission.
 
-## Current Week 1 Status
+## Current Implementation Status
+
+Detailed implementation tracking lives in:
+
+- `.codex/Progress-update-phase2.md`
+
+### Week 1 Foundation
 
 Implemented:
 
@@ -32,10 +38,43 @@ Current execution note:
 
 - The engines retain LangGraph-compatible graph scaffolding for future integration, but the active Week 1 runtime path is still imperative Python orchestration rather than full StateGraph execution.
 
-Not implemented yet:
+### Phase 2 Additions
+
+Implemented on top of the Week 1 foundation:
+
+- Real task lifecycle API:
+  - `POST /tasks/`
+  - `POST /tasks/{id}/run`
+  - `GET /tasks/`
+  - `GET /tasks/{id}`
+  - `GET /tasks/{id}/stream`
+  - `POST /tasks/{id}/pay`
+- Persisted selector decisions and replay-safe execution through stored task state.
+- Canonical SSE event envelopes with replay + live streaming:
+  - `event`
+  - `data`
+  - `timestamp`
+- Benchmark runner, curated datasets, and validation artifact generation under `benchmarks/`.
+- SDK surface for local and hosted execution, plus strict receipt verification.
+- Dual auth for hosted usage:
+  - WorkOS JWTs for dashboard users
+  - first-party Agora API keys for SDK, CI, and server-to-server callers
+- Provider hardening for dotenv, Secret Manager fallback, and late-bound credential resolution.
+- 4-model ensemble support in hosted/demo flows with explicit `agent_models_used` reporting.
+- Kimi K2 Thinking integrated as an active ensemble participant:
+  - vote diversity tier for 4-agent runs
+  - debate cross-exam / devil's-advocate role
+  - exposed in runtime/API result metadata
+- Hosted mechanism forcing supports either:
+  - request payload `mechanism_override=vote|debate`
+  - env fallback `AGORA_API_FORCE_MECHANISM=vote|debate`
+
+### Still Deferred / Not Implemented Yet
 
 - Real Solana integration (currently stubbed).
 - Full Delphi and MoA engines (currently stubs for later phases).
+- Full LangGraph StateGraph execution as the primary runtime path.
+- Final production packaging/publication work for the SDK release channel.
 
 ## End-to-End Runtime Flow
 
@@ -61,17 +100,19 @@ Model calls route through the shared AgentCaller abstraction with provider-speci
 
 - Gemini models use the direct Google GenAI SDK (`google-genai`) against Gemini Developer API (ai.google.dev).
 - Claude models use Anthropic's direct Python SDK (AsyncAnthropic).
+- Kimi models use OpenRouter via OpenAI-compatible AsyncOpenAI client.
 
 - If `AGORA_GEMINI_API_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`) is configured, AGORA attempts live Gemini calls.
 - If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls through Anthropic API.
+- If `AGORA_OPENROUTER_API_KEY` (or `OPENROUTER_API_KEY`) is configured, AGORA attempts live Kimi calls through OpenRouter.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
 - If AgentCaller cannot initialize due to missing credentials, that is surfaced clearly in model-layer errors.
 
 ## Project Structure
 
-```
+```text
 agora/
-  agent.py               # Unified caller (Gemini via google-genai + Claude via Anthropic SDK)
+  agent.py               # Unified caller (Gemini + Claude + OpenRouter/Kimi)
   config.py              # Runtime config (models, thresholds, GCP project)
   types.py               # Shared pydantic models and enums
   selector/
@@ -116,12 +157,49 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+### Auth configuration
+
+Hosted deployments now use two credential types behind one bearer-token interface:
+
+- Dashboard/browser auth: WorkOS-issued JWTs
+- Programmatic auth: Agora API keys in the form `agora_live_<public_id>.<secret>` or `agora_test_<public_id>.<secret>`
+
+Backend auth env:
+
+```bash
+export AUTH_REQUIRED=true
+export WORKOS_CLIENT_ID="..."
+export WORKOS_AUTHKIT_DOMAIN="..."
+export AUTH_AUDIENCE="..."
+export AUTH_ISSUER="https://your-authkit-domain"
+export AUTH_JWKS_URL="https://your-authkit-domain/oauth2/jwks"
+export AGORA_API_KEY_PEPPER="replace-with-a-long-random-secret"
+```
+
+Optional API key policy env:
+
+```bash
+export AGORA_API_KEY_DEFAULT_TTL_DAYS=90
+```
+
 ### Lint and test
 
 ```bash
 ruff check .
 pytest -s -q
 ```
+
+### Paid-Provider Integration Tests (Opt-In)
+
+Some vote/debate tests are marked as paid-provider integration checks and require explicit opt-in:
+
+```bash
+export RUN_PAID_PROVIDER_TESTS=1
+export AGORA_OPENROUTER_API_KEY="..."
+pytest -s -q -m paid_integration
+```
+
+By default, these tests are skipped to avoid accidental provider spend in routine local and CI runs.
 
 ### One-Command Week 1 Demo (Core + Josh Infra)
 
@@ -137,6 +215,10 @@ What it covers:
 - Runs all Python tests (core modules + API/infra tests)
 - Runs a local orchestrator smoke task (your side)
 - Runs direct Gemini GenAI SDK smoke checks on configured Flash/Pro models
+- Runs direct Kimi/OpenRouter SDK smoke checks on configured Kimi model
+- Runs a strict all-model 4-agent vote smoke when `RUN_ALL_MODELS_E2E=always`
+- Verifies Kimi appears as an active vote tier and debate challenger, not just a fallback
+- Prints `agent_models_used` so the participating ensemble is visible in demo output
 - Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
 - Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
 - Isolates Gemini API keys from the test phase so `pytest` stays deterministic and fast
@@ -144,12 +226,26 @@ What it covers:
 Optional controls:
 
 - `AGORA_API_URL`: override hosted API base URL
+- `AGORA_TEST_API_KEY`: real staging API key used for hosted smoke and E2E against authenticated deployments
 - `--query "text"`: pass the exact deliberation prompt used in orchestrator + hosted API task
 - `--api-url "url"`: override hosted API base URL via CLI (same effect as `AGORA_API_URL`)
 - `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
 - `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
+- `RUN_CLAUDE_SMOKE=always|auto|never`: force or skip Claude SDK smoke checks
+- `RUN_KIMI_SMOKE=always|auto|never`: force or skip Kimi/OpenRouter SDK smoke checks
+- `RUN_ALL_MODELS_E2E=always|auto|never`: force or skip one local 4-provider vote ensemble run
+- `RUN_HOSTED_API_E2E=always|auto|never`: require hosted `/tasks` flow or downgrade hosted failures to a warning in auto mode
+- `RUN_HOSTED_ALL_MODELS_E2E=always|never`: require hosted API to report the full 4-model vote ensemble
+- `AGORA_API_FORCE_MECHANISM=vote|debate`: fallback mechanism pin for hosted strict demo validation
+- Task create payload field `mechanism_override=vote|debate`: request-level mechanism pin for hosted runs
+- `RUN_ORCHESTRATOR_SMOKE=always|auto|never`: control the natural selector-driven local orchestrator smoke
+- `DEMO_AGENT_COUNT`: orchestrator/hosted smoke agent count (defaults to 4 unless both Kimi and all-model smokes are disabled)
+- `DEMO_ORCHESTRATOR_TIMEOUT_SECONDS`, `DEMO_MODEL_TIMEOUT_SECONDS`, `DEMO_ALL_MODELS_TIMEOUT_SECONDS`: cap live provider waits so demo failures are clean
+- `DEMO_ALL_MODELS_MAX_ATTEMPTS`: retry the strict 4-provider vote smoke on transient provider failures
 - `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3-flash-preview`)
 - `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3.1-pro-preview`)
+- `DEMO_CLAUDE_MODEL`: default Claude model used by script (defaults to `claude-sonnet-4-6`)
+- `DEMO_KIMI_MODEL`: default Kimi model used by script (defaults to `moonshotai/kimi-k2-thinking`)
 - `PYTHON_BIN`: custom Python executable path
 
 Examples:
@@ -164,8 +260,20 @@ RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 # Point to a different deployed API
 AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
 
+# Run hosted smoke against an authenticated deployment
+AGORA_TEST_API_KEY="agora_test_your_public_id.your_secret" ./scripts/week1_demo.sh
+
 # Enforce direct Gemini 3-series validation in demo
 RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh
+
+# Enforce Kimi via OpenRouter validation in demo
+RUN_KIMI_SMOKE=always ./scripts/week1_demo.sh
+
+# Prove Gemini Pro, Kimi, Gemini Flash, and Claude all run in one local vote ensemble
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
+
+# Keep the demo local-only if hosted auth/runtime is drifting
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_API_E2E=never ./scripts/week1_demo.sh
 
 # Pass custom deliberation query from CLI
 ./scripts/week1_demo.sh --query "Should our team choose debate or vote for incident response decisions?"
@@ -185,14 +293,21 @@ python -m pytest -s -q
 # 2) Strict model, Anchor, and hosted Week 1 E2E demo
 export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
-RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3)"
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+
+# Optional hosted strict all-model check after deploying the API with AGORA_API_FORCE_MECHANISM=vote
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 ```
 
 Expected demo summary:
 
 - `Python lint/tests`: `PASS`
+- `Orchestrator smoke`: `PASS` or `SKIPPED` in auto mode if a provider stalls
 - `Gemini 3 SDK smoke`: `PASS`
 - `Claude SDK smoke`: `PASS`
+- `Kimi K2 SDK smoke`: `PASS`
+- `All-model E2E smoke`: `PASS`
 - `Local Anchor checks`: `PASS`
 - `Hosted API E2E`: `PASS`
 
@@ -208,7 +323,7 @@ Run this once with a privileged principal (Owner or Secret Admin):
 PROJECT_ID="even-ally-480821-f3"
 SA_EMAIL="ghsl-storage-accessor@even-ally-480821-f3.iam.gserviceaccount.com"
 
-for SECRET in agora-gemini-api-key agora-anthropic-api-key; do
+for SECRET in agora-gemini-api-key agora-anthropic-api-key agora-openrouter-api-key; do
   gcloud secrets add-iam-policy-binding "$SECRET" \
     --project "$PROJECT_ID" \
     --member "serviceAccount:${SA_EMAIL}" \
@@ -221,6 +336,7 @@ Verification:
 ```bash
 gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3 >/dev/null
 gcloud secrets versions access latest --secret agora-anthropic-api-key --project even-ally-480821-f3 >/dev/null
+gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3 >/dev/null
 ```
 
 ## Quick Usage
@@ -256,8 +372,29 @@ Required for live Gemini Developer API calls:
 - GEMINI_API_KEY: fallback key env var
 - GOOGLE_API_KEY: fallback key env var
 
+Required for live Kimi/OpenRouter calls:
+
+- AGORA_OPENROUTER_API_KEY: preferred OpenRouter API key env var
+- OPENROUTER_API_KEY: fallback key env var
+
 AGORA loads `.env` from the current working directory or repository root if present,
 without overriding environment variables already exported in your shell.
+
+To load a dotenv file from another path (for example a sibling worktree), set:
+
+- AGORA_ENV_FILE=/absolute/path/to/.env
+
+If Secret Manager client credentials are not configured as ADC, AGORA also attempts
+`gcloud secrets versions access ...` as a fallback for secret-backed key resolution.
+
+API auth verification settings (WorkOS/AuthKit):
+
+- AUTH_REQUIRED (default: true)
+- WORKOS_CLIENT_ID (used as default audience when AUTH_AUDIENCE is unset)
+- WORKOS_AUTHKIT_DOMAIN (for example your-subdomain.authkit.app)
+- AUTH_ISSUER (optional explicit override)
+- AUTH_AUDIENCE (optional explicit override)
+- AUTH_JWKS_URL (optional explicit override; default: `${AUTH_ISSUER}/oauth2/jwks`)
 
 Optional model overrides:
 
@@ -265,17 +402,31 @@ Optional model overrides:
 - AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
 - AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
+- AGORA_KIMI_MODEL (default: moonshotai/kimi-k2-thinking)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
 - AGORA_ANTHROPIC_THROTTLE_ENABLED (default: true)
 - AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
 - AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS (default: 60)
+- AGORA_KIMI_MAX_TOKENS (default: 512)
+- AGORA_KIMI_REASONING_EFFORT (default: low)
+- AGORA_KIMI_REASONING_EXCLUDE (default: true)
+- AGORA_OPENROUTER_HTTP_REFERER (optional attribution header)
+- AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
+- AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; keeps compatibility with legacy X-Title)
+- AGORA_API_FORCE_MECHANISM (default: empty; set `vote` on the hosted API to pin the 4-model demo run)
 
 Anthropic Secret Manager fetch controls:
 
 - AGORA_ANTHROPIC_SECRET_NAME (default: agora-anthropic-api-key)
 - AGORA_ANTHROPIC_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
 - AGORA_ANTHROPIC_SECRET_VERSION (default: latest)
+
+OpenRouter Secret Manager fetch controls:
+
+- AGORA_OPENROUTER_SECRET_NAME (default: agora-openrouter-api-key)
+- AGORA_OPENROUTER_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
+- AGORA_OPENROUTER_SECRET_VERSION (default: latest)
 
 Gemini Secret Manager fetch controls:
 
@@ -406,6 +557,12 @@ The codebase already marks the Solana responsibilities as Josh-owned in the clie
    - Submit task
    - Query task status
    - Fetch finalized receipt and tx signature
+
+## Operations Runbooks
+
+- Release and deploy operations: `docs/release-operations.md`
+- Week 2 frontend acceptance report: `.codex/Week2-frontend-acceptance.md`
+- Week 2 API acceptance trace artifact: `.codex/week2_acceptance_api_trace.json`
 
 ## Notes
 

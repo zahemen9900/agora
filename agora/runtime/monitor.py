@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
-from typing import Any
+from typing import TypeAlias
 
 from agora.types import AgentOutput, ConvergenceMetrics, MechanismType
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
 
 
 class StateMonitor:
@@ -77,7 +80,7 @@ class StateMonitor:
         return " ".join(candidate.strip().lower().split())
 
     @staticmethod
-    def _parse_payload(content: str) -> Any:
+    def _parse_payload(content: str) -> JsonValue:
         """Parse a structured payload when possible."""
 
         try:
@@ -86,7 +89,7 @@ class StateMonitor:
             return content
 
     @staticmethod
-    def _extract_signal_from_payload(payload: Any) -> str | None:
+    def _extract_signal_from_payload(payload: JsonValue) -> str | None:
         """Find the most relevant answer-like field inside a structured payload."""
 
         if isinstance(payload, str):

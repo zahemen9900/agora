@@ -15,7 +15,7 @@ use instructions::{
     InitializeTask, RecordMechanismSwitch, RecordSelection, ReleasePayment, SubmitReceipt,
 };
 
-declare_id!("82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd");
+declare_id!("Ha75TiGBNEYiygpDLFWBsSRwFXPX6uiGp6sbaUStJte8");
 
 #[program]
 pub mod agora {

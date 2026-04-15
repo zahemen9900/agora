@@ -7,14 +7,16 @@ import asyncio
 import json
 import re
 from collections import Counter
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agora.agent import AgentCaller, AgentCallError, flash_caller, pro_caller
+from agora.agent import AgentCaller, AgentCallError, flash_caller, kimi_caller, pro_caller
 from agora.config import get_config
+from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.monitor import StateMonitor
 from agora.types import (
@@ -27,6 +29,7 @@ from agora.types import (
 )
 
 logger = structlog.get_logger(__name__)
+EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 _ARITHMETIC_CLAIM_RE = re.compile(
     r"(?P<claim>[-+*/().\d\s]*\d[-+*/().\d\s]*=\s*[-+*/().\d\s]*\d[-+*/().\d\s]*)"
@@ -106,8 +109,11 @@ class DebateEngine:
         max_rounds: int = 4,
         flash_agent: AgentCaller | None = None,
         pro_agent: AgentCaller | None = None,
+        kimi_agent: AgentCaller | None = None,
         monitor: StateMonitor | None = None,
         hasher: TranscriptHasher | None = None,
+        enable_devils_advocate: bool = True,
+        enable_adaptive_termination: bool = True,
     ) -> None:
         """Initialize debate engine dependencies.
 
@@ -124,12 +130,22 @@ class DebateEngine:
         self.max_rounds = max(1, max_rounds)
         self._flash_agent = flash_agent
         self._pro_agent = pro_agent
+        self._kimi_agent = kimi_agent
         self.monitor = monitor or StateMonitor()
         self.hasher = hasher or TranscriptHasher()
+        self.enable_devils_advocate = enable_devils_advocate
+        self.enable_adaptive_termination = enable_adaptive_termination
 
         self.graph = self._build_graph() if StateGraph is not None else None
 
-    async def run(self, task: str, selection: MechanismSelection) -> DebateEngineOutcome:
+    async def run(
+        self,
+        task: str,
+        selection: MechanismSelection,
+        event_sink: EventSink | None = None,
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
+        allow_switch: bool = True,
+    ) -> DebateEngineOutcome:
         """Execute factional debate and return either result or switch signal.
 
         Args:
@@ -152,7 +168,10 @@ class DebateEngine:
         token_counter = 0
         latency_ms = 0.0
 
-        initial_outputs, usage = await self._assign_initial_answers(task)
+        initial_outputs, usage = await self._assign_initial_answers(
+            task,
+            custom_agents=custom_agents,
+        )
         token_counter += usage["tokens"]
         latency_ms += usage["latency_ms"]
 
@@ -178,6 +197,7 @@ class DebateEngine:
             assignments=assignments,
             pro_answer=pro_answer,
             opp_answer=opp_answer,
+            custom_agents=custom_agents,
         )
         token_counter += usage["tokens"]
         latency_ms += usage["latency_ms"]
@@ -187,29 +207,46 @@ class DebateEngine:
                 state.factions["pro"].append(output)
             else:
                 state.factions["opp"].append(output)
+        await self._emit_agent_outputs(event_sink, opening_outputs)
 
         latest_round_outputs = opening_outputs
 
         for round_number in range(1, self.max_rounds + 1):
-            cross_output, usage = await self._cross_examination(
-                task=task,
-                round_number=round_number,
-                devil_advocate_id=devil_advocate_id,
-                pro_outputs=[
-                    o
-                    for o in latest_round_outputs
-                    if o.role == "proponent" or o.role == "pro_rebuttal"
-                ],
-                opp_outputs=[
-                    o
-                    for o in latest_round_outputs
-                    if o.role == "opponent" or o.role == "opp_rebuttal"
-                ],
-            )
-            token_counter += usage["tokens"]
-            latency_ms += usage["latency_ms"]
-            state.cross_examinations.append(cross_output)
-            state.transcript_hashes.append(self.hasher.hash_agent_output(cross_output))
+            if self.enable_devils_advocate:
+                cross_output, usage = await self._cross_examination(
+                    task=task,
+                    round_number=round_number,
+                    devil_advocate_id=devil_advocate_id,
+                    pro_outputs=[
+                        o
+                        for o in latest_round_outputs
+                        if o.role == "proponent" or o.role == "pro_rebuttal"
+                    ],
+                    opp_outputs=[
+                        o
+                        for o in latest_round_outputs
+                        if o.role == "opponent" or o.role == "opp_rebuttal"
+                    ],
+                    custom_agents=custom_agents,
+                )
+                token_counter += usage["tokens"]
+                latency_ms += usage["latency_ms"]
+                state.cross_examinations.append(cross_output)
+                state.transcript_hashes.append(self.hasher.hash_agent_output(cross_output))
+                await self._emit_cross_examination(event_sink, cross_output)
+            else:
+                empty_analyses = json.dumps({"analyses": []}, sort_keys=True)
+                cross_output = AgentOutput(
+                    agent_id=devil_advocate_id,
+                    agent_model="disabled-devils-advocate",
+                    role="devil_advocate",
+                    round_number=round_number,
+                    content=empty_analyses,
+                    confidence=0.0,
+                    predicted_group_answer=None,
+                    content_hash=self.hasher.hash_content(empty_analyses),
+                    timestamp=datetime.now(UTC),
+                )
 
             rebuttal_outputs, usage = await self._rebuttal_round(
                 task=task,
@@ -219,6 +256,7 @@ class DebateEngine:
                 pro_answer=pro_answer,
                 opp_answer=opp_answer,
                 locked_claims=state.locked_claims,
+                custom_agents=custom_agents,
             )
             token_counter += usage["tokens"]
             latency_ms += usage["latency_ms"]
@@ -239,39 +277,44 @@ class DebateEngine:
                         state.locked_claims.append(claim)
 
             latest_round_outputs = round_outputs
+            await self._emit_agent_outputs(event_sink, round_outputs)
             metrics = self.monitor.compute_metrics(round_outputs)
             state.convergence_history.append(metrics)
             state.round = round_number
+            await self._emit_convergence_update(event_sink, metrics, state.locked_claims)
 
-            terminate, terminate_reason = self.monitor.should_terminate(state.convergence_history)
-            if terminate:
-                state.terminated_early = round_number < self.max_rounds
-                logger.info(
-                    "debate_terminated",
-                    reason=terminate_reason,
-                    round_number=round_number,
+            if self.enable_adaptive_termination:
+                terminate, terminate_reason = self.monitor.should_terminate(
+                    state.convergence_history
                 )
-                break
+                if terminate:
+                    state.terminated_early = round_number < self.max_rounds
+                    logger.info(
+                        "debate_terminated",
+                        reason=terminate_reason,
+                        round_number=round_number,
+                    )
+                    break
 
-            should_switch, suggested, switch_reason = self.monitor.should_switch_mechanism(
-                state.convergence_history,
-                current_mechanism=MechanismType.DEBATE,
-            )
-            if should_switch and suggested == MechanismType.VOTE:
-                state.mechanism_switches += 1
-                logger.info(
-                    "debate_switch_suggested",
-                    round_number=round_number,
-                    reason=switch_reason,
-                    suggested_mechanism=suggested.value,
+                should_switch, suggested, switch_reason = self.monitor.should_switch_mechanism(
+                    state.convergence_history,
+                    current_mechanism=MechanismType.DEBATE,
                 )
-                return DebateEngineOutcome(
-                    state=state,
-                    result=None,
-                    switch_to_vote=True,
-                    suggested_mechanism=suggested,
-                    reason=switch_reason,
-                )
+                if allow_switch and should_switch and suggested == MechanismType.VOTE:
+                    state.mechanism_switches += 1
+                    logger.info(
+                        "debate_switch_suggested",
+                        round_number=round_number,
+                        reason=switch_reason,
+                        suggested_mechanism=suggested.value,
+                    )
+                    return DebateEngineOutcome(
+                        state=state,
+                        result=None,
+                        switch_to_vote=True,
+                        suggested_mechanism=suggested,
+                        reason=switch_reason,
+                    )
 
         result, usage = await self._final_aggregation(
             state=state,
@@ -280,6 +323,7 @@ class DebateEngine:
             opp_answer=opp_answer,
             prior_tokens=token_counter,
             prior_latency_ms=latency_ms,
+            custom_agents=custom_agents,
         )
         return DebateEngineOutcome(state=state, result=result, reason="completed")
 
@@ -313,7 +357,9 @@ class DebateEngine:
         return graph.compile()
 
     async def _assign_initial_answers(
-        self, task: str
+        self,
+        task: str,
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
     ) -> tuple[list[AgentOutput], dict[str, float | int]]:
         """Generate independent initial answers for faction assignment."""
 
@@ -328,12 +374,14 @@ class DebateEngine:
                 confidence=0.55,
             )
 
+            custom_agent = custom_agents[agent_idx] if custom_agents is not None else None
             response, usage = await self._call_structured(
                 tier="flash",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_model=_InitialAnswerResponse,
                 fallback=fallback,
+                custom_agent=custom_agent,
             )
             assert isinstance(response, _InitialAnswerResponse)
             timestamp = datetime.now(UTC)
@@ -341,7 +389,9 @@ class DebateEngine:
             return (
                 AgentOutput(
                     agent_id=agent_id,
-                    agent_model=self._model_name("flash"),
+                    agent_model=(
+                        "custom-agent" if custom_agent is not None else self._model_name("flash")
+                    ),
                     role="initial",
                     round_number=0,
                     content=content,
@@ -447,6 +497,7 @@ class DebateEngine:
         assignments: dict[str, str],
         pro_answer: str,
         opp_answer: str,
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
     ) -> tuple[list[AgentOutput], dict[str, float | int]]:
         """Generate faction opening statements in parallel."""
 
@@ -465,12 +516,16 @@ class DebateEngine:
                 evidence="Heuristic fallback evidence generated locally.",
                 confidence=0.55,
             )
+            custom_agent = (
+                custom_agents[self._agent_index(agent_id)] if custom_agents is not None else None
+            )
             response, usage = await self._call_structured(
                 tier="flash",
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_model=_OpeningResponse,
                 fallback=fallback,
+                custom_agent=custom_agent,
             )
             assert isinstance(response, _OpeningResponse)
             content = json.dumps(
@@ -485,7 +540,9 @@ class DebateEngine:
             timestamp = datetime.now(UTC)
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=self._model_name("flash"),
+                agent_model=(
+                    "custom-agent" if custom_agent is not None else self._model_name("flash")
+                ),
                 role=role,
                 round_number=1,
                 content=content,
@@ -510,6 +567,7 @@ class DebateEngine:
         devil_advocate_id: str,
         pro_outputs: list[AgentOutput],
         opp_outputs: list[AgentOutput],
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
     ) -> tuple[AgentOutput, dict[str, Any]]:
         """Run devil's advocate cross-examination against both factions."""
 
@@ -543,20 +601,36 @@ class DebateEngine:
             ]
         )
 
-        response, usage = await self._call_structured(
-            tier="pro",
+        custom_agent = (
+            custom_agents[self._agent_index(devil_advocate_id)]
+            if custom_agents is not None
+            else None
+        )
+        if custom_agent is not None:
+            response, usage = await self._call_structured(
+                tier="pro",
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_model=_CrossExamResponse,
+                fallback=fallback,
+                temperature=0.2,
+                custom_agent=custom_agent,
+            )
+            assert isinstance(response, _CrossExamResponse)
+        else:
+            response, usage = await self._call_cross_exam(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            response_model=_CrossExamResponse,
             fallback=fallback,
             temperature=0.2,
-        )
-        assert isinstance(response, _CrossExamResponse)
+            )
         content = json.dumps(response.model_dump(mode="json"), sort_keys=True)
 
         output = AgentOutput(
             agent_id=devil_advocate_id,
-            agent_model=self._model_name("pro"),
+            agent_model=(
+                "custom-agent" if custom_agent is not None else self._model_name("kimi")
+            ),
             role="devil_advocate",
             round_number=round_number,
             content=content,
@@ -576,6 +650,7 @@ class DebateEngine:
         pro_answer: str,
         opp_answer: str,
         locked_claims: list[VerifiedClaim],
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
     ) -> tuple[list[AgentOutput], dict[str, float | int]]:
         """Generate faction rebuttals responding to cross-examination."""
 
@@ -597,6 +672,9 @@ class DebateEngine:
                 defense="Fallback rebuttal: reinforce answer with concise rationale.",
                 confidence=0.55,
             )
+            custom_agent = (
+                custom_agents[self._agent_index(agent_id)] if custom_agents is not None else None
+            )
             response, usage = await self._call_structured(
                 tier="flash",
                 system_prompt=system_prompt,
@@ -604,6 +682,7 @@ class DebateEngine:
                 response_model=_RebuttalResponse,
                 fallback=fallback,
                 temperature=0.4,
+                custom_agent=custom_agent,
             )
             assert isinstance(response, _RebuttalResponse)
             content = json.dumps(
@@ -617,7 +696,9 @@ class DebateEngine:
             role = "pro_rebuttal" if side == "pro" else "opp_rebuttal"
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=self._model_name("flash"),
+                agent_model=(
+                    "custom-agent" if custom_agent is not None else self._model_name("flash")
+                ),
                 role=role,
                 round_number=round_number,
                 content=content,
@@ -643,6 +724,7 @@ class DebateEngine:
         opp_answer: str,
         prior_tokens: int,
         prior_latency_ms: float,
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
     ) -> tuple[DeliberationResult, dict[str, float | int]]:
         """Aggregate trajectory, synthesize final answer, and build result."""
 
@@ -681,6 +763,7 @@ class DebateEngine:
             summary="Fallback synthesis from trajectory scoring.",
         )
 
+        custom_agent = custom_agents[0] if custom_agents else None
         response, usage = await self._call_structured(
             tier="pro",
             system_prompt=system_prompt,
@@ -688,6 +771,7 @@ class DebateEngine:
             response_model=_SynthesisResponse,
             fallback=fallback,
             temperature=0.2,
+            custom_agent=custom_agent,
         )
         assert isinstance(response, _SynthesisResponse)
 
@@ -699,6 +783,18 @@ class DebateEngine:
 
         total_tokens = prior_tokens + int(usage["tokens"])
         total_latency_ms = prior_latency_ms + float(usage["latency_ms"])
+        agent_models_used = list(
+            dict.fromkeys(
+                [
+                    *[output.agent_model for output in state.factions.get("pro", [])],
+                    *[output.agent_model for output in state.factions.get("opp", [])],
+                    *[output.agent_model for output in state.cross_examinations],
+                    *[output.agent_model for output in state.rebuttals.get("pro", [])],
+                    *[output.agent_model for output in state.rebuttals.get("opp", [])],
+                    "custom-agent" if custom_agent is not None else self._model_name("pro"),
+                ]
+            )
+        )
 
         result = DeliberationResult(
             task=state.task,
@@ -712,6 +808,7 @@ class DebateEngine:
             mechanism_switches=state.mechanism_switches,
             merkle_root=state.merkle_root,
             transcript_hashes=state.transcript_hashes,
+            agent_models_used=agent_models_used,
             convergence_history=state.convergence_history,
             locked_claims=state.locked_claims,
             total_tokens_used=total_tokens,
@@ -727,8 +824,18 @@ class DebateEngine:
         response_model: type[BaseModel],
         fallback: BaseModel,
         temperature: float | None = None,
+        custom_agent: CustomAgentCallable | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
         """Call an agent with structured output and graceful fallback."""
+
+        if custom_agent is not None:
+            return await invoke_custom_agent(
+                custom_agent,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_model=response_model,
+                fallback=fallback,
+            )
 
         try:
             caller = self._get_caller(tier)
@@ -755,6 +862,180 @@ class DebateEngine:
 
         return fallback, {"tokens": 0, "latency_ms": 0.0}
 
+    async def _call_cross_exam(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: _CrossExamResponse,
+        temperature: float | None,
+    ) -> tuple[_CrossExamResponse, dict[str, Any]]:
+        """Call Kimi as a raw challenger and coerce output into transcript schema."""
+
+        try:
+            caller = self._get_caller("kimi")
+            response, usage = await caller.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+            )
+            response_text = (
+                response.model_dump_json() if isinstance(response, BaseModel) else str(response)
+            )
+            return self._coerce_cross_exam_response(response_text, fallback), {
+                "tokens": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
+                "latency_ms": float(usage.get("latency_ms", 0.0)),
+            }
+        except AgentCallError as exc:
+            logger.warning(
+                "debate_agent_fallback",
+                tier="kimi",
+                response_model=_CrossExamResponse.__name__,
+                error=str(exc),
+            )
+
+        return fallback, {"tokens": 0, "latency_ms": 0.0}
+
+    @staticmethod
+    def _coerce_cross_exam_response(
+        response_text: str,
+        fallback: _CrossExamResponse,
+    ) -> _CrossExamResponse:
+        """Parse Kimi JSON when available, otherwise preserve its raw critique."""
+
+        cleaned = response_text.strip()
+        if not cleaned:
+            return fallback
+
+        try:
+            parsed = json.loads(AgentCaller._extract_json_payload(cleaned))
+            if isinstance(parsed, list):
+                parsed = {"analyses": parsed}
+            return _CrossExamResponse.model_validate(parsed)
+        except (json.JSONDecodeError, ValidationError):
+            clipped = cleaned[:1200]
+            return _CrossExamResponse(
+                analyses=[
+                    _CrossExamItem(
+                        faction="pro",
+                        weakest_claim="kimi_unstructured_challenge",
+                        flaw=clipped,
+                        question="Which evidence most directly answers Kimi's challenge?",
+                    ),
+                    _CrossExamItem(
+                        faction="opp",
+                        weakest_claim="kimi_unstructured_challenge",
+                        flaw=clipped,
+                        question="Which assumption survives Kimi's challenge?",
+                    ),
+                ]
+            )
+
+    @staticmethod
+    def _agent_index(agent_id: str) -> int:
+        """Convert canonical agent id into zero-based index."""
+
+        return max(0, int(agent_id.split("-")[-1]) - 1)
+
+    @staticmethod
+    def _event_faction(output: AgentOutput) -> str:
+        """Map internal roles to frontend/API event factions."""
+
+        if output.role in {"proponent", "pro_rebuttal"}:
+            return "proponent"
+        if output.role in {"opponent", "opp_rebuttal"}:
+            return "opponent"
+        return output.role
+
+    @staticmethod
+    def _parse_json_content(content: str) -> dict[str, Any]:
+        """Best-effort JSON parsing for rich event payloads."""
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            return {"text": content}
+        return parsed if isinstance(parsed, dict) else {"payload": parsed}
+
+    async def _emit_agent_outputs(
+        self,
+        event_sink: EventSink | None,
+        outputs: list[AgentOutput],
+    ) -> None:
+        """Emit debate agent outputs to an external sink."""
+
+        if event_sink is None:
+            return
+
+        for output in outputs:
+            payload = self._parse_json_content(output.content)
+            await event_sink(
+                "agent_output",
+                {
+                    "agent_id": output.agent_id,
+                    "agent_model": output.agent_model,
+                    "role": output.role,
+                    "faction": self._event_faction(output),
+                    "round_number": output.round_number,
+                    "content": payload.get("defense")
+                    or payload.get("claim")
+                    or payload.get("answer")
+                    or output.content,
+                    "confidence": output.confidence,
+                    "payload": payload,
+                },
+            )
+
+    async def _emit_cross_examination(
+        self,
+        event_sink: EventSink | None,
+        output: AgentOutput,
+    ) -> None:
+        """Emit devil's advocate cross-examination output."""
+
+        if event_sink is None:
+            return
+
+        await event_sink(
+            "cross_examination",
+            {
+                "agent_id": output.agent_id,
+                "agent_model": output.agent_model,
+                "round_number": output.round_number,
+                "payload": self._parse_json_content(output.content),
+            },
+        )
+
+    async def _emit_convergence_update(
+        self,
+        event_sink: EventSink | None,
+        metrics: Any,
+        locked_claims: list[VerifiedClaim],
+    ) -> None:
+        """Emit convergence metrics and verified claims."""
+
+        if event_sink is None:
+            return
+
+        await event_sink(
+            "convergence_update",
+            {
+                "round_number": metrics.round_number,
+                "disagreement_entropy": metrics.disagreement_entropy,
+                "information_gain_delta": metrics.information_gain_delta,
+                "unique_answers": metrics.unique_answers,
+                "dominant_answer_share": metrics.dominant_answer_share,
+                "locked_claims": [
+                    {
+                        "claim_text": claim.claim_text,
+                        "verified_by": claim.verified_by,
+                        "round_locked": claim.round_locked,
+                        "claim_hash": claim.claim_hash,
+                    }
+                    for claim in locked_claims
+                ],
+            },
+        )
+
     def _get_caller(self, tier: str) -> AgentCaller:
         """Return lazily initialized caller for selected tier."""
 
@@ -762,6 +1043,10 @@ class DebateEngine:
             if self._flash_agent is None:
                 self._flash_agent = flash_caller()
             return self._flash_agent
+        if tier == "kimi":
+            if self._kimi_agent is None:
+                self._kimi_agent = kimi_caller()
+            return self._kimi_agent
         if self._pro_agent is None:
             self._pro_agent = pro_caller()
         return self._pro_agent
@@ -774,7 +1059,11 @@ class DebateEngine:
             return caller.model
         except AgentCallError:
             config = get_config()
-            return config.flash_model if tier == "flash" else config.pro_model
+            if tier == "flash":
+                return config.flash_model
+            if tier == "kimi":
+                return config.kimi_model
+            return config.pro_model
 
     @staticmethod
     def _extract_targeted_question(cross_exam_content: str, side: str) -> str:

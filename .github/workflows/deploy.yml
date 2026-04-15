@@ -3,6 +3,11 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-agora-api
+  cancel-in-progress: false
 
 jobs:
   deploy-api:
@@ -35,7 +40,7 @@ jobs:
       - name: Build and push image
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/${SERVICE_NAME}:${{ github.sha }}"
-          gcloud builds submit --tag "$IMAGE" -f api/Dockerfile .
+          gcloud builds submit --config api/cloudbuild.yaml --substitutions "_IMAGE=$IMAGE" .
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
 
       - name: Deploy to Cloud Run
@@ -46,3 +51,12 @@ jobs:
             --region "$REGION" \
             --platform managed \
             --allow-unauthenticated
+
+      - name: Verify deployed health endpoint
+        run: |
+          URL="$(gcloud run services describe "$SERVICE_NAME" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --region "$REGION" \
+            --format='value(status.url)')"
+          echo "URL=$URL"
+          curl -fsS "$URL/health"

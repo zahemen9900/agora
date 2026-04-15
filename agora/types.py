@@ -17,6 +17,17 @@ class MechanismType(StrEnum):
     MOA = "moa"
 
 
+SUPPORTED_MECHANISMS: frozenset[MechanismType] = frozenset(
+    {MechanismType.DEBATE, MechanismType.VOTE}
+)
+
+
+def mechanism_is_supported(mechanism: MechanismType) -> bool:
+    """Return whether a mechanism is currently executable in runtime paths."""
+
+    return mechanism in SUPPORTED_MECHANISMS
+
+
 class TaskFeatures(BaseModel):
     """Structured task features used by mechanism routing logic."""
 
@@ -140,6 +151,7 @@ class DeliberationResult(BaseModel):
     mechanism_switches: int = Field(ge=0)
     merkle_root: str
     transcript_hashes: list[str]
+    agent_models_used: list[str] = Field(default_factory=list)
     convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
     locked_claims: list[VerifiedClaim] = Field(default_factory=list)
     total_tokens_used: int = Field(ge=0)

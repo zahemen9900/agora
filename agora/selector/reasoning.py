@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Literal
 
 import structlog
 from pydantic import BaseModel, Field
@@ -17,7 +18,7 @@ logger = structlog.get_logger(__name__)
 class _ReasoningResponse(BaseModel):
     """Structured response format expected from the selector reasoning model."""
 
-    mechanism: MechanismType
+    mechanism: Literal["debate", "vote"]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 
@@ -59,7 +60,7 @@ class ReasoningSelector:
             "You are the Agora Mechanism Selector, a meta-reasoning agent that decides "
             "HOW a group of AI agents should resolve a task. Available mechanisms: "
             "DEBATE (adversarial deliberation), VOTE (independent confidence-weighted "
-            "aggregation), DELPHI (anonymous iterative refinement), MOA (layered synthesis). "
+            "aggregation). "
             "Choose the best mechanism for this specific task and explain your decision."
         )
 
@@ -79,7 +80,7 @@ class ReasoningSelector:
             f"{json.dumps(historical_payload, indent=2)}"
             "\n\n"
             "Respond with a JSON object in this exact schema:\n"
-            '{"mechanism": "debate"|"vote"|"delphi"|"moa", '
+            '{"mechanism": "debate"|"vote", '
             '"confidence": 0.0-1.0, "reasoning": "..."}'
         )
 
@@ -97,7 +98,7 @@ class ReasoningSelector:
 
             reasoning_hash = hashlib.sha256(response.reasoning.encode("utf-8")).hexdigest()
             selection = MechanismSelection(
-                mechanism=response.mechanism,
+                mechanism=MechanismType(response.mechanism),
                 confidence=response.confidence,
                 reasoning=response.reasoning,
                 reasoning_hash=reasoning_hash,

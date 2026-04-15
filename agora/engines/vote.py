@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import math
 from collections import Counter
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agora.agent import AgentCaller, AgentCallError, claude_caller, flash_caller, pro_caller
+from agora.agent import (
+    AgentCaller,
+    AgentCallError,
+    claude_caller,
+    flash_caller,
+    kimi_caller,
+    pro_caller,
+)
 from agora.config import get_config
+from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
 from agora.types import (
     AgentOutput,
@@ -23,6 +33,7 @@ from agora.types import (
 )
 
 logger = structlog.get_logger(__name__)
+EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 try:  # Optional import for architecture parity with LangGraph state graphs.
     from langgraph.graph import END, START, StateGraph
@@ -61,8 +72,10 @@ class VoteEngine:
         flash_agent: AgentCaller | None = None,
         pro_agent: AgentCaller | None = None,
         claude_agent: AgentCaller | None = None,
+        kimi_agent: AgentCaller | None = None,
         hasher: TranscriptHasher | None = None,
         temperature_scaling: float = 1.5,
+        aggregation_mode: str = "isp",
     ) -> None:
         """Initialize vote engine.
 
@@ -80,10 +93,18 @@ class VoteEngine:
         self._flash_agent = flash_agent
         self._pro_agent = pro_agent
         self._claude_agent = claude_agent
+        self._kimi_agent = kimi_agent
         self.hasher = hasher or TranscriptHasher()
+        self.aggregation_mode = aggregation_mode
         self.graph = self._build_graph() if StateGraph is not None else None
 
-    async def run(self, task: str, selection: MechanismSelection) -> VoteEngineOutcome:
+    async def run(
+        self,
+        task: str,
+        selection: MechanismSelection,
+        event_sink: EventSink | None = None,
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
+    ) -> VoteEngineOutcome:
         """Execute ISP vote workflow and return deliberation result.
 
         Args:
@@ -102,15 +123,16 @@ class VoteEngine:
         token_counter = 0
         latency_ms = 0.0
 
-        vote_outputs, usage = await self._generate_votes(task)
+        vote_outputs, usage = await self._generate_votes(task, custom_agents=custom_agents)
         token_counter += usage["tokens"]
         latency_ms += usage["latency_ms"]
 
         state.agent_outputs = vote_outputs
         state.transcript_hashes = [self.hasher.hash_agent_output(output) for output in vote_outputs]
+        await self._emit_votes(event_sink, vote_outputs)
 
         self._calibrate_confidence(state)
-        self._isp_aggregate(state)
+        self._aggregate_votes(state)
 
         best_answer, best_weight = self._pick_winner(state.final_weights)
         state.final_answer = best_answer
@@ -129,6 +151,9 @@ class VoteEngine:
             mechanism_switches=0,
             merkle_root=state.merkle_root,
             transcript_hashes=state.transcript_hashes,
+            agent_models_used=list(
+                dict.fromkeys(output.agent_model for output in vote_outputs)
+            ),
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=token_counter,
@@ -165,7 +190,11 @@ class VoteEngine:
         graph.add_edge("finalize", END)
         return graph.compile()
 
-    async def _generate_votes(self, task: str) -> tuple[list[AgentOutput], dict[str, float | int]]:
+    async def _generate_votes(
+        self,
+        task: str,
+        custom_agents: Sequence[CustomAgentCallable] | None = None,
+    ) -> tuple[list[AgentOutput], dict[str, float | int]]:
         """Generate one independent vote per agent in parallel."""
 
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
@@ -181,19 +210,21 @@ class VoteEngine:
                 "predicted_group_answer, reasoning."
             )
             fallback = self._fallback_vote(task=task, agent_idx=agent_idx)
+            custom_agent = custom_agents[agent_idx] if custom_agents is not None else None
             response, usage = await self._call_structured(
                 tier=tier,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_model=_VoteResponse,
                 fallback=fallback,
+                custom_agent=custom_agent,
             )
             assert isinstance(response, _VoteResponse)
 
             content = response.answer
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=self._model_name(tier),
+                agent_model="custom-agent" if custom_agent is not None else self._model_name(tier),
                 role="voter",
                 round_number=1,
                 content=content,
@@ -219,6 +250,40 @@ class VoteEngine:
                 temperature=self.temperature_scaling,
             )
         state.calibrated_confidences = calibrated
+
+    def _aggregate_votes(self, state: VoteState) -> None:
+        """Aggregate votes according to the configured Phase 2 mode."""
+
+        if self.aggregation_mode == "majority":
+            self._majority_aggregate(state)
+            return
+        if self.aggregation_mode == "confidence_weighted":
+            self._confidence_weighted_aggregate(state)
+            return
+        self._isp_aggregate(state)
+
+    def _majority_aggregate(self, state: VoteState) -> None:
+        """Aggregate votes using simple majority only."""
+
+        total_agents = max(1, len(state.agent_outputs))
+        counts = Counter(output.content.strip() for output in state.agent_outputs)
+        state.isp_scores = {answer: 0.0 for answer in counts}
+        state.final_weights = {answer: count / total_agents for answer, count in counts.items()}
+
+    def _confidence_weighted_aggregate(self, state: VoteState) -> None:
+        """Aggregate votes using calibrated confidence without ISP surprise."""
+
+        raw_weights: dict[str, float] = {}
+        for output in state.agent_outputs:
+            answer = output.content.strip()
+            raw_weights[answer] = raw_weights.get(answer, 0.0) + state.calibrated_confidences.get(
+                output.agent_id,
+                output.confidence,
+            )
+
+        total = sum(raw_weights.values()) or 1.0
+        state.isp_scores = {answer: 0.0 for answer in raw_weights}
+        state.final_weights = {answer: weight / total for answer, weight in raw_weights.items()}
 
     def _isp_aggregate(self, state: VoteState) -> None:
         """Compute ISP surprise scores and confidence-weighted final weights."""
@@ -284,8 +349,30 @@ class VoteEngine:
         user_prompt: str,
         response_model: type[BaseModel],
         fallback: BaseModel,
+        custom_agent: CustomAgentCallable | None = None,
     ) -> tuple[BaseModel, dict[str, Any]]:
         """Call selected tier with structured output and fallback on failure."""
+
+        if custom_agent is not None:
+            return await invoke_custom_agent(
+                custom_agent,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_model=response_model,
+                fallback=fallback,
+            )
+
+        if tier == "kimi" and response_model is _VoteResponse:
+            assert isinstance(fallback, _VoteResponse)
+            try:
+                return await self._call_kimi_vote(system_prompt, user_prompt, fallback)
+            except AgentCallError as exc:
+                logger.warning(
+                    "vote_agent_fallback",
+                    error=str(exc),
+                    response_model=response_model.__name__,
+                )
+                return fallback, {"tokens": 0, "latency_ms": 0.0}
 
         try:
             caller = self._get_caller(tier)
@@ -308,7 +395,78 @@ class VoteEngine:
                 "vote_agent_fallback", error=str(exc), response_model=response_model.__name__
             )
 
+            if tier == "claude":
+                try:
+                    assert isinstance(fallback, _VoteResponse)
+                    kimi_response, kimi_usage = await self._call_kimi_vote(
+                        system_prompt,
+                        user_prompt,
+                        fallback,
+                    )
+                    logger.info(
+                        "vote_agent_fallback_to_kimi_success",
+                        response_model=response_model.__name__,
+                    )
+                    return kimi_response, kimi_usage
+                except AgentCallError as kimi_exc:
+                    logger.warning(
+                        "vote_kimi_fallback_failed",
+                        error=str(kimi_exc),
+                        response_model=response_model.__name__,
+                    )
+
         return fallback, {"tokens": 0, "latency_ms": 0.0}
+
+    async def _call_kimi_vote(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: _VoteResponse,
+    ) -> tuple[_VoteResponse, dict[str, Any]]:
+        """Call Kimi as a raw voter and coerce output into vote schema."""
+
+        caller = self._get_caller("kimi")
+        response, usage = await caller.call(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+        if isinstance(response, _VoteResponse):
+            vote = response
+        else:
+            vote = self._coerce_vote_response(str(response), fallback)
+
+        return vote, {
+            "tokens": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
+            "latency_ms": float(usage.get("latency_ms", 0.0)),
+        }
+
+    @staticmethod
+    def _coerce_vote_response(response_text: str, fallback: _VoteResponse) -> _VoteResponse:
+        """Parse Kimi JSON when present; otherwise use its raw answer text."""
+
+        cleaned = response_text.strip()
+        if not cleaned:
+            return fallback
+
+        try:
+            parsed = json.loads(AgentCaller._extract_json_payload(cleaned))
+            if isinstance(parsed, dict):
+                if "answer" not in parsed and "final_answer" in parsed:
+                    parsed["answer"] = parsed["final_answer"]
+                parsed.setdefault("predicted_group_answer", parsed.get("answer", cleaned))
+                parsed.setdefault("reasoning", cleaned)
+                parsed.setdefault("confidence", fallback.confidence)
+                return _VoteResponse.model_validate(parsed)
+        except (json.JSONDecodeError, ValidationError):
+            pass
+
+        clipped = cleaned[:1200]
+        return _VoteResponse(
+            answer=clipped,
+            confidence=fallback.confidence,
+            predicted_group_answer=clipped,
+            reasoning=cleaned,
+        )
 
     def _get_caller(self, tier: str) -> AgentCaller:
         """Return lazy caller instance for a tier."""
@@ -323,6 +481,11 @@ class VoteEngine:
                 self._claude_agent = claude_caller()
             return self._claude_agent
 
+        if tier == "kimi":
+            if self._kimi_agent is None:
+                self._kimi_agent = kimi_caller()
+            return self._kimi_agent
+
         if self._flash_agent is None:
             self._flash_agent = flash_caller()
         return self._flash_agent
@@ -336,6 +499,8 @@ class VoteEngine:
             config = get_config()
             if tier == "claude":
                 return config.claude_model
+            if tier == "kimi":
+                return config.kimi_model
             if tier == "pro":
                 return config.pro_model
             return config.flash_model
@@ -344,7 +509,7 @@ class VoteEngine:
         """Route voters across model tiers for diversity.
 
         Strategy:
-            - 4+ agents: 1 pro, 1 claude, remaining flash.
+            - 4+ agents: 1 pro, 1 Kimi, 1 Claude, remaining flash.
             - 3 agents: 1 pro, 1 claude, 1 flash.
             - <3 agents: flash only.
         """
@@ -352,6 +517,8 @@ class VoteEngine:
         if self.agent_count >= 4:
             if agent_idx == 0:
                 return "pro"
+            if agent_idx == 1:
+                return "kimi"
             if agent_idx == self.agent_count - 1:
                 return "claude"
             return "flash"
@@ -369,7 +536,7 @@ class VoteEngine:
     def _temperature_scale(probability: float, temperature: float) -> float:
         """Calibrate probability using sigmoid(logit(p) / T)."""
 
-        p = min(1.0 - 1e-6, max(1e-6, probability))
+        p = min(0.99, max(0.01, probability))
         logit = math.log(p / (1.0 - p))
         adjusted = logit / temperature
         return 1.0 / (1.0 + math.exp(-adjusted))
@@ -418,3 +585,28 @@ class VoteEngine:
             predicted_group_answer=predicted,
             reasoning="Fallback generic heuristic.",
         )
+
+    async def _emit_votes(
+        self,
+        event_sink: EventSink | None,
+        outputs: list[AgentOutput],
+    ) -> None:
+        """Emit vote events to an external sink."""
+
+        if event_sink is None:
+            return
+
+        for output in outputs:
+            await event_sink(
+                "agent_output",
+                {
+                    "agent_id": output.agent_id,
+                    "agent_model": output.agent_model,
+                    "role": output.role,
+                    "faction": "vote",
+                    "round_number": output.round_number,
+                    "content": output.content,
+                    "confidence": output.confidence,
+                    "predicted_group_answer": output.predicted_group_answer,
+                },
+            )

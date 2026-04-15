@@ -47,6 +47,7 @@ describe("agora", () => {
     recipient: anchor.web3.PublicKey,
     threshold = 60,
     agentCount = 3,
+    mechanism = 0,
   ): Promise<{ taskPda: anchor.web3.PublicKey; vaultPda: anchor.web3.PublicKey }> => {
     const taskPda = deriveTaskPda(taskId);
     const vaultPda = deriveVaultPda(taskId);
@@ -54,7 +55,7 @@ describe("agora", () => {
     await program.methods
       .initializeTask(
         [...taskId] as unknown as number[],
-        0,
+        mechanism,
         [...taskId] as unknown as number[],
         threshold,
         agentCount,
@@ -329,6 +330,37 @@ describe("agora", () => {
       failedHigh = true;
     }
     expect(failedHigh).to.equal(true);
+  });
+
+  it("fails with invalid mechanism", async () => {
+    const taskId = taskKey("invalid-mechanism");
+    const recipient = anchor.web3.Keypair.generate();
+
+    let failed = false;
+    try {
+      await initializeTask(taskId, new anchor.BN(0), recipient.publicKey, 60, 3, 5);
+    } catch {
+      failed = true;
+    }
+
+    expect(failed).to.equal(true);
+  });
+
+  it("fails with default recipient", async () => {
+    const taskId = taskKey("default-recipient");
+
+    let failed = false;
+    try {
+      await initializeTask(
+        taskId,
+        new anchor.BN(0),
+        anchor.web3.SystemProgram.programId,
+      );
+    } catch {
+      failed = true;
+    }
+
+    expect(failed).to.equal(true);
   });
 
   it("handles zero-payment tasks", async () => {
