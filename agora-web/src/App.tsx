@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { ThemeProvider } from "./hooks/useTheme";
 
 // Need to create these page components next
 import { DashboardLayout } from "./layouts/DashboardLayout";
@@ -37,9 +38,11 @@ function AppRoutes() {
 
 function App() {
   return (
-    <AuthProvider>
-      <AppRoutes />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <AppRoutes />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 

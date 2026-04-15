@@ -8,6 +8,7 @@ import { InteractiveCodeBlock } from '../components/landing/InteractiveCodeBlock
 import { MartingaleViz } from '../components/landing/MartingaleViz';
 import { AgoraFixViz } from '../components/landing/AgoraFixViz';
 import { PaperSection, type PaperCardProps } from '../components/landing/PaperCard';
+import { ThemeToggle } from '../components/ui/ThemeToggle';
 
 // Scroll-reveal wrapper — applies to all below-fold sections
 function Reveal({ children, delay = 0, className = '' }: {
@@ -85,9 +86,12 @@ export function LoginPage() {
         {/* NAV */}
         <header className="flex justify-between items-center max-w-[1200px] mx-auto w-full z-20 py-6">
           <div className="wordmark text-2xl tracking-widest">AGORA</div>
-          <button onClick={signIn} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
-            {isLoading ? 'Connecting...' : 'Sign In'}
-          </button>
+          <div className="flex items-center gap-4">
+            <ThemeToggle />
+            <button onClick={signIn} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
+              {isLoading ? 'Connecting...' : 'Sign In'}
+            </button>
+          </div>
         </header>
 
         {/* HERO CONTENT — 2-col on md+, stacked on mobile */}

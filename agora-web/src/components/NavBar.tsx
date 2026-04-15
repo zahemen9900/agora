@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { LogOut, User as UserIcon } from 'lucide-react';
+import { ThemeToggle } from './ui/ThemeToggle';
 
 export function NavBar() {
   const { user, signOut } = useAuth();
@@ -45,6 +46,7 @@ export function NavBar() {
       </div>
 
       <div className="flex items-center justify-end w-auto md:w-[200px] gap-4">
+        <ThemeToggle />
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-full bg-elevated border border-border-subtle flex items-center justify-center">
             <UserIcon size={14} className="text-text-secondary" />
