@@ -14,6 +14,7 @@ class TaskCreateRequest(BaseModel):
     task: str = Field(min_length=1)
     agent_count: int = Field(default=3, ge=1, le=10)
     stakes: float = Field(default=0.0, ge=0.0)
+    mechanism_override: Literal["debate", "vote", "delphi", "moa"] | None = None
 
 
 class TaskCreateResponse(BaseModel):
@@ -45,6 +46,8 @@ class DeliberationResultResponse(BaseModel):
     quorum_reached: bool
     merkle_root: str | None = None
     decision_hash: str | None = None
+    agent_count: int = Field(ge=1, default=1)
+    agent_models_used: list[str] = Field(default_factory=list)
     total_tokens_used: int = Field(ge=0, default=0)
     latency_ms: float = Field(ge=0.0, default=0.0)
     round_count: int = Field(ge=1, default=1)
@@ -60,6 +63,7 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     task_text: str
     mechanism: str
+    mechanism_override: Literal["debate", "vote", "delphi", "moa"] | None = None
     status: Literal["pending", "in_progress", "completed", "failed", "paid"]
     selector_reasoning: str
     selector_reasoning_hash: str

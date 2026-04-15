@@ -90,6 +90,11 @@ async def test_local_api_e2e_flow(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
                 mechanism_switches=0,
                 merkle_root=merkle_root,
                 transcript_hashes=transcript_hashes,
+                agent_models_used=[
+                    "gemini-3.1-pro-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3-flash-preview",
+                ],
                 convergence_history=[],
                 locked_claims=[],
                 total_tokens_used=24,
@@ -148,6 +153,12 @@ async def test_local_api_e2e_flow(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
     run_response = await task_routes.run_task(task_id, user)
     assert run_response.merkle_root == merkle_root
     assert run_response.quorum_reached is True
+    assert run_response.agent_count == 3
+    assert run_response.agent_models_used == [
+        "gemini-3.1-pro-preview",
+        "moonshotai/kimi-k2-thinking",
+        "gemini-3-flash-preview",
+    ]
 
     status_response = await task_routes.get_task_status(task_id, user, detailed=True)
     assert status_response.solana_tx_hash == "receipt_tx"

@@ -140,6 +140,7 @@ class DeliberationResult(BaseModel):
     mechanism_switches: int = Field(ge=0)
     merkle_root: str
     transcript_hashes: list[str]
+    agent_models_used: list[str] = Field(default_factory=list)
     convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
     locked_claims: list[VerifiedClaim] = Field(default_factory=list)
     total_tokens_used: int = Field(ge=0)

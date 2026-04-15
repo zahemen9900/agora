@@ -34,6 +34,9 @@ _CONFIG_ENV_KEYS = (
     "AGORA_OPENROUTER_SECRET_VERSION",
     "AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED",
     "AGORA_KIMI_MODEL",
+    "AGORA_KIMI_REASONING_EFFORT",
+    "AGORA_KIMI_REASONING_EXCLUDE",
+    "AGORA_KIMI_MAX_TOKENS",
     "GOOGLE_CLOUD_PROJECT",
 )
 
@@ -258,6 +261,29 @@ def test_openrouter_api_key_deduplicates_repeated_token(monkeypatch: pytest.Monk
     config = get_config()
 
     assert config.openrouter_api_key == valid
+
+
+def test_kimi_reasoning_defaults_and_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kimi reasoning controls should default sanely and remain overrideable."""
+
+    monkeypatch.delenv("AGORA_KIMI_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("AGORA_KIMI_REASONING_EXCLUDE", raising=False)
+    monkeypatch.delenv("AGORA_KIMI_MAX_TOKENS", raising=False)
+
+    config = get_config()
+    assert config.kimi_reasoning_effort == "low"
+    assert config.kimi_reasoning_exclude is True
+    assert config.kimi_max_tokens == 512
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_KIMI_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("AGORA_KIMI_REASONING_EXCLUDE", "false")
+    monkeypatch.setenv("AGORA_KIMI_MAX_TOKENS", "256")
+
+    config = get_config()
+    assert config.kimi_reasoning_effort == "medium"
+    assert config.kimi_reasoning_exclude is False
+    assert config.kimi_max_tokens == 256
 
 
 def test_openrouter_api_key_falls_back_to_secret_manager(

@@ -469,6 +469,12 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
 
     async def fake_post(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
         if url == "/tasks/":
+            create_payload = _kwargs.get("json")
+            assert isinstance(create_payload, dict)
+            assert create_payload.get("task") == "Should I buy Solana or BTC?"
+            assert create_payload.get("agent_count") == 3
+            assert create_payload.get("stakes") == 0.0
+            assert create_payload.get("mechanism_override") == "vote"
             return _FakeResponse({"task_id": "task-hosted-verify"})
         if url == "/tasks/task-hosted-verify/run":
             return _FakeResponse({"ok": True})

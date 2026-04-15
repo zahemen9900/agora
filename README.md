@@ -4,7 +4,13 @@ On-chain debate-or-vote arbitration for multi-agent LLM systems.
 
 AGORA takes a task, chooses a deliberation mechanism (Debate or Vote), runs multi-agent reasoning, computes convergence and quorum signals, and produces cryptographic transcript artifacts (hashes + Merkle root) that are ready for on-chain receipt submission.
 
-## Current Week 1 Status
+## Current Implementation Status
+
+Detailed implementation tracking lives in:
+
+- `.codex/Progress-update-phase2.md`
+
+### Week 1 Foundation
 
 Implemented:
 
@@ -32,10 +38,41 @@ Current execution note:
 
 - The engines retain LangGraph-compatible graph scaffolding for future integration, but the active Week 1 runtime path is still imperative Python orchestration rather than full StateGraph execution.
 
-Not implemented yet:
+### Phase 2 Additions
+
+Implemented on top of the Week 1 foundation:
+
+- Real task lifecycle API:
+  - `POST /tasks/`
+  - `POST /tasks/{id}/run`
+  - `GET /tasks/`
+  - `GET /tasks/{id}`
+  - `GET /tasks/{id}/stream`
+  - `POST /tasks/{id}/pay`
+- Persisted selector decisions and replay-safe execution through stored task state.
+- Canonical SSE event envelopes with replay + live streaming:
+  - `event`
+  - `data`
+  - `timestamp`
+- Benchmark runner, curated datasets, and validation artifact generation under `benchmarks/`.
+- SDK surface for local and hosted execution, plus strict receipt verification.
+- Auth-first backend/frontend integration with verified JWT flow and async access-token retrieval.
+- Provider hardening for dotenv, Secret Manager fallback, and late-bound credential resolution.
+- 4-model ensemble support in hosted/demo flows with explicit `agent_models_used` reporting.
+- Kimi K2 Thinking integrated as an active ensemble participant:
+  - vote diversity tier for 4-agent runs
+  - debate cross-exam / devil's-advocate role
+  - exposed in runtime/API result metadata
+- Hosted mechanism forcing supports either:
+  - request payload `mechanism_override=vote|debate`
+  - env fallback `AGORA_API_FORCE_MECHANISM=vote|debate`
+
+### Still Deferred / Not Implemented Yet
 
 - Real Solana integration (currently stubbed).
 - Full Delphi and MoA engines (currently stubs for later phases).
+- Full LangGraph StateGraph execution as the primary runtime path.
+- Final production packaging/publication work for the SDK release channel.
 
 ## End-to-End Runtime Flow
 
@@ -152,6 +189,9 @@ What it covers:
 - Runs a local orchestrator smoke task (your side)
 - Runs direct Gemini GenAI SDK smoke checks on configured Flash/Pro models
 - Runs direct Kimi/OpenRouter SDK smoke checks on configured Kimi model
+- Runs a strict all-model 4-agent vote smoke when `RUN_ALL_MODELS_E2E=always`
+- Verifies Kimi appears as an active vote tier and debate challenger, not just a fallback
+- Prints `agent_models_used` so the participating ensemble is visible in demo output
 - Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
 - Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
 - Isolates Gemini API keys from the test phase so `pytest` stays deterministic and fast
@@ -165,9 +205,18 @@ Optional controls:
 - `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
 - `RUN_CLAUDE_SMOKE=always|auto|never`: force or skip Claude SDK smoke checks
 - `RUN_KIMI_SMOKE=always|auto|never`: force or skip Kimi/OpenRouter SDK smoke checks
-- `DEMO_AGENT_COUNT`: orchestrator smoke agent count (defaults to 4 when Kimi smoke is enabled)
+- `RUN_ALL_MODELS_E2E=always|auto|never`: force or skip one local 4-provider vote ensemble run
+- `RUN_HOSTED_API_E2E=always|auto|never`: require hosted `/tasks` flow or downgrade hosted failures to a warning in auto mode
+- `RUN_HOSTED_ALL_MODELS_E2E=always|never`: require hosted API to report the full 4-model vote ensemble
+- `AGORA_API_FORCE_MECHANISM=vote|debate`: fallback mechanism pin for hosted strict demo validation
+- Task create payload field `mechanism_override=vote|debate`: request-level mechanism pin for hosted runs
+- `RUN_ORCHESTRATOR_SMOKE=always|auto|never`: control the natural selector-driven local orchestrator smoke
+- `DEMO_AGENT_COUNT`: orchestrator/hosted smoke agent count (defaults to 4 unless both Kimi and all-model smokes are disabled)
+- `DEMO_ORCHESTRATOR_TIMEOUT_SECONDS`, `DEMO_MODEL_TIMEOUT_SECONDS`, `DEMO_ALL_MODELS_TIMEOUT_SECONDS`: cap live provider waits so demo failures are clean
+- `DEMO_ALL_MODELS_MAX_ATTEMPTS`: retry the strict 4-provider vote smoke on transient provider failures
 - `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3-flash-preview`)
 - `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3.1-pro-preview`)
+- `DEMO_CLAUDE_MODEL`: default Claude model used by script (defaults to `claude-sonnet-4-6`)
 - `DEMO_KIMI_MODEL`: default Kimi model used by script (defaults to `moonshotai/kimi-k2-thinking`)
 - `PYTHON_BIN`: custom Python executable path
 
@@ -185,6 +234,15 @@ AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
 
 # Enforce direct Gemini 3-series validation in demo
 RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh
+
+# Enforce Kimi via OpenRouter validation in demo
+RUN_KIMI_SMOKE=always ./scripts/week1_demo.sh
+
+# Prove Gemini Pro, Kimi, Gemini Flash, and Claude all run in one local vote ensemble
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
+
+# Keep the demo local-only if hosted auth/runtime is drifting
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_API_E2E=never ./scripts/week1_demo.sh
 
 # Pass custom deliberation query from CLI
 ./scripts/week1_demo.sh --query "Should our team choose debate or vote for incident response decisions?"
@@ -205,15 +263,20 @@ python -m pytest -s -q
 export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
 export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3)"
-RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_KIMI_SMOKE=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+
+# Optional hosted strict all-model check after deploying the API with AGORA_API_FORCE_MECHANISM=vote
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 ```
 
 Expected demo summary:
 
 - `Python lint/tests`: `PASS`
+- `Orchestrator smoke`: `PASS` or `SKIPPED` in auto mode if a provider stalls
 - `Gemini 3 SDK smoke`: `PASS`
 - `Claude SDK smoke`: `PASS`
 - `Kimi K2 SDK smoke`: `PASS`
+- `All-model E2E smoke`: `PASS`
 - `Local Anchor checks`: `PASS`
 - `Hosted API E2E`: `PASS`
 
@@ -320,6 +383,7 @@ Optional model overrides:
 - AGORA_OPENROUTER_HTTP_REFERER (optional attribution header)
 - AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
 - AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; keeps compatibility with legacy X-Title)
+- AGORA_API_FORCE_MECHANISM (default: empty; set `vote` on the hosted API to pin the 4-model demo run)
 
 Anthropic Secret Manager fetch controls:
 

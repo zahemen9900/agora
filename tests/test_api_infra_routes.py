@@ -233,6 +233,12 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         mechanism_switches=0,
         merkle_root="receipt-root",
         transcript_hashes=["leaf-1", "leaf-2"],
+        agent_models_used=[
+            "gemini-3.1-pro-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3-flash-preview",
+            "claude-sonnet-4-6",
+        ],
         convergence_history=[],
         locked_claims=[],
         total_tokens_used=42,
@@ -306,6 +312,13 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
 
         run_resp = await task_routes.run_task(task_id, _override_user())
         assert run_resp.final_answer == "Ship it."
+        assert run_resp.agent_count == 5
+        assert run_resp.agent_models_used == [
+            "gemini-3.1-pro-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3-flash-preview",
+            "claude-sonnet-4-6",
+        ]
 
         status_resp = await task_routes.get_task_status(task_id, _override_user())
         assert status_resp.status == "completed"
@@ -462,6 +475,181 @@ async def test_create_task_continues_when_chain_init_fails_in_non_strict_mode(
         fetched = await task_routes.get_task_status(create.task_id, _override_user())
         assert fetched.status == "pending"
         assert fetched.solana_tx_hash is None
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_run_task_honors_env_forced_mechanism_and_serializes_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "forced-mechanism-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    captured: dict[str, object] = {}
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _ForcedMechanismOrchestrator:
+        def __init__(self, agent_count: int):
+            captured["agent_count"] = agent_count
+            self.agent_count = agent_count
+            self.selector = _FakeSelector()
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | MechanismType | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, event_sink
+            captured["task"] = task
+            captured["mechanism_override"] = mechanism_override
+            return DeliberationResult(
+                task=task,
+                mechanism_used=MechanismType.VOTE,
+                mechanism_selection=selection,
+                final_answer="four-model answer",
+                confidence=0.88,
+                quorum_reached=True,
+                round_count=1,
+                agent_count=4,
+                mechanism_switches=0,
+                merkle_root="real-root",
+                transcript_hashes=["h1", "h2", "h3", "h4"],
+                agent_models_used=[
+                    "gemini-3.1-pro-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3-flash-preview",
+                    "claude-sonnet-4-6",
+                ],
+                convergence_history=[],
+                locked_claims=[],
+                total_tokens_used=44,
+                total_latency_ms=123.0,
+                timestamp=datetime.now(UTC),
+            )
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "api_force_mechanism", "vote")
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _ForcedMechanismOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="run real mode", agent_count=4, stakes=0.0),
+            _override_user(),
+        )
+        task_id = create.task_id
+
+        run_resp = await task_routes.run_task(task_id, _override_user())
+
+        assert captured["agent_count"] == 4
+        assert captured["mechanism_override"] == MechanismType.VOTE
+        assert run_resp.mechanism == "vote"
+        assert run_resp.agent_count == 4
+        assert run_resp.agent_models_used == [
+            "gemini-3.1-pro-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3-flash-preview",
+            "claude-sonnet-4-6",
+        ]
+        assert run_resp.total_tokens_used == 44
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_run_task_honors_request_mechanism_override_without_env_force(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "request-override-data"))
+    captured: dict[str, object] = {}
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+
+    class _RequestOverrideOrchestrator:
+        def __init__(self, agent_count: int):
+            captured["agent_count"] = agent_count
+            self.agent_count = agent_count
+            self.selector = _FakeSelector()
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | MechanismType | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, event_sink
+            captured["task"] = task
+            captured["mechanism_override"] = mechanism_override
+            selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+            return DeliberationResult(
+                task=task,
+                mechanism_used=MechanismType.VOTE,
+                mechanism_selection=selection,
+                final_answer="request override answer",
+                confidence=0.91,
+                quorum_reached=True,
+                round_count=1,
+                agent_count=4,
+                mechanism_switches=0,
+                merkle_root="request-override-root",
+                transcript_hashes=["h1", "h2", "h3", "h4"],
+                agent_models_used=[
+                    "gemini-3.1-pro-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3-flash-preview",
+                    "claude-sonnet-4-6",
+                ],
+                convergence_history=[],
+                locked_claims=[],
+                total_tokens_used=45,
+                total_latency_ms=111.0,
+                timestamp=datetime.now(UTC),
+            )
+
+        async def execute_selection(self, **_kwargs):
+            raise AssertionError("execute_selection should not be used when override is persisted")
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "api_force_mechanism", "")
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _RequestOverrideOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(
+                task="run request override",
+                agent_count=4,
+                stakes=0.0,
+                mechanism_override="vote",
+            ),
+            _override_user(),
+        )
+        task_id = create.task_id
+
+        assert create.mechanism == "vote"
+
+        run_resp = await task_routes.run_task(task_id, _override_user())
+
+        assert captured["agent_count"] == 4
+        assert captured["mechanism_override"] == MechanismType.VOTE
+        assert run_resp.mechanism == "vote"
+        assert run_resp.agent_count == 4
+        assert run_resp.agent_models_used == [
+            "gemini-3.1-pro-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3-flash-preview",
+            "claude-sonnet-4-6",
+        ]
     finally:
         task_routes._store = None
 

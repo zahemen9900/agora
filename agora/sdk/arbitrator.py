@@ -73,13 +73,17 @@ class AgoraArbitrator:
                 agents=agents,
             )
 
+        create_payload: dict[str, Any] = {
+            "task": task,
+            "agent_count": self.config.agent_count,
+            "stakes": stakes,
+        }
+        if self.config.mechanism is not None:
+            create_payload["mechanism_override"] = self.config.mechanism
+
         create_response = await self._client.post(
             "/tasks/",
-            json={
-                "task": task,
-                "agent_count": self.config.agent_count,
-                "stakes": stakes,
-            },
+            json=create_payload,
             headers=self._headers(),
         )
         create_response.raise_for_status()
@@ -227,6 +231,7 @@ class AgoraArbitrator:
             mechanism_switches=int(result_payload.get("mechanism_switches", 0)),
             merkle_root=str(result_payload["merkle_root"]),
             transcript_hashes=list(result_payload.get("transcript_hashes", [])),
+            agent_models_used=list(result_payload.get("agent_models_used", [])),
             convergence_history=list(result_payload.get("convergence_history", [])),
             locked_claims=list(result_payload.get("locked_claims", [])),
             total_tokens_used=int(result_payload.get("total_tokens_used", 0)),

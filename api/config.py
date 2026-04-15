@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +21,10 @@ class Settings(BaseSettings):
 
     google_cloud_project: str = ""
     gcs_bucket: str = "agora-data"
+    api_force_mechanism: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_API_FORCE_MECHANISM", "API_FORCE_MECHANISM"),
+    )
 
     auth_required: bool = True
     strict_chain_writes: bool = False

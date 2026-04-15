@@ -151,6 +151,9 @@ class VoteEngine:
             mechanism_switches=0,
             merkle_root=state.merkle_root,
             transcript_hashes=state.transcript_hashes,
+            agent_models_used=list(
+                dict.fromkeys(output.agent_model for output in vote_outputs)
+            ),
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=token_counter,

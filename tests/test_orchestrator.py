@@ -41,6 +41,7 @@ async def test_full_pipeline_returns_populated_result() -> None:
     assert len(result.transcript_hashes) > 0
     assert result.total_tokens_used >= 0
     assert result.total_latency_ms >= 0.0
+    assert result.agent_models_used
 
 
 @pytest.mark.asyncio
@@ -54,8 +55,8 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
         del task_text, agent_count, stakes
         return selection
 
-    async def fake_debate_run(task: str, selection):
-        del task, selection
+    async def fake_debate_run(task: str, selection, allow_switch: bool = True):
+        del task, selection, allow_switch
         debate_state = DebateState(
             task="switch test",
             task_features=make_features("reasoning"),
@@ -147,8 +148,8 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             reason="quorum_not_reached",
         )
 
-    async def fake_debate_run(task: str, selection):
-        del task
+    async def fake_debate_run(task: str, selection, allow_switch: bool = True):
+        del task, allow_switch
         debate_state = DebateState(
             task="switch test",
             task_features=make_features("reasoning"),
@@ -189,6 +190,60 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
 
     assert result.mechanism_used == MechanismType.DEBATE
     assert result.mechanism_switches == 1
+
+
+@pytest.mark.asyncio
+async def test_mechanism_override_pins_vote_without_switch(monkeypatch) -> None:
+    """Pinned mechanism overrides should not auto-switch into the other engine."""
+
+    orchestrator = AgoraOrchestrator(agent_count=4)
+
+    async def fail_debate_run(*_args, **_kwargs):
+        raise AssertionError("Debate engine should not run for a forced vote override")
+
+    async def fake_vote_run(task: str, selection):
+        del task
+        vote_state = VoteState(task="force vote", task_features=make_features("reasoning"))
+        result = DeliberationResult(
+            task="force vote",
+            mechanism_used=MechanismType.VOTE,
+            mechanism_selection=selection,
+            final_answer="Option A",
+            confidence=0.4,
+            quorum_reached=False,
+            round_count=1,
+            agent_count=4,
+            mechanism_switches=0,
+            merkle_root="vote-root",
+            transcript_hashes=["v1", "v2", "v3", "v4"],
+            agent_models_used=[
+                "gemini-3.1-pro-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3-flash-preview",
+                "claude-sonnet-4-6",
+            ],
+            convergence_history=[],
+            locked_claims=[],
+            total_tokens_used=20,
+            total_latency_ms=10.0,
+            timestamp=datetime.now(UTC),
+        )
+        return VoteEngineOutcome(
+            state=vote_state,
+            result=result,
+            switch_to_debate=True,
+            reason="quorum_not_reached",
+        )
+
+    monkeypatch.setattr(orchestrator.debate_engine, "run", fail_debate_run)
+    monkeypatch.setattr(orchestrator.vote_engine, "run", fake_vote_run)
+
+    result = await orchestrator.run("force vote", mechanism_override=MechanismType.VOTE)
+
+    assert result.mechanism_used == MechanismType.VOTE
+    assert result.mechanism_selection.mechanism == MechanismType.VOTE
+    assert result.mechanism_switches == 0
+    assert "moonshotai/kimi-k2-thinking" in result.agent_models_used
 
 
 @pytest.mark.asyncio

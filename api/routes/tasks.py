@@ -11,7 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from agora.runtime.orchestrator import AgoraOrchestrator
-from agora.types import DeliberationResult
+from agora.selector.features import extract_features
+from agora.types import DeliberationResult, MechanismSelection, MechanismType
 from api.auth import AuthenticatedUser, get_current_user
 from api.config import settings
 from api.models import (
@@ -66,6 +67,8 @@ def _result_to_response(task_id: str, result: DeliberationResult) -> Deliberatio
         quorum_reached=result.quorum_reached,
         merkle_root=result.merkle_root,
         decision_hash=_hash_text(result.final_answer),
+        agent_count=result.agent_count,
+        agent_models_used=result.agent_models_used,
         total_tokens_used=result.total_tokens_used,
         latency_ms=result.total_latency_ms,
         round_count=result.round_count,
@@ -95,6 +98,75 @@ def _event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any
         data=event_data,
         timestamp=datetime.now(UTC),
     ).model_dump(mode="json")
+
+
+def _forced_mechanism() -> MechanismType | None:
+    """Return an env-pinned mechanism for hosted demo validation when configured."""
+
+    configured = settings.api_force_mechanism.strip().lower()
+    if not configured:
+        return None
+    try:
+        return MechanismType(configured)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unsupported AGORA_API_FORCE_MECHANISM={settings.api_force_mechanism!r}",
+        ) from exc
+
+
+def _request_mechanism_override(request: TaskCreateRequest) -> MechanismType | None:
+    """Resolve optional request-level mechanism override from task create payload."""
+
+    if request.mechanism_override is None:
+        return None
+    return MechanismType(request.mechanism_override)
+
+
+async def _pinned_selection(
+    *,
+    task_text: str,
+    agent_count: int,
+    stakes: float,
+    mechanism: MechanismType,
+) -> MechanismSelection:
+    """Build deterministic selector metadata for an explicit mechanism override."""
+
+    reasoning = f"Mechanism override applied at task creation: forced {mechanism.value} execution."
+    features = await extract_features(
+        task_text=task_text,
+        agent_count=agent_count,
+        stakes=stakes,
+    )
+    return MechanismSelection(
+        mechanism=mechanism,
+        confidence=1.0,
+        reasoning=reasoning,
+        reasoning_hash=_hash_text(reasoning),
+        bandit_recommendation=mechanism,
+        bandit_confidence=1.0,
+        task_features=features,
+    )
+
+
+async def _stored_selection(task: TaskStatusResponse) -> MechanismSelection:
+    """Rebuild selector metadata from persisted task state without re-running selection."""
+
+    mechanism = MechanismType(task.mechanism)
+    features = await extract_features(
+        task_text=task.task_text,
+        agent_count=task.agent_count,
+        stakes=task.payment_amount,
+    )
+    return MechanismSelection(
+        mechanism=mechanism,
+        confidence=task.selector_confidence,
+        reasoning=task.selector_reasoning,
+        reasoning_hash=task.selector_reasoning_hash,
+        bandit_recommendation=mechanism,
+        bandit_confidence=task.selector_confidence,
+        task_features=features,
+    )
 
 
 async def persist_and_emit(
@@ -127,12 +199,24 @@ async def create_task(
 
     await store.upsert_user(user.id, user.email, user.display_name)
 
+    requested_override = _request_mechanism_override(request)
+    forced_override = _forced_mechanism()
+    effective_override = forced_override or requested_override
+
     orchestrator = AgoraOrchestrator(agent_count=request.agent_count)
-    selection = await orchestrator.selector.select(
-        task_text=request.task,
-        agent_count=request.agent_count,
-        stakes=request.stakes,
-    )
+    if effective_override is None:
+        selection = await orchestrator.selector.select(
+            task_text=request.task,
+            agent_count=request.agent_count,
+            stakes=request.stakes,
+        )
+    else:
+        selection = await _pinned_selection(
+            task_text=request.task,
+            agent_count=request.agent_count,
+            stakes=request.stakes,
+            mechanism=effective_override,
+        )
 
     init_tx_hash: str | None = None
     init_explorer_url: str | None = None
@@ -172,6 +256,7 @@ async def create_task(
         task_id=task_id,
         task_text=request.task,
         mechanism=selection.mechanism.value,
+        mechanism_override=effective_override.value if effective_override is not None else None,
         status="pending",
         selector_reasoning=selection.reasoning,
         selector_reasoning_hash=selection.reasoning_hash,
@@ -193,6 +278,9 @@ async def create_task(
         event_data={
             "task_id": task_id,
             "mechanism": selection.mechanism.value,
+            "mechanism_override": (
+                effective_override.value if effective_override is not None else None
+            ),
             "confidence": selection.confidence,
             "reasoning": selection.reasoning,
             "selector_reasoning_hash": selection.reasoning_hash,
@@ -243,12 +331,34 @@ async def run_task(
 
     orchestrator = AgoraOrchestrator(agent_count=task.agent_count)
     try:
-        result = await orchestrator.run(
-            task=task.task_text,
-            stakes=task.payment_amount,
-            mechanism_override=task.mechanism,
-            event_sink=runtime_event_sink,
+        stored_override = (
+            MechanismType(task.mechanism_override) if task.mechanism_override else None
         )
+        forced_mechanism = _forced_mechanism()
+        effective_override = forced_mechanism or stored_override
+
+        if effective_override is not None:
+            result = await orchestrator.run(
+                task=task.task_text,
+                stakes=task.payment_amount,
+                mechanism_override=effective_override,
+                event_sink=runtime_event_sink,
+            )
+        elif hasattr(orchestrator, "execute_selection"):
+            selection = await _stored_selection(task)
+            result = await orchestrator.execute_selection(
+                task=task.task_text,
+                selection=selection,
+                event_sink=runtime_event_sink,
+                allow_switch=True,
+            )
+        else:
+            result = await orchestrator.run(
+                task=task.task_text,
+                stakes=task.payment_amount,
+                mechanism_override=task.mechanism,
+                event_sink=runtime_event_sink,
+            )
     except Exception as exc:
         task.status = "failed"
         await store.save_task(user.id, task_id, task.model_dump(mode="json"))
@@ -329,6 +439,7 @@ async def run_task(
                     )
 
     task.status = "completed"
+    task.mechanism = result_response.mechanism
     task.quorum_reached = result_response.quorum_reached
     task.merkle_root = result_response.merkle_root
     task.decision_hash = result_response.decision_hash

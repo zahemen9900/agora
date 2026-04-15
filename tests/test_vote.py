@@ -30,7 +30,7 @@ def _has_openrouter_key() -> bool:
         return False
 
 
-_OPENROUTER_KEY_PRESENT = _has_openrouter_key()
+_OPENROUTER_KEY_PRESENT = _PAID_INTEGRATION_ENABLED and _has_openrouter_key()
 
 
 class _FailingCaller:
@@ -62,6 +62,19 @@ class _RawKimiCaller:
     async def call(self, **kwargs):
         self.calls.append(kwargs)
         return "Kimi raw answer", {"input_tokens": 8, "output_tokens": 5, "latency_ms": 15.0}
+
+
+class _SuccessfulVoteCaller:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    async def call(self, **_kwargs):
+        return _VoteResponse(
+            answer="Paris",
+            confidence=0.84,
+            predicted_group_answer="Paris",
+            reasoning=f"{self.model} voted for Paris.",
+        ), {"input_tokens": 6, "output_tokens": 4, "latency_ms": 10.0}
 
 
 def test_isp_aggregation_all_agents_agree() -> None:
@@ -176,6 +189,30 @@ async def test_quorum_check_threshold_works() -> None:
     assert outcome.state.quorum_reached is True
     assert outcome.result.quorum_reached is True
     assert outcome.result.final_answer != ""
+
+
+@pytest.mark.asyncio
+async def test_four_agent_vote_records_all_provider_models() -> None:
+    """The 4-agent vote path should expose the ordered provider ensemble."""
+
+    engine = VoteEngine(
+        agent_count=4,
+        quorum_threshold=0.6,
+        flash_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
+        pro_agent=_SuccessfulVoteCaller("gemini-3.1-pro-preview"),
+        claude_agent=_SuccessfulVoteCaller("claude-sonnet-4-6"),
+        kimi_agent=_SuccessfulVoteCaller("moonshotai/kimi-k2-thinking"),
+    )
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
+
+    outcome = await engine.run("Answer in one word: Paris or Lyon?", selection)
+
+    assert outcome.result.agent_models_used == [
+        "gemini-3.1-pro-preview",
+        "moonshotai/kimi-k2-thinking",
+        "gemini-3-flash-preview",
+        "claude-sonnet-4-6",
+    ]
 
 
 @pytest.mark.asyncio

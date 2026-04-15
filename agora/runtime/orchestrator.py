@@ -98,11 +98,12 @@ class AgoraOrchestrator:
             bandit_confidence=selection.bandit_confidence,
         )
 
-        result = await self._execute_mechanism(
+        result = await self.execute_selection(
             task=task,
             selection=selection,
             event_sink=event_sink,
             agents=agents,
+            allow_switch=mechanism_override is None,
         )
 
         receipt = self.hasher.build_receipt(
@@ -120,6 +121,29 @@ class AgoraOrchestrator:
             leaf_count=receipt["leaf_count"],
         )
         return result
+
+    async def execute_selection(
+        self,
+        *,
+        task: str,
+        selection: MechanismSelection,
+        event_sink: EventSink | None = None,
+        agents: Sequence[Callable[..., Any]] | None = None,
+        allow_switch: bool = True,
+    ) -> DeliberationResult:
+        """Execute a precomputed selector decision.
+
+        This is used by the API task lifecycle so we can honor the selector result
+        computed during task creation without re-running selection on task execution.
+        """
+
+        return await self._execute_mechanism(
+            task=task,
+            selection=selection,
+            event_sink=event_sink,
+            agents=agents,
+            allow_switch=allow_switch,
+        )
 
     async def run_and_learn(
         self,
@@ -221,6 +245,7 @@ class AgoraOrchestrator:
         selection: MechanismSelection,
         event_sink: EventSink | None = None,
         agents: Sequence[Callable[..., Any]] | None = None,
+        allow_switch: bool = True,
     ) -> DeliberationResult:
         """Execute selected mechanism with fallback/switch handling."""
 
@@ -230,8 +255,9 @@ class AgoraOrchestrator:
                 debate_run_kwargs["event_sink"] = event_sink
             if agents is not None:
                 debate_run_kwargs["custom_agents"] = agents
+            debate_run_kwargs["allow_switch"] = allow_switch
             debate_outcome = await self.debate_engine.run(**debate_run_kwargs)
-            if debate_outcome.switch_to_vote:
+            if allow_switch and debate_outcome.switch_to_vote:
                 await self._emit_event(
                     event_sink,
                     "mechanism_switch",
@@ -263,7 +289,7 @@ class AgoraOrchestrator:
             if agents is not None:
                 vote_run_kwargs["custom_agents"] = agents
             vote_outcome = await self.vote_engine.run(**vote_run_kwargs)
-            if vote_outcome.switch_to_debate:
+            if allow_switch and vote_outcome.switch_to_debate:
                 await self._emit_event(
                     event_sink,
                     "mechanism_switch",

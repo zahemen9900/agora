@@ -202,6 +202,7 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+
 # Infra scaffold artifacts
 contract/node_modules/
 contract/target/
@@ -221,3 +222,5 @@ agora-web/read_pdf.js
 docs/*.pdf
 node_modules
 .env.local
+
+.github/agents

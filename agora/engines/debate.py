@@ -144,6 +144,7 @@ class DebateEngine:
         selection: MechanismSelection,
         event_sink: EventSink | None = None,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
+        allow_switch: bool = True,
     ) -> DebateEngineOutcome:
         """Execute factional debate and return either result or switch signal.
 
@@ -299,7 +300,7 @@ class DebateEngine:
                     state.convergence_history,
                     current_mechanism=MechanismType.DEBATE,
                 )
-                if should_switch and suggested == MechanismType.VOTE:
+                if allow_switch and should_switch and suggested == MechanismType.VOTE:
                     state.mechanism_switches += 1
                     logger.info(
                         "debate_switch_suggested",
@@ -774,6 +775,18 @@ class DebateEngine:
 
         total_tokens = prior_tokens + int(usage["tokens"])
         total_latency_ms = prior_latency_ms + float(usage["latency_ms"])
+        agent_models_used = list(
+            dict.fromkeys(
+                [
+                    *[output.agent_model for output in state.factions.get("pro", [])],
+                    *[output.agent_model for output in state.factions.get("opp", [])],
+                    *[output.agent_model for output in state.cross_examinations],
+                    *[output.agent_model for output in state.rebuttals.get("pro", [])],
+                    *[output.agent_model for output in state.rebuttals.get("opp", [])],
+                    self._model_name("pro"),
+                ]
+            )
+        )
 
         result = DeliberationResult(
             task=state.task,
@@ -787,6 +800,7 @@ class DebateEngine:
             mechanism_switches=state.mechanism_switches,
             merkle_root=state.merkle_root,
             transcript_hashes=state.transcript_hashes,
+            agent_models_used=agent_models_used,
             convergence_history=state.convergence_history,
             locked_claims=state.locked_claims,
             total_tokens_used=total_tokens,

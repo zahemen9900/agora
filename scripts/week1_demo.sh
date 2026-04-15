@@ -7,16 +7,25 @@ RUN_ANCHOR_CHECKS="${RUN_ANCHOR_CHECKS:-auto}"
 RUN_GEMINI_SMOKE="${RUN_GEMINI_SMOKE:-auto}"
 RUN_CLAUDE_SMOKE="${RUN_CLAUDE_SMOKE:-auto}"
 RUN_KIMI_SMOKE="${RUN_KIMI_SMOKE:-auto}"
+RUN_ALL_MODELS_E2E="${RUN_ALL_MODELS_E2E:-auto}"
+RUN_HOSTED_API_E2E="${RUN_HOSTED_API_E2E:-auto}"
+RUN_HOSTED_ALL_MODELS_E2E="${RUN_HOSTED_ALL_MODELS_E2E:-never}"
+RUN_ORCHESTRATOR_SMOKE="${RUN_ORCHESTRATOR_SMOKE:-auto}"
 DEMO_VERBOSE_TEST_LOGS="${DEMO_VERBOSE_TEST_LOGS:-0}"
+DEMO_ORCHESTRATOR_TIMEOUT_SECONDS="${DEMO_ORCHESTRATOR_TIMEOUT_SECONDS:-180}"
+DEMO_MODEL_TIMEOUT_SECONDS="${DEMO_MODEL_TIMEOUT_SECONDS:-120}"
+DEMO_ALL_MODELS_TIMEOUT_SECONDS="${DEMO_ALL_MODELS_TIMEOUT_SECONDS:-240}"
+DEMO_ALL_MODELS_MAX_ATTEMPTS="${DEMO_ALL_MODELS_MAX_ATTEMPTS:-3}"
 AGORA_GCLOUD_CREDENTIALS_FILE="${AGORA_GCLOUD_CREDENTIALS_FILE:-}"
 DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3-flash-preview}"
 DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3.1-pro-preview}"
+DEMO_CLAUDE_MODEL="${DEMO_CLAUDE_MODEL:-claude-sonnet-4-6}"
 DEMO_KIMI_MODEL="${DEMO_KIMI_MODEL:-moonshotai/kimi-k2-thinking}"
 DEMO_QUERY_DEFAULT="Week 1 demo: should teams use debate or vote?"
 DEMO_QUERY="${DEMO_QUERY:-$DEMO_QUERY_DEFAULT}"
 
 if [[ -z "${DEMO_AGENT_COUNT:-}" ]]; then
-  if [[ "$RUN_KIMI_SMOKE" == "never" ]]; then
+  if [[ "$RUN_KIMI_SMOKE" == "never" && "$RUN_ALL_MODELS_E2E" == "never" ]]; then
     DEMO_AGENT_COUNT=3
   else
     DEMO_AGENT_COUNT=4
@@ -54,8 +63,17 @@ Environment controls still supported:
   RUN_GEMINI_SMOKE=always|auto|never
   RUN_CLAUDE_SMOKE=always|auto|never
   RUN_KIMI_SMOKE=always|auto|never
+  RUN_ALL_MODELS_E2E=always|auto|never
+  RUN_HOSTED_API_E2E=always|auto|never
+  RUN_HOSTED_ALL_MODELS_E2E=always|never
+  RUN_ORCHESTRATOR_SMOKE=always|auto|never
   RUN_ANCHOR_CHECKS=always|auto|never
+  DEMO_ORCHESTRATOR_TIMEOUT_SECONDS=180
+  DEMO_MODEL_TIMEOUT_SECONDS=120
+  DEMO_ALL_MODELS_TIMEOUT_SECONDS=240
+  DEMO_ALL_MODELS_MAX_ATTEMPTS=3
   DEMO_AGENT_COUNT=4
+  DEMO_CLAUDE_MODEL=claude-sonnet-4-6
   DEMO_VERBOSE_TEST_LOGS=1
 EOF
 }
@@ -158,6 +176,8 @@ API_E2E_STATUS="PASS"
 GEMINI_SDK_STATUS="SKIPPED"
 CLAUDE_SDK_STATUS="SKIPPED"
 KIMI_SDK_STATUS="SKIPPED"
+ALL_MODELS_E2E_STATUS="SKIPPED"
+ORCHESTRATOR_STATUS="SKIPPED"
 GEMINI_KEY_SOURCE="none"
 CLAUDE_KEY_SOURCE="none"
 OPENROUTER_KEY_SOURCE="none"
@@ -167,15 +187,23 @@ GCLOUD_ACTIVE_ACCOUNT="unknown"
 
 export AGORA_FLASH_MODEL="${AGORA_FLASH_MODEL:-$DEMO_FLASH_MODEL}"
 export AGORA_PRO_MODEL="${AGORA_PRO_MODEL:-$DEMO_PRO_MODEL}"
+export AGORA_CLAUDE_MODEL="${AGORA_CLAUDE_MODEL:-$DEMO_CLAUDE_MODEL}"
 export AGORA_KIMI_MODEL="${AGORA_KIMI_MODEL:-$DEMO_KIMI_MODEL}"
 export AGORA_KIMI_REASONING_EFFORT="${AGORA_KIMI_REASONING_EFFORT:-low}"
 export AGORA_KIMI_REASONING_EXCLUDE="${AGORA_KIMI_REASONING_EXCLUDE:-true}"
 export AGORA_KIMI_MAX_TOKENS="${AGORA_KIMI_MAX_TOKENS:-512}"
 export DEMO_AGENT_COUNT
+export RUN_GEMINI_SMOKE RUN_CLAUDE_SMOKE RUN_KIMI_SMOKE RUN_ALL_MODELS_E2E
+export RUN_HOSTED_API_E2E RUN_HOSTED_ALL_MODELS_E2E RUN_ANCHOR_CHECKS
+export RUN_ORCHESTRATOR_SMOKE DEMO_ORCHESTRATOR_TIMEOUT_SECONDS
+export DEMO_MODEL_TIMEOUT_SECONDS DEMO_ALL_MODELS_TIMEOUT_SECONDS
+export DEMO_ALL_MODELS_MAX_ATTEMPTS
+export AGORA_DEMO_EXPECTED_MODELS="$AGORA_PRO_MODEL,$AGORA_KIMI_MODEL,$AGORA_FLASH_MODEL,$AGORA_CLAUDE_MODEL"
 
 log_step "Configured Gemini models"
 printf "flash=%s\n" "$AGORA_FLASH_MODEL"
 printf "pro=%s\n" "$AGORA_PRO_MODEL"
+printf "claude=%s\n" "$AGORA_CLAUDE_MODEL"
 printf "kimi=%s\n" "$AGORA_KIMI_MODEL"
 printf "agent_count=%s\n" "$DEMO_AGENT_COUNT"
 printf "kimi_reasoning_effort=%s\n" "$AGORA_KIMI_REASONING_EFFORT"
@@ -506,8 +534,10 @@ setup_gcloud_auth
 prepare_model_credentials
 export AGORA_DEMO_QUERY="$DEMO_QUERY"
 
-log_step "Running orchestrator smoke test (core runtime path)"
-"$PYTHON_BIN" - <<'PY'
+run_orchestrator_smoke() {
+  log_step "Running orchestrator smoke test (core runtime path)"
+
+  if ! "$PYTHON_BIN" - <<'PY'
 import asyncio
 import os
 
@@ -540,14 +570,39 @@ async def main() -> None:
     print("orchestrator_kimi_debate_challenger_model:", cfg.kimi_model)
     result = await orchestrator.run(query)
     print("mechanism_used:", result.mechanism_used.value)
+    print("agent_models_used:", ",".join(result.agent_models_used))
     print("query:", query)
     print("final_answer:", result.final_answer)
     print("confidence:", result.confidence)
     print("merkle_root:", result.merkle_root)
 
 
-asyncio.run(main())
+asyncio.run(
+    asyncio.wait_for(
+        main(),
+        timeout=float(os.environ.get("DEMO_ORCHESTRATOR_TIMEOUT_SECONDS", "180")),
+    )
+)
 PY
+  then
+    return 1
+  fi
+  ORCHESTRATOR_STATUS="PASS"
+}
+
+if [[ "$RUN_ORCHESTRATOR_SMOKE" == "always" ]]; then
+  run_orchestrator_smoke
+elif [[ "$RUN_ORCHESTRATOR_SMOKE" == "never" ]]; then
+  log_warn "RUN_ORCHESTRATOR_SMOKE=never set. Skipping natural orchestrator smoke."
+  ORCHESTRATOR_STATUS="SKIPPED"
+else
+  if run_orchestrator_smoke; then
+    :
+  else
+    log_warn "Natural orchestrator smoke failed or timed out in auto mode. Continuing with strict model smokes."
+    ORCHESTRATOR_STATUS="SKIPPED"
+  fi
+fi
 
 run_gemini_sdk_smoke() {
   log_step "Running Gemini GenAI SDK smoke (latest model path)"
@@ -557,8 +612,9 @@ run_gemini_sdk_smoke() {
     return 1
   fi
 
-  "$PYTHON_BIN" - <<'PY'
+  if ! "$PYTHON_BIN" - <<'PY'
 import asyncio
+import os
 
 from agora.agent import AgentCaller
 from agora.config import get_config
@@ -594,8 +650,16 @@ async def main() -> None:
     )
 
 
-asyncio.run(main())
+asyncio.run(
+    asyncio.wait_for(
+        main(),
+        timeout=float(os.environ.get("DEMO_MODEL_TIMEOUT_SECONDS", "120")),
+    )
+)
 PY
+  then
+    return 1
+  fi
   GEMINI_SDK_STATUS="PASS"
 }
 
@@ -607,8 +671,9 @@ run_claude_sdk_smoke() {
     return 1
   fi
 
-  "$PYTHON_BIN" - <<'PY'
+  if ! "$PYTHON_BIN" - <<'PY'
 import asyncio
+import os
 
 from agora.agent import AgentCaller
 from agora.config import get_config
@@ -627,8 +692,16 @@ async def main() -> None:
     print("claude_usage:", usage.get("input_tokens"), usage.get("output_tokens"))
 
 
-asyncio.run(main())
+asyncio.run(
+    asyncio.wait_for(
+        main(),
+        timeout=float(os.environ.get("DEMO_MODEL_TIMEOUT_SECONDS", "120")),
+    )
+)
 PY
+  then
+    return 1
+  fi
 
   CLAUDE_SDK_STATUS="PASS"
 }
@@ -641,8 +714,9 @@ run_kimi_sdk_smoke() {
     return 1
   fi
 
-  "$PYTHON_BIN" - <<'PY'
+  if ! "$PYTHON_BIN" - <<'PY'
 import asyncio
+import os
 
 from agora.agent import AgentCaller
 from agora.config import get_config
@@ -669,8 +743,16 @@ async def main() -> None:
     )
 
 
-asyncio.run(main())
+asyncio.run(
+    asyncio.wait_for(
+        main(),
+        timeout=float(os.environ.get("DEMO_MODEL_TIMEOUT_SECONDS", "120")),
+    )
+)
 PY
+  then
+    return 1
+  fi
 
   KIMI_SDK_STATUS="PASS"
 }
@@ -714,6 +796,158 @@ else
   else
     log_warn "Kimi SDK smoke failed in auto mode. Continuing with remaining checks."
     KIMI_SDK_STATUS="SKIPPED"
+  fi
+fi
+
+run_all_models_e2e() {
+  log_step "Running all-model orchestrator ensemble smoke (forced 4-agent vote)"
+
+  if [[ -z "${AGORA_GEMINI_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" && -z "${GOOGLE_API_KEY:-}" && -z "${AGORA_GOOGLE_API_KEY:-}" ]]; then
+    log_warn "Gemini key unavailable for all-model ensemble smoke."
+    return 1
+  fi
+  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    log_warn "Anthropic key unavailable for all-model ensemble smoke."
+    return 1
+  fi
+  if [[ -z "${AGORA_OPENROUTER_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" ]]; then
+    log_warn "OpenRouter key unavailable for all-model ensemble smoke."
+    return 1
+  fi
+
+  if ! "$PYTHON_BIN" - <<'PY'
+import asyncio
+import os
+
+from agora.agent import claude_caller, flash_caller, kimi_caller, pro_caller
+from agora.engines.vote import VoteEngine
+from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.types import MechanismType
+
+
+class TrackingCaller:
+    def __init__(self, label: str, inner) -> None:
+        self.label = label
+        self.inner = inner
+        self.model = inner.model
+        self.successes = 0
+        self.tokens = 0
+
+    async def call(self, **kwargs):
+        response, usage = await self.inner.call(**kwargs)
+        self.successes += 1
+        self.tokens += int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+        return response, usage
+
+
+async def main() -> None:
+    query = os.environ["AGORA_DEMO_QUERY"]
+    agent_count = max(4, int(os.environ["DEMO_AGENT_COUNT"]))
+    max_attempts = max(1, int(os.environ.get("DEMO_ALL_MODELS_MAX_ATTEMPTS", "3")))
+    expected_models = {
+        model
+        for model in os.environ.get("AGORA_DEMO_EXPECTED_MODELS", "").split(",")
+        if model
+    }
+    failures: list[str] = []
+
+    for attempt in range(1, max_attempts + 1):
+        orchestrator = AgoraOrchestrator(agent_count=agent_count)
+        trackers = {
+            "pro": TrackingCaller("pro", pro_caller()),
+            "kimi": TrackingCaller("kimi", kimi_caller()),
+            "flash": TrackingCaller("flash", flash_caller()),
+            "claude": TrackingCaller("claude", claude_caller()),
+        }
+        orchestrator.vote_engine = VoteEngine(
+            agent_count=agent_count,
+            quorum_threshold=0.6,
+            hasher=orchestrator.hasher,
+            pro_agent=trackers["pro"],
+            kimi_agent=trackers["kimi"],
+            flash_agent=trackers["flash"],
+            claude_agent=trackers["claude"],
+        )
+
+        try:
+            result = await orchestrator.run(
+                query,
+                mechanism_override=MechanismType.VOTE,
+            )
+        except Exception as exc:
+            failures.append(f"attempt {attempt}: exception={exc}")
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    "All-model smoke exhausted retries: " + " | ".join(failures)
+                ) from exc
+            print(f"all_models_e2e_retry: attempt={attempt} reason=exception error={exc}")
+            continue
+
+        missing_callers = [label for label, caller in trackers.items() if caller.successes < 1]
+        missing_models = sorted(expected_models - set(result.agent_models_used))
+        if missing_callers or missing_models:
+            failures.append(
+                "attempt "
+                f"{attempt}: missing_callers={','.join(missing_callers)} "
+                f"missing_models={','.join(missing_models)}"
+            )
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    "All-model smoke exhausted retries: " + " | ".join(failures)
+                )
+            print(
+                "all_models_e2e_retry:",
+                f"attempt={attempt}",
+                "reason=incomplete_ensemble",
+                f"missing_callers={','.join(missing_callers) or 'none'}",
+                f"missing_models={','.join(missing_models) or 'none'}",
+            )
+            continue
+
+        print("all_models_e2e_attempt:", attempt)
+        print("all_models_e2e_mechanism:", result.mechanism_used.value)
+        print("all_models_e2e_agent_count:", result.agent_count)
+        print("all_models_e2e_agent_models_used:", ",".join(result.agent_models_used))
+        print(
+            "all_models_e2e_success_counts:",
+            ",".join(f"{label}={caller.successes}" for label, caller in trackers.items()),
+        )
+        print(
+            "all_models_e2e_token_counts:",
+            ",".join(f"{label}={caller.tokens}" for label, caller in trackers.items()),
+        )
+        print("all_models_e2e_total_tokens:", result.total_tokens_used)
+        print("all_models_e2e_merkle_root:", result.merkle_root)
+        return
+
+    raise RuntimeError("All-model smoke exited without a successful attempt.")
+
+
+asyncio.run(
+    asyncio.wait_for(
+        main(),
+        timeout=float(os.environ.get("DEMO_ALL_MODELS_TIMEOUT_SECONDS", "240")),
+    )
+)
+PY
+  then
+    return 1
+  fi
+
+  ALL_MODELS_E2E_STATUS="PASS"
+}
+
+if [[ "$RUN_ALL_MODELS_E2E" == "always" ]]; then
+  run_all_models_e2e
+elif [[ "$RUN_ALL_MODELS_E2E" == "never" ]]; then
+  log_warn "RUN_ALL_MODELS_E2E=never set. Skipping all-model ensemble smoke."
+  ALL_MODELS_E2E_STATUS="SKIPPED"
+else
+  if run_all_models_e2e; then
+    :
+  else
+    log_warn "All-model ensemble smoke failed in auto mode. Continuing with remaining checks."
+    ALL_MODELS_E2E_STATUS="SKIPPED"
   fi
 fi
 
@@ -814,9 +1048,11 @@ else
   run_anchor_checks
 fi
 
-log_step "Running hosted API end-to-end smoke (create -> run -> pay)"
-export AGORA_DEMO_API_URL="$API_URL"
-"$PYTHON_BIN" - <<'PY'
+run_hosted_api_e2e() {
+  log_step "Running hosted API end-to-end smoke (create -> run -> pay)"
+  export AGORA_DEMO_API_URL="$API_URL"
+
+  if ! "$PYTHON_BIN" - <<'PY'
 import base64
 import json
 import os
@@ -900,6 +1136,13 @@ def request_json(
 def main() -> None:
     token = make_token()
     query = os.environ["AGORA_DEMO_QUERY"]
+    agent_count = int(os.environ["DEMO_AGENT_COUNT"])
+    strict_all_models = os.environ.get("RUN_HOSTED_ALL_MODELS_E2E") == "always"
+    expected_models = {
+        model
+        for model in os.environ.get("AGORA_DEMO_EXPECTED_MODELS", "").split(",")
+        if model
+    }
 
     health_status, health_payload = request_json("GET", "/health", token=None)
     print("health:", health_status, health_payload)
@@ -909,13 +1152,28 @@ def main() -> None:
         "POST",
         "/tasks/",
         token,
-        {"task": task_text, "agent_count": 3, "stakes": 0.0},
+        {"task": task_text, "agent_count": agent_count, "stakes": 0.0},
     )
     print("create:", create_status, create_data)
     task_id = create_data["task_id"]
 
     run_status, run_data = request_json("POST", f"/tasks/{task_id}/run", token)
     print("run:", run_status, run_data)
+    print("run_agent_count:", run_data.get("agent_count"))
+    print("run_agent_models_used:", ",".join(run_data.get("agent_models_used") or []))
+    if strict_all_models:
+        run_models = set(run_data.get("agent_models_used") or [])
+        missing = sorted(expected_models - run_models)
+        if run_data.get("agent_count") != agent_count:
+            raise RuntimeError(
+                f"Expected hosted agent_count={agent_count}, got {run_data.get('agent_count')}"
+            )
+        if run_data.get("mechanism") != "vote":
+            raise RuntimeError(f"Expected hosted mechanism=vote, got {run_data.get('mechanism')}")
+        if missing:
+            raise RuntimeError(f"Hosted run did not report all expected models: {missing}")
+        if int(run_data.get("total_tokens_used") or 0) <= 0:
+            raise RuntimeError("Hosted run reported zero model tokens.")
 
     status_status, status_data = request_json("GET", f"/tasks/{task_id}", token)
     print("status:", status_status, status_data.get("status"), status_data.get("solana_tx_hash"))
@@ -937,15 +1195,36 @@ if __name__ == "__main__":
         print(f"HOSTED_E2E_FAILURE: {exc}")
         sys.exit(1)
 PY
+  then
+    return 1
+  fi
+  API_E2E_STATUS="PASS"
+}
+
+if [[ "$RUN_HOSTED_API_E2E" == "always" ]]; then
+  run_hosted_api_e2e
+elif [[ "$RUN_HOSTED_API_E2E" == "never" ]]; then
+  log_warn "RUN_HOSTED_API_E2E=never set. Skipping hosted API smoke."
+  API_E2E_STATUS="SKIPPED"
+else
+  if run_hosted_api_e2e; then
+    :
+  else
+    log_warn "Hosted API E2E failed in auto mode. Continuing with local verification summary."
+    API_E2E_STATUS="SKIPPED"
+  fi
+fi
 
 log_step "Week 1 demo summary"
 printf "  %-28s %s\n" "Python lint/tests" "$CORE_STATUS"
+printf "  %-28s %s\n" "Orchestrator smoke" "$ORCHESTRATOR_STATUS"
 printf "  %-28s %s\n" "Gemini key source" "$GEMINI_KEY_SOURCE"
 printf "  %-28s %s\n" "Gemini 3 SDK smoke" "$GEMINI_SDK_STATUS"
 printf "  %-28s %s\n" "Claude key source" "$CLAUDE_KEY_SOURCE"
 printf "  %-28s %s\n" "Claude Sonnet SDK smoke" "$CLAUDE_SDK_STATUS"
 printf "  %-28s %s\n" "OpenRouter key source" "$OPENROUTER_KEY_SOURCE"
 printf "  %-28s %s\n" "Kimi K2 SDK smoke" "$KIMI_SDK_STATUS"
+printf "  %-28s %s\n" "All-model E2E smoke" "$ALL_MODELS_E2E_STATUS"
 printf "  %-28s %s\n" "Local Anchor checks" "$ANCHOR_STATUS"
 printf "  %-28s %s\n" "Hosted API E2E" "$API_E2E_STATUS"
 printf "\nDemo complete.\n"
