@@ -65,10 +65,11 @@ Production deploy workflow is defined in `.github/workflows/deploy.yml` and uses
 
 ### CI-Driven Deploy (Canonical)
 
-- Trigger: push to `main`
+- Trigger: push to `main` or manual `workflow_dispatch`
 - Build: Cloud Build builds `api/Dockerfile`
 - Registry: `us-central1-docker.pkg.dev/<project>/agora/agora-api:<sha>`
 - Deploy target: Cloud Run service `agora-api` in `us-central1`
+- Verification: workflow checks `GET /health` after deployment
 
 ### Manual Equivalent (Ops)
 
@@ -94,9 +95,9 @@ gcloud run deploy "${SERVICE}" \
 curl -sS "https://<cloud-run-url>/benchmarks" | head
 ```
 
-## GHCR Policy (Non-Canonical)
+## Container Registry Policy
 
-GHCR publish behavior in `.github/workflows/ci.yml` remains useful for CI observability and external pull convenience, but production rollout source of truth is Artifact Registry.
+Container image delivery is Artifact Registry only. CI no longer publishes GHCR images.
 
 ## Rollback
 
