@@ -17,6 +17,17 @@ class MechanismType(StrEnum):
     MOA = "moa"
 
 
+SUPPORTED_MECHANISMS: frozenset[MechanismType] = frozenset(
+    {MechanismType.DEBATE, MechanismType.VOTE}
+)
+
+
+def mechanism_is_supported(mechanism: MechanismType) -> bool:
+    """Return whether a mechanism is currently executable in runtime paths."""
+
+    return mechanism in SUPPORTED_MECHANISMS
+
+
 class TaskFeatures(BaseModel):
     """Structured task features used by mechanism routing logic."""
 

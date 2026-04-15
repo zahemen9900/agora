@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -12,9 +14,18 @@ from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.monitor import StateMonitor
 from agora.selector.features import extract_features
 from agora.selector.selector import AgoraSelector
-from agora.types import DeliberationResult, MechanismSelection, MechanismType
+from agora.types import (
+    SUPPORTED_MECHANISMS,
+    DeliberationResult,
+    MechanismSelection,
+    MechanismType,
+    mechanism_is_supported,
+)
 
 logger = structlog.get_logger(__name__)
+_SUPPORTED_MECHANISMS_TEXT = ", ".join(sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS))
+
+EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class AgoraOrchestrator:
@@ -55,14 +66,18 @@ class AgoraOrchestrator:
         self,
         task: str,
         stakes: float | None = None,
-        forced_mechanism: MechanismType | None = None,
+        mechanism_override: str | MechanismType | None = None,
+        event_sink: EventSink | None = None,
+        agents: Sequence[Callable[..., Any]] | None = None,
     ) -> DeliberationResult:
         """Execute full selection-to-deliberation pipeline.
 
         Args:
             task: Input task/question.
             stakes: Optional normalized stake override.
-            forced_mechanism: Optional explicit execution mechanism for demos/API runs.
+            mechanism_override: Optional forced mechanism for experiments or SDK callers.
+            event_sink: Optional async callback for runtime event emission.
+            agents: Optional local custom agent callables used instead of hosted models.
 
         Returns:
             DeliberationResult: Final deliberation artifact.
@@ -72,18 +87,13 @@ class AgoraOrchestrator:
         """
 
         normalized_stakes = self.default_stakes if stakes is None else max(0.0, min(1.0, stakes))
-        selection = (
-            await self._build_forced_selection(
-                task=task,
-                stakes=normalized_stakes,
-                forced_mechanism=forced_mechanism,
-            )
-            if forced_mechanism is not None
-            else await self.selector.select(
-                task_text=task,
-                agent_count=self.agent_count,
-                stakes=normalized_stakes,
-            )
+        if agents is not None and len(agents) < self.agent_count:
+            raise ValueError("agents must contain at least agent_count callables")
+
+        selection = await self._select_mechanism(
+            task=task,
+            normalized_stakes=normalized_stakes,
+            mechanism_override=mechanism_override,
         )
 
         logger.info(
@@ -96,10 +106,12 @@ class AgoraOrchestrator:
             forced_mechanism=forced_mechanism.value if forced_mechanism else None,
         )
 
-        result = await self._execute_mechanism(
+        result = await self.execute_selection(
             task=task,
             selection=selection,
-            forced_mechanism=forced_mechanism,
+            event_sink=event_sink,
+            agents=agents,
+            allow_switch=mechanism_override is None,
         )
 
         receipt = self.hasher.build_receipt(
@@ -118,91 +130,163 @@ class AgoraOrchestrator:
         )
         return result
 
-    async def _build_forced_selection(
+    async def execute_selection(
         self,
+        *,
         task: str,
-        stakes: float,
-        forced_mechanism: MechanismType,
-    ) -> MechanismSelection:
-        """Build deterministic selection metadata without calling the LLM selector."""
+        selection: MechanismSelection,
+        event_sink: EventSink | None = None,
+        agents: Sequence[Callable[..., Any]] | None = None,
+        allow_switch: bool = True,
+    ) -> DeliberationResult:
+        """Execute a precomputed selector decision.
 
-        reasoning = f"Forced mechanism override for demo/API execution: {forced_mechanism.value}"
-        return MechanismSelection(
-            mechanism=forced_mechanism,
-            confidence=1.0,
-            reasoning=reasoning,
-            reasoning_hash=self.hasher.hash_content(reasoning),
-            bandit_recommendation=forced_mechanism,
-            bandit_confidence=1.0,
-            task_features=await extract_features(
-                task_text=task,
-                agent_count=self.agent_count,
-                stakes=stakes,
-            ),
+        This is used by the API task lifecycle so we can honor the selector result
+        computed during task creation without re-running selection on task execution.
+        """
+
+        return await self._execute_mechanism(
+            task=task,
+            selection=selection,
+            event_sink=event_sink,
+            agents=agents,
+            allow_switch=allow_switch,
         )
 
     async def run_and_learn(
         self,
         task: str,
         ground_truth: str | None = None,
+        reward: float | None = None,
         stakes: float | None = None,
-        forced_mechanism: MechanismType | None = None,
+        mechanism_override: str | MechanismType | None = None,
+        event_sink: EventSink | None = None,
+        agents: Sequence[Callable[..., Any]] | None = None,
     ) -> DeliberationResult:
         """Run task and update selector from reward signal.
 
         Args:
             task: Input task/question.
             ground_truth: Optional expected answer for supervised reward.
+            reward: Optional explicit reward override in [0, 1].
             stakes: Optional normalized stake override.
-            forced_mechanism: Optional explicit execution mechanism for demos/API runs.
+            mechanism_override: Optional forced mechanism for evaluation runs.
+            event_sink: Optional async callback for runtime event emission.
+            agents: Optional local custom agent callables used instead of hosted models.
 
         Returns:
             DeliberationResult: Execution result.
         """
 
-        if forced_mechanism is None:
-            result = await self.run(task=task, stakes=stakes)
-        else:
-            result = await self.run(
-                task=task,
-                stakes=stakes,
-                forced_mechanism=forced_mechanism,
-            )
+        run_kwargs: dict[str, Any] = {"task": task, "stakes": stakes}
+        if mechanism_override is not None:
+            run_kwargs["mechanism_override"] = mechanism_override
+        if event_sink is not None:
+            run_kwargs["event_sink"] = event_sink
+        if agents is not None:
+            run_kwargs["agents"] = agents
 
-        if ground_truth is not None:
-            reward = (
+        result = await self.run(**run_kwargs)
+
+        if reward is not None:
+            bounded_reward = max(0.0, min(1.0, reward))
+        elif ground_truth is not None:
+            bounded_reward = (
                 1.0 if result.final_answer.strip().lower() == ground_truth.strip().lower() else 0.0
             )
         else:
-            reward = result.confidence * (1.0 if result.quorum_reached else 0.5)
+            bounded_reward = result.confidence * (1.0 if result.quorum_reached else 0.5)
 
         self.selector.update_with_mechanism(
             result.mechanism_selection,
-            reward,
+            bounded_reward,
             mechanism=result.mechanism_used,
         )
         logger.info(
             "orchestrator_bandit_updated",
-            reward=reward,
+            reward=bounded_reward,
             mechanism=result.mechanism_used.value,
             originally_selected=result.mechanism_selection.mechanism.value,
         )
         return result
 
+    async def _select_mechanism(
+        self,
+        *,
+        task: str,
+        normalized_stakes: float,
+        mechanism_override: str | MechanismType | None,
+    ) -> MechanismSelection:
+        """Resolve selector-driven or forced mechanism selection."""
+
+        if mechanism_override is None:
+            return await self.selector.select(
+                task_text=task,
+                agent_count=self.agent_count,
+                stakes=normalized_stakes,
+            )
+
+        override = (
+            mechanism_override
+            if isinstance(mechanism_override, MechanismType)
+            else MechanismType(str(mechanism_override).lower())
+        )
+        if not mechanism_is_supported(override):
+            raise ValueError(
+                f"Mechanism override '{override.value}' is not currently supported. "
+                f"Supported mechanisms: {_SUPPORTED_MECHANISMS_TEXT}."
+            )
+        features = await extract_features(
+            task_text=task,
+            agent_count=self.agent_count,
+            stakes=normalized_stakes,
+        )
+        reasoning = f"Mechanism override applied: forced {override.value} execution."
+        return MechanismSelection(
+            mechanism=override,
+            confidence=1.0,
+            reasoning=reasoning,
+            reasoning_hash=self.hasher.hash_content(reasoning),
+            bandit_recommendation=override,
+            bandit_confidence=1.0,
+            task_features=features,
+        )
+
     async def _execute_mechanism(
         self,
         task: str,
         selection: MechanismSelection,
-        forced_mechanism: MechanismType | None = None,
+        event_sink: EventSink | None = None,
+        agents: Sequence[Callable[..., Any]] | None = None,
+        allow_switch: bool = True,
     ) -> DeliberationResult:
         """Execute selected mechanism with fallback/switch handling."""
 
-        execution_mechanism = forced_mechanism or selection.mechanism
-
-        if execution_mechanism == MechanismType.DEBATE:
-            debate_outcome = await self.debate_engine.run(task=task, selection=selection)
-            if forced_mechanism is None and debate_outcome.switch_to_vote:
-                vote_outcome = await self.vote_engine.run(task=task, selection=selection)
+        if selection.mechanism == MechanismType.DEBATE:
+            debate_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+            if event_sink is not None:
+                debate_run_kwargs["event_sink"] = event_sink
+            if agents is not None:
+                debate_run_kwargs["custom_agents"] = agents
+            debate_run_kwargs["allow_switch"] = allow_switch
+            debate_outcome = await self.debate_engine.run(**debate_run_kwargs)
+            if allow_switch and debate_outcome.switch_to_vote:
+                await self._emit_event(
+                    event_sink,
+                    "mechanism_switch",
+                    {
+                        "from_mechanism": MechanismType.DEBATE.value,
+                        "to_mechanism": MechanismType.VOTE.value,
+                        "reason": debate_outcome.reason,
+                        "round_number": debate_outcome.state.round,
+                    },
+                )
+                vote_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+                if event_sink is not None:
+                    vote_run_kwargs["event_sink"] = event_sink
+                if agents is not None:
+                    vote_run_kwargs["custom_agents"] = agents
+                vote_outcome = await self.vote_engine.run(**vote_run_kwargs)
                 switched = vote_outcome.result.model_copy(
                     update={"mechanism_switches": vote_outcome.result.mechanism_switches + 1}
                 )
@@ -211,10 +295,30 @@ class AgoraOrchestrator:
                 return debate_outcome.result
             raise RuntimeError("Debate engine produced no result")
 
-        if execution_mechanism == MechanismType.VOTE:
-            vote_outcome = await self.vote_engine.run(task=task, selection=selection)
-            if forced_mechanism is None and vote_outcome.switch_to_debate:
-                debate_outcome = await self.debate_engine.run(task=task, selection=selection)
+        if selection.mechanism == MechanismType.VOTE:
+            vote_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+            if event_sink is not None:
+                vote_run_kwargs["event_sink"] = event_sink
+            if agents is not None:
+                vote_run_kwargs["custom_agents"] = agents
+            vote_outcome = await self.vote_engine.run(**vote_run_kwargs)
+            if allow_switch and vote_outcome.switch_to_debate:
+                await self._emit_event(
+                    event_sink,
+                    "mechanism_switch",
+                    {
+                        "from_mechanism": MechanismType.VOTE.value,
+                        "to_mechanism": MechanismType.DEBATE.value,
+                        "reason": vote_outcome.reason,
+                        "round_number": 1,
+                    },
+                )
+                debate_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+                if event_sink is not None:
+                    debate_run_kwargs["event_sink"] = event_sink
+                if agents is not None:
+                    debate_run_kwargs["custom_agents"] = agents
+                debate_outcome = await self.debate_engine.run(**debate_run_kwargs)
                 if debate_outcome.result is not None:
                     switched = debate_outcome.result.model_copy(
                         update={
@@ -225,10 +329,18 @@ class AgoraOrchestrator:
                     return switched
             return vote_outcome.result
 
-        # Week 1 supports debate and vote only. Route extension mechanisms safely.
-        fallback_selection = selection.model_copy(update={"mechanism": MechanismType.DEBATE})
-        debate_outcome = await self.debate_engine.run(task=task, selection=fallback_selection)
-        if debate_outcome.result is not None:
-            return debate_outcome.result
-        vote_outcome = await self.vote_engine.run(task=task, selection=fallback_selection)
-        return vote_outcome.result
+        raise ValueError(
+            f"Mechanism '{selection.mechanism.value}' is not currently supported. "
+            f"Supported mechanisms: {_SUPPORTED_MECHANISMS_TEXT}."
+        )
+
+    @staticmethod
+    async def _emit_event(
+        event_sink: EventSink | None,
+        event_type: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Emit a runtime event when a sink is configured."""
+
+        if event_sink is not None:
+            await event_sink(event_type, data)

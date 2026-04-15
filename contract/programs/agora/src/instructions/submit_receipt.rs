@@ -3,6 +3,8 @@ use anchor_lang::prelude::*;
 use crate::errors::AgoraError;
 use crate::state::{TaskAccount, TaskStatus};
 
+const MAX_MECHANISM: u8 = 4;
+
 #[derive(Accounts)]
 #[instruction(task_id: [u8; 32])]
 pub struct SubmitReceipt<'info> {
@@ -33,6 +35,10 @@ pub fn handler(
     require!(
         matches!(task_account.status, TaskStatus::InProgress),
         AgoraError::InvalidTaskStatus
+    );
+    require!(
+        final_mechanism <= MAX_MECHANISM,
+        AgoraError::InvalidMechanism
     );
 
     task_account.transcript_merkle_root = transcript_merkle_root;

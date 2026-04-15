@@ -34,4 +34,10 @@ pub enum AgoraError {
 
     #[msg("Insufficient vault balance for requested payment amount")]
     InsufficientVaultBalance,
+
+    #[msg("Invalid mechanism value")]
+    InvalidMechanism,
+
+    #[msg("Invalid recipient pubkey")]
+    InvalidRecipient,
 }

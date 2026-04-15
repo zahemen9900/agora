@@ -1,0 +1,44 @@
+[
+  {
+    "category": "factual",
+    "task": "What is the capital city of Japan?",
+    "ground_truth": "Tokyo",
+    "source": "curated_facts_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "factual",
+    "task": "Which planet is known as the Red Planet?",
+    "ground_truth": "Mars",
+    "source": "curated_facts_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "factual",
+    "task": "Who wrote 'Pride and Prejudice'?",
+    "ground_truth": "Jane Austen",
+    "source": "curated_facts_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "factual",
+    "task": "What gas do plants primarily absorb from the atmosphere?",
+    "ground_truth": "carbon dioxide",
+    "source": "curated_facts_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "factual",
+    "task": "What is the largest ocean on Earth?",
+    "ground_truth": "Pacific Ocean",
+    "source": "curated_facts_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "factual",
+    "task": "What is the chemical symbol for sodium?",
+    "ground_truth": "Na",
+    "source": "curated_facts_v1",
+    "stakes": 0.0
+  }
+]

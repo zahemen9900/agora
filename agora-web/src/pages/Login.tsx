@@ -69,7 +69,7 @@ const PAPERS: PaperCardProps[] = [
 ];
 
 export function LoginPage() {
-  const { signIn, isLoading } = useAuth();
+  const { signIn, signUp, isLoading } = useAuth();
 
   return (
     <div className="flex flex-col relative">
@@ -85,7 +85,7 @@ export function LoginPage() {
         {/* NAV */}
         <header className="flex justify-between items-center max-w-[1200px] mx-auto w-full z-20 py-6">
           <div className="wordmark text-2xl tracking-widest">AGORA</div>
-          <button onClick={signIn} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
+          <button onClick={() => signIn()} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
             {isLoading ? 'Connecting...' : 'Sign In'}
           </button>
         </header>
@@ -134,20 +134,21 @@ export function LoginPage() {
                 <Button
                   variant="primary"
                   size="md"
-                  onClick={signIn}
+                  onClick={() => signIn()}
                   disabled={isLoading}
                   rightIcon={<ArrowRight size={18} />}
                   className="shadow-[0_0_20px_rgba(0,212,170,0.3)] hover:shadow-[0_0_30px_rgba(0,212,170,0.5)] transition-shadow duration-300"
                 >
-                  {isLoading ? 'Connecting...' : 'Launch App'}
+                  {isLoading ? 'Connecting...' : 'Sign In'}
                 </Button>
                 <Button
                   variant="secondary"
                   size="md"
-                  onClick={() => window.open('https://github.com', '_blank')}
+                  onClick={() => signUp()}
+                  disabled={isLoading}
                   rightIcon={<ArrowRight size={18} />}
                 >
-                  Read the Docs
+                  {isLoading ? 'Loading...' : 'Create Account'}
                 </Button>
               </motion.div>
 

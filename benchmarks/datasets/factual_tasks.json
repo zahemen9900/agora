@@ -1,0 +1,22 @@
+[
+  {"category":"factual","task":"What is the capital city of Japan?","ground_truth":"Tokyo","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Which planet is known as the Red Planet?","ground_truth":"Mars","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Who wrote Pride and Prejudice?","ground_truth":"Jane Austen","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What gas do plants primarily absorb from the atmosphere?","ground_truth":"carbon dioxide","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What is the largest ocean on Earth?","ground_truth":"Pacific Ocean","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What is the chemical symbol for sodium?","ground_truth":"Na","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Which continent is the Sahara Desert located on?","ground_truth":"Africa","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What is the capital of Canada?","ground_truth":"Ottawa","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Who painted the Mona Lisa?","ground_truth":"Leonardo da Vinci","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What is the boiling point of water at sea level in Celsius?","ground_truth":"100","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Which element has atomic number 1?","ground_truth":"Hydrogen","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What language is primarily spoken in Brazil?","ground_truth":"Portuguese","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Which organ pumps blood through the human body?","ground_truth":"heart","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What is the smallest prime number?","ground_truth":"2","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Which country gifted the Statue of Liberty to the United States?","ground_truth":"France","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What is the currency used in the United Kingdom?","ground_truth":"Pound sterling","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Which scientist proposed the theory of general relativity?","ground_truth":"Albert Einstein","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"What is the tallest mammal?","ground_truth":"giraffe","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"In computing, what does CPU stand for?","ground_truth":"Central Processing Unit","source":"curated_factual_v2","stakes":0.0},
+  {"category":"factual","task":"Which metal is liquid at room temperature?","ground_truth":"Mercury","source":"curated_factual_v2","stakes":0.0}
+]

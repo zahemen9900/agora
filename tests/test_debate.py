@@ -12,6 +12,9 @@ from agora.config import get_config
 from agora.engines.debate import (
     DebateEngine,
     _CrossExamResponse,
+    _InitialAnswerResponse,
+    _OpeningResponse,
+    _RebuttalResponse,
     _SynthesisResponse,
 )
 from agora.types import DebateState, MechanismType
@@ -26,10 +29,8 @@ _PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in 
 
 
 def _has_openrouter_key() -> bool:
-    """Detect OpenRouter key availability only when paid tests are explicitly enabled."""
+    """Detect OpenRouter key availability through env or Secret Manager-backed config."""
 
-    if not _PAID_INTEGRATION_ENABLED:
-        return False
     try:
         get_config.cache_clear()
         return bool(get_config().openrouter_api_key)
@@ -37,7 +38,7 @@ def _has_openrouter_key() -> bool:
         return False
 
 
-_OPENROUTER_KEY_PRESENT = _has_openrouter_key()
+_OPENROUTER_KEY_PRESENT = _PAID_INTEGRATION_ENABLED and _has_openrouter_key()
 
 
 class _FakeDebateCaller:
@@ -57,6 +58,43 @@ class _FailingCaller:
 
     async def call(self, **_kwargs):
         raise AgentCallError("forced failure")
+
+
+class _SchemaAwareDebateCaller:
+    def __init__(self, model: str) -> None:
+        self.model = model
+
+    async def call(self, **kwargs):
+        response_format = kwargs.get("response_format")
+        if response_format is _InitialAnswerResponse:
+            return _InitialAnswerResponse(answer="Architecture A", confidence=0.72), {
+                "input_tokens": 4,
+                "output_tokens": 6,
+                "latency_ms": 8.0,
+            }
+        if response_format is _OpeningResponse:
+            return _OpeningResponse(
+                claim="Architecture A is more robust.",
+                evidence="It isolates failures and simplifies recovery.",
+                confidence=0.71,
+            ), {"input_tokens": 6, "output_tokens": 10, "latency_ms": 8.0}
+        if response_format is _RebuttalResponse:
+            return _RebuttalResponse(
+                answer="Architecture A",
+                defense="The isolation boundary directly addresses the critique.",
+                confidence=0.74,
+            ), {"input_tokens": 7, "output_tokens": 10, "latency_ms": 8.0}
+        if response_format is _SynthesisResponse:
+            return _SynthesisResponse(
+                final_answer="Choose Architecture A for reliability.",
+                confidence=0.81,
+                summary="It isolates failures better than the alternative.",
+            ), {"input_tokens": 8, "output_tokens": 12, "latency_ms": 8.0}
+        return (
+            '{"analyses":[{"faction":"pro","weakest_claim":"claim A","flaw":"unsupported",'
+            '"question":"What evidence supports claim A?"}]}',
+            {"input_tokens": 5, "output_tokens": 9, "latency_ms": 8.0},
+        )
 
 
 def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
@@ -160,13 +198,13 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         "Use architecture A because it isolates failures.",
         confidence=0.8,
         role="pro_opening",
-    )
+    ).model_copy(update={"agent_model": "gemini-3-flash-preview"})
     opp_output = make_agent_output(
         "agent-2",
         "Use architecture B because it is simpler.",
         confidence=0.6,
         role="opp_opening",
-    )
+    ).model_copy(update={"agent_model": "gemini-3-flash-preview"})
     state = DebateState(
         task="Choose an architecture.",
         task_features=selection.task_features,
@@ -175,6 +213,14 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         factions={"pro": [pro_output], "opp": [opp_output]},
         rebuttals={"pro": [], "opp": []},
         transcript_hashes=[pro_output.content_hash, opp_output.content_hash],
+        cross_examinations=[
+            make_agent_output(
+                "agent-3",
+                '{"analyses":[{"faction":"pro","question":"Prove the isolation claim."}]}',
+                role="devil_advocate",
+                round_number=1,
+            ).model_copy(update={"agent_model": "moonshotai/kimi-k2-thinking"})
+        ],
     )
 
     result, usage = await engine._final_aggregation(
@@ -190,6 +236,11 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
     assert result.mechanism_used is MechanismType.DEBATE
     assert result.total_tokens_used == 15
     assert usage["tokens"] == 12
+    assert result.agent_models_used == [
+        "gemini-3-flash-preview",
+        "moonshotai/kimi-k2-thinking",
+        "gemini-3.1-pro-preview",
+    ]
     assert pro.calls[0]["response_format"] is _SynthesisResponse
     assert kimi.calls == []
 
@@ -201,9 +252,9 @@ async def test_full_debate_run_on_simple_math_task() -> None:
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
-        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
-        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
-        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        flash_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
+        pro_agent=_SchemaAwareDebateCaller("gemini-3.1-pro-preview"),
+        kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
 
@@ -222,9 +273,9 @@ async def test_adaptive_termination_fires_on_plateau() -> None:
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
-        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
-        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
-        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        flash_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
+        pro_agent=_SchemaAwareDebateCaller("gemini-3.1-pro-preview"),
+        kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
 
@@ -242,17 +293,17 @@ async def test_mechanism_switch_triggers_when_monitor_requests(monkeypatch) -> N
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
-        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
-        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
-        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        flash_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
+        pro_agent=_SchemaAwareDebateCaller("gemini-3.1-pro-preview"),
+        kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
 
-    monkeypatch.setattr(engine.monitor, "should_terminate", lambda history: (False, "continue"))
+    monkeypatch.setattr(engine.monitor, "should_terminate", lambda _history: (False, "continue"))
     monkeypatch.setattr(
         engine.monitor,
         "should_switch_mechanism",
-        lambda history, current_mechanism: (True, MechanismType.VOTE, "forced switch"),
+        lambda _history, current_mechanism: (True, MechanismType.VOTE, "forced switch"),
     )
 
     outcome = await engine.run("Compare two software architectures.", selection)

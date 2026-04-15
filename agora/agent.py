@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from pydantic import BaseModel, ValidationError
@@ -559,6 +560,190 @@ class AgentCaller:
         except Exception as exc:
             raise AgentCallError("Gemini structured response was not valid JSON.") from exc
 
+    async def _call_openrouter(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None,
+        temperature: float | None,
+        stream: bool,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str | BaseModel, dict[str, Any]]:
+        """Execute one OpenRouter call via OpenAI-compatible chat completions."""
+
+        if self._openrouter_client is None:
+            raise AgentCallError("OpenRouter client was not initialized.")
+
+        effective_temperature = self.temperature if temperature is None else temperature
+        backoff_seconds = 0.5
+        max_retries = 3
+
+        for attempt in range(1, max_retries + 1):
+            start = time.perf_counter()
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+
+                request_kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": effective_temperature,
+                    "max_tokens": self._kimi_max_tokens,
+                    "extra_body": {"reasoning": self._build_openrouter_reasoning_payload()},
+                }
+
+                if response_format is not None:
+                    messages[1] = {
+                        "role": "user",
+                        "content": self._with_structured_json_instructions(
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                        ),
+                    }
+                    request_kwargs["response_format"] = {"type": "json_object"}
+
+                raw_message: Any | None = None
+                response_content: str | BaseModel = ""
+                if stream:
+                    request_kwargs["stream"] = True
+                    stream_response = await self._openrouter_client.chat.completions.create(
+                        **request_kwargs
+                    )
+                    response_content, raw_message = await self._stream_openrouter_text(
+                        stream_response=stream_response,
+                        stream_callback=stream_callback,
+                    )
+                else:
+                    raw_message = await self._openrouter_client.chat.completions.create(
+                        **request_kwargs
+                    )
+                    if response_format is not None:
+                        response_content = self._parse_openrouter_structured_response(
+                            raw_message=raw_message,
+                            response_format=response_format,
+                        )
+                    else:
+                        response_content = self._extract_openrouter_text(raw_message)
+
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                usage = self._normalize_usage(raw_message, elapsed_ms)
+
+                logger.info(
+                    "agent_call_success",
+                    model=self.model,
+                    provider=self.provider,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    reasoning_tokens=usage.get("reasoning_tokens", 0),
+                    latency_ms=usage["latency_ms"],
+                    streamed=stream,
+                    thinking_trace_present=usage.get("thinking_trace_present", False),
+                )
+                return response_content, usage
+            except OpenAIRateLimitError as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except (OpenAIAPIConnectionError, OpenAIAPITimeoutError, TimeoutError) as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except OpenAIAPIStatusError as exc:
+                status_code = getattr(exc, "status_code", None)
+                retryable_status = isinstance(status_code, int) and (
+                    status_code in {408, 409, 429} or status_code >= 500
+                )
+
+                if retryable_status and attempt < max_retries:
+                    logger.warning(
+                        "agent_call_retrying",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        backoff_seconds=backoff_seconds,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    backoff_seconds *= 2.0
+                    continue
+
+                if retryable_status:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    status_code=status_code,
+                    error=str(exc),
+                )
+                raise AgentCallError(
+                    f"OpenRouter API returned status {status_code} for model {self.model}."
+                ) from exc
+            except AgentCallError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                raise AgentCallError(f"Non-retryable failure for model {self.model}.") from exc
+
+        raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
+
     async def _call_claude(
         self,
         system_prompt: str,
@@ -581,6 +766,7 @@ class AgentCaller:
             start = time.perf_counter()
             try:
                 raw_message: Any | None = None
+                response_content: str | BaseModel = ""
                 if response_format is not None:
                     parsed_via_sdk = False
                     messages_api = getattr(self._anthropic_client, "messages", None)
@@ -588,7 +774,7 @@ class AgentCaller:
                     if callable(parse_api):
                         try:
                             await self._acquire_anthropic_slot(request_kind="messages.parse")
-                            raw_message = await parse_api(
+                            parse_result = parse_api(
                                 model=self.model,
                                 max_tokens=self._anthropic_max_tokens,
                                 temperature=effective_temperature,
@@ -596,6 +782,10 @@ class AgentCaller:
                                 messages=[{"role": "user", "content": user_prompt}],
                                 output_format=response_format,
                             )
+                            if inspect.isawaitable(parse_result):
+                                raw_message = await cast(Awaitable[Any], parse_result)
+                            else:
+                                raw_message = parse_result
                             parsed_output = getattr(raw_message, "parsed_output", None)
                             if parsed_output is None:
                                 parsed_output = getattr(raw_message, "parsed", None)
@@ -1068,12 +1258,67 @@ class AgentCaller:
 
         return "".join(chunks), final_message
 
+    async def _stream_openrouter_text(
+        self,
+        stream_response: Any,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str, Any | None]:
+        """Stream OpenRouter text chunks and return full text plus last chunk metadata."""
+
+        chunks: list[str] = []
+        last_chunk: Any | None = None
+
+        async for chunk in stream_response:
+            last_chunk = chunk
+            chunk_text: str | None = None
+            choices = getattr(chunk, "choices", None)
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0]
+                delta = getattr(first_choice, "delta", None)
+                if delta is not None:
+                    chunk_text = getattr(delta, "content", None)
+                elif isinstance(first_choice, dict):
+                    delta_dict = first_choice.get("delta")
+                    if isinstance(delta_dict, dict):
+                        chunk_text = delta_dict.get("content")
+
+            if isinstance(chunk_text, str) and chunk_text:
+                chunks.append(chunk_text)
+                if stream_callback is not None:
+                    try:
+                        stream_callback(chunk_text)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("stream_callback_error", error=str(exc))
+
+        return "".join(chunks), last_chunk
+
+    @staticmethod
+    def _build_openrouter_headers(config: Any) -> dict[str, str]:
+        """Build optional OpenRouter app attribution headers."""
+
+        headers: dict[str, str] = {}
+        if config.openrouter_http_referer:
+            headers["HTTP-Referer"] = config.openrouter_http_referer
+        if config.openrouter_app_title:
+            headers["X-OpenRouter-Title"] = config.openrouter_app_title
+            if config.openrouter_legacy_x_title_enabled:
+                headers["X-Title"] = config.openrouter_app_title
+        return headers
+
+    def _build_openrouter_reasoning_payload(self) -> dict[str, Any]:
+        """Return explicit Kimi reasoning controls to avoid provider defaults."""
+
+        reasoning: dict[str, Any] = {"exclude": self._kimi_reasoning_exclude}
+        if self._kimi_reasoning_effort:
+            reasoning["effort"] = self._kimi_reasoning_effort
+        return reasoning
+
     @staticmethod
     def _with_structured_json_instructions(
         user_prompt: str,
         response_format: type[BaseModel],
     ) -> str:
-        """Add strict JSON instructions for Claude structured responses."""
+        """Add strict JSON instructions for structured provider responses."""
 
         schema = json.dumps(response_format.model_json_schema(), ensure_ascii=True)
         return (
@@ -1118,6 +1363,7 @@ class AgentCaller:
             parsed = json.loads(json_payload)
         except json.JSONDecodeError as exc:
             raise AgentCallError("OpenRouter structured response was not valid JSON.") from exc
+
         if isinstance(parsed, list) and "analyses" in response_format.model_fields:
             parsed = {"analyses": parsed}
 
@@ -1131,7 +1377,7 @@ class AgentCaller:
 
     @staticmethod
     def _extract_json_payload(text: str) -> str:
-        """Extract a JSON object payload from model text, tolerating wrapped output."""
+        """Return JSON payload only when the whole response is JSON."""
 
         cleaned = text.strip()
         if cleaned.startswith("```"):
@@ -1140,23 +1386,12 @@ class AgentCaller:
                 cleaned = "\n".join(lines[1:-1]).strip()
 
         decoder = json.JSONDecoder()
-        starts: list[int] = []
-        for char in ("{", "["):
-            search_from = 0
-            while True:
-                idx = cleaned.find(char, search_from)
-                if idx == -1:
-                    break
-                starts.append(idx)
-                search_from = idx + len(char)
-
-        starts = sorted(set(starts))
-        for start in starts:
-            try:
-                _parsed, end = decoder.raw_decode(cleaned[start:])
-                return cleaned[start : start + end]
-            except json.JSONDecodeError:
-                continue
+        try:
+            _parsed, end = decoder.raw_decode(cleaned)
+        except json.JSONDecodeError:
+            return cleaned
+        if cleaned[end:].strip():
+            return cleaned
         return cleaned
 
     @staticmethod
@@ -1186,35 +1421,33 @@ class AgentCaller:
 
     @staticmethod
     def _extract_openrouter_text(raw_message: Any) -> str:
-        """Extract plain text from OpenRouter/OpenAI chat completion payloads."""
+        """Extract plain text from OpenRouter chat completion payloads."""
 
         choices = getattr(raw_message, "choices", None)
         if not isinstance(choices, list) or not choices:
             return ""
 
         first_choice = choices[0]
-        message = getattr(first_choice, "message", None)
-        if message is None and isinstance(first_choice, dict):
+        if isinstance(first_choice, dict):
             message = first_choice.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+                if content is None:
+                    return ""
+                return str(content)
+            return ""
 
-        if isinstance(message, dict):
-            content = message.get("content")
-        else:
-            content = getattr(message, "content", None)
-
+        message = getattr(first_choice, "message", None)
+        if message is None:
+            return ""
+        content = getattr(message, "content", None)
         if isinstance(content, str):
             return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                else:
-                    text = getattr(item, "text", None)
-                if isinstance(text, str):
-                    parts.append(text)
-            return "".join(parts)
-        return ""
+        if content is None:
+            return ""
+        return str(content)
 
     def _normalize_usage(self, raw_message: Any | None, latency_ms: float) -> dict[str, Any]:
         """Normalize token usage metadata across provider response formats."""
@@ -1254,21 +1487,20 @@ class AgentCaller:
 
             response_metadata = getattr(raw_message, "response_metadata", None)
             if isinstance(response_metadata, dict):
-                usage = (
-                    response_metadata.get("usage")
-                    if isinstance(response_metadata.get("usage"), dict)
-                    else {}
-                )
+                response_usage: dict[str, Any] = {}
+                metadata_usage = response_metadata.get("usage")
+                if isinstance(metadata_usage, dict):
+                    response_usage = metadata_usage
                 input_tokens = input_tokens or int(
-                    usage.get("input_tokens")
-                    or usage.get("prompt_tokens")
-                    or usage.get("prompt_token_count")
+                    response_usage.get("input_tokens")
+                    or response_usage.get("prompt_tokens")
+                    or response_usage.get("prompt_token_count")
                     or 0
                 )
                 output_tokens = output_tokens or int(
-                    usage.get("output_tokens")
-                    or usage.get("completion_tokens")
-                    or usage.get("candidates_token_count")
+                    response_usage.get("output_tokens")
+                    or response_usage.get("completion_tokens")
+                    or response_usage.get("candidates_token_count")
                     or 0
                 )
 
@@ -1280,16 +1512,9 @@ class AgentCaller:
                 output_tokens = output_tokens or int(
                     usage.get("output_tokens") or usage.get("completion_tokens") or 0
                 )
-                reasoning_tokens = reasoning_tokens or int(
-                    usage.get("reasoning_tokens")
-                    or usage.get("reasoningTokens")
-                    or (
-                        usage.get("completion_tokens_details", {}).get("reasoning_tokens")
-                        if isinstance(usage.get("completion_tokens_details"), dict)
-                        else 0
-                    )
-                    or 0
-                )
+                completion_details = usage.get("completion_tokens_details")
+                if isinstance(completion_details, dict):
+                    reasoning_tokens = int(completion_details.get("reasoning_tokens") or 0)
             elif usage is not None:
                 input_tokens = input_tokens or int(
                     getattr(usage, "input_tokens", None)
@@ -1302,12 +1527,17 @@ class AgentCaller:
                     or 0
                 )
                 completion_details = getattr(usage, "completion_tokens_details", None)
-                reasoning_tokens = reasoning_tokens or int(
-                    getattr(usage, "reasoning_tokens", None)
-                    or getattr(usage, "reasoningTokens", None)
-                    or getattr(completion_details, "reasoning_tokens", None)
-                    or 0
-                )
+                if completion_details is not None:
+                    details_reasoning_tokens = 0
+                    if isinstance(completion_details, dict):
+                        details_reasoning_tokens = int(
+                            completion_details.get("reasoning_tokens") or 0
+                        )
+                    reasoning_tokens = int(
+                        getattr(completion_details, "reasoning_tokens", None)
+                        or details_reasoning_tokens
+                        or 0
+                    )
 
         thinking_trace_present = False
         thinking_trace_chars = 0
@@ -1421,7 +1651,7 @@ def claude_caller() -> AgentCaller:
 
 
 def kimi_caller() -> AgentCaller:
-    """Return OpenRouter Kimi caller for vote-tier fallback diversity routing."""
+    """Return OpenRouter Kimi caller for challenger or fallback routing."""
 
     config = get_config()
     return AgentCaller(model=config.kimi_model, temperature=0.5)

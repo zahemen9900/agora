@@ -18,7 +18,21 @@ async def test_full_pipeline_returns_populated_result() -> None:
     """End-to-end orchestration should produce a complete result object."""
 
     orchestrator = AgoraOrchestrator(agent_count=3)
-    result = await orchestrator.run("What is the capital of France?")
+
+    async def paris_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "Paris",
+            "confidence": 0.9,
+            "predicted_group_answer": "Paris",
+            "reasoning": "Deterministic local test agent.",
+        }
+
+    result = await orchestrator.run(
+        "What is the capital of France?",
+        mechanism_override=MechanismType.VOTE,
+        agents=[paris_agent, paris_agent, paris_agent],
+    )
 
     assert result.task != ""
     assert result.final_answer != ""
@@ -27,6 +41,7 @@ async def test_full_pipeline_returns_populated_result() -> None:
     assert len(result.transcript_hashes) > 0
     assert result.total_tokens_used >= 0
     assert result.total_latency_ms >= 0.0
+    assert result.agent_models_used
 
 
 @pytest.mark.asyncio
@@ -40,8 +55,8 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
         del task_text, agent_count, stakes
         return selection
 
-    async def fake_debate_run(task: str, selection):
-        del task, selection
+    async def fake_debate_run(task: str, selection, allow_switch: bool = True):
+        del task, selection, allow_switch
         debate_state = DebateState(
             task="switch test",
             task_features=make_features("reasoning"),
@@ -133,8 +148,8 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             reason="quorum_not_reached",
         )
 
-    async def fake_debate_run(task: str, selection):
-        del task
+    async def fake_debate_run(task: str, selection, allow_switch: bool = True):
+        del task, allow_switch
         debate_state = DebateState(
             task="switch test",
             task_features=make_features("reasoning"),
@@ -178,24 +193,19 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_forced_vote_executes_without_auto_switch(monkeypatch) -> None:
-    """Forced demo/API runs should execute the requested mechanism exactly once."""
+async def test_mechanism_override_pins_vote_without_switch(monkeypatch) -> None:
+    """Pinned mechanism overrides should not auto-switch into the other engine."""
 
     orchestrator = AgoraOrchestrator(agent_count=4)
 
-    async def fake_select(task_text: str, agent_count: int, stakes: float):
-        del task_text, agent_count, stakes
-        raise AssertionError("forced vote should not call the selector")
-
-    async def fail_debate_run(task: str, selection):
-        del task, selection
-        raise AssertionError("forced vote should not execute debate")
+    async def fail_debate_run(*_args, **_kwargs):
+        raise AssertionError("Debate engine should not run for a forced vote override")
 
     async def fake_vote_run(task: str, selection):
         del task
-        vote_state = VoteState(task="forced vote", task_features=make_features("reasoning"))
+        vote_state = VoteState(task="force vote", task_features=make_features("reasoning"))
         result = DeliberationResult(
-            task="forced vote",
+            task="force vote",
             mechanism_used=MechanismType.VOTE,
             mechanism_selection=selection,
             final_answer="Option A",
@@ -225,19 +235,29 @@ async def test_forced_vote_executes_without_auto_switch(monkeypatch) -> None:
             reason="quorum_not_reached",
         )
 
-    monkeypatch.setattr(orchestrator.selector, "select", fake_select)
     monkeypatch.setattr(orchestrator.debate_engine, "run", fail_debate_run)
     monkeypatch.setattr(orchestrator.vote_engine, "run", fake_vote_run)
 
-    result = await orchestrator.run("force vote", forced_mechanism=MechanismType.VOTE)
+    result = await orchestrator.run("force vote", mechanism_override=MechanismType.VOTE)
 
     assert result.mechanism_used == MechanismType.VOTE
     assert result.mechanism_selection.mechanism == MechanismType.VOTE
-    assert result.mechanism_selection.confidence == 1.0
-    assert result.mechanism_selection.task_features.agent_count == 4
-    assert "Forced mechanism override" in result.mechanism_selection.reasoning
     assert result.mechanism_switches == 0
     assert "moonshotai/kimi-k2-thinking" in result.agent_models_used
+
+
+@pytest.mark.asyncio
+async def test_mechanism_override_rejects_unsupported_mechanism() -> None:
+    """Unsupported mechanism overrides should fail explicitly."""
+
+    orchestrator = AgoraOrchestrator(agent_count=3)
+
+    with pytest.raises(ValueError) as exc_info:
+        await orchestrator.run("force unsupported", mechanism_override=MechanismType.DELPHI)
+
+    message = str(exc_info.value)
+    assert "not currently supported" in message
+    assert "debate, vote" in message
 
 
 @pytest.mark.asyncio

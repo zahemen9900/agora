@@ -18,8 +18,7 @@ DEMO_ALL_MODELS_TIMEOUT_SECONDS="${DEMO_ALL_MODELS_TIMEOUT_SECONDS:-240}"
 DEMO_ALL_MODELS_MAX_ATTEMPTS="${DEMO_ALL_MODELS_MAX_ATTEMPTS:-3}"
 AGORA_GCLOUD_CREDENTIALS_FILE="${AGORA_GCLOUD_CREDENTIALS_FILE:-}"
 DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3-flash-preview}"
-DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-2.5-pro}"
-DEMO_PRO_FALLBACK_MODEL="${DEMO_PRO_FALLBACK_MODEL:-gemini-3.1-pro-preview}"
+DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3.1-pro-preview}"
 DEMO_CLAUDE_MODEL="${DEMO_CLAUDE_MODEL:-claude-sonnet-4-6}"
 DEMO_KIMI_MODEL="${DEMO_KIMI_MODEL:-moonshotai/kimi-k2-thinking}"
 DEMO_QUERY_DEFAULT="Week 1 demo: should teams use debate or vote?"
@@ -61,6 +60,7 @@ Options:
   --help                     Show this help
 
 Environment controls still supported:
+  AGORA_TEST_API_KEY=agora_test_<public_id>.<secret>
   RUN_GEMINI_SMOKE=always|auto|never
   RUN_CLAUDE_SMOKE=always|auto|never
   RUN_KIMI_SMOKE=always|auto|never
@@ -74,11 +74,7 @@ Environment controls still supported:
   DEMO_ALL_MODELS_TIMEOUT_SECONDS=240
   DEMO_ALL_MODELS_MAX_ATTEMPTS=3
   DEMO_AGENT_COUNT=4
-  DEMO_FLASH_MODEL=gemini-3-flash-preview
-  DEMO_PRO_MODEL=gemini-2.5-pro
-  DEMO_PRO_FALLBACK_MODEL=gemini-3.1-pro-preview
   DEMO_CLAUDE_MODEL=claude-sonnet-4-6
-  DEMO_KIMI_MODEL=moonshotai/kimi-k2-thinking
   DEMO_VERBOSE_TEST_LOGS=1
 EOF
 }
@@ -194,7 +190,6 @@ export AGORA_FLASH_MODEL="${AGORA_FLASH_MODEL:-$DEMO_FLASH_MODEL}"
 export AGORA_PRO_MODEL="${AGORA_PRO_MODEL:-$DEMO_PRO_MODEL}"
 export AGORA_CLAUDE_MODEL="${AGORA_CLAUDE_MODEL:-$DEMO_CLAUDE_MODEL}"
 export AGORA_KIMI_MODEL="${AGORA_KIMI_MODEL:-$DEMO_KIMI_MODEL}"
-export DEMO_PRO_FALLBACK_MODEL
 export AGORA_KIMI_REASONING_EFFORT="${AGORA_KIMI_REASONING_EFFORT:-low}"
 export AGORA_KIMI_REASONING_EXCLUDE="${AGORA_KIMI_REASONING_EXCLUDE:-true}"
 export AGORA_KIMI_MAX_TOKENS="${AGORA_KIMI_MAX_TOKENS:-512}"
@@ -209,7 +204,6 @@ export AGORA_DEMO_EXPECTED_MODELS="$AGORA_PRO_MODEL,$AGORA_KIMI_MODEL,$AGORA_FLA
 log_step "Configured Gemini models"
 printf "flash=%s\n" "$AGORA_FLASH_MODEL"
 printf "pro=%s\n" "$AGORA_PRO_MODEL"
-printf "pro_fallback=%s\n" "$DEMO_PRO_FALLBACK_MODEL"
 printf "claude=%s\n" "$AGORA_CLAUDE_MODEL"
 printf "kimi=%s\n" "$AGORA_KIMI_MODEL"
 printf "agent_count=%s\n" "$DEMO_AGENT_COUNT"
@@ -416,7 +410,6 @@ prepare_model_credentials() {
     fetched_openrouter="$(env "${GCLOUD_PROMPTLESS[@]}" gcloud secrets versions access "${AGORA_OPENROUTER_SECRET_VERSION}" --secret "${AGORA_OPENROUTER_SECRET_NAME}" --project "${AGORA_OPENROUTER_SECRET_PROJECT}" 2>"$openrouter_err_file" || true)"
     if [[ -n "$fetched_openrouter" ]]; then
       export AGORA_OPENROUTER_API_KEY="$fetched_openrouter"
-      export OPENROUTER_API_KEY="$fetched_openrouter"
       OPENROUTER_KEY_SOURCE="${AGORA_OPENROUTER_SECRET_NAME}(secret-manager)"
     elif grep -q "PERMISSION_DENIED" "$openrouter_err_file"; then
       log_warn "OpenRouter secret fetch denied for current gcloud identity; check secret IAM access."
@@ -550,6 +543,7 @@ export AGORA_DEMO_QUERY="$DEMO_QUERY"
 
 run_orchestrator_smoke() {
   log_step "Running orchestrator smoke test (core runtime path)"
+
   if ! "$PYTHON_BIN" - <<'PY'
 import asyncio
 import os
@@ -770,166 +764,6 @@ PY
   KIMI_SDK_STATUS="PASS"
 }
 
-run_all_models_e2e() {
-  log_step "Running all-model orchestrator ensemble smoke (forced 4-agent vote)"
-
-  if [[ -z "${AGORA_GEMINI_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" && -z "${GOOGLE_API_KEY:-}" && -z "${AGORA_GOOGLE_API_KEY:-}" ]]; then
-    log_warn "Gemini key unavailable for all-model ensemble smoke."
-    return 1
-  fi
-  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-    log_warn "Anthropic key unavailable for all-model ensemble smoke."
-    return 1
-  fi
-  if [[ -z "${AGORA_OPENROUTER_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" ]]; then
-    log_warn "OpenRouter key unavailable for all-model ensemble smoke."
-    return 1
-  fi
-
-  if ! "$PYTHON_BIN" - <<'PY'
-import asyncio
-import os
-
-from agora.agent import AgentCaller, claude_caller, flash_caller, kimi_caller, pro_caller
-from agora.engines.vote import VoteEngine
-from agora.runtime.orchestrator import AgoraOrchestrator
-from agora.types import MechanismType
-
-
-class TrackingCaller:
-    def __init__(self, label: str, inner) -> None:
-        self.label = label
-        self.inner = inner
-        self.model = inner.model
-        self.successes = 0
-        self.tokens = 0
-
-    async def call(self, **kwargs):
-        response, usage = await self.inner.call(**kwargs)
-        self.successes += 1
-        self.tokens += int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
-        return response, usage
-
-
-class ResilientTrackingCaller:
-    def __init__(self, label: str, inners) -> None:
-        self.label = label
-        self.inners = list(inners)
-        if not self.inners:
-            raise ValueError("ResilientTrackingCaller requires at least one caller")
-        self.model = self.inners[0].model
-        self.successes = 0
-        self.tokens = 0
-
-    async def call(self, **kwargs):
-        errors: list[str] = []
-        for inner in self.inners:
-            self.model = inner.model
-            try:
-                response, usage = await inner.call(**kwargs)
-                self.successes += 1
-                self.tokens += int(usage.get("input_tokens", 0)) + int(
-                    usage.get("output_tokens", 0)
-                )
-                return response, usage
-            except Exception as exc:
-                errors.append(f"{inner.model}: {exc}")
-
-        raise RuntimeError(
-            f"{self.label} call failed across fallback models: {' | '.join(errors)}"
-        )
-
-
-async def main() -> None:
-    query = os.environ["AGORA_DEMO_QUERY"]
-    agent_count = max(4, int(os.environ["DEMO_AGENT_COUNT"]))
-    max_attempts = max(1, int(os.environ.get("DEMO_ALL_MODELS_MAX_ATTEMPTS", "3")))
-    fallback_pro_model = os.environ.get("DEMO_PRO_FALLBACK_MODEL", "").strip()
-    failures: list[str] = []
-
-    for attempt in range(1, max_attempts + 1):
-        orchestrator = AgoraOrchestrator(agent_count=agent_count)
-        pro_callers = [pro_caller()]
-        if fallback_pro_model and fallback_pro_model != pro_callers[0].model:
-            pro_callers.append(AgentCaller(model=fallback_pro_model, temperature=0.1))
-        trackers = {
-            "pro": ResilientTrackingCaller("pro", pro_callers),
-            "kimi": TrackingCaller("kimi", kimi_caller()),
-            "flash": TrackingCaller("flash", flash_caller()),
-            "claude": TrackingCaller("claude", claude_caller()),
-        }
-        orchestrator.vote_engine = VoteEngine(
-            agent_count=agent_count,
-            quorum_threshold=0.6,
-            hasher=orchestrator.hasher,
-            pro_agent=trackers["pro"],
-            kimi_agent=trackers["kimi"],
-            flash_agent=trackers["flash"],
-            claude_agent=trackers["claude"],
-        )
-
-        try:
-            result = await orchestrator.run(
-                query,
-                forced_mechanism=MechanismType.VOTE,
-            )
-        except Exception as exc:
-            failures.append(f"attempt {attempt}: exception={exc}")
-            if attempt >= max_attempts:
-                raise RuntimeError(
-                    "All-model smoke exhausted retries: " + " | ".join(failures)
-                ) from exc
-            print(f"all_models_e2e_retry: attempt={attempt} reason=exception error={exc}")
-            continue
-
-        missing = [label for label, caller in trackers.items() if caller.successes < 1]
-        if missing:
-            failures.append(f"attempt {attempt}: missing={','.join(missing)}")
-            if attempt >= max_attempts:
-                raise RuntimeError(
-                    "All-model smoke exhausted retries: " + " | ".join(failures)
-                )
-            print(
-                "all_models_e2e_retry:",
-                f"attempt={attempt}",
-                f"reason=missing_providers",
-                f"missing={','.join(missing)}",
-            )
-            continue
-
-        print("all_models_e2e_attempt:", attempt)
-        print("all_models_e2e_mechanism:", result.mechanism_used.value)
-        print("all_models_e2e_agent_count:", result.agent_count)
-        print("all_models_e2e_agent_models_used:", ",".join(result.agent_models_used))
-        print(
-            "all_models_e2e_success_counts:",
-            ",".join(f"{label}={caller.successes}" for label, caller in trackers.items()),
-        )
-        print(
-            "all_models_e2e_token_counts:",
-            ",".join(f"{label}={caller.tokens}" for label, caller in trackers.items()),
-        )
-        print("all_models_e2e_total_tokens:", result.total_tokens_used)
-        print("all_models_e2e_merkle_root:", result.merkle_root)
-        return
-
-    raise RuntimeError("All-model smoke exited without a successful attempt.")
-
-
-asyncio.run(
-    asyncio.wait_for(
-        main(),
-        timeout=float(os.environ.get("DEMO_ALL_MODELS_TIMEOUT_SECONDS", "240")),
-    )
-)
-PY
-  then
-    return 1
-  fi
-
-  ALL_MODELS_E2E_STATUS="PASS"
-}
-
 if [[ "$RUN_GEMINI_SMOKE" == "always" ]]; then
   run_gemini_sdk_smoke
 elif [[ "$RUN_GEMINI_SMOKE" == "never" ]]; then
@@ -972,21 +806,154 @@ else
   fi
 fi
 
+run_all_models_e2e() {
+  log_step "Running all-model orchestrator ensemble smoke (forced 4-agent vote)"
+
+  if [[ -z "${AGORA_GEMINI_API_KEY:-}" && -z "${GEMINI_API_KEY:-}" && -z "${GOOGLE_API_KEY:-}" && -z "${AGORA_GOOGLE_API_KEY:-}" ]]; then
+    log_warn "Gemini key unavailable for all-model ensemble smoke."
+    return 1
+  fi
+  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    log_warn "Anthropic key unavailable for all-model ensemble smoke."
+    return 1
+  fi
+  if [[ -z "${AGORA_OPENROUTER_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" ]]; then
+    log_warn "OpenRouter key unavailable for all-model ensemble smoke."
+    return 1
+  fi
+
+  if ! "$PYTHON_BIN" - <<'PY'
+import asyncio
+import os
+
+from agora.agent import claude_caller, flash_caller, kimi_caller, pro_caller
+from agora.engines.vote import VoteEngine
+from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.types import MechanismType
+
+
+class TrackingCaller:
+    def __init__(self, label: str, inner) -> None:
+        self.label = label
+        self.inner = inner
+        self.model = inner.model
+        self.successes = 0
+        self.tokens = 0
+
+    async def call(self, **kwargs):
+        response, usage = await self.inner.call(**kwargs)
+        self.successes += 1
+        self.tokens += int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0))
+        return response, usage
+
+
+async def main() -> None:
+    query = os.environ["AGORA_DEMO_QUERY"]
+    agent_count = max(4, int(os.environ["DEMO_AGENT_COUNT"]))
+    max_attempts = max(1, int(os.environ.get("DEMO_ALL_MODELS_MAX_ATTEMPTS", "3")))
+    expected_models = {
+        model
+        for model in os.environ.get("AGORA_DEMO_EXPECTED_MODELS", "").split(",")
+        if model
+    }
+    failures: list[str] = []
+
+    for attempt in range(1, max_attempts + 1):
+        orchestrator = AgoraOrchestrator(agent_count=agent_count)
+        trackers = {
+            "pro": TrackingCaller("pro", pro_caller()),
+            "kimi": TrackingCaller("kimi", kimi_caller()),
+            "flash": TrackingCaller("flash", flash_caller()),
+            "claude": TrackingCaller("claude", claude_caller()),
+        }
+        orchestrator.vote_engine = VoteEngine(
+            agent_count=agent_count,
+            quorum_threshold=0.6,
+            hasher=orchestrator.hasher,
+            pro_agent=trackers["pro"],
+            kimi_agent=trackers["kimi"],
+            flash_agent=trackers["flash"],
+            claude_agent=trackers["claude"],
+        )
+
+        try:
+            result = await orchestrator.run(
+                query,
+                mechanism_override=MechanismType.VOTE,
+            )
+        except Exception as exc:
+            failures.append(f"attempt {attempt}: exception={exc}")
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    "All-model smoke exhausted retries: " + " | ".join(failures)
+                ) from exc
+            print(f"all_models_e2e_retry: attempt={attempt} reason=exception error={exc}")
+            continue
+
+        missing_callers = [label for label, caller in trackers.items() if caller.successes < 1]
+        missing_models = sorted(expected_models - set(result.agent_models_used))
+        if missing_callers or missing_models:
+            failures.append(
+                "attempt "
+                f"{attempt}: missing_callers={','.join(missing_callers)} "
+                f"missing_models={','.join(missing_models)}"
+            )
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    "All-model smoke exhausted retries: " + " | ".join(failures)
+                )
+            print(
+                "all_models_e2e_retry:",
+                f"attempt={attempt}",
+                "reason=incomplete_ensemble",
+                f"missing_callers={','.join(missing_callers) or 'none'}",
+                f"missing_models={','.join(missing_models) or 'none'}",
+            )
+            continue
+
+        print("all_models_e2e_attempt:", attempt)
+        print("all_models_e2e_mechanism:", result.mechanism_used.value)
+        print("all_models_e2e_agent_count:", result.agent_count)
+        print("all_models_e2e_agent_models_used:", ",".join(result.agent_models_used))
+        print(
+            "all_models_e2e_success_counts:",
+            ",".join(f"{label}={caller.successes}" for label, caller in trackers.items()),
+        )
+        print(
+            "all_models_e2e_token_counts:",
+            ",".join(f"{label}={caller.tokens}" for label, caller in trackers.items()),
+        )
+        print("all_models_e2e_total_tokens:", result.total_tokens_used)
+        print("all_models_e2e_merkle_root:", result.merkle_root)
+        return
+
+    raise RuntimeError("All-model smoke exited without a successful attempt.")
+
+
+asyncio.run(
+    asyncio.wait_for(
+        main(),
+        timeout=float(os.environ.get("DEMO_ALL_MODELS_TIMEOUT_SECONDS", "240")),
+    )
+)
+PY
+  then
+    return 1
+  fi
+
+  ALL_MODELS_E2E_STATUS="PASS"
+}
+
 if [[ "$RUN_ALL_MODELS_E2E" == "always" ]]; then
   run_all_models_e2e
 elif [[ "$RUN_ALL_MODELS_E2E" == "never" ]]; then
   log_warn "RUN_ALL_MODELS_E2E=never set. Skipping all-model ensemble smoke."
   ALL_MODELS_E2E_STATUS="SKIPPED"
 else
-  if [[ "$GEMINI_SDK_STATUS" == "PASS" && "$CLAUDE_SDK_STATUS" == "PASS" && "$KIMI_SDK_STATUS" == "PASS" ]]; then
-    if run_all_models_e2e; then
-      :
-    else
-      log_warn "All-model ensemble smoke failed in auto mode. Continuing with remaining checks."
-      ALL_MODELS_E2E_STATUS="SKIPPED"
-    fi
+  if run_all_models_e2e; then
+    :
   else
-    log_warn "Skipping all-model ensemble smoke in auto mode because one or more SDK smokes did not pass."
+    log_warn "All-model ensemble smoke failed in auto mode. Continuing with remaining checks."
     ALL_MODELS_E2E_STATUS="SKIPPED"
   fi
 fi
@@ -1091,8 +1058,8 @@ fi
 run_hosted_api_e2e() {
   log_step "Running hosted API end-to-end smoke (create -> run -> pay)"
   export AGORA_DEMO_API_URL="$API_URL"
+
   if ! "$PYTHON_BIN" - <<'PY'
-import base64
 import json
 import os
 import sys
@@ -1101,26 +1068,6 @@ import urllib.error
 import urllib.request
 
 BASE_URL = os.environ["AGORA_DEMO_API_URL"].rstrip("/")
-
-
-def b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def make_token() -> str:
-    header = {"alg": "RS256", "typ": "JWT"}
-    payload = {
-        "sub": "week1-demo-user",
-        "email": "week1-demo@example.com",
-        "name": "Week1 Demo",
-    }
-    return ".".join(
-        [
-            b64url(json.dumps(header, separators=(",", ":")).encode("utf-8")),
-            b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8")),
-            b64url(b"sig"),
-        ]
-    )
 
 
 def request_json(
@@ -1173,7 +1120,9 @@ def request_json(
 
 
 def main() -> None:
-    token = make_token()
+    token = os.environ.get("AGORA_TEST_API_KEY")
+    if not token:
+        raise RuntimeError("Set AGORA_TEST_API_KEY to run hosted API smoke against an authenticated deployment.")
     query = os.environ["AGORA_DEMO_QUERY"]
     agent_count = int(os.environ["DEMO_AGENT_COUNT"])
     strict_all_models = os.environ.get("RUN_HOSTED_ALL_MODELS_E2E") == "always"
@@ -1262,10 +1211,11 @@ printf "  %-28s %s\n" "Gemini 3 SDK smoke" "$GEMINI_SDK_STATUS"
 printf "  %-28s %s\n" "Claude key source" "$CLAUDE_KEY_SOURCE"
 printf "  %-28s %s\n" "Claude Sonnet SDK smoke" "$CLAUDE_SDK_STATUS"
 printf "  %-28s %s\n" "OpenRouter key source" "$OPENROUTER_KEY_SOURCE"
-printf "  %-28s %s\n" "Kimi SDK smoke" "$KIMI_SDK_STATUS"
+printf "  %-28s %s\n" "Kimi K2 SDK smoke" "$KIMI_SDK_STATUS"
 printf "  %-28s %s\n" "All-model E2E smoke" "$ALL_MODELS_E2E_STATUS"
 printf "  %-28s %s\n" "Local Anchor checks" "$ANCHOR_STATUS"
 printf "  %-28s %s\n" "Hosted API E2E" "$API_E2E_STATUS"
 printf "\nDemo complete.\n"
 printf "If you later install Solana/Anchor locally, rerun with RUN_ANCHOR_CHECKS=always to force local contract verification.\n"
 printf "If you want strict Gemini validation, run with RUN_GEMINI_SMOKE=always and a configured Gemini key source.\n"
+printf "If you want strict Kimi validation, run with RUN_KIMI_SMOKE=always and a configured OpenRouter key source.\n"

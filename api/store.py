@@ -7,17 +7,134 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from google.api_core import exceptions as gcs_exceptions
 from google.cloud import storage
 
+from api.security import validate_storage_id
+from api.store_errors import TaskStoreNotFound, TaskStorePayloadError, TaskStoreUnavailable
 from api.store_local import LocalTaskStore
 
 logger = structlog.get_logger(__name__)
 
 
 class TaskStore:
+    _APPEND_EVENT_MAX_RETRIES = 3
+
     def __init__(self, bucket_name: str) -> None:
         self.client = storage.Client()
         self.bucket = self.client.bucket(bucket_name)
+
+    @staticmethod
+    def _serialize_json(data: dict[str, Any]) -> str:
+        return json.dumps(data, default=str)
+
+    def _decode_json_payload(
+        self,
+        payload: str,
+        *,
+        blob_name: str,
+        operation: str,
+    ) -> dict[str, Any]:
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise TaskStorePayloadError(
+                f"Invalid JSON payload while {operation}: blob={blob_name}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise TaskStorePayloadError(
+                f"Expected JSON object while {operation}: blob={blob_name}"
+            )
+        return parsed
+
+    def _download_blob_json(
+        self,
+        blob: storage.Blob,
+        *,
+        allow_missing: bool,
+        operation: str,
+    ) -> dict[str, Any] | None:
+        try:
+            payload = blob.download_as_text()
+        except gcs_exceptions.NotFound:
+            if allow_missing:
+                return None
+            raise TaskStoreNotFound(f"Missing blob while {operation}: blob={blob.name}")
+        except Exception as exc:
+            raise TaskStoreUnavailable(
+                f"Failed to read blob while {operation}: blob={blob.name}"
+            ) from exc
+
+        return self._decode_json_payload(payload, blob_name=blob.name, operation=operation)
+
+    def _upload_blob_json(
+        self,
+        blob: storage.Blob,
+        data: dict[str, Any],
+        *,
+        operation: str,
+        if_generation_match: int | None = None,
+    ) -> None:
+        upload_kwargs: dict[str, Any] = {}
+        if if_generation_match is not None:
+            upload_kwargs["if_generation_match"] = if_generation_match
+
+        try:
+            blob.upload_from_string(
+                self._serialize_json(data),
+                content_type="application/json",
+                **upload_kwargs,
+            )
+        except gcs_exceptions.PreconditionFailed:
+            raise
+        except Exception as exc:
+            raise TaskStoreUnavailable(
+                f"Failed to write blob while {operation}: blob={blob.name}"
+            ) from exc
+
+    def _list_blobs(self, *, prefix: str, operation: str) -> list[storage.Blob]:
+        try:
+            return list(self.bucket.list_blobs(prefix=prefix))
+        except Exception as exc:
+            raise TaskStoreUnavailable(
+                f"Failed to list blobs while {operation}: prefix={prefix}"
+            ) from exc
+
+    @staticmethod
+    def _user_prefix(user_id: str) -> str:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        return f"users/{safe_user_id}"
+
+    @staticmethod
+    def _workspace_prefix(workspace_id: str) -> str:
+        safe_workspace_id = validate_storage_id(workspace_id, field_name="workspace_id")
+        return f"workspaces/{safe_workspace_id}"
+
+    @classmethod
+    def _task_blob_name(cls, workspace_id: str, task_id: str) -> str:
+        safe_task_id = validate_storage_id(task_id, field_name="task_id")
+        # Keep the users/ task layout for v1 compatibility while
+        # tenancy semantics shift to workspaces.
+        return f"{cls._user_prefix(workspace_id)}/tasks/{safe_task_id}.json"
+
+    @classmethod
+    def _workspace_blob_name(cls, workspace_id: str) -> str:
+        return f"{cls._workspace_prefix(workspace_id)}/profile.json"
+
+    @classmethod
+    def _api_key_blob_name(cls, workspace_id: str, key_id: str) -> str:
+        safe_key_id = validate_storage_id(key_id, field_name="key_id")
+        return f"{cls._workspace_prefix(workspace_id)}/api_keys/{safe_key_id}.json"
+
+    @staticmethod
+    def _api_key_index_blob_name(public_id: str) -> str:
+        safe_public_id = validate_storage_id(public_id, field_name="public_id")
+        return f"api_keys/by_public_id/{safe_public_id}.json"
+
+    @staticmethod
+    def _personal_workspace_id(user_id: str) -> str:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        return safe_user_id
 
     async def upsert_user(
         self,
@@ -25,15 +142,19 @@ class TaskStore:
         email: str,
         name: str | None = None,
     ) -> dict[str, Any]:
-        blob = self.bucket.blob(f"users/{user_id}/profile.json")
+        blob = self.bucket.blob(f"{self._user_prefix(user_id)}/profile.json")
 
-        try:
-            existing = json.loads(blob.download_as_text())
+        existing = self._download_blob_json(
+            blob,
+            allow_missing=True,
+            operation="upsert_user.read_profile",
+        )
+        if existing is not None:
             existing["last_seen_at"] = datetime.now(UTC).isoformat()
             existing["email"] = email
             if name:
                 existing["display_name"] = name
-        except Exception:
+        else:
             existing = {
                 "id": user_id,
                 "email": email,
@@ -42,24 +163,74 @@ class TaskStore:
                 "last_seen_at": datetime.now(UTC).isoformat(),
             }
 
-        blob.upload_from_string(json.dumps(existing), content_type="application/json")
+        self._upload_blob_json(blob, existing, operation="upsert_user.write_profile")
         return existing
 
-    async def save_task(self, user_id: str, task_id: str, data: dict[str, Any]) -> None:
-        blob = self.bucket.blob(f"users/{user_id}/tasks/{task_id}.json")
-        blob.upload_from_string(json.dumps(data, default=str), content_type="application/json")
+    async def get_user(self, user_id: str) -> dict[str, Any] | None:
+        blob = self.bucket.blob(f"{self._user_prefix(user_id)}/profile.json")
+        return self._download_blob_json(blob, allow_missing=True, operation="get_user")
 
-    async def get_task(self, user_id: str, task_id: str) -> dict[str, Any] | None:
-        blob = self.bucket.blob(f"users/{user_id}/tasks/{task_id}.json")
-        try:
-            return json.loads(blob.download_as_text())
-        except Exception:
-            logger.debug("task_not_found_or_unreadable", user_id=user_id, task_id=task_id)
-            return None
+    async def ensure_personal_workspace(
+        self,
+        user_id: str,
+        email: str,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        user = await self.upsert_user(user_id, email, name)
+        workspace_id = str(user.get("workspace_id") or self._personal_workspace_id(user_id))
+        workspace_blob = self.bucket.blob(self._workspace_blob_name(workspace_id))
+        workspace = self._download_blob_json(
+            workspace_blob,
+            allow_missing=True,
+            operation="ensure_personal_workspace.read_workspace",
+        )
+        if workspace is None:
+            display_name = (name or email or user_id).strip() or user_id
+            workspace = {
+                "id": workspace_id,
+                "display_name": f"{display_name}'s Workspace",
+                "kind": "personal",
+                "owner_user_id": user_id,
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+            self._upload_blob_json(
+                workspace_blob,
+                workspace,
+                operation="ensure_personal_workspace.write_workspace",
+            )
 
-    async def list_user_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        prefix = f"users/{user_id}/tasks/"
-        blobs = list(self.bucket.list_blobs(prefix=prefix))
+        if user.get("workspace_id") != workspace_id:
+            user["workspace_id"] = workspace_id
+            user_blob = self.bucket.blob(f"{self._user_prefix(user_id)}/profile.json")
+            self._upload_blob_json(
+                user_blob,
+                user,
+                operation="ensure_personal_workspace.write_user_profile",
+            )
+        return workspace
+
+    async def get_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        blob = self.bucket.blob(self._workspace_blob_name(workspace_id))
+        return self._download_blob_json(blob, allow_missing=True, operation="get_workspace")
+
+    async def save_task(self, workspace_id: str, task_id: str, data: dict[str, Any]) -> None:
+        blob = self.bucket.blob(self._task_blob_name(workspace_id, task_id))
+        self._upload_blob_json(blob, data, operation="save_task")
+
+    async def get_task(self, workspace_id: str, task_id: str) -> dict[str, Any] | None:
+        blob = self.bucket.blob(self._task_blob_name(workspace_id, task_id))
+        task = self._download_blob_json(blob, allow_missing=True, operation="get_task")
+        if task is None:
+            logger.debug(
+                "task_not_found_or_unreadable",
+                workspace_id=workspace_id,
+                task_id=task_id,
+            )
+        return task
+
+    async def list_user_tasks(self, workspace_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        prefix = f"{self._user_prefix(workspace_id)}/tasks/"
+        blobs = self._list_blobs(prefix=prefix, operation="list_user_tasks")
         blobs.sort(
             key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
             reverse=True,
@@ -67,44 +238,192 @@ class TaskStore:
 
         tasks: list[dict[str, Any]] = []
         for blob in blobs[:limit]:
-            try:
-                tasks.append(json.loads(blob.download_as_text()))
-            except Exception:
+            task = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_user_tasks.read_task",
+            )
+            if task is None:
                 continue
+            tasks.append(task)
         return tasks
 
-    async def append_event(self, user_id: str, task_id: str, event: dict[str, Any]) -> None:
-        task = await self.get_task(user_id, task_id)
-        if task is None:
-            return
+    async def append_event(self, workspace_id: str, task_id: str, event: dict[str, Any]) -> None:
+        blob = self.bucket.blob(self._task_blob_name(workspace_id, task_id))
 
-        task.setdefault("events", []).append({
-            **event,
-            "timestamp": datetime.now(UTC).isoformat(),
-        })
-        await self.save_task(user_id, task_id, task)
+        for attempt in range(1, self._APPEND_EVENT_MAX_RETRIES + 1):
+            task = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="append_event.read_task",
+            )
+            if task is None:
+                raise TaskStoreNotFound(
+                    f"Cannot append event: task not found workspace_id={workspace_id} task_id={task_id}"
+                )
 
-    async def get_events(self, user_id: str, task_id: str) -> list[dict[str, Any]]:
-        task = await self.get_task(user_id, task_id)
+            timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
+            task.setdefault("events", []).append(
+                {
+                    **event,
+                    "timestamp": timestamp,
+                }
+            )
+
+            generation = blob.generation
+            if generation is None:
+                try:
+                    blob.reload()
+                except gcs_exceptions.NotFound as exc:
+                    raise TaskStoreNotFound(
+                        f"Cannot append event: task disappeared workspace_id={workspace_id} task_id={task_id}"
+                    ) from exc
+                except Exception as exc:
+                    raise TaskStoreUnavailable(
+                        "Failed to refresh blob metadata during append_event"
+                    ) from exc
+                generation = blob.generation
+
+            if generation is None:
+                raise TaskStoreUnavailable(
+                    "Missing blob generation metadata during append_event"
+                )
+
+            try:
+                self._upload_blob_json(
+                    blob,
+                    task,
+                    operation="append_event.write_task",
+                    if_generation_match=int(generation),
+                )
+                return
+            except gcs_exceptions.PreconditionFailed as exc:
+                logger.warning(
+                    "task_event_append_generation_conflict",
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    attempt=attempt,
+                )
+                if attempt >= self._APPEND_EVENT_MAX_RETRIES:
+                    raise TaskStoreUnavailable(
+                        "Failed to append event after repeated generation conflicts"
+                    ) from exc
+
+    async def get_events(self, workspace_id: str, task_id: str) -> list[dict[str, Any]]:
+        task = await self.get_task(workspace_id, task_id)
         if task is None:
             return []
         return task.get("events", [])
 
-    async def get_all_completed_tasks(self, user_id: str) -> list[dict[str, Any]]:
-        tasks = await self.list_user_tasks(user_id, limit=500)
+    async def get_all_completed_tasks(self, workspace_id: str) -> list[dict[str, Any]]:
+        tasks = await self.list_user_tasks(workspace_id, limit=500)
         return [task for task in tasks if task.get("status") == "completed"]
+
+    async def get_completed_tasks_for_benchmarks(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return completed tasks across all users for benchmark aggregation."""
+
+        blobs = self._list_blobs(prefix="users/", operation="get_completed_tasks_for_benchmarks")
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        tasks: list[dict[str, Any]] = []
+        for blob in blobs:
+            if not blob.name.endswith(".json") or "/tasks/" not in blob.name:
+                continue
+            task = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="get_completed_tasks_for_benchmarks.read_task",
+            )
+            if task is None:
+                continue
+            if task.get("status") in {"completed", "paid"}:
+                tasks.append(task)
+            if len(tasks) >= limit:
+                break
+        return tasks
 
     async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
         blob = self.bucket.blob("benchmarks/summary.json")
-        blob.upload_from_string(json.dumps(summary, default=str), content_type="application/json")
+        self._upload_blob_json(blob, summary, operation="save_benchmark_summary")
 
     async def get_benchmark_summary(self) -> dict[str, Any] | None:
         blob = self.bucket.blob("benchmarks/summary.json")
-        try:
-            return json.loads(blob.download_as_text())
-        except Exception:
+        summary = self._download_blob_json(
+            blob,
+            allow_missing=True,
+            operation="get_benchmark_summary",
+        )
+        if summary is None:
             logger.debug("benchmark_summary_not_found")
+        return summary
+
+    async def save_api_key(self, workspace_id: str, key_id: str, data: dict[str, Any]) -> None:
+        key_blob = self.bucket.blob(self._api_key_blob_name(workspace_id, key_id))
+        self._upload_blob_json(key_blob, data, operation="save_api_key.write_key")
+        index_blob = self.bucket.blob(self._api_key_index_blob_name(str(data["public_id"])))
+        self._upload_blob_json(
+            index_blob,
+            {"workspace_id": workspace_id, "key_id": key_id},
+            operation="save_api_key.write_index",
+        )
+
+    async def get_api_key(self, workspace_id: str, key_id: str) -> dict[str, Any] | None:
+        blob = self.bucket.blob(self._api_key_blob_name(workspace_id, key_id))
+        return self._download_blob_json(blob, allow_missing=True, operation="get_api_key")
+
+    async def list_api_keys(self, workspace_id: str) -> list[dict[str, Any]]:
+        prefix = f"{self._workspace_prefix(workspace_id)}/api_keys/"
+        blobs = self._list_blobs(prefix=prefix, operation="list_api_keys")
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        keys: list[dict[str, Any]] = []
+        for blob in blobs:
+            key = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_api_keys.read_key",
+            )
+            if key is None:
+                continue
+            keys.append(key)
+        return keys
+
+    async def get_api_key_by_public_id(self, public_id: str) -> dict[str, Any] | None:
+        index_blob = self.bucket.blob(self._api_key_index_blob_name(public_id))
+        index = self._download_blob_json(
+            index_blob,
+            allow_missing=True,
+            operation="get_api_key_by_public_id.read_index",
+        )
+        if index is None:
             return None
+
+        try:
+            workspace_id = str(index["workspace_id"])
+            key_id = str(index["key_id"])
+        except KeyError as exc:
+            raise TaskStorePayloadError(
+                "API key public index payload missing required fields"
+            ) from exc
+        return await self.get_api_key(workspace_id, key_id)
+
+    async def update_api_key(
+        self,
+        workspace_id: str,
+        key_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        current = await self.get_api_key(workspace_id, key_id)
+        if current is None:
+            return None
+        current.update(updates)
+        await self.save_api_key(workspace_id, key_id, current)
+        return current
 
 
 def get_store(bucket_name: str | None) -> TaskStore | LocalTaskStore:

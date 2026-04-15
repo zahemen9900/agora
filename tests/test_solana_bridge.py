@@ -7,7 +7,7 @@ import pytest
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 
-from api.solana_bridge import SolanaBridge
+from api.solana_bridge import SYSTEM_PROGRAM_ID, SolanaBridge
 
 
 def _bridge(*, rpc_url: str = "https://devnet.helius-rpc.com/?api-key=test") -> SolanaBridge:
@@ -112,6 +112,36 @@ def test_builds_anchor_instruction_payloads_for_all_week1_calls() -> None:
     assert len(receipt_ix.accounts) == 2
     assert len(switch_ix.accounts) == 4
     assert len(pay_ix.accounts) == 5
+
+
+def test_bridge_rejects_invalid_mechanism_values() -> None:
+    bridge = _bridge()
+
+    with pytest.raises(ValueError, match=r"range \[0, 4\]"):
+        bridge.build_submit_receipt_instruction(
+            task_id=hashlib.sha256(b"task-invalid-mechanism").hexdigest(),
+            transcript_merkle_root=hashlib.sha256(b"merkle").hexdigest(),
+            decision_hash=hashlib.sha256(b"decision").hexdigest(),
+            quorum_reached=True,
+            final_mechanism=5,
+            authority=Keypair().pubkey(),
+        )
+
+
+def test_bridge_rejects_default_recipient() -> None:
+    bridge = _bridge()
+
+    with pytest.raises(ValueError, match="recipient must not be the default pubkey"):
+        bridge.build_initialize_task_instruction(
+            task_id=hashlib.sha256(b"task-default-recipient").hexdigest(),
+            mechanism="vote",
+            task_hash=hashlib.sha256(b"task-text").hexdigest(),
+            consensus_threshold=60,
+            agent_count=3,
+            payment_amount_lamports=1,
+            payer=Keypair().pubkey(),
+            recipient=SYSTEM_PROGRAM_ID,
+        )
 
 
 def test_rejects_placeholder_helius_url() -> None:

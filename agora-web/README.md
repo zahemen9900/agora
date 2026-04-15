@@ -71,3 +71,22 @@ export default defineConfig([
   },
 ])
 ```
+
+## API Base URL and Vercel Proxy
+
+- Development default API URL: `http://localhost:8000`
+- Production default API URL: `/api`
+- Override in any environment with `VITE_AGORA_API_URL`
+
+## WorkOS AuthKit Setup
+
+- Set `VITE_WORKOS_CLIENT_ID` in your frontend env file (for example `.env.local`).
+- Set `VITE_WORKOS_REDIRECT_URI` to the dashboard callback URL.
+- Use `/login` to initiate sign-in and `/callback` as the AuthKit redirect target.
+- After AuthKit resolves a user, the dashboard bootstraps itself with `GET /auth/me`.
+- Protected routes render only after `/auth/me` succeeds; if it returns `401`, the app signs the user out and redirects back to `/login`.
+- API requests fetch access tokens on-demand through `getAccessToken()` before sending `Authorization: Bearer <token>` to the backend.
+- API key management now lives at `/api-keys`.
+- Benchmarks are intentionally hidden from normal navigation until backend RBAC exists.
+
+When deploying on Vercel, `vercel.json` rewrites `/api/*` to the hosted Cloud Run API endpoint so browser calls remain same-origin and avoid CORS preflight failures.

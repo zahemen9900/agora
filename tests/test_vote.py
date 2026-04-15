@@ -21,10 +21,8 @@ _PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in 
 
 
 def _has_openrouter_key() -> bool:
-    """Detect OpenRouter key availability only when paid tests are explicitly enabled."""
+    """Detect OpenRouter key availability through env or Secret Manager-backed config."""
 
-    if not _PAID_INTEGRATION_ENABLED:
-        return False
     try:
         get_config.cache_clear()
         return bool(get_config().openrouter_api_key)
@@ -32,7 +30,7 @@ def _has_openrouter_key() -> bool:
         return False
 
 
-_OPENROUTER_KEY_PRESENT = _has_openrouter_key()
+_OPENROUTER_KEY_PRESENT = _PAID_INTEGRATION_ENABLED and _has_openrouter_key()
 
 
 class _FailingCaller:
@@ -67,17 +65,16 @@ class _RawKimiCaller:
 
 
 class _SuccessfulVoteCaller:
-    def __init__(self, model: str, answer: str = "Paris") -> None:
+    def __init__(self, model: str) -> None:
         self.model = model
-        self.answer = answer
 
     async def call(self, **_kwargs):
         return _VoteResponse(
-            answer=self.answer,
-            confidence=0.9,
-            predicted_group_answer=self.answer,
-            reasoning="Deterministic local test agent.",
-        ), {"input_tokens": 3, "output_tokens": 2, "latency_ms": 1.0}
+            answer="Paris",
+            confidence=0.84,
+            predicted_group_answer="Paris",
+            reasoning=f"{self.model} voted for Paris.",
+        ), {"input_tokens": 6, "output_tokens": 4, "latency_ms": 10.0}
 
 
 def test_isp_aggregation_all_agents_agree() -> None:
@@ -181,7 +178,20 @@ async def test_quorum_check_threshold_works() -> None:
     )
     selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
 
-    outcome = await engine.run("What is the capital of France?", selection)
+    async def paris_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "Paris",
+            "confidence": 0.9,
+            "predicted_group_answer": "Paris",
+            "reasoning": "Deterministic local test agent.",
+        }
+
+    outcome = await engine.run(
+        "What is the capital of France?",
+        selection,
+        custom_agents=[paris_agent, paris_agent, paris_agent],
+    )
 
     assert outcome.state.quorum_reached is True
     assert outcome.result.quorum_reached is True
@@ -190,7 +200,7 @@ async def test_quorum_check_threshold_works() -> None:
 
 @pytest.mark.asyncio
 async def test_four_agent_vote_records_all_provider_models() -> None:
-    """The demo-critical 4-agent vote path should expose all provider model names."""
+    """The 4-agent vote path should expose the ordered provider ensemble."""
 
     engine = VoteEngine(
         agent_count=4,
@@ -210,6 +220,43 @@ async def test_four_agent_vote_records_all_provider_models() -> None:
         "gemini-3-flash-preview",
         "claude-sonnet-4-6",
     ]
+
+
+@pytest.mark.asyncio
+async def test_custom_agents_short_circuit_all_provider_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom agents are local execution; provider callers must never be reached."""
+
+    captured_prompts: list[tuple[str, str]] = []
+
+    async def local_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        captured_prompts.append((system_prompt, user_prompt))
+        return {
+            "answer": "Paris",
+            "confidence": 0.9,
+            "predicted_group_answer": "Paris",
+            "reasoning": "Local deterministic agent.",
+        }
+
+    def fail_provider_lookup(self: VoteEngine, tier: str) -> object:
+        del self
+        raise AssertionError(f"provider tier should not be used: {tier}")
+
+    monkeypatch.setattr(VoteEngine, "_get_caller", fail_provider_lookup)
+    engine = VoteEngine(agent_count=4)
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
+
+    outcome = await engine.run(
+        "Answer in one word: Paris or Lyon?",
+        selection,
+        custom_agents=[local_agent, local_agent, local_agent, local_agent],
+    )
+
+    assert outcome.result.final_answer == "Paris"
+    assert outcome.result.agent_models_used == ["custom-agent"]
+    assert len(captured_prompts) == 4
+    assert all("Answer the task" in system for system, _user in captured_prompts)
 
 
 @pytest.mark.asyncio

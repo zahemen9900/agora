@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from functools import lru_cache
 from pathlib import Path
 
@@ -60,7 +61,11 @@ def _load_dotenv_if_present() -> None:
     """Load a local `.env` file without overriding exported environment variables."""
 
     repo_root = Path(__file__).resolve().parents[1]
-    candidate_paths = [Path.cwd() / ".env", repo_root / ".env"]
+    candidate_paths: list[Path] = []
+    explicit_env_file = os.getenv("AGORA_ENV_FILE", "").strip()
+    if explicit_env_file:
+        candidate_paths.append(Path(explicit_env_file).expanduser())
+    candidate_paths.extend([Path.cwd() / ".env", repo_root / ".env"])
     seen: set[Path] = set()
 
     for candidate in candidate_paths:
@@ -93,11 +98,39 @@ def _load_secret_manager_value(
         client = secretmanager.SecretManagerServiceClient()
         secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/{version}"
         response = client.access_secret_version(request={"name": secret_path})
+        payload = response.payload.data.decode("utf-8").strip()
+        return payload or None
     except Exception:
-        return None
+        # Fallback to gcloud CLI for environments authenticated via `gcloud auth login`
+        # but without Application Default Credentials configured.
+        try:
+            env = os.environ.copy()
+            env.setdefault("CLOUDSDK_PAGER", "")
+            result = subprocess.run(
+                [
+                    "gcloud",
+                    "secrets",
+                    "versions",
+                    "access",
+                    version,
+                    "--secret",
+                    secret_name,
+                    "--project",
+                    project_id,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=20,
+            )
+        except Exception:
+            return None
 
-    payload = response.payload.data.decode("utf-8").strip()
-    return payload or None
+        if result.returncode != 0:
+            return None
+        payload = result.stdout.strip()
+        return payload or None
 
 
 def _resolve_anthropic_api_key() -> str | None:
@@ -160,7 +193,16 @@ def _resolve_openrouter_api_key() -> str | None:
 
     explicit_key = os.getenv("AGORA_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
     if explicit_key:
-        return explicit_key
+        cleaned = explicit_key.strip()
+        # Guard against accidental duplicated prefix copy/paste corruption.
+        if cleaned.startswith("sk-or-v1-") and cleaned.count("sk-or-v1-") > 1:
+            half = len(cleaned) // 2
+            if len(cleaned) % 2 == 0 and cleaned[:half] == cleaned[half:]:
+                cleaned = cleaned[:half]
+            else:
+                cleaned = ""
+        if cleaned:
+            return cleaned
 
     secret_name = os.getenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key").strip()
     if not secret_name:

@@ -3,6 +3,8 @@ use anchor_lang::prelude::*;
 use crate::errors::AgoraError;
 use crate::state::{MechanismSwitchLog, TaskAccount, TaskStatus};
 
+const MAX_MECHANISM: u8 = 4;
+
 #[derive(Accounts)]
 #[instruction(task_id: [u8; 32], switch_index: u8)]
 pub struct RecordMechanismSwitch<'info> {
@@ -48,6 +50,11 @@ pub fn handler(
         AgoraError::InvalidTaskStatus
     );
     require!(from_mechanism != to_mechanism, AgoraError::SameMechanism);
+    require!(
+        from_mechanism <= MAX_MECHANISM,
+        AgoraError::InvalidMechanism
+    );
+    require!(to_mechanism <= MAX_MECHANISM, AgoraError::InvalidMechanism);
     require!(
         switch_index == task_account.mechanism_switches,
         AgoraError::InvalidSwitchIndex

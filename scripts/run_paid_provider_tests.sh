@@ -30,7 +30,7 @@ Behavior:
   - Pulls OpenRouter key from Google Secret Manager.
   - Unsets OPENROUTER_API_KEY and sets AGORA_OPENROUTER_API_KEY for the test process.
   - Sets RUN_PAID_PROVIDER_TESTS=1.
-  - Runs: python -m pytest -s -q -m <mark> [pytest-args]
+  - Runs: python -m pytest -q -m <mark> [pytest-args]
 EOF
 }
 
@@ -109,7 +109,7 @@ echo "[info] Running paid-provider pytest marker: $PYTEST_MARK"
   env -u OPENROUTER_API_KEY \
     AGORA_OPENROUTER_API_KEY="$OPENROUTER_SECRET" \
     RUN_PAID_PROVIDER_TESTS=1 \
-    "$PYTHON_BIN" -m pytest -s -q -m "$PYTEST_MARK" "${PYTEST_ARGS[@]}"
+    "$PYTHON_BIN" -m pytest -q -m "$PYTEST_MARK" "${PYTEST_ARGS[@]}"
 )
 
 unset OPENROUTER_SECRET

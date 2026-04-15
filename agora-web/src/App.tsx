@@ -1,16 +1,18 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth";
 
-// Need to create these page components next
+// Page components
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { LoginPage } from "./pages/Login";
+import { LoginRoute } from "./pages/Login.route";
+import { Callback } from "./pages/Callback";
 import { TaskSubmit } from "./pages/TaskSubmit";
 import { LiveDeliberation } from "./pages/LiveDeliberation";
 import { OnChainReceipt } from "./pages/OnChainReceipt";
-import { Benchmarks } from "./pages/Benchmarks";
+import { ApiKeys } from "./pages/ApiKeys";
 
 function AppRoutes() {
-  const { isLoading, user } = useAuth();
+  const { isLoading, authStatus } = useAuth();
 
   if (isLoading) {
     return (
@@ -20,18 +22,26 @@ function AppRoutes() {
     );
   }
 
-  if (!user) return <LoginPage />;
-
   return (
-    <DashboardLayout>
-      <Routes>
-        <Route path="/" element={<TaskSubmit />} />
-        <Route path="/task/:taskId" element={<LiveDeliberation />} />
-        <Route path="/task/:taskId/receipt" element={<OnChainReceipt />} />
-        <Route path="/benchmarks" element={<Benchmarks />} />
-        <Route path="*" element={<Navigate to="/" />} />
-      </Routes>
-    </DashboardLayout>
+    <Routes>
+      {/* OAuth routes - accessible regardless of auth state */}
+      <Route path="/login" element={<LoginRoute />} />
+      <Route path="/callback" element={<Callback />} />
+
+      {/* Landing page for unauthenticated users */}
+      {authStatus !== "authenticated" && <Route path="*" element={<LoginPage />} />}
+
+      {/* Protected routes - only accessible when authenticated */}
+      {authStatus === "authenticated" && (
+        <>
+          <Route path="/" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
+          <Route path="/task/:taskId" element={<DashboardLayout><LiveDeliberation /></DashboardLayout>} />
+          <Route path="/task/:taskId/receipt" element={<DashboardLayout><OnChainReceipt /></DashboardLayout>} />
+          <Route path="/api-keys" element={<DashboardLayout><ApiKeys /></DashboardLayout>} />
+          <Route path="*" element={<Navigate to="/" />} />
+        </>
+      )}
+    </Routes>
   );
 }
 
