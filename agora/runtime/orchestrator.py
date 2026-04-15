@@ -14,9 +14,16 @@ from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.monitor import StateMonitor
 from agora.selector.features import extract_features
 from agora.selector.selector import AgoraSelector
-from agora.types import DeliberationResult, MechanismSelection, MechanismType
+from agora.types import (
+    SUPPORTED_MECHANISMS,
+    DeliberationResult,
+    MechanismSelection,
+    MechanismType,
+    mechanism_is_supported,
+)
 
 logger = structlog.get_logger(__name__)
+_SUPPORTED_MECHANISMS_TEXT = ", ".join(sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS))
 
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -223,6 +230,11 @@ class AgoraOrchestrator:
             if isinstance(mechanism_override, MechanismType)
             else MechanismType(str(mechanism_override).lower())
         )
+        if not mechanism_is_supported(override):
+            raise ValueError(
+                f"Mechanism override '{override.value}' is not currently supported. "
+                f"Supported mechanisms: {_SUPPORTED_MECHANISMS_TEXT}."
+            )
         features = await extract_features(
             task_text=task,
             agent_count=self.agent_count,
@@ -316,23 +328,10 @@ class AgoraOrchestrator:
                     return switched
             return vote_outcome.result
 
-        # Week 1 supports debate and vote only. Route extension mechanisms safely.
-        fallback_selection = selection.model_copy(update={"mechanism": MechanismType.DEBATE})
-        debate_run_kwargs: dict[str, Any] = {"task": task, "selection": fallback_selection}
-        if event_sink is not None:
-            debate_run_kwargs["event_sink"] = event_sink
-        if agents is not None:
-            debate_run_kwargs["custom_agents"] = agents
-        debate_outcome = await self.debate_engine.run(**debate_run_kwargs)
-        if debate_outcome.result is not None:
-            return debate_outcome.result
-        vote_run_kwargs: dict[str, Any] = {"task": task, "selection": fallback_selection}
-        if event_sink is not None:
-            vote_run_kwargs["event_sink"] = event_sink
-        if agents is not None:
-            vote_run_kwargs["custom_agents"] = agents
-        vote_outcome = await self.vote_engine.run(**vote_run_kwargs)
-        return vote_outcome.result
+        raise ValueError(
+            f"Mechanism '{selection.mechanism.value}' is not currently supported. "
+            f"Supported mechanisms: {_SUPPORTED_MECHANISMS_TEXT}."
+        )
 
     @staticmethod
     async def _emit_event(

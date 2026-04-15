@@ -34,11 +34,29 @@ class Settings(BaseSettings):
     )
     benchmark_admin_token: str = ""
     stream_ticket_ttl_seconds: int = Field(default=60, ge=5, le=600)
+    task_run_lock_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+    coordination_backend: str = Field(
+        default="memory",
+        validation_alias=AliasChoices("AGORA_COORDINATION_BACKEND", "COORDINATION_BACKEND"),
+    )
+    redis_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_REDIS_URL", "REDIS_URL"),
+    )
+    coordination_namespace: str = Field(
+        default="agora",
+        validation_alias=AliasChoices(
+            "AGORA_COORDINATION_NAMESPACE",
+            "COORDINATION_NAMESPACE",
+        ),
+    )
     webhook_secret: str = Field(
         default="",
         validation_alias=AliasChoices("AGORA_WEBHOOK_SECRET", "WEBHOOK_SECRET"),
     )
     webhook_max_bytes: int = Field(default=262_144, ge=1024)
+    webhook_timestamp_skew_seconds: int = Field(default=300, ge=5, le=3600)
+    webhook_replay_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
     strict_chain_writes: bool = False
     workos_client_id: str = ""
     workos_authkit_domain: str = ""

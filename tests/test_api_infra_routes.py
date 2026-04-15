@@ -20,6 +20,7 @@ from agora.types import DeliberationResult, MechanismType
 from api import auth
 from api.auth import AuthenticatedUser
 from api.auth_keys import DEFAULT_API_KEY_SCOPES, build_api_key_token, hash_api_key_secret
+from api.coordination import InMemoryCoordinationBackend, StreamTicketRecord
 from api.main import app
 from api.models import ApiKeyCreateRequest, TaskCreateRequest
 from api.routes import api_keys as api_key_routes
@@ -27,7 +28,7 @@ from api.routes import auth_session
 from api.routes import tasks as task_routes
 from api.routes import webhooks as webhook_routes
 from api.store_local import LocalTaskStore
-from api.streaming import DeliberationStream, get_stream_manager
+from api.streaming import DeliberationStream, get_stream_manager, reset_stream_manager_for_tests
 from tests.helpers import make_selection
 
 
@@ -61,6 +62,27 @@ class _FakeSelectionOnlyOrchestrator:
         return make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
 
 
+def _signed_webhook_headers(
+    secret: str,
+    body: bytes,
+    *,
+    timestamp: int | None = None,
+    signature_override: str | None = None,
+) -> dict[str, str]:
+    ts = int(datetime.now(UTC).timestamp()) if timestamp is None else timestamp
+    if signature_override is None:
+        signed_payload = f"{ts}.".encode("utf-8") + body
+        digest = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+        signature = f"sha256={digest}"
+    else:
+        signature = signature_override
+    return {
+        "content-type": "application/json",
+        "x-agora-timestamp": str(ts),
+        "x-agora-signature": signature,
+    }
+
+
 @pytest.fixture
 async def client(
     monkeypatch: pytest.MonkeyPatch,
@@ -68,8 +90,8 @@ async def client(
 ) -> AsyncIterator[httpx.AsyncClient]:
     data_dir = str(tmp_path / "data")
     task_routes._store = LocalTaskStore(data_dir=data_dir)
-    task_routes._stream_tickets.clear()
-    task_routes._running_task_keys.clear()
+    await task_routes._reset_coordination_state_for_tests()
+    await reset_stream_manager_for_tests()
     app.dependency_overrides[auth.get_current_user] = _override_user
 
     transport = httpx.ASGITransport(app=app)
@@ -78,8 +100,8 @@ async def client(
 
     app.dependency_overrides.clear()
     task_routes._store = None
-    task_routes._stream_tickets.clear()
-    task_routes._running_task_keys.clear()
+    await task_routes._reset_coordination_state_for_tests()
+    await reset_stream_manager_for_tests()
 
 
 @pytest.mark.asyncio
@@ -301,6 +323,97 @@ async def test_create_list_get_task_with_local_store(
 
 
 @pytest.mark.asyncio
+async def test_create_task_rejects_unsupported_mechanism_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "unsupported-override-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.create_task(
+                TaskCreateRequest(
+                    task="force unsupported override",
+                    agent_count=3,
+                    stakes=0.0,
+                    mechanism_override="delphi",
+                ),
+                _override_user(),
+            )
+    finally:
+        task_routes._store = None
+
+    assert exc_info.value.status_code == 400
+    assert "Supported mechanisms: debate, vote" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_task_rejects_unsupported_forced_mechanism_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "unsupported-forced-data"))
+    try:
+        monkeypatch.setattr(task_routes.settings, "api_force_mechanism", "delphi")
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.create_task(
+                TaskCreateRequest(
+                    task="force unsupported from env",
+                    agent_count=3,
+                    stakes=0.0,
+                ),
+                _override_user(),
+            )
+    finally:
+        task_routes._store = None
+
+    assert exc_info.value.status_code == 500
+    assert "Supported mechanisms: debate, vote" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_run_task_rejects_unsupported_persisted_mechanism(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "unsupported-persisted-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes.settings, "api_force_mechanism", "")
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="persisted unsupported", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["mechanism"] = "delphi"
+        task["mechanism_override"] = None
+        await store.save_task("user-1", create.task_id, task)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.run_task(create.task_id, _override_user())
+
+        refreshed = await store.get_task("user-1", create.task_id)
+        assert refreshed is not None
+    finally:
+        task_routes._store = None
+
+    assert exc_info.value.status_code == 409
+    assert "Supported mechanisms: debate, vote" in str(exc_info.value.detail)
+    assert refreshed["status"] == "pending"
+
+
+@pytest.mark.asyncio
 async def test_list_tasks_filters_records_with_foreign_created_by(tmp_path: Path) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "list-filter-data"))
     user = _override_user()
@@ -365,6 +478,36 @@ async def test_run_rejects_task_already_in_progress(
             await task_routes.run_task(create.task_id, _override_user())
     finally:
         task_routes._store = None
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Task is already in progress"
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_when_coordination_lock_is_held(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-lock-held-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="lock held", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        run_key = task_routes._task_run_key("user-1", create.task_id)
+        acquired = await task_routes._acquire_task_run_lock(run_key)
+        assert acquired is True
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.run_task(create.task_id, _override_user())
+
+        await task_routes._release_task_run_lock(run_key)
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "Task is already in progress"
@@ -604,12 +747,12 @@ async def test_stream_task_replays_timestamped_event_envelopes(
     monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
 
     try:
-        ticket = task_routes._issue_stream_ticket(user.workspace_id, task_id)["ticket"]
+        ticket = (await task_routes._issue_stream_ticket(user.workspace_id, task_id))["ticket"]
         response = await task_routes.stream_task(task_id, ticket=ticket)
         replayed_events = [item async for item in response.content]
     finally:
         task_routes._store = None
-        task_routes._stream_tickets.clear()
+        await task_routes._reset_coordination_state_for_tests()
 
     assert replayed_events == [first_event, second_event]
     assert all(set(item) == {"event", "data", "timestamp"} for item in replayed_events)
@@ -664,7 +807,7 @@ async def test_stream_ticket_is_one_use_and_namespaced(
             await task_routes.stream_task(task_id, ticket=ticket["ticket"])
     finally:
         task_routes._store = None
-        task_routes._stream_tickets.clear()
+        await task_routes._reset_coordination_state_for_tests()
 
     assert exc_info.value.status_code == 401
 
@@ -702,9 +845,12 @@ async def test_stream_ticket_expiry_is_rejected(
     await store.upsert_user(user.id, user.email, user.display_name)
     await store.save_task(user.workspace_id, task_id, task_payload)
     issued = await task_routes.create_stream_ticket(task_id, user)
-    task_routes._stream_tickets[issued["ticket"]] = task_routes._StreamTicket(
-        workspace_id=user.workspace_id,
-        task_id=task_id,
+    backend = task_routes.get_coordination_backend()
+    assert isinstance(backend, InMemoryCoordinationBackend)
+    original = backend._stream_tickets[issued["ticket"]]
+    backend._stream_tickets[issued["ticket"]] = StreamTicketRecord(
+        workspace_id=original.workspace_id,
+        task_id=original.task_id,
         expires_at=datetime.now(UTC) - timedelta(seconds=1),
     )
 
@@ -714,7 +860,7 @@ async def test_stream_ticket_expiry_is_rejected(
             await task_routes.stream_task(task_id, ticket=issued["ticket"])
     finally:
         task_routes._store = None
-        task_routes._stream_tickets.clear()
+        await task_routes._reset_coordination_state_for_tests()
 
     assert exc_info.value.status_code == 401
 
@@ -769,17 +915,21 @@ async def test_solana_webhook_requires_valid_signature(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(webhook_routes.settings, "webhook_secret", "webhook-secret")
+    monkeypatch.setattr(webhook_routes.settings, "webhook_timestamp_skew_seconds", 300)
+    monkeypatch.setattr(webhook_routes.settings, "webhook_replay_ttl_seconds", 900)
     body = json.dumps(
         [{"task_id": "task-webhook", "user_id": "user-1", "signature": "tx-signature"}]
     ).encode("utf-8")
 
+    headers = _signed_webhook_headers(
+        "webhook-secret",
+        body,
+        signature_override="sha256=bad-signature",
+    )
     response = await client.post(
         "/webhooks/solana",
         content=body,
-        headers={
-            "content-type": "application/json",
-            "x-agora-signature": "sha256=bad-signature",
-        },
+        headers=headers,
     )
 
     assert response.status_code == 401
@@ -792,10 +942,12 @@ async def test_solana_webhook_emits_signed_namespaced_event(
 ) -> None:
     secret = "webhook-secret"
     monkeypatch.setattr(webhook_routes.settings, "webhook_secret", secret)
+    monkeypatch.setattr(webhook_routes.settings, "webhook_timestamp_skew_seconds", 300)
+    monkeypatch.setattr(webhook_routes.settings, "webhook_replay_ttl_seconds", 900)
     body = json.dumps(
         [{"task_id": "task-webhook", "workspace_id": "user-1", "signature": "tx-signature"}]
     ).encode("utf-8")
-    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    headers = _signed_webhook_headers(secret, body)
     manager = get_stream_manager()
     stream_id = task_routes._stream_key("user-1", "task-webhook")
     queue = manager.subscribe(stream_id)
@@ -804,10 +956,7 @@ async def test_solana_webhook_emits_signed_namespaced_event(
         response = await client.post(
             "/webhooks/solana",
             content=body,
-            headers={
-                "content-type": "application/json",
-                "x-agora-signature": f"sha256={signature}",
-            },
+            headers=headers,
         )
         event = await queue.get()
     finally:
@@ -818,6 +967,66 @@ async def test_solana_webhook_emits_signed_namespaced_event(
     assert event["event"] == "receipt_confirmed"
     assert event["data"]["task_id"] == "task-webhook"
     assert event["data"]["signature"] == "tx-signature"
+
+
+@pytest.mark.asyncio
+async def test_solana_webhook_requires_timestamp_header(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "webhook-secret"
+    monkeypatch.setattr(webhook_routes.settings, "webhook_secret", secret)
+    monkeypatch.setattr(webhook_routes.settings, "webhook_timestamp_skew_seconds", 300)
+    monkeypatch.setattr(webhook_routes.settings, "webhook_replay_ttl_seconds", 900)
+
+    body = json.dumps(
+        [{"task_id": "task-webhook", "workspace_id": "user-1", "signature": "tx-signature"}]
+    ).encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+
+    response = await client.post(
+        "/webhooks/solana",
+        content=body,
+        headers={
+            "content-type": "application/json",
+            "x-agora-signature": f"sha256={digest}",
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing webhook timestamp"
+
+
+@pytest.mark.asyncio
+async def test_solana_webhook_rejects_replay_payload(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "webhook-secret"
+    monkeypatch.setattr(webhook_routes.settings, "webhook_secret", secret)
+    monkeypatch.setattr(webhook_routes.settings, "webhook_timestamp_skew_seconds", 300)
+    monkeypatch.setattr(webhook_routes.settings, "webhook_replay_ttl_seconds", 900)
+
+    body = json.dumps(
+        [{"task_id": "task-webhook", "workspace_id": "user-1", "signature": "tx-signature"}]
+    ).encode("utf-8")
+    timestamp = int(datetime.now(UTC).timestamp())
+    headers = _signed_webhook_headers(secret, body, timestamp=timestamp)
+
+    first = await client.post(
+        "/webhooks/solana",
+        content=body,
+        headers=headers,
+    )
+    second = await client.post(
+        "/webhooks/solana",
+        content=body,
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Duplicate webhook payload"
 
 
 @pytest.mark.asyncio
@@ -1165,6 +1374,63 @@ async def test_api_key_auth_rejects_revoked_expired_and_malformed_tokens(tmp_pat
     with pytest.raises(HTTPException) as malformed_exc:
         await auth.get_current_user(malformed_creds)
     assert malformed_exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_api_key_auth_handles_naive_expiry_timestamps(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "auth-api-key-naive-expiry"))
+    auth._store = store
+    now = datetime.now(UTC)
+
+    await store.save_api_key(
+        "user-1",
+        "key-naive-future",
+        {
+            "key_id": "key-naive-future",
+            "workspace_id": "user-1",
+            "name": "naive-future",
+            "public_id": "naivefuture1",
+            "secret_hash": hash_api_key_secret("naive-future-secret"),
+            "scopes": list(DEFAULT_API_KEY_SCOPES),
+            "created_by_user_id": "user-1",
+            "created_at": now.isoformat(),
+            "last_used_at": None,
+            "expires_at": (now + timedelta(hours=1)).replace(tzinfo=None).isoformat(),
+            "revoked_at": None,
+        },
+    )
+    await store.save_api_key(
+        "user-1",
+        "key-naive-past",
+        {
+            "key_id": "key-naive-past",
+            "workspace_id": "user-1",
+            "name": "naive-past",
+            "public_id": "naivepast1",
+            "secret_hash": hash_api_key_secret("naive-past-secret"),
+            "scopes": list(DEFAULT_API_KEY_SCOPES),
+            "created_by_user_id": "user-1",
+            "created_at": now.isoformat(),
+            "last_used_at": None,
+            "expires_at": (now - timedelta(hours=1)).replace(tzinfo=None).isoformat(),
+            "revoked_at": None,
+        },
+    )
+
+    future_creds = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=build_api_key_token("naivefuture1", "naive-future-secret"),
+    )
+    future_user = await auth.get_current_user(future_creds)
+    assert future_user.workspace_id == "user-1"
+
+    past_creds = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=build_api_key_token("naivepast1", "naive-past-secret"),
+    )
+    with pytest.raises(HTTPException) as past_exc:
+        await auth.get_current_user(past_creds)
+    assert past_exc.value.status_code == 401
 
 
 @pytest.mark.asyncio

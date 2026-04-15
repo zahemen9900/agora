@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import secrets
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 import structlog
@@ -14,8 +13,19 @@ from sse_starlette.sse import EventSourceResponse
 
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
-from agora.types import DeliberationResult, MechanismSelection, MechanismType
+from agora.types import (
+    SUPPORTED_MECHANISMS,
+    DeliberationResult,
+    MechanismSelection,
+    MechanismType,
+    mechanism_is_supported,
+)
 from api.auth import AuthenticatedUser, get_current_user, require_scope
+from api.coordination import (
+    StreamTicketRecord,
+    get_coordination_backend,
+    reset_coordination_state_for_tests,
+)
 from api.config import settings
 from api.models import (
     DeliberationResultResponse,
@@ -33,18 +43,9 @@ router = APIRouter()
 logger = structlog.get_logger(__name__)
 
 _store: TaskStore | LocalTaskStore | None = None
-_running_task_keys: set[str] = set()
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
-
-
-@dataclass(frozen=True)
-class _StreamTicket:
-    workspace_id: str
-    task_id: str
-    expires_at: datetime
-
-
-_stream_tickets: dict[str, _StreamTicket] = {}
+_SUPPORTED_MECHANISMS_TEXT = ", ".join(sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS))
+_STREAM_POLL_INTERVAL_SECONDS = 0.5
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -107,33 +108,39 @@ async def _load_task_for_user(
     return raw_task
 
 
-def _issue_stream_ticket(workspace_id: str, task_id: str) -> dict[str, str]:
+async def _issue_stream_ticket(workspace_id: str, task_id: str) -> dict[str, str]:
     """Create a short-lived one-use ticket for EventSource auth."""
 
-    _purge_expired_stream_tickets()
-    ticket = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(seconds=settings.stream_ticket_ttl_seconds)
-    _stream_tickets[ticket] = _StreamTicket(
-        workspace_id=workspace_id,
-        task_id=task_id,
-        expires_at=expires_at,
+    ticket, expires_at = await get_coordination_backend().issue_stream_ticket(
+        workspace_id,
+        task_id,
+        settings.stream_ticket_ttl_seconds,
     )
     return {"ticket": ticket, "expires_at": expires_at.isoformat()}
 
 
-def _purge_expired_stream_tickets() -> None:
-    now = datetime.now(UTC)
-    expired = [ticket for ticket, entry in _stream_tickets.items() if entry.expires_at <= now]
-    for ticket in expired:
-        _stream_tickets.pop(ticket, None)
-
-
-def _consume_stream_ticket(ticket: str, *, task_id: str) -> _StreamTicket:
-    _purge_expired_stream_tickets()
-    entry = _stream_tickets.pop(ticket, None)
-    if entry is None or entry.task_id != task_id or entry.expires_at <= datetime.now(UTC):
+async def _consume_stream_ticket(ticket: str, *, task_id: str) -> StreamTicketRecord:
+    entry = await get_coordination_backend().consume_stream_ticket(ticket, task_id=task_id)
+    if entry is None:
         raise HTTPException(status_code=401, detail="Invalid stream ticket")
     return entry
+
+
+async def _acquire_task_run_lock(run_key: str) -> bool:
+    return await get_coordination_backend().acquire_run_lock(
+        run_key,
+        ttl_seconds=settings.task_run_lock_ttl_seconds,
+    )
+
+
+async def _release_task_run_lock(run_key: str) -> None:
+    await get_coordination_backend().release_run_lock(run_key)
+
+
+async def _reset_coordination_state_for_tests() -> None:
+    """Clear coordination state for deterministic tests."""
+
+    await reset_coordination_state_for_tests()
 
 
 def _result_to_response(task_id: str, result: DeliberationResult) -> DeliberationResultResponse:
@@ -187,12 +194,54 @@ def _forced_mechanism() -> MechanismType | None:
     if not configured:
         return None
     try:
-        return MechanismType(configured)
+        mechanism = MechanismType(configured)
     except ValueError as exc:
         raise HTTPException(
             status_code=500,
             detail=f"Unsupported AGORA_API_FORCE_MECHANISM={settings.api_force_mechanism!r}",
         ) from exc
+    return _require_supported_mechanism(
+        mechanism,
+        status_code=500,
+        source="AGORA_API_FORCE_MECHANISM",
+    )
+
+
+def _require_supported_mechanism(
+    mechanism: MechanismType,
+    *,
+    status_code: int,
+    source: str,
+) -> MechanismType:
+    """Require a mechanism to be executable in current runtime paths."""
+
+    if not mechanism_is_supported(mechanism):
+        raise HTTPException(
+            status_code=status_code,
+            detail=(
+                f"Mechanism '{mechanism.value}' from {source} is not currently supported. "
+                f"Supported mechanisms: {_SUPPORTED_MECHANISMS_TEXT}."
+            ),
+        )
+    return mechanism
+
+
+def _parse_mechanism(
+    raw_mechanism: str,
+    *,
+    status_code: int,
+    source: str,
+) -> MechanismType:
+    """Parse and validate mechanism strings stored in persisted task records."""
+
+    try:
+        mechanism = MechanismType(raw_mechanism)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"Invalid mechanism '{raw_mechanism}' in {source}.",
+        ) from exc
+    return _require_supported_mechanism(mechanism, status_code=status_code, source=source)
 
 
 def _request_mechanism_override(request: TaskCreateRequest) -> MechanismType | None:
@@ -200,7 +249,11 @@ def _request_mechanism_override(request: TaskCreateRequest) -> MechanismType | N
 
     if request.mechanism_override is None:
         return None
-    return MechanismType(request.mechanism_override)
+    return _require_supported_mechanism(
+        MechanismType(request.mechanism_override),
+        status_code=400,
+        source="mechanism_override",
+    )
 
 
 async def _pinned_selection(
@@ -324,6 +377,11 @@ async def create_task(
             stakes=request.stakes,
             mechanism=effective_override,
         )
+    _require_supported_mechanism(
+        selection.mechanism,
+        status_code=500,
+        source="selector",
+    )
 
     init_tx_hash: str | None = None
     init_explorer_url: str | None = None
@@ -426,13 +484,34 @@ async def run_task(
     if task.status != "pending":
         raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
 
-    run_key = _task_run_key(user.workspace_id, task_id)
-    if run_key in _running_task_keys:
-        raise HTTPException(status_code=409, detail="Task is already in progress")
-    _running_task_keys.add(run_key)
+    forced_mechanism = _forced_mechanism()
+    stored_override: MechanismType | None = None
+    if task.mechanism_override is not None:
+        stored_override = _parse_mechanism(
+            task.mechanism_override,
+            status_code=409,
+            source="stored mechanism_override",
+        )
+    effective_override = forced_mechanism or stored_override
+    if effective_override is None:
+        _parse_mechanism(
+            task.mechanism,
+            status_code=409,
+            source="stored task mechanism",
+        )
 
-    task.status = "in_progress"
-    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
+    run_key = _task_run_key(user.workspace_id, task_id)
+    if not await _acquire_task_run_lock(run_key):
+        raise HTTPException(status_code=409, detail="Task is already in progress")
+
+    run_lock_released = False
+
+    async def _release_run_lock_once() -> None:
+        nonlocal run_lock_released
+        if run_lock_released:
+            return
+        await _release_task_run_lock(run_key)
+        run_lock_released = True
 
     async def runtime_event_sink(event_type: str, data: dict[str, Any]) -> None:
         await persist_and_emit(
@@ -446,11 +525,8 @@ async def run_task(
 
     orchestrator = AgoraOrchestrator(agent_count=task.agent_count)
     try:
-        stored_override = (
-            MechanismType(task.mechanism_override) if task.mechanism_override else None
-        )
-        forced_mechanism = _forced_mechanism()
-        effective_override = forced_mechanism or stored_override
+        task.status = "in_progress"
+        await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
 
         if effective_override is not None:
             result = await orchestrator.run(
@@ -486,7 +562,7 @@ async def run_task(
             )
         finally:
             logger.exception("task_execution_failed", task_id=task_id)
-            _running_task_keys.discard(run_key)
+            await _release_run_lock_once()
         raise HTTPException(status_code=500, detail="Task execution failed") from exc
 
     result_response = _result_to_response(task_id, result)
@@ -515,7 +591,7 @@ async def run_task(
                         message="Failed to submit receipt on Solana",
                     )
                 finally:
-                    _running_task_keys.discard(run_key)
+                    await _release_run_lock_once()
                 raise HTTPException(
                     status_code=502,
                     detail="Failed to submit receipt on Solana",
@@ -563,7 +639,7 @@ async def run_task(
                                 message="Failed to record mechanism switch on Solana",
                             )
                         finally:
-                            _running_task_keys.discard(run_key)
+                            await _release_run_lock_once()
                         raise HTTPException(
                             status_code=502,
                             detail="Failed to record mechanism switch on Solana",
@@ -629,7 +705,7 @@ async def run_task(
         event_data={"task_id": task_id, "status": task.status},
     )
     await stream.close(_stream_key(user.workspace_id, task_id))
-    _running_task_keys.discard(run_key)
+    await _release_run_lock_once()
     return result_response
 
 
@@ -681,7 +757,7 @@ async def create_stream_ticket(
     require_scope(user, "tasks:read")
     store = get_task_store()
     await _load_task_for_user(store, user.workspace_id, task_id)
-    return _issue_stream_ticket(user.workspace_id, task_id)
+    return await _issue_stream_ticket(user.workspace_id, task_id)
 
 
 @router.get("/{task_id}/stream")
@@ -691,7 +767,7 @@ async def stream_task(
 ) -> EventSourceResponse:
     """Replay persisted events, then continue with live SSE updates."""
 
-    stream_ticket = _consume_stream_ticket(ticket, task_id=task_id)
+    stream_ticket = await _consume_stream_ticket(ticket, task_id=task_id)
     workspace_id = stream_ticket.workspace_id
     store = get_task_store()
     stream = get_stream_manager()
@@ -711,12 +787,38 @@ async def stream_task(
 
         stream_id = _stream_key(workspace_id, task_id)
         queue = stream.subscribe(stream_id)
+        next_event_index = len(events)
+
         try:
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=_STREAM_POLL_INTERVAL_SECONDS,
+                    )
+                except TimeoutError:
+                    latest = await store.get_events(workspace_id, task_id)
+                    if next_event_index >= len(latest):
+                        continue
+
+                    for event in latest[next_event_index:]:
+                        payload = {
+                            "event": event.get("event", "update"),
+                            "data": event.get("data", {}),
+                            "timestamp": event.get("timestamp"),
+                        }
+                        next_event_index += 1
+                        yield payload
+                        if payload["event"] in {"complete", "error"}:
+                            return
+                    continue
+
                 if item is None:
                     break
                 yield item
+                next_event_index += 1
+                if item.get("event") in {"complete", "error"}:
+                    break
         finally:
             stream.unsubscribe(stream_id, queue)
 

@@ -247,6 +247,20 @@ async def test_mechanism_override_pins_vote_without_switch(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mechanism_override_rejects_unsupported_mechanism() -> None:
+    """Unsupported mechanism overrides should fail explicitly."""
+
+    orchestrator = AgoraOrchestrator(agent_count=3)
+
+    with pytest.raises(ValueError) as exc_info:
+        await orchestrator.run("force unsupported", mechanism_override=MechanismType.DELPHI)
+
+    message = str(exc_info.value)
+    assert "not currently supported" in message
+    assert "debate, vote" in message
+
+
+@pytest.mark.asyncio
 async def test_run_and_learn_credits_final_mechanism(monkeypatch) -> None:
     """Bandit updates should credit the mechanism that produced the final answer."""
 

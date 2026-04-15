@@ -168,9 +168,12 @@ async def get_current_user(
                 raise HTTPException(status_code=401, detail="Invalid bearer token")
             if isinstance(expires_at, str):
                 try:
-                    if datetime.fromisoformat(expires_at) <= datetime.now(UTC):
+                    expires_at_dt = datetime.fromisoformat(expires_at)
+                    if expires_at_dt.tzinfo is None:
+                        expires_at_dt = expires_at_dt.replace(tzinfo=UTC)
+                    if expires_at_dt <= datetime.now(UTC):
                         raise HTTPException(status_code=401, detail="Invalid bearer token")
-                except ValueError as exc:
+                except (TypeError, ValueError) as exc:
                     raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
             candidate_hash = hash_api_key_secret(secret)
             stored_hash = str(api_key.get("secret_hash", ""))
