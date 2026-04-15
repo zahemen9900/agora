@@ -1139,7 +1139,7 @@ class AgentCaller:
 
     @staticmethod
     def _extract_json_payload(text: str) -> str:
-        """Extract a JSON object or array payload from model text."""
+        """Return JSON payload only when the whole response is JSON."""
 
         cleaned = text.strip()
         if cleaned.startswith("```"):
@@ -1148,24 +1148,12 @@ class AgentCaller:
                 cleaned = "\n".join(lines[1:-1]).strip()
 
         decoder = json.JSONDecoder()
-        starts: list[int] = []
-        for char in ("{", "["):
-            search_from = 0
-            while True:
-                idx = cleaned.find(char, search_from)
-                if idx == -1:
-                    break
-                starts.append(idx)
-                search_from = idx + len(char)
-
-        starts = sorted(set(starts))
-        for start in starts:
-            try:
-                _parsed, end = decoder.raw_decode(cleaned[start:])
-                return cleaned[start : start + end]
-            except json.JSONDecodeError:
-                continue
-
+        try:
+            _parsed, end = decoder.raw_decode(cleaned)
+        except json.JSONDecodeError:
+            return cleaned
+        if cleaned[end:].strip():
+            return cleaned
         return cleaned
 
     @staticmethod

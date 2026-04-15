@@ -36,29 +36,44 @@ async def _call_agent(
     system_prompt: str,
     user_prompt: str,
 ) -> Any:
-    """Call a sync or async agent using a permissive invocation strategy."""
+    """Call a sync or async agent while preserving system and user prompts."""
 
-    candidates: list[tuple[tuple[Any, ...], dict[str, Any]]] = [
-        ((), {"system_prompt": system_prompt, "user_prompt": user_prompt}),
-        ((system_prompt, user_prompt), {}),
-        ((user_prompt,), {}),
-        ((), {"prompt": user_prompt}),
-    ]
+    args: tuple[Any, ...] = ()
+    kwargs: dict[str, Any] = {}
 
-    last_error: TypeError | None = None
-    for args, kwargs in candidates:
-        try:
-            value = agent(*args, **kwargs)
-        except TypeError as exc:
-            last_error = exc
-            continue
-        if inspect.isawaitable(value):
-            return await value
-        return value
+    try:
+        signature = inspect.signature(agent)
+    except (TypeError, ValueError):
+        kwargs = {"system_prompt": system_prompt, "user_prompt": user_prompt}
+    else:
+        parameters = signature.parameters
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if accepts_kwargs or {"system_prompt", "user_prompt"}.issubset(parameters):
+            kwargs = {"system_prompt": system_prompt, "user_prompt": user_prompt}
+        else:
+            positional = [
+                parameter
+                for parameter in parameters.values()
+                if parameter.kind
+                in {
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                }
+            ]
+            if len(positional) >= 2:
+                args = (system_prompt, user_prompt)
+            else:
+                raise TypeError(
+                    "Custom agent must accept both system_prompt and user_prompt"
+                )
 
-    if last_error is not None:
-        raise last_error
-    raise TypeError("Custom agent callable could not be invoked")
+    value = agent(*args, **kwargs)
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _coerce_response(

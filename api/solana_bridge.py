@@ -25,6 +25,7 @@ logger = structlog.get_logger(__name__)
 
 LAMPORTS_PER_SOL = 1_000_000_000
 SYSTEM_PROGRAM_ID = Pubkey.from_string("11111111111111111111111111111111")
+MAX_MECHANISM_U8 = 4
 
 MECHANISM_TO_U8: dict[str, int] = {
     "debate": 0,
@@ -235,8 +236,8 @@ class SolanaBridge:
 
     def _mechanism_u8(self, mechanism: str | int) -> int:
         if isinstance(mechanism, int):
-            if mechanism < 0 or mechanism > 255:
-                raise ValueError("mechanism value must be in range [0, 255]")
+            if mechanism < 0 or mechanism > MAX_MECHANISM_U8:
+                raise ValueError(f"mechanism value must be in range [0, {MAX_MECHANISM_U8}]")
             return mechanism
 
         key = mechanism.strip().lower()
@@ -262,6 +263,8 @@ class SolanaBridge:
             raise ValueError("agent_count must be in range [1, 10]")
         if payment_amount_lamports < 0:
             raise ValueError("payment_amount_lamports must be non-negative")
+        if recipient == SYSTEM_PROGRAM_ID:
+            raise ValueError("recipient must not be the default pubkey")
 
         task_id_bytes = self.task_id_to_bytes(task_id)
         task_hash_bytes = bytes.fromhex(self._normalize_hex(task_hash, field_name="task_hash"))

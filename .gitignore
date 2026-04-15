@@ -208,6 +208,8 @@ contract/node_modules/
 contract/target/
 contract/.anchor/
 api/data/
+data/
+.env.*
 
 # Marimo
 marimo/_static/

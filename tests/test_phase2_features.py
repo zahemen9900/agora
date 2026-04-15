@@ -43,7 +43,10 @@ def test_benchmark_runner_builds_default_phase2_split() -> None:
 
 
 @pytest.mark.asyncio
-async def test_benchmarks_route_reads_store_summary(tmp_path: Path) -> None:
+async def test_benchmarks_route_reads_store_summary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-data"))
     task_routes._store = store
     summary = {
@@ -54,10 +57,14 @@ async def test_benchmarks_route_reads_store_summary(tmp_path: Path) -> None:
     }
 
     try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
         await store.save_benchmark_summary(summary)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            response = await client.get("/benchmarks")
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
 
         assert response.status_code == 200
         assert response.json() == summary
@@ -66,55 +73,24 @@ async def test_benchmarks_route_reads_store_summary(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_benchmarks_route_falls_back_to_completed_tasks(tmp_path: Path) -> None:
+async def test_benchmarks_route_requires_admin_token(tmp_path: Path) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-tasks"))
-    original_results_path = benchmark_routes._RESULTS_PATH
     task_routes._store = store
-    benchmark_routes._RESULTS_PATH = tmp_path / "missing-phase2-validation.json"
-    task_payload = {
-        "task_id": "task-1",
-        "task_text": "Should we use a monolith?",
-        "mechanism": "vote",
-        "status": "completed",
-        "selector_reasoning": "Low disagreement, force vote.",
-        "selector_reasoning_hash": "hash-1",
-        "selector_confidence": 0.91,
-        "result": {
-            "task_id": "task-1",
-            "mechanism": "vote",
-            "final_answer": "Use a monolith first.",
-            "confidence": 0.88,
-            "quorum_reached": True,
-            "merkle_root": "root-1",
-            "decision_hash": "decision-1",
-            "total_tokens_used": 120,
-            "latency_ms": 45.0,
-            "round_count": 1,
-            "mechanism_switches": 0,
-            "transcript_hashes": ["leaf-1"],
-            "convergence_history": [],
-            "locked_claims": [],
-        },
-    }
 
     try:
-        await store.save_task("user-1", "task-1", task_payload)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get("/benchmarks")
 
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["metadata"]["accuracy_is_proxy"] is True
-        assert payload["summary"]["per_mode"]["vote"]["avg_tokens"] == 120.0
+        assert response.status_code == 403
     finally:
         task_routes._store = None
-        benchmark_routes._RESULTS_PATH = original_results_path
 
 
 @pytest.mark.asyncio
-async def test_benchmarks_route_prefers_completed_tasks_before_file_fallback(
+async def test_benchmarks_route_uses_file_fallback_not_completed_tasks(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-order"))
     original_results_path = benchmark_routes._RESULTS_PATH
@@ -157,15 +133,19 @@ async def test_benchmarks_route_prefers_completed_tasks_before_file_fallback(
     }
 
     try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
         await store.save_task("user-1", "task-2", task_payload)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            response = await client.get("/benchmarks")
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["metadata"]["source"] == "completed_task_records"
-        assert payload["summary"]["per_mode"]["vote"]["avg_tokens"] == 98.0
+        assert payload["metadata"]["source"] == "file_artifact"
+        assert payload["summary"]["per_mode"]["selector"]["accuracy"] == 0.11
     finally:
         task_routes._store = None
         benchmark_routes._RESULTS_PATH = original_results_path
@@ -251,7 +231,11 @@ async def test_sdk_local_mode_supports_custom_agents() -> None:
             "reasoning": "All agents independently prefer BTC here.",
         }
 
-    arbitrator = AgoraArbitrator(mechanism="vote", agent_count=3)
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        strict_verification=False,
+    )
     result = await arbitrator.arbitrate(
         "Should I buy Solana or BTC?",
         agents=[unanimous_agent, unanimous_agent, unanimous_agent],
@@ -376,7 +360,7 @@ async def test_sdk_verify_receipt_strict_hosted_payload_mismatch_raises(
 
 
 @pytest.mark.asyncio
-async def test_sdk_verify_receipt_strict_hosted_payload_success(
+async def test_sdk_verify_receipt_strict_hosted_payload_still_requires_chain_proof(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
@@ -416,18 +400,20 @@ async def test_sdk_verify_receipt_strict_hosted_payload_success(
         return _FakeResponse(payload)
 
     monkeypatch.setattr(arbitrator._client, "get", fake_get)
-    verification = await arbitrator.verify_receipt(result)
+    with pytest.raises(ReceiptVerificationError, match="Strict on-chain receipt verification"):
+        await arbitrator.verify_receipt(result)
     await arbitrator.aclose()
-
-    assert verification["valid"] is True
-    assert verification["on_chain_match"] is True
 
 
 @pytest.mark.asyncio
 async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    arbitrator = AgoraArbitrator(mechanism="vote", agent_count=3)
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        strict_verification=False,
+    )
     hasher = TranscriptHasher()
     final_answer = "BTC"
     transcript_hashes = [
@@ -494,7 +480,8 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
 
     assert verification["valid"] is True
     assert verification["merkle_match"] is True
-    assert verification["on_chain_match"] is True
+    assert verification["hosted_metadata_match"] is True
+    assert verification["on_chain_match"] is None
 
 
 @pytest.mark.asyncio

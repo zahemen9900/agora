@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 from google.cloud import storage
 
+from api.security import validate_storage_id
 from api.store_local import LocalTaskStore
 
 logger = structlog.get_logger(__name__)
@@ -19,13 +20,23 @@ class TaskStore:
         self.client = storage.Client()
         self.bucket = self.client.bucket(bucket_name)
 
+    @staticmethod
+    def _user_prefix(user_id: str) -> str:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        return f"users/{safe_user_id}"
+
+    @classmethod
+    def _task_blob_name(cls, user_id: str, task_id: str) -> str:
+        safe_task_id = validate_storage_id(task_id, field_name="task_id")
+        return f"{cls._user_prefix(user_id)}/tasks/{safe_task_id}.json"
+
     async def upsert_user(
         self,
         user_id: str,
         email: str,
         name: str | None = None,
     ) -> dict[str, Any]:
-        blob = self.bucket.blob(f"users/{user_id}/profile.json")
+        blob = self.bucket.blob(f"{self._user_prefix(user_id)}/profile.json")
 
         try:
             existing = json.loads(blob.download_as_text())
@@ -46,11 +57,11 @@ class TaskStore:
         return existing
 
     async def save_task(self, user_id: str, task_id: str, data: dict[str, Any]) -> None:
-        blob = self.bucket.blob(f"users/{user_id}/tasks/{task_id}.json")
+        blob = self.bucket.blob(self._task_blob_name(user_id, task_id))
         blob.upload_from_string(json.dumps(data, default=str), content_type="application/json")
 
     async def get_task(self, user_id: str, task_id: str) -> dict[str, Any] | None:
-        blob = self.bucket.blob(f"users/{user_id}/tasks/{task_id}.json")
+        blob = self.bucket.blob(self._task_blob_name(user_id, task_id))
         try:
             return json.loads(blob.download_as_text())
         except Exception:
@@ -58,7 +69,7 @@ class TaskStore:
             return None
 
     async def list_user_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        prefix = f"users/{user_id}/tasks/"
+        prefix = f"{self._user_prefix(user_id)}/tasks/"
         blobs = list(self.bucket.list_blobs(prefix=prefix))
         blobs.sort(
             key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),

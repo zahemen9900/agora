@@ -299,11 +299,11 @@ async def test_mechanism_switch_triggers_when_monitor_requests(monkeypatch) -> N
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
 
-    monkeypatch.setattr(engine.monitor, "should_terminate", lambda history: (False, "continue"))
+    monkeypatch.setattr(engine.monitor, "should_terminate", lambda _history: (False, "continue"))
     monkeypatch.setattr(
         engine.monitor,
         "should_switch_mechanism",
-        lambda history, current_mechanism: (True, MechanismType.VOTE, "forced switch"),
+        lambda _history, current_mechanism: (True, MechanismType.VOTE, "forced switch"),
     )
 
     outcome = await engine.run("Compare two software architectures.", selection)

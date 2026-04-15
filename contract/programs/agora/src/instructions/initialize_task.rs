@@ -4,6 +4,8 @@ use anchor_lang::system_program::{transfer, Transfer};
 use crate::errors::AgoraError;
 use crate::state::{TaskAccount, TaskStatus, VaultAccount};
 
+const MAX_MECHANISM: u8 = 4;
+
 #[derive(Accounts)]
 #[instruction(task_id: [u8; 32])]
 pub struct InitializeTask<'info> {
@@ -48,6 +50,8 @@ pub fn handler(
         agent_count > 0 && agent_count <= 10,
         AgoraError::InvalidAgentCount
     );
+    require!(mechanism <= MAX_MECHANISM, AgoraError::InvalidMechanism);
+    require!(recipient != Pubkey::default(), AgoraError::InvalidRecipient);
 
     let now = Clock::get()?.unix_timestamp;
 

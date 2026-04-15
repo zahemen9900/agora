@@ -216,6 +216,43 @@ async def test_four_agent_vote_records_all_provider_models() -> None:
 
 
 @pytest.mark.asyncio
+async def test_custom_agents_short_circuit_all_provider_tiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom agents are local execution; provider callers must never be reached."""
+
+    captured_prompts: list[tuple[str, str]] = []
+
+    async def local_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        captured_prompts.append((system_prompt, user_prompt))
+        return {
+            "answer": "Paris",
+            "confidence": 0.9,
+            "predicted_group_answer": "Paris",
+            "reasoning": "Local deterministic agent.",
+        }
+
+    def fail_provider_lookup(self: VoteEngine, tier: str) -> object:
+        del self
+        raise AssertionError(f"provider tier should not be used: {tier}")
+
+    monkeypatch.setattr(VoteEngine, "_get_caller", fail_provider_lookup)
+    engine = VoteEngine(agent_count=4)
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
+
+    outcome = await engine.run(
+        "Answer in one word: Paris or Lyon?",
+        selection,
+        custom_agents=[local_agent, local_agent, local_agent, local_agent],
+    )
+
+    assert outcome.result.final_answer == "Paris"
+    assert outcome.result.agent_models_used == ["custom-agent"]
+    assert len(captured_prompts) == 4
+    assert all("Answer the task" in system for system, _user in captured_prompts)
+
+
+@pytest.mark.asyncio
 async def test_call_structured_claude_falls_back_to_kimi() -> None:
     """Structured Claude failures should retry once with Kimi fallback caller."""
 

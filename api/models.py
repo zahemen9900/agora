@@ -7,25 +7,29 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+MechanismName = Literal["debate", "vote", "delphi", "moa"]
+TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
+PaymentStatusName = Literal["locked", "released", "none"]
+
 
 class TaskCreateRequest(BaseModel):
     """Payload for creating a persisted task."""
 
-    task: str = Field(min_length=1)
+    task: str = Field(min_length=1, max_length=12_000)
     agent_count: int = Field(default=3, ge=1, le=10)
     stakes: float = Field(default=0.0, ge=0.0)
-    mechanism_override: Literal["debate", "vote", "delphi", "moa"] | None = None
+    mechanism_override: MechanismName | None = None
 
 
 class TaskCreateResponse(BaseModel):
     """Selector result returned at task creation time."""
 
     task_id: str
-    mechanism: Literal["debate", "vote", "delphi", "moa"]
+    mechanism: MechanismName
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
     selector_reasoning_hash: str
-    status: Literal["pending", "in_progress", "completed", "failed", "paid"]
+    status: TaskStatusName
 
 
 class TaskEvent(BaseModel):
@@ -62,9 +66,10 @@ class TaskStatusResponse(BaseModel):
 
     task_id: str
     task_text: str
+    created_by: str = ""
     mechanism: str
-    mechanism_override: Literal["debate", "vote", "delphi", "moa"] | None = None
-    status: Literal["pending", "in_progress", "completed", "failed", "paid"]
+    mechanism_override: MechanismName | None = None
+    status: TaskStatusName
     selector_reasoning: str
     selector_reasoning_hash: str
     selector_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -78,7 +83,7 @@ class TaskStatusResponse(BaseModel):
     solana_tx_hash: str | None = None
     explorer_url: str | None = None
     payment_amount: float = 0.0
-    payment_status: Literal["locked", "released", "none"] = "none"
+    payment_status: PaymentStatusName = "none"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
     result: DeliberationResultResponse | None = None

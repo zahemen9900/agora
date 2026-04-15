@@ -6,13 +6,16 @@ from functools import lru_cache
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, Query
+import structlog
+from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from api.config import settings
+from api.security import validate_storage_id
 
 security = HTTPBearer(auto_error=False)
+logger = structlog.get_logger(__name__)
 
 
 class AuthenticatedUser(BaseModel):
@@ -99,39 +102,56 @@ def _demo_user() -> AuthenticatedUser:
     )
 
 
+def _demo_auth_enabled() -> bool:
+    """Return whether unauthenticated demo access is explicitly enabled."""
+
+    environment = settings.environment.strip().lower()
+    return (
+        not settings.auth_required
+        and settings.demo_mode
+        and environment not in {"prod", "production"}
+    )
+
+
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
-    token: str | None = Query(default=None),
 ) -> AuthenticatedUser:
     """Decode bearer token and return normalized user claims."""
 
-    raw_token = credentials.credentials if credentials is not None else token
+    raw_token = credentials.credentials if credentials is not None else None
     if not raw_token:
-        if not settings.auth_required:
+        if _demo_auth_enabled():
             return _demo_user()
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
     try:
         payload = _decode_verified_token(raw_token)
     except RuntimeError as exc:
-        if not settings.auth_required:
+        logger.error("auth_verification_misconfigured", error=str(exc))
+        if _demo_auth_enabled():
             return _demo_user()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Authentication error") from exc
     except jwt.PyJWTError as exc:
-        if not settings.auth_required:
+        if _demo_auth_enabled():
             return _demo_user()
         raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
 
     user_id = payload.get("sub")
     if not user_id:
-        if not settings.auth_required:
+        if _demo_auth_enabled():
             return _demo_user()
         raise HTTPException(status_code=401, detail="Token missing sub claim")
 
     if not isinstance(user_id, str):
-        if not settings.auth_required:
+        if _demo_auth_enabled():
             return _demo_user()
         raise HTTPException(status_code=401, detail="Token missing sub claim")
+    try:
+        validate_storage_id(user_id, field_name="sub")
+    except ValueError as exc:
+        if _demo_auth_enabled():
+            return _demo_user()
+        raise HTTPException(status_code=401, detail="Token has invalid sub claim") from exc
 
     email = payload.get("email")
     if not isinstance(email, str):

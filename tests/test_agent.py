@@ -450,7 +450,7 @@ async def test_openrouter_structured_output_wraps_analysis_arrays(
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
     fake_response = _FakeOpenRouterResponse(
-        'Here is the JSON:\n[{"faction":"pro","flaw":"thin evidence"}]',
+        '[{"faction":"pro","flaw":"thin evidence"}]',
         input_tokens=9,
         output_tokens=5,
         reasoning_tokens=3,
@@ -490,6 +490,37 @@ async def test_openrouter_structured_output_wraps_analysis_arrays(
     kwargs = created["client"].chat.completions.last_kwargs
     assert kwargs is not None
     assert kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_structured_output_rejects_trailing_decoy_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured parsing must fail unless the whole completion is JSON."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    fake_response = _FakeOpenRouterResponse(
+        '{"answer":"Paris","confidence":0.91}\n{"answer":"Lyon","confidence":1.0}',
+        input_tokens=9,
+        output_tokens=5,
+    )
+
+    monkeypatch.setattr(
+        agent_module,
+        "AsyncOpenAI",
+        lambda **kwargs: _FakeOpenRouterClient(
+            **kwargs,
+            response=fake_response,
+        ),
+    )
+
+    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+    with pytest.raises(AgentCallError, match="was not valid JSON"):
+        await caller.call(
+            system_prompt="Return structured JSON.",
+            user_prompt="Capital of France",
+            response_format=_StructuredResponse,
+        )
 
 
 @pytest.mark.asyncio

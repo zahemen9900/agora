@@ -7,14 +7,24 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from api.security import safe_child_path, validate_storage_id
+
 
 class LocalTaskStore:
-    def __init__(self, data_dir: str = "./data") -> None:
-        self.root = Path(data_dir)
+    def __init__(self, data_dir: str = "api/data") -> None:
+        self.root = Path(data_dir).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def _user_dir(self, user_id: str) -> Path:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        return safe_child_path(self.root, "users", safe_user_id)
+
+    def _task_path(self, user_id: str, task_id: str) -> Path:
+        safe_task_id = validate_storage_id(task_id, field_name="task_id")
+        return self._user_dir(user_id) / "tasks" / f"{safe_task_id}.json"
+
     async def save_task(self, user_id: str, task_id: str, data: dict[str, Any]) -> None:
-        path = self.root / "users" / user_id / "tasks" / f"{task_id}.json"
+        path = self._task_path(user_id, task_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, default=str), encoding="utf-8")
 
@@ -24,7 +34,7 @@ class LocalTaskStore:
         email: str,
         name: str | None = None,
     ) -> dict[str, Any]:
-        path = self.root / "users" / user_id / "profile.json"
+        path = self._user_dir(user_id) / "profile.json"
         path.parent.mkdir(parents=True, exist_ok=True)
 
         if path.exists():
@@ -47,13 +57,13 @@ class LocalTaskStore:
         return data
 
     async def get_task(self, user_id: str, task_id: str) -> dict[str, Any] | None:
-        path = self.root / "users" / user_id / "tasks" / f"{task_id}.json"
+        path = self._task_path(user_id, task_id)
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
     async def list_user_tasks(self, user_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        task_dir = self.root / "users" / user_id / "tasks"
+        task_dir = self._user_dir(user_id) / "tasks"
         if not task_dir.exists():
             return []
 

@@ -224,7 +224,7 @@ class VoteEngine:
             content = response.answer
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=self._model_name(tier),
+                agent_model="custom-agent" if custom_agent is not None else self._model_name(tier),
                 role="voter",
                 round_number=1,
                 content=content,
@@ -353,6 +353,15 @@ class VoteEngine:
     ) -> tuple[BaseModel, dict[str, Any]]:
         """Call selected tier with structured output and fallback on failure."""
 
+        if custom_agent is not None:
+            return await invoke_custom_agent(
+                custom_agent,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_model=response_model,
+                fallback=fallback,
+            )
+
         if tier == "kimi" and response_model is _VoteResponse:
             assert isinstance(fallback, _VoteResponse)
             try:
@@ -364,15 +373,6 @@ class VoteEngine:
                     response_model=response_model.__name__,
                 )
                 return fallback, {"tokens": 0, "latency_ms": 0.0}
-
-        if custom_agent is not None:
-            return await invoke_custom_agent(
-                custom_agent,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response_model=response_model,
-                fallback=fallback,
-            )
 
         try:
             caller = self._get_caller(tier)

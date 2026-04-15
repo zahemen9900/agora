@@ -2,24 +2,53 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+import hashlib
+import hmac
 
+from fastapi import APIRouter, Header, HTTPException, Request
+
+from api.config import settings
+from api.security import validate_storage_id
 from api.streaming import get_stream_manager
 
 router = APIRouter(prefix="/webhooks")
 
 
 @router.post("/solana")
-async def solana_webhook(request: Request) -> dict[str, str]:
-    payload = await request.json()
+async def solana_webhook(
+    request: Request,
+    x_agora_signature: str | None = Header(default=None),
+) -> dict[str, str]:
+    body = await request.body()
+    if len(body) > settings.webhook_max_bytes:
+        raise HTTPException(status_code=413, detail="Webhook payload too large")
+    _verify_webhook_signature(body, x_agora_signature)
+
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Webhook payload must be JSON") from exc
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=400, detail="Webhook payload must be a list")
+
     manager = get_stream_manager()
 
-    for tx in payload if isinstance(payload, list) else []:
-        task_id = tx.get("task_id")
-        if not task_id:
+    for tx in payload:
+        if not isinstance(tx, dict):
             continue
-        await manager.publish(
-            task_id,
+        task_id = tx.get("task_id")
+        user_id = tx.get("user_id")
+        if not isinstance(task_id, str):
+            continue
+        try:
+            validate_storage_id(task_id, field_name="task_id")
+            if isinstance(user_id, str) and user_id:
+                validate_storage_id(user_id, field_name="user_id")
+        except ValueError:
+            continue
+        stream_id = f"{user_id}:{task_id}" if isinstance(user_id, str) and user_id else task_id
+        await manager.emit(
+            stream_id,
             {
                 "event": "receipt_confirmed",
                 "data": {
@@ -30,3 +59,18 @@ async def solana_webhook(request: Request) -> dict[str, str]:
         )
 
     return {"status": "ok"}
+
+
+def _verify_webhook_signature(body: bytes, signature: str | None) -> None:
+    """Verify HMAC-SHA256 webhook signatures."""
+
+    secret = settings.webhook_secret.strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Webhook verification is not configured")
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing webhook signature")
+
+    expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    provided = signature.removeprefix("sha256=").strip()
+    if not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")

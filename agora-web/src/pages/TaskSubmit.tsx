@@ -17,6 +17,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     task_id: `example-${index}`,
     task_text: task,
     mechanism: "debate",
+    mechanism_override: null,
     status: "pending",
     selector_reasoning: "Example prompt for demo purposes.",
     selector_reasoning_hash: "",

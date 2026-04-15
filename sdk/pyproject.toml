@@ -9,8 +9,15 @@ description = "On-chain multi-agent arbitration primitive. Debate or vote, the A
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "langgraph>=0.3.0",
+    "google-genai>=1.33.0",
+    "anthropic>=0.40",
+    "openai>=1.52.0",
     "httpx>=0.27",
     "pydantic>=2.0",
+    "structlog>=24.0",
+    "numpy>=1.26",
+    "merkletools>=1.0.3; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
@@ -20,8 +27,10 @@ langgraph = ["langgraph>=0.3.0"]
 Homepage = "https://github.com/zahemen9900/agora"
 
 [tool.setuptools]
-package-dir = {"" = ".."}
+package-dir = {"" = "."}
+include-package-data = false
 
 [tool.setuptools.packages.find]
-where = [".."]
+where = ["."]
 include = ["agora*"]
+namespaces = false

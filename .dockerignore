@@ -11,7 +11,10 @@ agora-env/
 .claude/
 .qodo/
 .env
+.env.*
+.env.local
 .envrc
+data/
 __pycache__/
 *.py[cod]
 agora-web/

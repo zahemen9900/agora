@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   python-lint-test:
@@ -55,6 +54,23 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}/agora-api"
+          docker build -f api/Dockerfile -t "$IMAGE_NAME:${GITHUB_SHA}" -t "$IMAGE_NAME:latest" .
+
+  docker-publish:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
@@ -64,7 +80,6 @@ jobs:
           docker build -f api/Dockerfile -t "$IMAGE_NAME:${GITHUB_SHA}" -t "$IMAGE_NAME:latest" .
 
       - name: Push Docker image to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           IMAGE_NAME="ghcr.io/${GITHUB_REPOSITORY,,}/agora-api"
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin

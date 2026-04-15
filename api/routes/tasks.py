@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+import secrets
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 import structlog
@@ -31,7 +33,18 @@ router = APIRouter()
 logger = structlog.get_logger(__name__)
 
 _store: TaskStore | LocalTaskStore | None = None
+_running_task_keys: set[str] = set()
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+
+
+@dataclass(frozen=True)
+class _StreamTicket:
+    user_id: str
+    task_id: str
+    expires_at: datetime
+
+
+_stream_tickets: dict[str, _StreamTicket] = {}
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -54,6 +67,70 @@ def _build_task_id(task_text: str) -> str:
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _stream_key(user_id: str, task_id: str) -> str:
+    """Namespace live streams by user and task to avoid cross-tenant fan-out."""
+
+    return f"{user_id}:{task_id}"
+
+
+def _task_run_key(user_id: str, task_id: str) -> str:
+    return _stream_key(user_id, task_id)
+
+
+def _assert_task_owner(raw_task: dict[str, Any], user_id: str) -> None:
+    """Reject task records that are explicitly owned by another user."""
+
+    created_by = raw_task.get("created_by")
+    if created_by and created_by != user_id:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+
+async def _load_task_for_user(
+    store: TaskStore | LocalTaskStore,
+    user_id: str,
+    task_id: str,
+) -> dict[str, Any]:
+    """Load a task while hiding unsafe IDs and cross-tenant records as not-found."""
+
+    try:
+        raw_task = await store.get_task(user_id, task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    if raw_task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _assert_task_owner(raw_task, user_id)
+    return raw_task
+
+
+def _issue_stream_ticket(user_id: str, task_id: str) -> dict[str, str]:
+    """Create a short-lived one-use ticket for EventSource auth."""
+
+    _purge_expired_stream_tickets()
+    ticket = secrets.token_urlsafe(32)
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.stream_ticket_ttl_seconds)
+    _stream_tickets[ticket] = _StreamTicket(
+        user_id=user_id,
+        task_id=task_id,
+        expires_at=expires_at,
+    )
+    return {"ticket": ticket, "expires_at": expires_at.isoformat()}
+
+
+def _purge_expired_stream_tickets() -> None:
+    now = datetime.now(UTC)
+    expired = [ticket for ticket, entry in _stream_tickets.items() if entry.expires_at <= now]
+    for ticket in expired:
+        _stream_tickets.pop(ticket, None)
+
+
+def _consume_stream_ticket(ticket: str, *, task_id: str) -> _StreamTicket:
+    _purge_expired_stream_tickets()
+    entry = _stream_tickets.pop(ticket, None)
+    if entry is None or entry.task_id != task_id or entry.expires_at <= datetime.now(UTC):
+        raise HTTPException(status_code=401, detail="Invalid stream ticket")
+    return entry
 
 
 def _result_to_response(task_id: str, result: DeliberationResult) -> DeliberationResultResponse:
@@ -182,7 +259,35 @@ async def persist_and_emit(
 
     payload = _event_payload(event_type, event_data)
     await store.append_event(user_id, task_id, payload)
-    await stream.emit(task_id, payload)
+    await stream.emit(_stream_key(user_id, task_id), payload)
+
+
+async def _mark_task_failed(
+    *,
+    store: TaskStore | LocalTaskStore,
+    stream: DeliberationStream,
+    user_id: str,
+    task_id: str,
+    task: TaskStatusResponse,
+    message: str,
+) -> None:
+    """Persist failed task state while preserving events emitted before failure."""
+
+    task.status = "failed"
+    task.events = [
+        TaskEvent.model_validate(event)
+        for event in await store.get_events(user_id, task_id)
+    ]
+    await store.save_task(user_id, task_id, task.model_dump(mode="json"))
+    await persist_and_emit(
+        store=store,
+        stream=stream,
+        user_id=user_id,
+        task_id=task_id,
+        event_type="error",
+        event_data={"message": message},
+    )
+    await stream.close(_stream_key(user_id, task_id))
 
 
 @router.post("/", response_model=TaskCreateResponse)
@@ -255,6 +360,7 @@ async def create_task(
     task_status = TaskStatusResponse(
         task_id=task_id,
         task_text=request.task,
+        created_by=user.id,
         mechanism=selection.mechanism.value,
         mechanism_override=effective_override.value if effective_override is not None else None,
         status="pending",
@@ -306,15 +412,20 @@ async def run_task(
 
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await store.get_task(user.id, task_id)
-    if raw_task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    raw_task = await _load_task_for_user(store, user.id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
     if task.status in {"completed", "paid"} and task.result is not None:
         return task.result
-    if task.status not in {"pending", "in_progress"}:
+    if task.status == "in_progress":
+        raise HTTPException(status_code=409, detail="Task is already in progress")
+    if task.status != "pending":
         raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
+
+    run_key = _task_run_key(user.id, task_id)
+    if run_key in _running_task_keys:
+        raise HTTPException(status_code=409, detail="Task is already in progress")
+    _running_task_keys.add(run_key)
 
     task.status = "in_progress"
     await store.save_task(user.id, task_id, task.model_dump(mode="json"))
@@ -360,18 +471,18 @@ async def run_task(
                 event_sink=runtime_event_sink,
             )
     except Exception as exc:
-        task.status = "failed"
-        await store.save_task(user.id, task_id, task.model_dump(mode="json"))
-        await persist_and_emit(
-            store=store,
-            stream=stream,
-            user_id=user.id,
-            task_id=task_id,
-            event_type="error",
-            event_data={"message": str(exc)},
-        )
-        await stream.close(task_id)
-        logger.exception("task_execution_failed", task_id=task_id)
+        try:
+            await _mark_task_failed(
+                store=store,
+                stream=stream,
+                user_id=user.id,
+                task_id=task_id,
+                task=task,
+                message=str(exc),
+            )
+        finally:
+            logger.exception("task_execution_failed", task_id=task_id)
+            _running_task_keys.discard(run_key)
         raise HTTPException(status_code=500, detail="Task execution failed") from exc
 
     result_response = _result_to_response(task_id, result)
@@ -390,6 +501,17 @@ async def run_task(
         except Exception as exc:
             logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
             if settings.strict_chain_writes:
+                try:
+                    await _mark_task_failed(
+                        store=store,
+                        stream=stream,
+                        user_id=user.id,
+                        task_id=task_id,
+                        task=task,
+                        message="Failed to submit receipt on Solana",
+                    )
+                finally:
+                    _running_task_keys.discard(run_key)
                 raise HTTPException(
                     status_code=502,
                     detail="Failed to submit receipt on Solana",
@@ -427,6 +549,17 @@ async def run_task(
                         error=str(exc),
                     )
                     if settings.strict_chain_writes:
+                        try:
+                            await _mark_task_failed(
+                                store=store,
+                                stream=stream,
+                                user_id=user.id,
+                                task_id=task_id,
+                                task=task,
+                                message="Failed to record mechanism switch on Solana",
+                            )
+                        finally:
+                            _running_task_keys.discard(run_key)
                         raise HTTPException(
                             status_code=502,
                             detail="Failed to record mechanism switch on Solana",
@@ -448,6 +581,10 @@ async def run_task(
     task.transcript_hashes = result_response.transcript_hashes
     task.completed_at = datetime.now(UTC)
     task.result = result_response
+    task.events = [
+        TaskEvent.model_validate(event)
+        for event in await store.get_events(user.id, task_id)
+    ]
 
     await store.save_task(user.id, task_id, task.model_dump(mode="json"))
     await persist_and_emit(
@@ -487,7 +624,8 @@ async def run_task(
         event_type="complete",
         event_data={"task_id": task_id, "status": task.status},
     )
-    await stream.close(task_id)
+    await stream.close(_stream_key(user.id, task_id))
+    _running_task_keys.discard(run_key)
     return result_response
 
 
@@ -511,27 +649,37 @@ async def get_task_status(
     """Fetch one task by id."""
 
     store = get_task_store()
-    raw_task = await store.get_task(user.id, task_id)
-    if raw_task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    raw_task = await _load_task_for_user(store, user.id, task_id)
     return _to_status_response(raw_task, detailed=detailed)
+
+
+@router.post("/{task_id}/stream-ticket")
+async def create_stream_ticket(
+    task_id: str,
+    user: CurrentUser,
+) -> dict[str, str]:
+    """Issue a short-lived ticket for browser EventSource authentication."""
+
+    store = get_task_store()
+    await _load_task_for_user(store, user.id, task_id)
+    return _issue_stream_ticket(user.id, task_id)
 
 
 @router.get("/{task_id}/stream")
 async def stream_task(
     task_id: str,
-    user: CurrentUser,
+    ticket: str = Query(...),
 ) -> EventSourceResponse:
     """Replay persisted events, then continue with live SSE updates."""
 
+    stream_ticket = _consume_stream_ticket(ticket, task_id=task_id)
+    user_id = stream_ticket.user_id
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await store.get_task(user.id, task_id)
-    if raw_task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    await _load_task_for_user(store, user_id, task_id)
 
     async def event_generator() -> Any:
-        events = await store.get_events(user.id, task_id)
+        events = await store.get_events(user_id, task_id)
         for event in events:
             yield {
                 "event": event.get("event", "update"),
@@ -542,7 +690,8 @@ async def stream_task(
         if any(event.get("event") == "complete" for event in events):
             return
 
-        queue = stream.subscribe(task_id)
+        stream_id = _stream_key(user_id, task_id)
+        queue = stream.subscribe(stream_id)
         try:
             while True:
                 item = await queue.get()
@@ -550,7 +699,7 @@ async def stream_task(
                     break
                 yield item
         finally:
-            stream.unsubscribe(task_id, queue)
+            stream.unsubscribe(stream_id, queue)
 
     return EventSourceResponse(event_generator())
 
@@ -564,9 +713,7 @@ async def release_payment(
 
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await store.get_task(user.id, task_id)
-    if raw_task is None:
-        raise HTTPException(status_code=404, detail="Task not found")
+    raw_task = await _load_task_for_user(store, user.id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
     if task.status not in {"completed", "paid"}:

@@ -115,8 +115,7 @@ class AgoraArbitrator:
     ) -> dict[str, bool | None]:
         """Verify receipt root locally and, when available, against hosted receipt metadata.
 
-        ``on_chain_match`` currently reports whether the hosted API's stored receipt
-        metadata matches the local result. It is not yet a direct Solana RPC lookup.
+        Strict mode fails closed unless a real chain proof verifier is available.
         """
 
         strict_mode = self.config.strict_verification if strict is None else strict
@@ -126,7 +125,7 @@ class AgoraArbitrator:
         if strict_mode and not merkle_match:
             raise ReceiptVerificationError("Local Merkle verification failed")
 
-        on_chain_match: bool | None = None
+        hosted_metadata_match: bool | None = None
         task_id = self._result_task_ids.get(result.merkle_root)
         if task_id:
             try:
@@ -143,22 +142,27 @@ class AgoraArbitrator:
                         f"Hosted receipt fetch failed: {exc}"
                     ) from exc
             else:
-                on_chain_match = self._hosted_receipt_matches(payload, result)
-                if strict_mode and not on_chain_match:
+                hosted_metadata_match = self._hosted_receipt_matches(payload, result)
+                if strict_mode and not hosted_metadata_match:
                     raise ReceiptVerificationError(
                         "Hosted receipt verification failed: stored receipt fields mismatch"
                     )
-        elif strict_mode and self.config.solana_wallet:
+        elif strict_mode:
             raise ReceiptVerificationError(
-                "Hosted verification requires a known task_id for this result"
+                "Strict receipt verification requires a hosted task_id and chain proof"
             )
 
-        valid = merkle_match and (on_chain_match in {True, None})
-        if strict_mode and task_id:
-            valid = merkle_match and on_chain_match is True
+        on_chain_match: bool | None = None
+        if strict_mode:
+            raise ReceiptVerificationError(
+                "Strict on-chain receipt verification is not implemented"
+            )
+
+        valid = merkle_match and (hosted_metadata_match in {True, None})
         return {
             "valid": valid,
             "merkle_match": merkle_match,
+            "hosted_metadata_match": hosted_metadata_match,
             "on_chain_match": on_chain_match,
         }
 

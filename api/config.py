@@ -27,6 +27,18 @@ class Settings(BaseSettings):
     )
 
     auth_required: bool = True
+    demo_mode: bool = False
+    environment: str = Field(
+        default="development",
+        validation_alias=AliasChoices("AGORA_ENVIRONMENT", "ENVIRONMENT"),
+    )
+    benchmark_admin_token: str = ""
+    stream_ticket_ttl_seconds: int = Field(default=60, ge=5, le=600)
+    webhook_secret: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_WEBHOOK_SECRET", "WEBHOOK_SECRET"),
+    )
+    webhook_max_bytes: int = Field(default=262_144, ge=1024)
     strict_chain_writes: bool = False
     workos_client_id: str = ""
     workos_authkit_domain: str = ""

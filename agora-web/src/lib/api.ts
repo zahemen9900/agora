@@ -2,13 +2,17 @@ const API_URL =
   import.meta.env.VITE_AGORA_API_URL ??
   (import.meta.env.PROD ? "/api" : "http://localhost:8000");
 
+export type MechanismName = "debate" | "vote" | "delphi" | "moa";
+export type TaskStatusName = "pending" | "in_progress" | "completed" | "failed" | "paid";
+export type PaymentStatusName = "locked" | "released" | "none";
+
 export interface TaskCreateResponse {
   task_id: string;
-  mechanism: string;
+  mechanism: MechanismName;
   confidence: number;
   reasoning: string;
   selector_reasoning_hash: string;
-  status: string;
+  status: TaskStatusName;
 }
 
 export interface TaskEvent {
@@ -19,12 +23,14 @@ export interface TaskEvent {
 
 export interface DeliberationResultResponse {
   task_id: string;
-  mechanism: string;
+  mechanism: MechanismName;
   final_answer: string;
   confidence: number;
   quorum_reached: boolean;
   merkle_root: string | null;
   decision_hash: string | null;
+  agent_count: number;
+  agent_models_used: string[];
   total_tokens_used: number;
   latency_ms: number;
   round_count: number;
@@ -37,8 +43,9 @@ export interface DeliberationResultResponse {
 export interface TaskStatusResponse {
   task_id: string;
   task_text: string;
-  mechanism: string;
-  status: string;
+  mechanism: MechanismName;
+  mechanism_override: MechanismName | null;
+  status: TaskStatusName;
   selector_reasoning: string;
   selector_reasoning_hash: string;
   selector_confidence: number;
@@ -52,11 +59,16 @@ export interface TaskStatusResponse {
   solana_tx_hash: string | null;
   explorer_url: string | null;
   payment_amount: number;
-  payment_status: string;
+  payment_status: PaymentStatusName;
   created_at: string;
   completed_at: string | null;
   result: DeliberationResultResponse | null;
   events: TaskEvent[];
+}
+
+interface StreamTicketResponse {
+  ticket: string;
+  expires_at: string;
 }
 
 export interface BenchmarkSummary {
@@ -193,10 +205,15 @@ export async function streamDeliberation(
   token: string | null,
   onEvent: (event: TaskEvent) => void,
 ): Promise<StreamHandle> {
-  const url = new URL(`${API_URL}/tasks/${taskId}/stream`);
-  if (token) {
-    url.searchParams.set("token", token);
-  }
+  const ticketResponse = await requestJson<StreamTicketResponse>(
+    `/tasks/${taskId}/stream-ticket`,
+    {
+      method: "POST",
+      headers: authHeaders(token),
+    },
+  );
+  const url = new URL(`${API_URL}/tasks/${taskId}/stream`, window.location.origin);
+  url.searchParams.set("ticket", ticketResponse.ticket);
 
   const source = new EventSource(url.toString());
   const eventTypes = [

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 import subprocess
 import sys
@@ -11,6 +14,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import ValidationError
 
 from agora.types import DeliberationResult, MechanismType
 from api import auth
@@ -18,8 +22,9 @@ from api.auth import AuthenticatedUser
 from api.main import app
 from api.models import TaskCreateRequest
 from api.routes import tasks as task_routes
+from api.routes import webhooks as webhook_routes
 from api.store_local import LocalTaskStore
-from api.streaming import DeliberationStream
+from api.streaming import DeliberationStream, get_stream_manager
 from tests.helpers import make_selection
 
 
@@ -44,6 +49,8 @@ async def client(
 ) -> AsyncIterator[httpx.AsyncClient]:
     data_dir = str(tmp_path / "data")
     task_routes._store = LocalTaskStore(data_dir=data_dir)
+    task_routes._stream_tickets.clear()
+    task_routes._running_task_keys.clear()
     app.dependency_overrides[auth.get_current_user] = _override_user
 
     transport = httpx.ASGITransport(app=app)
@@ -52,6 +59,8 @@ async def client(
 
     app.dependency_overrides.clear()
     task_routes._store = None
+    task_routes._stream_tickets.clear()
+    task_routes._running_task_keys.clear()
 
 
 @pytest.mark.asyncio
@@ -78,8 +87,10 @@ async def test_auth_allows_demo_fallback_when_auth_not_required(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(auth.settings, "auth_required", False)
+    monkeypatch.setattr(auth.settings, "demo_mode", True)
+    monkeypatch.setattr(auth.settings, "environment", "development")
 
-    user = await auth.get_current_user(None, None)
+    user = await auth.get_current_user(None)
 
     assert user.id == "demo-user"
     assert user.email == "demo@example.com"
@@ -90,9 +101,10 @@ async def test_auth_requires_token_when_auth_required(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(auth.settings, "auth_required", True)
+    monkeypatch.setattr(auth.settings, "demo_mode", False)
 
     with pytest.raises(HTTPException) as exc_info:
-        await auth.get_current_user(None, None)
+        await auth.get_current_user(None)
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail == "Missing bearer token"
@@ -103,6 +115,7 @@ async def test_auth_surfaces_misconfiguration_when_required(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(auth.settings, "auth_required", True)
+    monkeypatch.setattr(auth.settings, "demo_mode", False)
 
     def fail_decode(_raw_token: str) -> dict[str, str]:
         raise RuntimeError("Auth verification is not configured")
@@ -114,7 +127,29 @@ async def test_auth_surfaces_misconfiguration_when_required(
         await auth.get_current_user(creds)
 
     assert exc_info.value.status_code == 500
-    assert "Auth verification is not configured" in str(exc_info.value.detail)
+    assert exc_info.value.detail == "Authentication error"
+
+
+@pytest.mark.asyncio
+async def test_auth_rejects_unsafe_sub_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth.settings, "auth_required", True)
+    monkeypatch.setattr(auth.settings, "demo_mode", False)
+
+    def fake_decode(_raw_token: str) -> dict[str, str]:
+        return {
+            "sub": "../user-123",
+            "email": "josh@example.com",
+            "name": "Josh",
+        }
+
+    monkeypatch.setattr(auth, "_decode_verified_token", fake_decode)
+
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="dummy")
+    with pytest.raises(HTTPException) as exc_info:
+        await auth.get_current_user(creds)
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Token has invalid sub claim"
 
 
 @pytest.mark.asyncio
@@ -212,6 +247,41 @@ async def test_create_list_get_task_with_local_store(
         assert fetched.status == "pending"
     finally:
         task_routes._store = None
+
+
+def test_task_create_request_rejects_oversized_task() -> None:
+    with pytest.raises(ValidationError):
+        TaskCreateRequest(task="x" * 12_001, agent_count=3, stakes=0.0)
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_task_already_in_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "in-progress-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="already running", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "in_progress"
+        await store.save_task("user-1", create.task_id, task)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.run_task(create.task_id, _override_user())
+    finally:
+        task_routes._store = None
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Task is already in progress"
 
 
 @pytest.mark.asyncio
@@ -341,6 +411,13 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         with pytest.raises(HTTPException) as exc_info:
             await task_routes.run_task(task_id_fail, _override_user())
         assert exc_info.value.status_code == 502
+        failed_status = await task_routes.get_task_status(
+            task_id_fail,
+            _override_user(),
+            detailed=True,
+        )
+        assert failed_status.status == "failed"
+        assert any(event.event == "error" for event in failed_status.events)
     finally:
         task_routes._store = None
 
@@ -370,7 +447,8 @@ async def test_persist_and_emit_preserves_full_timestamped_envelope(
     await store.upsert_user(user.id, user.email, user.display_name)
     await store.save_task(user.id, task_id, task_payload)
 
-    queue = stream.subscribe(task_id)
+    stream_id = task_routes._stream_key(user.id, task_id)
+    queue = stream.subscribe(stream_id)
     try:
         await task_routes.persist_and_emit(
             store=store,
@@ -384,7 +462,7 @@ async def test_persist_and_emit_preserves_full_timestamped_envelope(
         live_payload = await queue.get()
         stored_events = await store.get_events(user.id, task_id)
     finally:
-        stream.unsubscribe(task_id, queue)
+        stream.unsubscribe(stream_id, queue)
 
     assert set(live_payload) == {"event", "data", "timestamp"}
     assert stored_events == [live_payload]
@@ -438,13 +516,161 @@ async def test_stream_task_replays_timestamped_event_envelopes(
     monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
 
     try:
-        response = await task_routes.stream_task(task_id, user)
+        ticket = task_routes._issue_stream_ticket(user.id, task_id)["ticket"]
+        response = await task_routes.stream_task(task_id, ticket=ticket)
         replayed_events = [item async for item in response.content]
     finally:
         task_routes._store = None
+        task_routes._stream_tickets.clear()
 
     assert replayed_events == [first_event, second_event]
     assert all(set(item) == {"event", "data", "timestamp"} for item in replayed_events)
+
+
+@pytest.mark.asyncio
+async def test_stream_ticket_is_one_use_and_namespaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "stream-ticket"))
+    user = _override_user()
+    task_id = "task-stream-ticket"
+    task_payload = {
+        "task_id": task_id,
+        "task_text": "Ticket this task",
+        "created_by": user.id,
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [
+            {
+                "event": "complete",
+                "data": {"task_id": task_id, "status": "completed"},
+                "timestamp": "2026-04-14T13:00:00+00:00",
+            }
+        ],
+    }
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content):
+            self.content = content
+
+    task_routes._store = store
+    await store.upsert_user(user.id, user.email, user.display_name)
+    await store.save_task(user.id, task_id, task_payload)
+    ticket = await task_routes.create_stream_ticket(task_id, user)
+
+    try:
+        assert "ticket" in ticket
+        monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+        first = await task_routes.stream_task(task_id, ticket=ticket["ticket"])
+        assert [item async for item in first.content] == task_payload["events"]
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.stream_task(task_id, ticket=ticket["ticket"])
+    finally:
+        task_routes._store = None
+        task_routes._stream_tickets.clear()
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_task_routes_hide_cross_user_and_malformed_ids(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "tenant-data"))
+    owner = _override_user()
+    other = AuthenticatedUser(id="user-2", email="user2@example.com", display_name="User Two")
+    task_payload = {
+        "task_id": "task-owned",
+        "task_text": "Owned task",
+        "created_by": owner.id,
+        "mechanism": "vote",
+        "status": "pending",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [],
+    }
+
+    task_routes._store = store
+    await store.upsert_user(owner.id, owner.email, owner.display_name)
+    await store.save_task(owner.id, "task-owned", task_payload)
+    try:
+        with pytest.raises(HTTPException) as cross_user:
+            await task_routes.get_task_status("task-owned", other)
+        with pytest.raises(HTTPException) as malformed:
+            await task_routes.get_task_status("../task-owned", owner)
+    finally:
+        task_routes._store = None
+
+    assert cross_user.value.status_code == 404
+    assert malformed.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_solana_webhook_requires_valid_signature(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(webhook_routes.settings, "webhook_secret", "webhook-secret")
+    body = json.dumps(
+        [{"task_id": "task-webhook", "user_id": "user-1", "signature": "tx-signature"}]
+    ).encode("utf-8")
+
+    response = await client.post(
+        "/webhooks/solana",
+        content=body,
+        headers={
+            "content-type": "application/json",
+            "x-agora-signature": "sha256=bad-signature",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_solana_webhook_emits_signed_namespaced_event(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "webhook-secret"
+    monkeypatch.setattr(webhook_routes.settings, "webhook_secret", secret)
+    body = json.dumps(
+        [{"task_id": "task-webhook", "user_id": "user-1", "signature": "tx-signature"}]
+    ).encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    manager = get_stream_manager()
+    stream_id = task_routes._stream_key("user-1", "task-webhook")
+    queue = manager.subscribe(stream_id)
+
+    try:
+        response = await client.post(
+            "/webhooks/solana",
+            content=body,
+            headers={
+                "content-type": "application/json",
+                "x-agora-signature": f"sha256={signature}",
+            },
+        )
+        event = await queue.get()
+    finally:
+        manager.unsubscribe(stream_id, queue)
+
+    assert response.status_code == 200
+    assert event is not None
+    assert event["event"] == "receipt_confirmed"
+    assert event["data"]["task_id"] == "task-webhook"
+    assert event["data"]["signature"] == "tx-signature"
 
 
 @pytest.mark.asyncio

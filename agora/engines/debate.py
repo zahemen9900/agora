@@ -389,7 +389,9 @@ class DebateEngine:
             return (
                 AgentOutput(
                     agent_id=agent_id,
-                    agent_model=self._model_name("flash"),
+                    agent_model=(
+                        "custom-agent" if custom_agent is not None else self._model_name("flash")
+                    ),
                     role="initial",
                     round_number=0,
                     content=content,
@@ -538,7 +540,9 @@ class DebateEngine:
             timestamp = datetime.now(UTC)
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=self._model_name("flash"),
+                agent_model=(
+                    "custom-agent" if custom_agent is not None else self._model_name("flash")
+                ),
                 role=role,
                 round_number=1,
                 content=content,
@@ -624,7 +628,9 @@ class DebateEngine:
 
         output = AgentOutput(
             agent_id=devil_advocate_id,
-            agent_model=self._model_name("kimi"),
+            agent_model=(
+                "custom-agent" if custom_agent is not None else self._model_name("kimi")
+            ),
             role="devil_advocate",
             round_number=round_number,
             content=content,
@@ -690,7 +696,9 @@ class DebateEngine:
             role = "pro_rebuttal" if side == "pro" else "opp_rebuttal"
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=self._model_name("flash"),
+                agent_model=(
+                    "custom-agent" if custom_agent is not None else self._model_name("flash")
+                ),
                 role=role,
                 round_number=round_number,
                 content=content,
@@ -783,7 +791,7 @@ class DebateEngine:
                     *[output.agent_model for output in state.cross_examinations],
                     *[output.agent_model for output in state.rebuttals.get("pro", [])],
                     *[output.agent_model for output in state.rebuttals.get("opp", [])],
-                    self._model_name("pro"),
+                    "custom-agent" if custom_agent is not None else self._model_name("pro"),
                 ]
             )
         )
