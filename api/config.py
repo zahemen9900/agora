@@ -65,11 +65,26 @@ class Settings(BaseSettings):
     webhook_timestamp_skew_seconds: int = Field(default=300, ge=5, le=3600)
     webhook_replay_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
     strict_chain_writes: bool = False
-    workos_client_id: str = ""
-    workos_authkit_domain: str = ""
-    auth_issuer: str = ""
-    auth_audience: str = ""
-    auth_jwks_url: str = ""
+    workos_client_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("WORKOS_CLIENT_ID", "AGORA_WORKOS_CLIENT_ID"),
+    )
+    workos_authkit_domain: str = Field(
+        default="",
+        validation_alias=AliasChoices("WORKOS_AUTHKIT_DOMAIN", "AGORA_WORKOS_AUTHKIT_DOMAIN"),
+    )
+    auth_issuer: str = Field(
+        default="",
+        validation_alias=AliasChoices("AUTH_ISSUER", "AGORA_AUTH_ISSUER"),
+    )
+    auth_audience: str = Field(
+        default="",
+        validation_alias=AliasChoices("AUTH_AUDIENCE", "AGORA_AUTH_AUDIENCE"),
+    )
+    auth_jwks_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AUTH_JWKS_URL", "AGORA_AUTH_JWKS_URL"),
+    )
     api_key_pepper: str = Field(
         default="",
         validation_alias=AliasChoices("AGORA_API_KEY_PEPPER", "API_KEY_PEPPER"),

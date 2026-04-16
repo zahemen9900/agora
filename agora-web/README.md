@@ -82,11 +82,18 @@ export default defineConfig([
 
 - Set `VITE_WORKOS_CLIENT_ID` in your frontend env file (for example `.env.local`).
 - Set `VITE_WORKOS_REDIRECT_URI` to the dashboard callback URL.
-- Use `/login` to initiate sign-in and `/callback` as the AuthKit redirect target.
+- Use `/auth` as the user-facing auth page, `/login` as the WorkOS sign-in endpoint, and `/callback` as the AuthKit redirect target.
+- In local development, keep `VITE_WORKOS_USE_DEV_PROXY=true` so Vite proxies `/user_management/*` to WorkOS and avoids browser CORS failures during code exchange.
 - After AuthKit resolves a user, the dashboard bootstraps itself with `GET /auth/me`.
-- Protected routes render only after `/auth/me` succeeds; if it returns `401`, the app signs the user out and redirects back to `/login`.
+- Protected routes render only after `/auth/me` succeeds; if it returns `401`, the app signs the user out and redirects back to `/auth`.
 - API requests fetch access tokens on-demand through `getAccessToken()` before sending `Authorization: Bearer <token>` to the backend.
 - API key management now lives at `/api-keys`.
 - Benchmarks are intentionally hidden from normal navigation until backend RBAC exists.
+
+WorkOS dashboard checklist for local auth:
+
+- Add `http://localhost:5173/callback` to Redirect URIs.
+- Add `http://localhost:5173/login` as the Sign-in endpoint.
+- Add `http://localhost:5173` to Allowed Origins.
 
 When deploying on Vercel, `vercel.json` rewrites `/api/*` to the hosted Cloud Run API endpoint so browser calls remain same-origin and avoid CORS preflight failures.

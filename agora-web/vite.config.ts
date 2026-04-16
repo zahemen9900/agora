@@ -5,4 +5,13 @@ import tailwindcss from '@tailwindcss/vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    proxy: {
+      "/user_management": {
+        target: "https://api.workos.com",
+        changeOrigin: true,
+        secure: true,
+      },
+    },
+  },
 })

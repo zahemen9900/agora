@@ -25,11 +25,12 @@ function AppRoutes() {
   return (
     <Routes>
       {/* OAuth routes - accessible regardless of auth state */}
+      <Route path="/auth" element={<LoginPage />} />
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/callback" element={<Callback />} />
 
-      {/* Landing page for unauthenticated users */}
-      {authStatus !== "authenticated" && <Route path="*" element={<LoginPage />} />}
+      {/* Redirect unauthenticated users to the dedicated auth page */}
+      {authStatus !== "authenticated" && <Route path="*" element={<Navigate to="/auth" replace />} />}
 
       {/* Protected routes - only accessible when authenticated */}
       {authStatus === "authenticated" && (
