@@ -314,6 +314,176 @@ def test_sdk_hosted_mode_keeps_bearer_auth_token_interface() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(
+        api_url="https://example.invalid",
+        auth_token="agora_test_public.secret",
+        mechanism="vote",
+        agent_count=4,
+        strict_verification=False,
+    )
+    status_payload: dict[str, Any] = {
+        "task_id": "task-phase2-demo",
+        "task_text": "Should we use vote for the phase 2 demo?",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Pinned for strict demo stability.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 1.0,
+        "merkle_root": "root-123",
+        "decision_hash": "decision-123",
+        "solana_tx_hash": "receipt-tx",
+        "payment_amount": 0.01,
+        "payment_status": "locked",
+        "result": {
+            "task_id": "task-phase2-demo",
+            "mechanism": "vote",
+            "final_answer": "Yes",
+            "confidence": 0.95,
+            "quorum_reached": True,
+            "round_count": 1,
+            "mechanism_switches": 0,
+            "merkle_root": "root-123",
+            "decision_hash": "decision-123",
+            "transcript_hashes": ["leaf-1", "leaf-2"],
+            "agent_models_used": [
+                "gemini-3.1-pro-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3-flash-preview",
+                "claude-sonnet-4-6",
+            ],
+            "convergence_history": [],
+            "locked_claims": [],
+            "total_tokens_used": 88,
+            "latency_ms": 20.0,
+        },
+    }
+    seen_calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def fake_post(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("POST", url, dict(kwargs)))
+        if url == "/tasks/":
+            return _FakeResponse(
+                {
+                    "task_id": "task-phase2-demo",
+                    "mechanism": "vote",
+                    "confidence": 1.0,
+                    "reasoning": "Pinned for strict demo stability.",
+                    "selector_reasoning_hash": "selector-hash",
+                    "status": "pending",
+                }
+            )
+        if url == "/tasks/task-phase2-demo/run":
+            return _FakeResponse(status_payload["result"])
+        if url == "/tasks/task-phase2-demo/pay":
+            return _FakeResponse({"released": True, "tx_hash": "pay-tx"})
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+    async def fake_get(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("GET", url, dict(kwargs)))
+        if url == "/tasks/task-phase2-demo":
+            return _FakeResponse(status_payload)
+        raise AssertionError(f"Unexpected GET url: {url}")
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    created = await arbitrator.create_task(
+        "Should we use vote for the phase 2 demo?",
+        stakes=0.01,
+    )
+    run = await arbitrator.run_task("task-phase2-demo")
+    status = await arbitrator.get_task_status("task-phase2-demo", detailed=True)
+    payment = await arbitrator.release_payment("task-phase2-demo")
+    await arbitrator.aclose()
+
+    assert created.task_id == "task-phase2-demo"
+    assert run.final_answer == "Yes"
+    assert status.result is not None
+    assert status.result.agent_models_used[-1] == "claude-sonnet-4-6"
+    assert payment.released is True
+    assert payment.tx_hash == "pay-tx"
+    assert arbitrator.latest_task_id == "task-phase2-demo"
+    assert seen_calls[0][2]["headers"] == {
+        "Authorization": "Bearer agora_test_public.secret",
+    }
+    assert seen_calls[0][2]["json"] == {
+        "task": "Should we use vote for the phase 2 demo?",
+        "agent_count": 4,
+        "stakes": 0.01,
+        "mechanism_override": "vote",
+    }
+    assert seen_calls[2][2]["params"] == {"detailed": "true"}
+
+
+@pytest.mark.asyncio
+async def test_sdk_get_task_result_tracks_task_id_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(
+        api_url="https://example.invalid",
+        auth_token="agora_test_public.secret",
+        strict_verification=False,
+    )
+    hasher = TranscriptHasher()
+    transcript_hashes = [
+        hasher.hash_content("agent-1: Paris"),
+        hasher.hash_content("agent-2: Paris"),
+        hasher.hash_content("agent-3: Paris"),
+        hasher.hash_content("agent-4: Paris"),
+    ]
+    merkle_root = hasher.build_merkle_tree(transcript_hashes)
+    decision_hash = hasher.hash_content("Paris")
+    status_payload: dict[str, Any] = {
+        "task_id": "task-mapped",
+        "task_text": "What is the capital of France?",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Low disagreement, use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.97,
+        "merkle_root": merkle_root,
+        "decision_hash": decision_hash,
+        "solana_tx_hash": "receipt-tx",
+        "payment_amount": 0.01,
+        "payment_status": "locked",
+        "result": {
+            "task_id": "task-mapped",
+            "mechanism": "vote",
+            "final_answer": "Paris",
+            "confidence": 0.97,
+            "quorum_reached": True,
+            "round_count": 1,
+            "mechanism_switches": 0,
+            "merkle_root": merkle_root,
+            "decision_hash": decision_hash,
+            "transcript_hashes": transcript_hashes,
+            "agent_models_used": [],
+            "convergence_history": [],
+            "locked_claims": [],
+            "total_tokens_used": 32,
+            "latency_ms": 10.0,
+        },
+    }
+
+    async def fake_get(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        if url != "/tasks/task-mapped":
+            raise AssertionError(f"Unexpected GET url: {url}")
+        return _FakeResponse(status_payload)
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    result = await arbitrator.get_task_result("task-mapped")
+    await arbitrator.aclose()
+
+    assert result.final_answer == "Paris"
+    assert arbitrator.latest_task_id == "task-mapped"
+    assert arbitrator.task_id_for_result(result) == "task-mapped"
+
+
 class _FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload

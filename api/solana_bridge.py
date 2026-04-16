@@ -5,6 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -174,22 +177,69 @@ class SolanaBridge:
             raise RuntimeError("Secret payload is not a valid 64-byte Solana keypair") from exc
 
     def _load_keypair_from_secret(self) -> Keypair:
-        try:
-            from google.cloud import secretmanager
-        except ImportError as exc:
-            raise RuntimeError(
-                "google-cloud-secret-manager is required for secret-backed keypair loading"
-            ) from exc
-
         resource_name = self._keypair_secret_resource_name()
-        client = secretmanager.SecretManagerServiceClient()
-
+        client_error: Exception | None = None
         try:
-            response = client.access_secret_version(request={"name": resource_name})
+            payload = self._load_keypair_secret_payload_via_client(resource_name=resource_name)
+            return self._parse_keypair_secret_payload(payload)
         except Exception as exc:  # pragma: no cover - network and auth dependent
-            raise RuntimeError(f"Failed to read keypair secret: {resource_name}") from exc
+            client_error = exc
 
-        return self._parse_keypair_secret_payload(response.payload.data)
+        payload = self._load_keypair_secret_payload_via_gcloud()
+        if payload is not None:
+            return self._parse_keypair_secret_payload(payload)
+
+        raise RuntimeError(f"Failed to read keypair secret: {resource_name}") from client_error
+
+    def _load_keypair_secret_payload_via_client(self, *, resource_name: str) -> bytes:
+        from google.cloud import secretmanager
+
+        client = secretmanager.SecretManagerServiceClient()
+        response = client.access_secret_version(request={"name": resource_name})
+        return bytes(response.payload.data)
+
+    def _load_keypair_secret_payload_via_gcloud(self) -> bytes | None:
+        if shutil.which("gcloud") is None:
+            return None
+
+        secret_name = self.keypair_secret_name.strip()
+        secret_project = (
+            self.keypair_secret_project.strip() or settings.google_cloud_project.strip()
+        )
+        if not secret_name or not secret_project:
+            return None
+
+        secret_version = self.keypair_secret_version.strip() or "latest"
+        env = os.environ.copy()
+        env.setdefault("CLOUDSDK_PAGER", "")
+        env.setdefault("CLOUDSDK_CORE_DISABLE_PROMPTS", "1")
+
+        result = subprocess.run(
+            [
+                "gcloud",
+                "secrets",
+                "versions",
+                "access",
+                secret_version,
+                "--secret",
+                secret_name,
+                "--project",
+                secret_project,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            return None
+
+        payload = result.stdout.strip()
+        if not payload:
+            return None
+
+        return payload.encode("utf-8")
 
     def _build_explorer_url(self, signature: str) -> str:
         cluster = "mainnet" if self.network == "mainnet" else self.network

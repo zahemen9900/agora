@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -93,44 +94,77 @@ def _load_secret_manager_value(
     """Read a secret value from Google Secret Manager when available."""
 
     try:
-        from google.cloud import secretmanager
-
-        client = secretmanager.SecretManagerServiceClient()
-        secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/{version}"
-        response = client.access_secret_version(request={"name": secret_path})
-        payload = response.payload.data.decode("utf-8").strip()
-        return payload or None
+        payload = _load_secret_manager_value_via_client(
+            project_id=project_id,
+            secret_name=secret_name,
+            version=version,
+        )
+        if payload:
+            return payload
     except Exception:
-        # Fallback to gcloud CLI for environments authenticated via `gcloud auth login`
-        # but without Application Default Credentials configured.
-        try:
-            env = os.environ.copy()
-            env.setdefault("CLOUDSDK_PAGER", "")
-            result = subprocess.run(
-                [
-                    "gcloud",
-                    "secrets",
-                    "versions",
-                    "access",
-                    version,
-                    "--secret",
-                    secret_name,
-                    "--project",
-                    project_id,
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                env=env,
-                timeout=20,
-            )
-        except Exception:
-            return None
+        pass
 
-        if result.returncode != 0:
-            return None
-        payload = result.stdout.strip()
-        return payload or None
+    try:
+        return _load_secret_manager_value_via_gcloud(
+            project_id=project_id,
+            secret_name=secret_name,
+            version=version,
+        )
+    except Exception:
+        return None
+
+
+def _load_secret_manager_value_via_client(
+    project_id: str,
+    secret_name: str,
+    version: str = "latest",
+) -> str | None:
+    """Read a secret value via Google Secret Manager client libraries."""
+
+    from google.cloud import secretmanager
+
+    client = secretmanager.SecretManagerServiceClient()
+    secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/{version}"
+    response = client.access_secret_version(request={"name": secret_path})
+    payload = response.payload.data.decode("utf-8").strip()
+    return payload or None
+
+
+def _load_secret_manager_value_via_gcloud(
+    project_id: str,
+    secret_name: str,
+    version: str = "latest",
+) -> str | None:
+    """Fallback to gcloud CLI for shells authenticated with gcloud user credentials."""
+
+    if shutil.which("gcloud") is None:
+        return None
+
+    env = os.environ.copy()
+    env.setdefault("CLOUDSDK_PAGER", "")
+    env.setdefault("CLOUDSDK_CORE_DISABLE_PROMPTS", "1")
+    result = subprocess.run(
+        [
+            "gcloud",
+            "secrets",
+            "versions",
+            "access",
+            version,
+            "--secret",
+            secret_name,
+            "--project",
+            project_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        return None
+    payload = result.stdout.strip()
+    return payload or None
 
 
 def _resolve_anthropic_api_key() -> str | None:

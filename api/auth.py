@@ -47,7 +47,8 @@ def get_auth_store() -> TaskStore | LocalTaskStore:
     global _store
     if _store is None:
         _store = get_store(
-            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None
+            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None,
+            local_data_dir=settings.local_data_dir,
         )
     return _store
 
@@ -122,17 +123,6 @@ def _decode_verified_token(raw_token: str) -> dict[str, object]:
     return payload
 
 
-def _demo_user() -> AuthenticatedUser:
-    return AuthenticatedUser(
-        auth_method="jwt",
-        workspace_id="demo-user",
-        user_id="demo-user",
-        email="demo@example.com",
-        display_name="Demo User",
-        scopes=list(DEFAULT_API_KEY_SCOPES),
-    )
-
-
 def _demo_auth_enabled() -> bool:
     """Return whether unauthenticated demo access is explicitly enabled."""
 
@@ -144,6 +134,24 @@ def _demo_auth_enabled() -> bool:
     )
 
 
+async def _resolve_demo_user(store: TaskStore | LocalTaskStore) -> AuthenticatedUser:
+    """Return a synthetic demo user backed by a real personal workspace."""
+
+    workspace = await store.ensure_personal_workspace(
+        user_id="demo-user",
+        email="demo@example.com",
+        name="Demo User",
+    )
+    return AuthenticatedUser(
+        auth_method="jwt",
+        workspace_id=str(workspace["id"]),
+        user_id="demo-user",
+        email="demo@example.com",
+        display_name="Demo User",
+        scopes=list(DEFAULT_API_KEY_SCOPES),
+    )
+
+
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
 ) -> AuthenticatedUser:
@@ -152,7 +160,8 @@ async def get_current_user(
     raw_token = credentials.credentials if credentials is not None else None
     if not raw_token:
         if _demo_auth_enabled():
-            return _demo_user()
+            store = get_auth_store()
+            return await _resolve_demo_user(store)
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
     store = get_auth_store()
@@ -209,28 +218,28 @@ async def get_current_user(
     except RuntimeError as exc:
         logger.error("auth_verification_misconfigured", error=str(exc))
         if _demo_auth_enabled():
-            return _demo_user()
+            return await _resolve_demo_user(store)
         raise HTTPException(status_code=500, detail="Authentication error") from exc
     except jwt.PyJWTError as exc:
         if _demo_auth_enabled():
-            return _demo_user()
+            return await _resolve_demo_user(store)
         raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
 
     user_id = payload.get("sub")
     if not user_id:
         if _demo_auth_enabled():
-            return _demo_user()
+            return await _resolve_demo_user(store)
         raise HTTPException(status_code=401, detail="Token missing sub claim")
 
     if not isinstance(user_id, str):
         if _demo_auth_enabled():
-            return _demo_user()
+            return await _resolve_demo_user(store)
         raise HTTPException(status_code=401, detail="Token missing sub claim")
     try:
         validate_storage_id(user_id, field_name="sub")
     except ValueError as exc:
         if _demo_auth_enabled():
-            return _demo_user()
+            return await _resolve_demo_user(store)
         raise HTTPException(status_code=401, detail="Token has invalid sub claim") from exc
 
     email = payload.get("email")

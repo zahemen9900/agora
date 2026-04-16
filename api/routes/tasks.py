@@ -21,12 +21,12 @@ from agora.types import (
     mechanism_is_supported,
 )
 from api.auth import AuthenticatedUser, get_current_user, require_scope
+from api.config import settings
 from api.coordination import (
     StreamTicketRecord,
     get_coordination_backend,
     reset_coordination_state_for_tests,
 )
-from api.config import settings
 from api.models import (
     DeliberationResultResponse,
     TaskCreateRequest,
@@ -44,7 +44,9 @@ logger = structlog.get_logger(__name__)
 
 _store: TaskStore | LocalTaskStore | None = None
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
-_SUPPORTED_MECHANISMS_TEXT = ", ".join(sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS))
+_SUPPORTED_MECHANISMS_TEXT = ", ".join(
+    sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS)
+)
 _STREAM_POLL_INTERVAL_SECONDS = 0.5
 
 
@@ -54,7 +56,8 @@ def get_task_store() -> TaskStore | LocalTaskStore:
     global _store
     if _store is None:
         _store = get_store(
-            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None
+            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None,
+            local_data_dir=settings.local_data_dir,
         )
     return _store
 

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -208,3 +212,66 @@ def test_hosted_cloud_run_devnet_e2e() -> None:
         pay.raise_for_status()
         pay_payload = pay.json()
         assert pay_payload["released"] is True
+
+
+def test_phase2_demo_rejects_unsafe_overrides_without_flag(tmp_path: Path) -> None:
+    output_path = tmp_path / "phase2_demo_override_rejected.json"
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/phase2_demo.py",
+            "--output",
+            str(output_path),
+            "--stakes",
+            "0.02",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert output_path.exists()
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert "Strict phase 2 demo defaults are enforced" in payload["error"]
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_PHASE2_DEMO", "").lower() not in {"1", "true", "yes", "on"},
+    reason="Strict phase 2 live demo smoke is opt-in.",
+)
+def test_phase2_demo_script_live(tmp_path: Path) -> None:
+    output_path = tmp_path / "phase2_demo_live.json"
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/phase2_demo.py",
+            "--output",
+            str(output_path),
+            "--target",
+            "local",
+        ],
+        check=True,
+        env=env,
+    )
+    assert output_path.exists()
+
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "passed"
+    assert payload["selected_mechanism"] == "vote"
+    assert payload["final_status"] == "paid"
+    assert payload["payment_status"] == "released"
+    assert payload["revoked_key_reuse_status"] == 401
+    assert payload["initialize_tx_hash"]
+    assert payload["receipt_tx_hash"]
+    assert payload["payment_tx_hash"]
+    assert len(payload["agent_models_used"]) == 4
+    assert payload["receipt_verification"]["merkle_match"] is True
+    assert payload["receipt_verification"]["hosted_metadata_match"] is True

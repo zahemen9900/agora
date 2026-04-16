@@ -11,7 +11,10 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    helius_rpc_url: str = "https://devnet.helius-rpc.com/?api-key=YOUR_KEY"
+    helius_rpc_url: str = Field(
+        default="https://devnet.helius-rpc.com/?api-key=YOUR_KEY",
+        validation_alias=AliasChoices("HELIUS_RPC_URL", "HELIUS_URL"),
+    )
     solana_keypair_path: str = "~/.config/solana/devnet-keypair.json"
     solana_keypair_secret_name: str = ""
     solana_keypair_secret_project: str = ""
@@ -21,6 +24,10 @@ class Settings(BaseSettings):
 
     google_cloud_project: str = ""
     gcs_bucket: str = "agora-data"
+    local_data_dir: str = Field(
+        default="api/data",
+        validation_alias=AliasChoices("AGORA_LOCAL_DATA_DIR", "LOCAL_DATA_DIR"),
+    )
     api_force_mechanism: str = Field(
         default="",
         validation_alias=AliasChoices("AGORA_API_FORCE_MECHANISM", "API_FORCE_MECHANISM"),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 import pytest
 
@@ -122,6 +123,100 @@ def test_anthropic_throttle_settings_from_env(monkeypatch: pytest.MonkeyPatch) -
     assert config.anthropic_throttle_enabled is False
     assert config.anthropic_requests_per_minute == 7
     assert config.anthropic_throttle_window_seconds == 30.0
+
+
+def test_secret_manager_loader_prefers_native_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Native Secret Manager client should be preferred over gcloud fallback."""
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value_via_client",
+        lambda project_id, secret_name, version: "native-key",
+    )
+
+    def _unexpected_gcloud(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("gcloud fallback should not run when native client succeeds")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value_via_gcloud", _unexpected_gcloud)
+
+    value = config_module._load_secret_manager_value(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value == "native-key"
+
+
+def test_secret_manager_loader_falls_back_to_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gcloud fallback should be used when native client loading fails."""
+
+    def _client_failure(*args, **kwargs):
+        raise RuntimeError("native client unavailable")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value_via_client", _client_failure)
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value_via_gcloud",
+        lambda project_id, secret_name, version: "fallback-key",
+    )
+
+    value = config_module._load_secret_manager_value(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value == "fallback-key"
+
+
+def test_secret_manager_gcloud_loader_sets_non_interactive_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gcloud fallback should disable prompts/pager and return trimmed secret values."""
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, *, check, capture_output, text, env, timeout):
+        captured["command"] = command
+        captured["env"] = env
+        captured["timeout"] = timeout
+        assert check is False
+        assert capture_output is True
+        assert text is True
+        return subprocess.CompletedProcess(command, 0, stdout=" secret-value\n", stderr="")
+
+    monkeypatch.setattr(config_module.shutil, "which", lambda binary: "/usr/bin/gcloud")
+    monkeypatch.setattr(config_module.subprocess, "run", _fake_run)
+
+    value = config_module._load_secret_manager_value_via_gcloud(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value == "secret-value"
+    assert isinstance(captured["env"], dict)
+    assert captured["env"]["CLOUDSDK_PAGER"] == ""
+    assert captured["env"]["CLOUDSDK_CORE_DISABLE_PROMPTS"] == "1"
+    assert captured["command"][0] == "gcloud"
+    assert captured["timeout"] == 20
+
+
+def test_secret_manager_gcloud_loader_returns_none_without_gcloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gcloud fallback should fail closed when gcloud is unavailable."""
+
+    monkeypatch.setattr(config_module.shutil, "which", lambda binary: None)
+
+    value = config_module._load_secret_manager_value_via_gcloud(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value is None
 
 
 def test_anthropic_api_key_falls_back_to_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
