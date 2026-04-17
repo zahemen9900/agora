@@ -120,7 +120,6 @@ tasks:
     use: [code, rust, anchor-system-packages]
     run: |
       sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.13/install)"
-      echo "$HOME/.local/share/solana/install/active_release/bin" > "$RWX_ENV/PATH"
 
       cargo install --git https://github.com/coral-xyz/anchor \
         --tag v1.0.0 \
@@ -128,7 +127,11 @@ tasks:
         avm \
         --locked \
         --force
-      echo "$HOME/.cargo/bin" >> "$RWX_ENV/PATH"
+
+      export AGAVE_BIN="$HOME/.local/share/solana/install/active_release/bin"
+      export CARGO_BIN="$HOME/.cargo/bin"
+      export PATH="$CARGO_BIN:$AGAVE_BIN:$PATH"
+      printf "%s:%s\n" "$CARGO_BIN" "$AGAVE_BIN" > "$RWX_ENV/PATH"
 
       solana --version
       anchor --version
