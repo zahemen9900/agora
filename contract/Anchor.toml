@@ -8,6 +8,9 @@ skip-lint = false
 [programs.devnet]
 agora = "Ha75TiGBNEYiygpDLFWBsSRwFXPX6uiGp6sbaUStJte8"
 
+[programs.localnet]
+agora = "Ha75TiGBNEYiygpDLFWBsSRwFXPX6uiGp6sbaUStJte8"
+
 [provider]
 cluster = "devnet"
 wallet = "~/.config/solana/devnet-keypair.json"

@@ -119,6 +119,13 @@ tasks:
   - key: anchor-toolchain
     use: [code, rust, anchor-system-packages]
     run: |
+      if ! command -v rustup >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --default-toolchain 1.88.0
+      fi
+      . "$HOME/.cargo/env"
+      rustup default 1.88.0
+
       sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.13/install)"
 
       cargo install --git https://github.com/coral-xyz/anchor \
@@ -154,21 +161,36 @@ tasks:
     use: [code, node, rust, anchor-toolchain, contract-deps]
     run: |
       cd contract
-      anchor build
-    agent:
-      cpus: 4
-      memory: 16gb
-      disk: 100gb
+      mkdir -p "$HOME/.config/solana" target/deploy
+      solana-keygen new \
+        --no-bip39-passphrase \
+        --silent \
+        --outfile "$HOME/.config/solana/devnet-keypair.json" \
+        --force
+      printf "%s\n" "$AGORA_ANCHOR_PROGRAM_KEYPAIR" > target/deploy/agora-keypair.json
+      anchor build \
+        --provider.cluster localnet \
+        --provider.wallet "$HOME/.config/solana/devnet-keypair.json"
+    env:
+      AGORA_ANCHOR_PROGRAM_KEYPAIR: ${{ secrets.AGORA_ANCHOR_PROGRAM_KEYPAIR }}
 
   - key: anchor-test
     use: [code, node, rust, anchor-toolchain, contract-deps]
     run: |
       cd contract
-      anchor test --provider.cluster localnet --validator legacy
-    agent:
-      cpus: 4
-      memory: 16gb
-      disk: 100gb
+      mkdir -p "$HOME/.config/solana" target/deploy
+      solana-keygen new \
+        --no-bip39-passphrase \
+        --silent \
+        --outfile "$HOME/.config/solana/devnet-keypair.json" \
+        --force
+      printf "%s\n" "$AGORA_ANCHOR_PROGRAM_KEYPAIR" > target/deploy/agora-keypair.json
+      anchor test \
+        --provider.cluster localnet \
+        --provider.wallet "$HOME/.config/solana/devnet-keypair.json" \
+        --validator legacy
+    env:
+      AGORA_ANCHOR_PROGRAM_KEYPAIR: ${{ secrets.AGORA_ANCHOR_PROGRAM_KEYPAIR }}
 
   - key: anchor-ci
     after:

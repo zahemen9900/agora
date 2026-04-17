@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -7,10 +8,12 @@ import os
 import subprocess
 import sys
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
+import jwt
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
@@ -21,7 +24,11 @@ from agora.types import DeliberationResult, MechanismType
 from api import auth
 from api.auth import AuthenticatedUser
 from api.auth_keys import DEFAULT_API_KEY_SCOPES, build_api_key_token, hash_api_key_secret
-from api.coordination import InMemoryCoordinationBackend, StreamTicketRecord
+from api.coordination import (
+    InMemoryCoordinationBackend,
+    StreamTicketRecord,
+    reset_coordination_backend_cache_for_tests,
+)
 from api.main import app
 from api.models import ApiKeyCreateRequest, TaskCreateRequest
 from api.routes import api_keys as api_key_routes
@@ -51,6 +58,19 @@ def isolated_auth_store(
 ) -> None:
     monkeypatch.setattr(auth.settings, "api_key_pepper", "test-pepper")
     monkeypatch.setattr(auth, "_store", LocalTaskStore(data_dir=str(tmp_path / "auth-store")))
+
+
+@pytest.fixture(autouse=True)
+async def isolated_coordination_state() -> AsyncIterator[None]:
+    reset_coordination_backend_cache_for_tests()
+    with suppress(RuntimeError):
+        await task_routes._reset_coordination_state_for_tests()
+    await reset_stream_manager_for_tests()
+    yield
+    reset_coordination_backend_cache_for_tests()
+    with suppress(RuntimeError):
+        await task_routes._reset_coordination_state_for_tests()
+    await reset_stream_manager_for_tests()
 
 
 class _FakeSelectionOnlyOrchestrator:
@@ -123,6 +143,251 @@ async def test_jwt_auth_extracts_claims(monkeypatch: pytest.MonkeyPatch) -> None
     assert user.workspace_id == "user-123"
     assert user.email == "josh@example.com"
     assert user.display_name == "Josh"
+
+
+def test_auth_audiences_collects_and_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth.settings, "auth_audience", "aud-primary")
+    monkeypatch.setattr(auth.settings, "workos_client_id", "client-123")
+    monkeypatch.setattr(auth.settings, "auth_audiences", "aud-secondary, aud-primary")
+
+    assert auth._auth_audiences() == ["aud-primary", "client-123", "aud-secondary"]
+
+
+def test_auth_jwks_url_uses_workos_session_jwks_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_jwks_url", "")
+    monkeypatch.setattr(auth.settings, "workos_client_id", "client-123")
+
+    assert auth._auth_jwks_url("https://api.workos.com") == "https://api.workos.com/sso/jwks/client-123"
+
+
+def test_auth_jwks_candidates_include_explicit_and_derived(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_jwks_url", "https://custom.example/jwks")
+    monkeypatch.setattr(auth.settings, "workos_client_id", "client-123")
+
+    assert auth._auth_jwks_candidates(
+        ["https://api.workos.com", "https://tenant.authkit.app"]
+    ) == [
+        "https://custom.example/jwks",
+        "https://api.workos.com/sso/jwks/client-123",
+        "https://tenant.authkit.app/oauth2/jwks",
+    ]
+
+
+def test_decode_verified_token_accepts_trailing_slash_issuer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_issuer", "https://issuer.example")
+    monkeypatch.setattr(auth.settings, "auth_jwks_url", "https://issuer.example/oauth2/jwks")
+    monkeypatch.setattr(auth.settings, "auth_audience", "aud-primary")
+    monkeypatch.setattr(auth.settings, "auth_audiences", "")
+
+    class _SigningKey:
+        key = "test-signing-key"
+
+    class _Client:
+        @staticmethod
+        def get_signing_key_from_jwt(_token: str) -> _SigningKey:
+            return _SigningKey()
+
+    monkeypatch.setattr(auth, "_jwks_client", lambda _url: _Client())
+
+    issuers_seen: list[str] = []
+
+    def fake_decode(
+        raw_token: str,
+        *,
+        key: str,
+        algorithms: list[str],
+        issuer: str,
+        audience: list[str],
+    ) -> dict[str, str]:
+        del raw_token, key, algorithms, audience
+        issuers_seen.append(issuer)
+        if issuer == "https://issuer.example":
+            raise jwt.InvalidIssuerError("issuer without trailing slash rejected")
+        return {
+            "sub": "user-123",
+            "email": "josh@example.com",
+            "name": "Josh",
+        }
+
+    monkeypatch.setattr(auth.jwt, "decode", fake_decode)
+
+    payload = auth._decode_verified_token("dummy")
+
+    assert payload["sub"] == "user-123"
+    assert issuers_seen == ["https://issuer.example", "https://issuer.example/"]
+
+
+def test_decode_verified_token_relaxes_audience_in_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "environment", "development")
+    monkeypatch.setattr(auth.settings, "auth_issuer", "https://issuer.example")
+    monkeypatch.setattr(auth.settings, "auth_jwks_url", "https://issuer.example/oauth2/jwks")
+    monkeypatch.setattr(auth.settings, "auth_audience", "aud-configured")
+    monkeypatch.setattr(auth.settings, "auth_audiences", "")
+
+    class _SigningKey:
+        key = "test-signing-key"
+
+    class _Client:
+        @staticmethod
+        def get_signing_key_from_jwt(_token: str) -> _SigningKey:
+            return _SigningKey()
+
+    monkeypatch.setattr(auth, "_jwks_client", lambda _url: _Client())
+
+    decode_audiences_seen: list[tuple[str, ...]] = []
+
+    def fake_decode(
+        raw_token: str,
+        *,
+        key: str | None = None,
+        algorithms: list[str] | None = None,
+        issuer: str | None = None,
+        audience: list[str] | None = None,
+        options: dict[str, bool] | None = None,
+    ) -> dict[str, str]:
+        del raw_token, key, algorithms, issuer
+        if options is not None:
+            return {
+                "sub": "user-123",
+                "email": "josh@example.com",
+                "name": "Josh",
+                "iss": "https://issuer.example",
+                "aud": "aud-token",
+            }
+
+        candidates = tuple(audience or [])
+        decode_audiences_seen.append(candidates)
+        if "aud-token" in candidates:
+            return {
+                "sub": "user-123",
+                "email": "josh@example.com",
+                "name": "Josh",
+            }
+        raise jwt.InvalidAudienceError("audience mismatch")
+
+    monkeypatch.setattr(auth.jwt, "decode", fake_decode)
+
+    payload = auth._decode_verified_token("dummy")
+
+    assert payload["sub"] == "user-123"
+    assert any("aud-token" in audiences for audiences in decode_audiences_seen)
+
+
+def test_decode_verified_token_allows_session_token_without_audience(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "environment", "production")
+    monkeypatch.setattr(auth.settings, "auth_issuer", "https://api.workos.com")
+    monkeypatch.setattr(auth.settings, "workos_authkit_domain", "")
+    monkeypatch.setattr(auth.settings, "auth_jwks_url", "https://api.workos.com/sso/jwks/client-123")
+    monkeypatch.setattr(auth.settings, "auth_audience", "client-123")
+    monkeypatch.setattr(auth.settings, "auth_audiences", "")
+
+    class _SigningKey:
+        key = "test-signing-key"
+
+    class _Client:
+        @staticmethod
+        def get_signing_key_from_jwt(_token: str) -> _SigningKey:
+            return _SigningKey()
+
+    monkeypatch.setattr(auth, "_jwks_client", lambda _url: _Client())
+
+    verify_options_seen: list[dict[str, bool] | None] = []
+
+    def fake_decode(raw_token: str, **kwargs: object) -> dict[str, object]:
+        del raw_token
+        options = kwargs.get("options")
+        if isinstance(options, dict) and options.get("verify_signature") is False:
+            return {
+                "iss": "https://api.workos.com",
+                "sub": "user-123",
+                "sid": "session_123",
+            }
+
+        verify_options_seen.append(options if isinstance(options, dict) else None)
+        if isinstance(options, dict) and options.get("verify_aud") is False:
+            return {
+                "sub": "user-123",
+                "email": "josh@example.com",
+                "name": "Josh",
+            }
+
+        raise jwt.InvalidAudienceError("audience should not be required for session token")
+
+    monkeypatch.setattr(auth.jwt, "decode", fake_decode)
+
+    payload = auth._decode_verified_token("dummy")
+
+    assert payload["sub"] == "user-123"
+    assert {"verify_aud": False} in verify_options_seen
+
+
+def test_decode_verified_token_accepts_known_workos_claim_issuer_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "environment", "production")
+    monkeypatch.setattr(auth.settings, "auth_issuer", "https://healthy-flare-22-staging.authkit.app")
+    monkeypatch.setattr(auth.settings, "workos_authkit_domain", "")
+    monkeypatch.setattr(auth.settings, "auth_jwks_url", "")
+    monkeypatch.setattr(auth.settings, "auth_audience", "client-123")
+    monkeypatch.setattr(auth.settings, "auth_audiences", "")
+    monkeypatch.setattr(auth.settings, "workos_client_id", "client-123")
+
+    class _SigningKey:
+        key = "test-signing-key"
+
+    jwks_urls_seen: list[str] = []
+
+    class _Client:
+        def __init__(self, jwks_url: str) -> None:
+            self._jwks_url = jwks_url
+
+        def get_signing_key_from_jwt(self, _token: str) -> _SigningKey:
+            jwks_urls_seen.append(self._jwks_url)
+            if "healthy-flare-22-staging.authkit.app" in self._jwks_url:
+                raise jwt.PyJWKClientError("kid not found")
+            return _SigningKey()
+
+    monkeypatch.setattr(auth, "_jwks_client", lambda url: _Client(url))
+
+    def fake_decode(raw_token: str, **kwargs: object) -> dict[str, object]:
+        del raw_token
+        options = kwargs.get("options")
+        if isinstance(options, dict) and options.get("verify_signature") is False:
+            return {
+                "iss": "https://api.workos.com",
+                "sub": "user-123",
+                "sid": "session_123",
+            }
+
+        issuer = str(kwargs.get("issuer", ""))
+        verify_options = kwargs.get("options")
+        if issuer in {"https://api.workos.com", "https://api.workos.com/"} and isinstance(
+            verify_options,
+            dict,
+        ) and verify_options.get("verify_aud") is False:
+            return {
+                "sub": "user-123",
+                "email": "josh@example.com",
+                "name": "Josh",
+            }
+        raise jwt.InvalidIssuerError("issuer mismatch")
+
+    monkeypatch.setattr(auth.jwt, "decode", fake_decode)
+
+    payload = auth._decode_verified_token("dummy")
+
+    assert payload["sub"] == "user-123"
+    assert "https://api.workos.com/sso/jwks/client-123" in jwks_urls_seen
 
 
 @pytest.mark.asyncio
@@ -245,7 +510,7 @@ async def test_health_route_is_public(client: httpx.AsyncClient) -> None:
 async def test_cors_allows_vercel_and_localhost_origins(client: httpx.AsyncClient) -> None:
     for origin in (
         "https://agora-bay-seven.vercel.app",
-        "http://localhost:4173",
+        "http://localhost:5173",
     ):
         response = await client.options(
             "/tasks/",
@@ -353,21 +618,41 @@ async def test_create_task_rejects_unsupported_mechanism_override(
         monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
         monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
 
-        with pytest.raises(HTTPException) as exc_info:
-            await task_routes.create_task(
-                TaskCreateRequest(
-                    task="force unsupported override",
-                    agent_count=3,
-                    stakes=0.0,
-                    mechanism_override="delphi",
-                ),
-                _override_user(),
+        with pytest.raises(ValidationError) as exc_info:
+            TaskCreateRequest(
+                task="force unsupported override",
+                agent_count=3,
+                stakes=0.0,
+                mechanism_override="delphi",
             )
     finally:
         task_routes._store = None
 
-    assert exc_info.value.status_code == 400
-    assert "Supported mechanisms: debate, vote" in str(exc_info.value.detail)
+    assert "Input should be 'debate' or 'vote'" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_create_task_rate_limit_returns_429(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+    monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+    monkeypatch.setattr(task_routes.settings, "task_create_rate_limit_per_minute", 1)
+
+    first = await client.post(
+        "/tasks/",
+        json={"task": "first create", "agent_count": 3, "stakes": 0.0},
+    )
+    second = await client.post(
+        "/tasks/",
+        json={"task": "second create", "agent_count": 3, "stakes": 0.0},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.json()["detail"] == "Task creation rate limit exceeded"
+    assert second.headers["Retry-After"] != ""
 
 
 @pytest.mark.asyncio
@@ -520,18 +805,187 @@ async def test_run_rejects_when_coordination_lock_is_held(
         )
         run_key = task_routes._task_run_key("user-1", create.task_id)
         acquired = await task_routes._acquire_task_run_lock(run_key)
-        assert acquired is True
+        assert acquired is not None
 
         with pytest.raises(HTTPException) as exc_info:
             await task_routes.run_task(create.task_id, _override_user())
 
-        await task_routes._release_task_run_lock(run_key)
+        await task_routes._release_task_run_lock(run_key, lease_id=acquired.lease_id)
     finally:
         task_routes._store = None
         await task_routes._reset_coordination_state_for_tests()
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "Task is already in progress"
+
+
+@pytest.mark.asyncio
+async def test_run_task_rate_limit_returns_429(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-rate-limit-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="run me",
+        mechanism_used=MechanismType.DEBATE,
+        mechanism_selection=selection,
+        final_answer="Ship it.",
+        confidence=0.88,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=3,
+        mechanism_switches=0,
+        merkle_root="receipt-root-rate-limit",
+        transcript_hashes=["leaf-1", "leaf-2"],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=42,
+        total_latency_ms=12.5,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _FakeRunOrchestrator:
+        def __init__(self, agent_count: int):
+            self.agent_count = agent_count
+            self.selector = _FakeSelector()
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, mechanism_override
+            if event_sink is not None:
+                await event_sink(
+                    "complete",
+                    {"task": task, "mechanism": completed_result.mechanism_used.value},
+                )
+            return completed_result.model_copy(update={"task": task})
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeRunOrchestrator)
+        monkeypatch.setattr(task_routes.settings, "task_run_rate_limit_per_minute", 1)
+
+        create_one = await task_routes.create_task(
+            TaskCreateRequest(task="run-one", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        create_two = await task_routes.create_task(
+            TaskCreateRequest(task="run-two", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+
+        first = await task_routes.run_task(create_one.task_id, _override_user())
+        assert first.final_answer == "Ship it."
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.run_task(create_two.task_id, _override_user())
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.detail == "Task run rate limit exceeded"
+    assert exc_info.value.headers == {"Retry-After": "60"}
+
+
+@pytest.mark.asyncio
+async def test_workspace_concurrent_run_limit_returns_429(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "workspace-run-limit-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    release_run = asyncio.Event()
+    first_run_started = asyncio.Event()
+    completed_result = DeliberationResult(
+        task="concurrent run",
+        mechanism_used=MechanismType.DEBATE,
+        mechanism_selection=selection,
+        final_answer="Ship it.",
+        confidence=0.88,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=3,
+        mechanism_switches=0,
+        merkle_root="receipt-root-concurrency",
+        transcript_hashes=["leaf-1", "leaf-2"],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=42,
+        total_latency_ms=12.5,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _BlockingRunOrchestrator:
+        def __init__(self, agent_count: int):
+            self.agent_count = agent_count
+            self.selector = _FakeSelector()
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, mechanism_override
+            first_run_started.set()
+            await release_run.wait()
+            if event_sink is not None:
+                await event_sink(
+                    "complete",
+                    {"task": task, "mechanism": completed_result.mechanism_used.value},
+                )
+            return completed_result.model_copy(update={"task": task})
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _BlockingRunOrchestrator)
+        monkeypatch.setattr(task_routes.settings, "task_run_rate_limit_per_minute", 0)
+        monkeypatch.setattr(task_routes.settings, "workspace_concurrent_task_runs", 1)
+
+        create_one = await task_routes.create_task(
+            TaskCreateRequest(task="run-one", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        create_two = await task_routes.create_task(
+            TaskCreateRequest(task="run-two", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+
+        first_task = asyncio.create_task(task_routes.run_task(create_one.task_id, _override_user()))
+        await first_run_started.wait()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.run_task(create_two.task_id, _override_user())
+
+        release_run.set()
+        first = await first_task
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert first.final_answer == "Ship it."
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.detail == "Workspace concurrent task run limit exceeded"
+    assert exc_info.value.headers == {"Retry-After": "1"}
 
 
 @pytest.mark.asyncio

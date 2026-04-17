@@ -1,5 +1,3 @@
-"""Solana integration interfaces for Agora runtime."""
+"""Solana integration internals for Agora runtime."""
 
-from agora.solana.client import SolanaClient
-
-__all__ = ["SolanaClient"]
+__all__: list[str] = []

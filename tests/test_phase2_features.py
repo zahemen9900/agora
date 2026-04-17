@@ -628,7 +628,7 @@ async def test_sdk_verify_receipt_strict_hosted_payload_mismatch_raises(
 
 
 @pytest.mark.asyncio
-async def test_sdk_verify_receipt_strict_hosted_payload_still_requires_chain_proof(
+async def test_sdk_verify_receipt_strict_hosted_payload_requires_rpc_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
@@ -668,9 +668,84 @@ async def test_sdk_verify_receipt_strict_hosted_payload_still_requires_chain_pro
         return _FakeResponse(payload)
 
     monkeypatch.setattr(arbitrator._client, "get", fake_get)
-    with pytest.raises(ReceiptVerificationError, match="Strict on-chain receipt verification"):
+    with pytest.raises(ReceiptVerificationError, match="requires rpc_url"):
         await arbitrator.verify_receipt(result)
     await arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_receipt_strict_succeeds_with_onchain_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+        rpc_url="http://localhost:8899",
+    )
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    arbitrator._result_task_ids[result.merkle_root] = "task-verify-onchain"
+
+    decision_hash = TranscriptHasher().hash_content(result.final_answer)
+    payload: dict[str, Any] = {
+        "task_id": "task-verify-onchain",
+        "task_text": "Should I buy Solana or BTC?",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": result.mechanism_selection.reasoning,
+        "selector_reasoning_hash": result.mechanism_selection.reasoning_hash,
+        "selector_confidence": result.mechanism_selection.confidence,
+        "merkle_root": result.merkle_root,
+        "decision_hash": decision_hash,
+        "solana_tx_hash": "tx-123",
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "events": [],
+        "result": {
+            "task_id": "task-verify-onchain",
+            "mechanism": "vote",
+            "final_answer": result.final_answer,
+            "confidence": result.confidence,
+            "quorum_reached": result.quorum_reached,
+            "round_count": result.round_count,
+            "mechanism_switches": result.mechanism_switches,
+            "merkle_root": result.merkle_root,
+            "decision_hash": decision_hash,
+            "transcript_hashes": result.transcript_hashes,
+            "convergence_history": [],
+            "locked_claims": [],
+            "total_tokens_used": result.total_tokens_used,
+            "latency_ms": result.total_latency_ms,
+        },
+    }
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(payload)
+
+    async def fake_verify_onchain_receipt(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+    monkeypatch.setattr(arbitrator, "_verify_onchain_receipt", fake_verify_onchain_receipt)
+
+    verification = await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+    assert verification["valid"] is True
+    assert verification["hosted_metadata_match"] is True
+    assert verification["on_chain_match"] is True
 
 
 @pytest.mark.asyncio

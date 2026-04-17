@@ -72,7 +72,7 @@ Implemented on top of the Week 1 foundation:
 ### Still Deferred / Not Implemented Yet
 
 - SDK-side `agora/solana/client.py` remains a stub; the API-side Solana bridge and contract flow are active.
-- Full Delphi and MoA engines (currently stubs for later phases).
+- Internal Delphi and MoA scaffolding for a later implementation phase; current public support is Debate and Vote.
 - Full LangGraph StateGraph execution as the primary runtime path.
 - Final production packaging/publication work for the SDK release channel.
 
@@ -123,8 +123,8 @@ agora/
   engines/
     debate.py            # Debate mechanism
     vote.py              # Vote mechanism
-    delphi.py            # Stub (future)
-    moa.py               # Stub (future)
+    delphi.py            # Internal Week 3 scaffold (not publicly supported yet)
+    moa.py               # Internal Week 3 scaffold (not publicly supported yet)
   runtime/
     monitor.py           # Convergence + switch logic
     hasher.py            # Transcript hashing + Merkle root/receipt

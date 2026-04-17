@@ -8,11 +8,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
 import {
+  ApiRequestError,
   getAuthMe,
   type FeatureFlagsResponse,
   type PrincipalResponse,
@@ -86,7 +88,7 @@ function returnToFromState(state: unknown): string | null {
   return sanitizeReturnTo(candidate);
 }
 
-export function consumeReturnTo(): string {
+function consumeReturnTo(): string {
   const value = window.sessionStorage.getItem(RETURN_TO_STORAGE_KEY);
   window.sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
   return sanitizeReturnTo(value);
@@ -115,12 +117,24 @@ function resolveRedirectUri(configuredRedirectUri: string | undefined): string {
   }
 }
 
+function isBackendUnavailableError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("request failed: 502")
+    || message.includes("failed to fetch")
+    || message.includes("networkerror");
+}
+
 function AuthStateProvider({ children }: { children: ReactNode }) {
   const workosAuth = useWorkOSAuth();
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const [principal, setPrincipal] = useState<PrincipalResponse | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [featureFlags, setFeatureFlags] = useState<FeatureFlagsResponse | null>(null);
+  const bootstrappedSubjectRef = useRef<string | null>(null);
+  const backendUnavailableWarnedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,12 +149,22 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
         setWorkspace(null);
         setFeatureFlags(null);
         setAuthStatus("unauthenticated");
+        bootstrappedSubjectRef.current = null;
+        backendUnavailableWarnedRef.current = false;
         return;
       }
 
+      const bootstrapSubject = workosAuth.user.id ?? workosAuth.user.email ?? "authenticated";
+      if (bootstrappedSubjectRef.current === bootstrapSubject) {
+        setAuthStatus("authenticated");
+        return;
+      }
+
+      bootstrappedSubjectRef.current = bootstrapSubject;
+
       setAuthStatus("loading");
       try {
-        const token = await workosAuth.getAccessToken();
+        const token = await workosAuth.getAccessToken({ forceRefresh: true });
         if (!token) {
           await workosAuth.signOut();
           if (!cancelled) {
@@ -164,14 +188,44 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
           setPrincipal(session.principal);
           setWorkspace(session.workspace);
           setFeatureFlags(session.feature_flags);
+          backendUnavailableWarnedRef.current = false;
         } catch (error) {
           if (cancelled) {
             return;
           }
+
+          if (error instanceof ApiRequestError && error.status === 401) {
+            setPrincipal(null);
+            setWorkspace(null);
+            setFeatureFlags(null);
+            if (!backendUnavailableWarnedRef.current) {
+              console.warn(
+                "Auth bootstrap warning: backend rejected the access token on /auth/me. "
+                + "Keeping WorkOS session active to avoid logout loops. "
+                + "Check backend AUTH_ISSUER/AUTH_AUDIENCE/AUTH_JWKS_URL and API target.",
+                error,
+              );
+              backendUnavailableWarnedRef.current = true;
+            }
+            return;
+          }
+
           setPrincipal(null);
           setWorkspace(null);
           setFeatureFlags(null);
-          console.warn("Auth bootstrap warning: /auth/me failed", error);
+
+          if (isBackendUnavailableError(error)) {
+            if (!backendUnavailableWarnedRef.current) {
+              console.warn(
+                "Auth bootstrap skipped: backend is unavailable via /api. "
+                + "Set VITE_AGORA_API_PROXY_TARGET/VITE_AGORA_API_URL to a reachable backend "
+                + "(for local backend use http://localhost:8000).",
+              );
+              backendUnavailableWarnedRef.current = true;
+            }
+          } else {
+            console.warn("Auth bootstrap warning: /auth/me failed", error);
+          }
         }
       } catch {
         await workosAuth.signOut();
@@ -188,7 +242,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [workosAuth]);
+  }, [workosAuth.getAccessToken, workosAuth.isLoading, workosAuth.signOut, workosAuth.user]);
 
   const contextValue = useMemo<AuthContextType>(() => ({
     user: workosAuth.user ?? null,
@@ -218,7 +272,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
         return null;
       }
       try {
-        const token = await workosAuth.getAccessToken();
+        const token = await workosAuth.getAccessToken({ forceRefresh: true });
         return token ?? null;
       } catch {
         return null;

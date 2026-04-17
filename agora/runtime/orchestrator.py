@@ -23,7 +23,9 @@ from agora.types import (
 )
 
 logger = structlog.get_logger(__name__)
-_SUPPORTED_MECHANISMS_TEXT = ", ".join(sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS))
+_SUPPORTED_MECHANISMS_TEXT = ", ".join(
+    sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS)
+)
 
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -103,7 +105,11 @@ class AgoraOrchestrator:
             reasoning_hash=selection.reasoning_hash,
             bandit_recommendation=selection.bandit_recommendation.value,
             bandit_confidence=selection.bandit_confidence,
-            forced_mechanism=forced_mechanism.value if forced_mechanism else None,
+            forced_mechanism=(
+                mechanism_override.value
+                if isinstance(mechanism_override, MechanismType)
+                else mechanism_override
+            ),
         )
 
         result = await self.execute_selection(

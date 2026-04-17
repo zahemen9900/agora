@@ -226,3 +226,4 @@ node_modules
 .env.local
 
 .github/agents
+.vercel

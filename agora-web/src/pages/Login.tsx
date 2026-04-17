@@ -192,7 +192,7 @@ export function LoginPage() {
               vizType="selector"
               accentColor="var(--text-muted)"
               title="The AI Decides How to Decide"
-              description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal mechanism — debate, vote, or Delphi consensus."
+              description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal supported mechanism for now: debate or vote."
             />
             <StepCard
               step={2}

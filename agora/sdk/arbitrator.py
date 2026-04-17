@@ -2,16 +2,53 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from collections.abc import Callable
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from solana.rpc.async_api import AsyncClient
+from solders.pubkey import Pubkey
 
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
-from agora.types import DeliberationResult, MechanismSelection, MechanismType
+from agora.types import (
+    ConvergenceMetrics,
+    DeliberationResult,
+    MechanismSelection,
+    MechanismType,
+    VerifiedClaim,
+)
+
+MechanismName = Literal["debate", "vote"]
+TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
+DEFAULT_PROGRAM_ID = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
+DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class _OnChainTaskAccount:
+    selector_reasoning_hash: str
+    transcript_merkle_root: str
+    decision_hash: str
+    quorum_reached: bool
+    mechanism: MechanismName
+    switched_to: MechanismName | None
+    mechanism_switches: int
+    status: TaskStatusName
+
+
+@dataclass(frozen=True)
+class _OnChainMechanismSwitchLog:
+    switch_index: int
+    from_mechanism: MechanismName
+    to_mechanism: MechanismName
+    reason_hash: str
+    round_number: int
 
 
 class ArbitratorConfig(BaseModel):
@@ -21,10 +58,13 @@ class ArbitratorConfig(BaseModel):
 
     api_url: str = "http://localhost:8000"
     solana_wallet: str | None = None
-    mechanism: str | None = None
+    mechanism: MechanismName | None = None
     agent_count: int = 3
     auth_token: str | None = None
     strict_verification: bool = True
+    rpc_url: str = ""
+    program_id: str = DEFAULT_PROGRAM_ID
+    http_timeout_seconds: float = Field(default=DEFAULT_HTTP_TIMEOUT_SECONDS, gt=0)
 
 
 class HostedTaskCreateResponse(BaseModel):
@@ -33,11 +73,11 @@ class HostedTaskCreateResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     task_id: str = ""
-    mechanism: str = ""
+    mechanism: MechanismName = "debate"
     confidence: float = 0.0
     reasoning: str = ""
     selector_reasoning_hash: str = ""
-    status: str = "pending"
+    status: TaskStatusName = "pending"
 
 
 class HostedDeliberationResult(BaseModel):
@@ -46,7 +86,7 @@ class HostedDeliberationResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     task_id: str = ""
-    mechanism: str = ""
+    mechanism: MechanismName = "debate"
     final_answer: str = ""
     confidence: float = 0.0
     quorum_reached: bool = False
@@ -59,8 +99,8 @@ class HostedDeliberationResult(BaseModel):
     round_count: int = 1
     mechanism_switches: int = 0
     transcript_hashes: list[str] = Field(default_factory=list)
-    convergence_history: list[dict[str, Any]] = Field(default_factory=list)
-    locked_claims: list[dict[str, Any]] = Field(default_factory=list)
+    convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
+    locked_claims: list[VerifiedClaim] = Field(default_factory=list)
 
 
 class HostedTaskStatus(BaseModel):
@@ -72,9 +112,9 @@ class HostedTaskStatus(BaseModel):
     task_text: str = ""
     workspace_id: str = ""
     created_by: str = ""
-    mechanism: str = ""
-    mechanism_override: str | None = None
-    status: str = ""
+    mechanism: MechanismName = "debate"
+    mechanism_override: MechanismName | None = None
+    status: TaskStatusName = "pending"
     selector_reasoning: str = ""
     selector_reasoning_hash: str = ""
     selector_confidence: float = 0.0
@@ -88,7 +128,7 @@ class HostedTaskStatus(BaseModel):
     solana_tx_hash: str | None = None
     explorer_url: str | None = None
     payment_amount: float = 0.0
-    payment_status: str = "none"
+    payment_status: Literal["locked", "released", "none"] = "none"
     created_at: str | None = None
     completed_at: str | None = None
     result: HostedDeliberationResult | None = None
@@ -115,10 +155,13 @@ class AgoraArbitrator:
         self,
         api_url: str = "http://localhost:8000",
         solana_wallet: str | None = None,
-        mechanism: str | None = None,
+        mechanism: MechanismName | None = None,
         agent_count: int = 3,
         auth_token: str | None = None,
         strict_verification: bool = True,
+        rpc_url: str = "",
+        program_id: str = DEFAULT_PROGRAM_ID,
+        http_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> None:
         self.config = ArbitratorConfig(
             api_url=api_url,
@@ -127,8 +170,14 @@ class AgoraArbitrator:
             agent_count=agent_count,
             auth_token=auth_token,
             strict_verification=strict_verification,
+            rpc_url=rpc_url,
+            program_id=program_id,
+            http_timeout_seconds=http_timeout_seconds,
         )
-        self._client = httpx.AsyncClient(base_url=api_url, timeout=120.0)
+        self._client = httpx.AsyncClient(
+            base_url=api_url,
+            timeout=httpx.Timeout(self.config.http_timeout_seconds),
+        )
         self._hasher = TranscriptHasher()
         self._result_task_ids: dict[str, str] = {}
         self._latest_task_id: str | None = None
@@ -144,7 +193,7 @@ class AgoraArbitrator:
         task: str,
         *,
         stakes: float = 0.0,
-        mechanism: str | None = None,
+        mechanism: MechanismName | None = None,
         agent_count: int | None = None,
     ) -> HostedTaskCreateResponse:
         """Create a hosted task without executing it."""
@@ -247,6 +296,7 @@ class AgoraArbitrator:
         result: DeliberationResult,
         *,
         strict: bool | None = None,
+        task_id: str | None = None,
     ) -> dict[str, bool | None]:
         """Verify receipt root locally and, when available, against hosted receipt metadata.
 
@@ -261,10 +311,11 @@ class AgoraArbitrator:
             raise ReceiptVerificationError("Local Merkle verification failed")
 
         hosted_metadata_match: bool | None = None
-        task_id = self._result_task_ids.get(result.merkle_root)
-        if task_id:
+        status: HostedTaskStatus | None = None
+        resolved_task_id = task_id or self._result_task_ids.get(result.merkle_root)
+        if resolved_task_id:
             try:
-                status = await self.get_task_status(task_id, detailed=True)
+                status = await self.get_task_status(resolved_task_id, detailed=True)
             except Exception as exc:
                 if strict_mode:
                     raise ReceiptVerificationError(
@@ -283,17 +334,261 @@ class AgoraArbitrator:
 
         on_chain_match: bool | None = None
         if strict_mode:
-            raise ReceiptVerificationError(
-                "Strict on-chain receipt verification is not implemented"
+            assert resolved_task_id is not None
+            if status is None:
+                raise ReceiptVerificationError(
+                    "Strict receipt verification requires hosted task metadata"
+                )
+            if not self.config.rpc_url.strip():
+                raise ReceiptVerificationError("Strict receipt verification requires rpc_url")
+            on_chain_match = await self._verify_onchain_receipt(
+                task_id=resolved_task_id,
+                status=status,
+                result=result,
             )
+            if not on_chain_match:
+                raise ReceiptVerificationError("Strict on-chain receipt verification failed")
 
-        valid = merkle_match and (hosted_metadata_match in {True, None})
+        valid = (
+            merkle_match
+            and (hosted_metadata_match in {True, None})
+            and (on_chain_match in {True, None})
+        )
         return {
             "valid": valid,
             "merkle_match": merkle_match,
             "hosted_metadata_match": hosted_metadata_match,
             "on_chain_match": on_chain_match,
         }
+
+    async def _verify_onchain_receipt(
+        self,
+        *,
+        task_id: str,
+        status: HostedTaskStatus,
+        result: DeliberationResult,
+    ) -> bool:
+        task_account = await self._fetch_onchain_task_account(task_id)
+        if task_account is None:
+            raise ReceiptVerificationError(f"On-chain task account not found for task_id={task_id}")
+
+        expected_decision_hash = self._hasher.hash_content(result.final_answer)
+        if status.status not in {"completed", "paid"}:
+            return False
+        if task_account.selector_reasoning_hash != status.selector_reasoning_hash:
+            return False
+        if task_account.transcript_merkle_root != result.merkle_root:
+            return False
+        if task_account.decision_hash != expected_decision_hash:
+            return False
+        if task_account.quorum_reached != result.quorum_reached:
+            return False
+        if task_account.mechanism != result.mechanism_used.value:
+            return False
+        if task_account.mechanism_switches != result.mechanism_switches:
+            return False
+        if status.status == "completed" and task_account.status != "completed":
+            return False
+        if status.status == "paid" and task_account.status != "paid":
+            return False
+        if result.mechanism_switches == 0:
+            return True
+
+        switch_events = [
+            event for event in status.events if event.get("event") == "mechanism_switch"
+        ]
+        if len(switch_events) != result.mechanism_switches:
+            return False
+
+        for switch_index, event in enumerate(switch_events):
+            switch_log = await self._fetch_onchain_switch_log(task_id, switch_index)
+            if switch_log is None:
+                return False
+            data = event.get("data") or {}
+            if not isinstance(data, dict):
+                return False
+            if switch_log.from_mechanism != str(data.get("from_mechanism", "")):
+                return False
+            if switch_log.to_mechanism != str(data.get("to_mechanism", "")):
+                return False
+            if switch_log.round_number != int(data.get("round_number", 0)):
+                return False
+            expected_reason_hash = self._hasher.hash_content(str(data.get("reason", "")))
+            if switch_log.reason_hash != expected_reason_hash:
+                return False
+        return True
+
+    async def _fetch_onchain_task_account(self, task_id: str) -> _OnChainTaskAccount | None:
+        payload = await self._fetch_account_bytes(self._derive_task_pda(task_id))
+        if payload is None:
+            return None
+        return self._parse_task_account(payload)
+
+    async def _fetch_onchain_switch_log(
+        self,
+        task_id: str,
+        switch_index: int,
+    ) -> _OnChainMechanismSwitchLog | None:
+        payload = await self._fetch_account_bytes(self._derive_switch_pda(task_id, switch_index))
+        if payload is None:
+            return None
+        return self._parse_switch_log(payload)
+
+    async def _fetch_account_bytes(self, account: Pubkey) -> bytes | None:
+        async with AsyncClient(self.config.rpc_url) as client:
+            response = await client.get_account_info(
+                account,
+                encoding="base64",
+                commitment="confirmed",
+            )
+        value = response.value
+        if value is None:
+            return None
+        data = value.data
+        if isinstance(data, bytes | bytearray):
+            return bytes(data)
+        if isinstance(data, tuple):
+            encoded = data[0]
+        elif isinstance(data, list):
+            encoded = data[0]
+        else:
+            encoded = data
+        if isinstance(encoded, bytes | bytearray):
+            return bytes(encoded)
+        if not isinstance(encoded, str):
+            raise ReceiptVerificationError("Unexpected account data encoding from Solana RPC")
+        return base64.b64decode(encoded)
+
+    def _derive_task_pda(self, task_id: str) -> Pubkey:
+        return Pubkey.find_program_address(
+            [b"task", bytes.fromhex(task_id)],
+            Pubkey.from_string(self.config.program_id),
+        )[0]
+
+    def _derive_switch_pda(self, task_id: str, switch_index: int) -> Pubkey:
+        return Pubkey.find_program_address(
+            [b"switch", bytes.fromhex(task_id), bytes([switch_index])],
+            Pubkey.from_string(self.config.program_id),
+        )[0]
+
+    @staticmethod
+    def _account_discriminator(name: str) -> bytes:
+        return hashlib.sha256(f"account:{name}".encode()).digest()[:8]
+
+    @staticmethod
+    def _parse_mechanism(value: int) -> MechanismName:
+        mapping: dict[int, MechanismName] = {0: "debate", 1: "vote"}
+        mechanism = mapping.get(value)
+        if mechanism is None:
+            raise ReceiptVerificationError(f"Unsupported on-chain mechanism value: {value}")
+        return mechanism
+
+    @staticmethod
+    def _parse_task_status(value: int) -> TaskStatusName:
+        mapping: dict[int, TaskStatusName] = {
+            0: "pending",
+            1: "in_progress",
+            2: "completed",
+            3: "failed",
+            4: "paid",
+        }
+        status = mapping.get(value)
+        if status is None:
+            raise ReceiptVerificationError(f"Unsupported on-chain task status value: {value}")
+        return status
+
+    @staticmethod
+    def _read_u8(payload: bytes, offset: int) -> tuple[int, int]:
+        return payload[offset], offset + 1
+
+    @staticmethod
+    def _read_bool(payload: bytes, offset: int) -> tuple[bool, int]:
+        value, offset = AgoraArbitrator._read_u8(payload, offset)
+        return bool(value), offset
+
+    @staticmethod
+    def _read_bytes(payload: bytes, offset: int, size: int) -> tuple[bytes, int]:
+        return payload[offset : offset + size], offset + size
+
+    @staticmethod
+    def _read_option_u8(payload: bytes, offset: int) -> tuple[int | None, int]:
+        tag, offset = AgoraArbitrator._read_u8(payload, offset)
+        if tag == 0:
+            return None, offset
+        value, offset = AgoraArbitrator._read_u8(payload, offset)
+        return value, offset
+
+    @staticmethod
+    def _read_i64(payload: bytes, offset: int) -> tuple[int, int]:
+        chunk, offset = AgoraArbitrator._read_bytes(payload, offset, 8)
+        return int.from_bytes(chunk, "little", signed=True), offset
+
+    @staticmethod
+    def _read_u64(payload: bytes, offset: int) -> tuple[int, int]:
+        chunk, offset = AgoraArbitrator._read_bytes(payload, offset, 8)
+        return int.from_bytes(chunk, "little"), offset
+
+    def _parse_task_account(self, payload: bytes) -> _OnChainTaskAccount:
+        if payload[:8] != self._account_discriminator("TaskAccount"):
+            raise ReceiptVerificationError("Unexpected TaskAccount discriminator")
+        offset = 8
+        _, offset = self._read_bytes(payload, offset, 32)
+        _, offset = self._read_bytes(payload, offset, 32)
+        mechanism_value, offset = self._read_u8(payload, offset)
+        switched_to_value, offset = self._read_option_u8(payload, offset)
+        selector_reasoning_hash, offset = self._read_bytes(payload, offset, 32)
+        transcript_merkle_root, offset = self._read_bytes(payload, offset, 32)
+        decision_hash, offset = self._read_bytes(payload, offset, 32)
+        quorum_reached, offset = self._read_bool(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+        _, offset = self._read_u64(payload, offset)
+        _, offset = self._read_bytes(payload, offset, 32)
+        _, offset = self._read_bytes(payload, offset, 32)
+        mechanism_switches, offset = self._read_u8(payload, offset)
+        status_value, offset = self._read_u8(payload, offset)
+        _, offset = self._read_i64(payload, offset)
+        completed_tag, offset = self._read_u8(payload, offset)
+        if completed_tag == 1:
+            _, offset = self._read_i64(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+
+        return _OnChainTaskAccount(
+            selector_reasoning_hash=selector_reasoning_hash.hex(),
+            transcript_merkle_root=transcript_merkle_root.hex(),
+            decision_hash=decision_hash.hex(),
+            quorum_reached=quorum_reached,
+            mechanism=self._parse_mechanism(mechanism_value),
+            switched_to=(
+                self._parse_mechanism(switched_to_value)
+                if switched_to_value is not None
+                else None
+            ),
+            mechanism_switches=mechanism_switches,
+            status=self._parse_task_status(status_value),
+        )
+
+    def _parse_switch_log(self, payload: bytes) -> _OnChainMechanismSwitchLog:
+        if payload[:8] != self._account_discriminator("MechanismSwitchLog"):
+            raise ReceiptVerificationError("Unexpected MechanismSwitchLog discriminator")
+        offset = 8
+        _, offset = self._read_bytes(payload, offset, 32)
+        switch_index, offset = self._read_u8(payload, offset)
+        from_mechanism, offset = self._read_u8(payload, offset)
+        to_mechanism, offset = self._read_u8(payload, offset)
+        reason_hash, offset = self._read_bytes(payload, offset, 32)
+        round_number, offset = self._read_u8(payload, offset)
+        _, offset = self._read_i64(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+
+        return _OnChainMechanismSwitchLog(
+            switch_index=switch_index,
+            from_mechanism=self._parse_mechanism(from_mechanism),
+            to_mechanism=self._parse_mechanism(to_mechanism),
+            reason_hash=reason_hash.hex(),
+            round_number=round_number,
+        )
 
     def _hosted_receipt_matches(
         self,
@@ -398,10 +693,13 @@ class AgoraNode:
         self,
         api_url: str = "http://localhost:8000",
         solana_wallet: str | None = None,
-        mechanism: str | None = None,
+        mechanism: MechanismName | None = None,
         agent_count: int = 3,
         auth_token: str | None = None,
         strict_verification: bool = True,
+        rpc_url: str = "",
+        program_id: str = DEFAULT_PROGRAM_ID,
+        http_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> None:
         self.arbitrator = AgoraArbitrator(
             api_url=api_url,
@@ -410,6 +708,9 @@ class AgoraNode:
             agent_count=agent_count,
             auth_token=auth_token,
             strict_verification=strict_verification,
+            rpc_url=rpc_url,
+            program_id=program_id,
+            http_timeout_seconds=http_timeout_seconds,
         )
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:

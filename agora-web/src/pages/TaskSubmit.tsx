@@ -17,6 +17,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     task_id: `example-${index}`,
     task_text: task,
     workspace_id: "demo-user",
+    created_by: "demo-user",
     mechanism: "debate",
     mechanism_override: null,
     status: "pending",

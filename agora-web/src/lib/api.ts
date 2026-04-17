@@ -1,118 +1,32 @@
 const API_URL = import.meta.env.VITE_AGORA_API_URL ?? "/api";
 
-export type MechanismName = "debate" | "vote" | "delphi" | "moa";
-export type TaskStatusName = "pending" | "in_progress" | "completed" | "failed" | "paid";
-export type PaymentStatusName = "locked" | "released" | "none";
-export type AuthMethodName = "jwt" | "api_key";
-export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "api_keys:read" | "api_keys:write";
+import type {
+  ApiKeyCreateResponse,
+  ApiKeyMetadataResponse,
+  AuthMeResponse,
+  DeliberationResultResponse,
+  TaskCreateResponse,
+  TaskEvent,
+  TaskStatusResponse,
+} from "./api.generated";
 
-export interface TaskCreateResponse {
-  task_id: string;
-  mechanism: MechanismName;
-  confidence: number;
-  reasoning: string;
-  selector_reasoning_hash: string;
-  status: TaskStatusName;
-}
-
-export interface TaskEvent {
-  event: string;
-  data: Record<string, unknown>;
-  timestamp?: string | null;
-}
-
-export interface DeliberationResultResponse {
-  task_id: string;
-  mechanism: MechanismName;
-  final_answer: string;
-  confidence: number;
-  quorum_reached: boolean;
-  merkle_root: string | null;
-  decision_hash: string | null;
-  agent_count: number;
-  agent_models_used: string[];
-  total_tokens_used: number;
-  latency_ms: number;
-  round_count: number;
-  mechanism_switches: number;
-  transcript_hashes: string[];
-  convergence_history: Array<Record<string, unknown>>;
-  locked_claims: Array<Record<string, unknown>>;
-}
-
-export interface TaskStatusResponse {
-  task_id: string;
-  task_text: string;
-  workspace_id: string;
-  mechanism: MechanismName;
-  mechanism_override: MechanismName | null;
-  status: TaskStatusName;
-  selector_reasoning: string;
-  selector_reasoning_hash: string;
-  selector_confidence: number;
-  merkle_root: string | null;
-  decision_hash: string | null;
-  quorum_reached: boolean | null;
-  agent_count: number;
-  round_count: number;
-  mechanism_switches: number;
-  transcript_hashes: string[];
-  solana_tx_hash: string | null;
-  explorer_url: string | null;
-  payment_amount: number;
-  payment_status: PaymentStatusName;
-  created_at: string;
-  completed_at: string | null;
-  result: DeliberationResultResponse | null;
-  events: TaskEvent[];
-}
-
-export interface PrincipalResponse {
-  auth_method: AuthMethodName;
-  workspace_id: string;
-  user_id: string | null;
-  display_name: string;
-  email: string;
-  scopes: ApiKeyScopeName[];
-  api_key_id: string | null;
-}
-
-export interface WorkspaceResponse {
-  id: string;
-  display_name: string;
-  kind: "personal";
-  owner_user_id: string;
-  created_at: string;
-}
-
-export interface FeatureFlagsResponse {
-  benchmarks_visible: boolean;
-  api_keys_visible: boolean;
-}
-
-export interface AuthMeResponse {
-  principal: PrincipalResponse;
-  workspace: WorkspaceResponse;
-  feature_flags: FeatureFlagsResponse;
-}
-
-export interface ApiKeyMetadataResponse {
-  key_id: string;
-  workspace_id: string;
-  name: string;
-  public_id: string;
-  scopes: ApiKeyScopeName[];
-  created_by_user_id: string;
-  created_at: string;
-  last_used_at: string | null;
-  expires_at: string | null;
-  revoked_at: string | null;
-}
-
-export interface ApiKeyCreateResponse {
-  api_key: string;
-  metadata: ApiKeyMetadataResponse;
-}
+export type {
+  ApiKeyCreateResponse,
+  ApiKeyMetadataResponse,
+  ApiKeyScopeName,
+  AuthMethodName,
+  AuthMeResponse,
+  FeatureFlagsResponse,
+  MechanismName,
+  PaymentStatusName,
+  PrincipalResponse,
+  TaskStatusName,
+  TaskCreateResponse,
+  TaskEvent,
+  TaskStatusResponse,
+  WorkspaceResponse,
+  DeliberationResultResponse,
+} from "./api.generated";
 
 interface StreamTicketResponse {
   ticket: string;
@@ -135,6 +49,20 @@ export interface StreamHandle {
   close: () => void;
 }
 
+export class ApiRequestError extends Error {
+  status: number;
+  detail: unknown;
+  path: string;
+
+  constructor(status: number, message: string, path: string, detail: unknown = null) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.detail = detail;
+    this.path = path;
+  }
+}
+
 function authHeaders(token: string | null): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
@@ -145,8 +73,28 @@ async function requestJson<T>(
 ): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, init);
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
+    const raw = await response.text();
+    let detail: unknown = null;
+
+    if (raw) {
+      try {
+        detail = JSON.parse(raw) as unknown;
+      } catch {
+        detail = raw;
+      }
+    }
+
+    const detailMessage = (
+      typeof detail === "object"
+      && detail !== null
+      && "detail" in detail
+      && typeof (detail as { detail?: unknown }).detail === "string"
+    )
+      ? (detail as { detail: string }).detail
+      : null;
+
+    const message = detailMessage ?? (raw || `Request failed: ${response.status}`);
+    throw new ApiRequestError(response.status, message, path, detail);
   }
   return (await response.json()) as T;
 }
@@ -321,6 +269,7 @@ export async function streamDeliberation(
       onEvent({
         event: eventType,
         data: JSON.parse(message.data) as Record<string, unknown>,
+        timestamp: null,
       });
     });
   }
@@ -329,6 +278,7 @@ export async function streamDeliberation(
     onEvent({
       event: "error",
       data: { message: "Stream disconnected" },
+      timestamp: null,
     });
   };
 

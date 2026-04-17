@@ -28,6 +28,12 @@ export default defineConfig({
         agent: workosProxyAgent,
         timeout: 15_000,
         proxyTimeout: 15_000,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            delete proxyRes.headers['set-cookie']
+            delete proxyRes.headers['set-cookie2']
+          })
+        },
       },
     },
   },

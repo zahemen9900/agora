@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-MechanismName = Literal["debate", "vote", "delphi", "moa"]
+MechanismName = Literal["debate", "vote"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 PaymentStatusName = Literal["locked", "released", "none"]
 AuthMethodName = Literal["jwt", "api_key"]
@@ -46,7 +46,7 @@ class DeliberationResultResponse(BaseModel):
     """Serialized deliberation result used by API and SDK callers."""
 
     task_id: str
-    mechanism: str
+    mechanism: MechanismName
     final_answer: str
     confidence: float = Field(ge=0.0, le=1.0)
     quorum_reached: bool
@@ -70,7 +70,7 @@ class TaskStatusResponse(BaseModel):
     task_text: str
     workspace_id: str = ""
     created_by: str = ""
-    mechanism: str
+    mechanism: MechanismName
     mechanism_override: MechanismName | None = None
     status: TaskStatusName
     selector_reasoning: str
