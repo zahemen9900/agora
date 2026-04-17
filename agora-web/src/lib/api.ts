@@ -1,6 +1,4 @@
-const API_URL =
-  import.meta.env.VITE_AGORA_API_URL ??
-  (import.meta.env.PROD ? "/api" : "http://localhost:8000");
+const API_URL = import.meta.env.VITE_AGORA_API_URL ?? "/api";
 
 export type MechanismName = "debate" | "vote" | "delphi" | "moa";
 export type TaskStatusName = "pending" | "in_progress" | "completed" | "failed" | "paid";

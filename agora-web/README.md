@@ -74,8 +74,8 @@ export default defineConfig([
 
 ## API Base URL and Vercel Proxy
 
-- Development default API URL: `http://localhost:8000`
-- Development proxy support: when `VITE_AGORA_API_URL=/api`, Vite proxies `/api/*` to `VITE_AGORA_API_PROXY_TARGET` (default `http://localhost:8000`).
+- Development default API URL: `/api` (same-origin from `http://localhost:5173`).
+- Development proxy support: Vite forwards `/api/*` to `VITE_AGORA_API_PROXY_TARGET` (default `http://localhost:8000`) for backend access.
 - Production default API URL: `/api`
 - Override request base in any environment with `VITE_AGORA_API_URL`.
 - If you enable proxy mode, Vite forwards `/user_management/*` to WorkOS with explicit upstream timeouts.
@@ -92,5 +92,7 @@ WorkOS dashboard checklist for local auth:
 - Add `http://localhost:5173/callback` to Redirect URIs.
 - Add `http://localhost:5173/login` as the Sign-in endpoint.
 - Add `http://localhost:5173` to Allowed Origins.
+
+For local AuthKit troubleshooting, prefer `http://localhost:5173` for both sign-in and callback URLs. The backend API can still run on `http://localhost:8000` behind the `/api` Vite proxy.
 
 When deploying on Vercel, `vercel.json` rewrites `/api/*` to the hosted Cloud Run API endpoint so browser calls remain same-origin and avoid CORS preflight failures.
