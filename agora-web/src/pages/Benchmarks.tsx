@@ -15,19 +15,41 @@ import {
 import { ExternalLink } from "lucide-react";
 
 import { getBenchmarks, type BenchmarkPayload } from "../lib/api";
+import { useAuth } from "../lib/auth";
 
 export function Benchmarks() {
   const navigate = useNavigate();
+  const { authStatus, getAccessToken } = useAuth();
   const [benchmarks, setBenchmarks] = useState<BenchmarkPayload | null>(null);
 
   useEffect(() => {
-    void getBenchmarks()
-      .then((payload) => setBenchmarks(payload))
-      .catch((error) => {
-        console.error(error);
-        setBenchmarks({ summary: { per_mode: {}, per_category: {} } });
-      });
-  }, []);
+    let cancelled = false;
+
+    async function loadBenchmarks() {
+      try {
+        const token = await getAccessToken();
+        const payload = await getBenchmarks(token);
+        if (!cancelled) {
+          setBenchmarks(payload);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error);
+          setBenchmarks({ summary: { per_mode: {}, per_category: {} } });
+        }
+      }
+    }
+
+    if (authStatus !== "authenticated") {
+      return;
+    }
+
+    void loadBenchmarks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authStatus, getAccessToken]);
 
   const summary = benchmarks?.post_learning?.summary ?? benchmarks?.summary;
   const modeSummary = summary?.per_mode ?? {};

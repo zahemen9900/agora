@@ -265,6 +265,16 @@ async def get_current_user(
     )
 
 
+async def get_optional_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security)],
+) -> AuthenticatedUser | None:
+    """Resolve bearer auth when present, otherwise return None."""
+
+    if credentials is None:
+        return None
+    return await get_current_user(credentials)
+
+
 def require_scope(user: AuthenticatedUser, scope: str) -> None:
     if scope not in user.scopes:
         raise HTTPException(status_code=403, detail="Forbidden")

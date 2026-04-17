@@ -10,6 +10,7 @@ import pytest
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
+from api.auth import AuthenticatedUser
 from api.main import app
 from api.routes import benchmarks as benchmark_routes
 from api.routes import tasks as task_routes
@@ -83,6 +84,91 @@ async def test_benchmarks_route_requires_admin_token(tmp_path: Path) -> None:
             response = await client.get("/benchmarks")
 
         assert response.status_code == 403
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_allows_human_bearer_without_admin_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-human-auth"))
+    task_routes._store = store
+    summary = {
+        "summary": {
+            "per_mode": {"selector": {"accuracy": 0.91}},
+            "per_category": {"reasoning": {"selector": {"accuracy": 0.81}}},
+        }
+    }
+
+    async def fake_human_user(_credentials: object) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            auth_method="jwt",
+            workspace_id="user-1",
+            user_id="user-1",
+            email="user1@example.com",
+            display_name="User One",
+            scopes=["tasks:read"],
+        )
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "")
+        monkeypatch.setattr(benchmark_routes, "get_current_user", fake_human_user)
+        await store.save_benchmark_summary(summary)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"Authorization": "Bearer dummy"},
+            )
+
+        assert response.status_code == 200
+        assert response.json() == summary
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_rejects_api_key_principal_without_admin_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-api-key-auth"))
+    task_routes._store = store
+    summary = {
+        "summary": {
+            "per_mode": {"selector": {"accuracy": 0.5}},
+            "per_category": {"math": {"selector": {"accuracy": 0.5}}},
+        }
+    }
+
+    async def fake_api_key_user(_credentials: object) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            auth_method="api_key",
+            workspace_id="user-1",
+            user_id=None,
+            email="",
+            display_name="API Key",
+            scopes=["tasks:read"],
+            api_key_id="key-1",
+        )
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "")
+        monkeypatch.setattr(benchmark_routes, "get_current_user", fake_api_key_user)
+        await store.save_benchmark_summary(summary)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"Authorization": "Bearer dummy"},
+            )
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Human authentication required"
     finally:
         task_routes._store = None
 

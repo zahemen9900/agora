@@ -33,6 +33,17 @@ export function NavBar() {
              <div className="absolute -bottom-[18px] left-0 right-0 h-[2px] bg-accent shadow-[0_0_20px_rgba(0,212,170,0.15)]" />
           )}
         </Link>
+        {featureFlags?.benchmarks_visible ? (
+          <Link
+            to="/benchmarks"
+            className={`font-medium text-sm relative ${isNavActive('/benchmarks') ? 'text-accent' : 'text-text-secondary'}`}
+          >
+            Benchmarks
+            {isNavActive('/benchmarks') && (
+              <div className="absolute -bottom-[18px] left-0 right-0 h-[2px] bg-accent shadow-[0_0_20px_rgba(0,212,170,0.15)]" />
+            )}
+          </Link>
+        ) : null}
         {featureFlags?.api_keys_visible ? (
           <Link
             to="/api-keys"

@@ -27,7 +27,7 @@ async def auth_me(
         principal=PrincipalResponse.model_validate(principal_payload(user)),
         workspace=WorkspaceResponse.model_validate(workspace),
         feature_flags=FeatureFlagsResponse(
-            benchmarks_visible=False,
+            benchmarks_visible=user.auth_method == "jwt",
             api_keys_visible=user.auth_method == "jwt",
         ),
     )

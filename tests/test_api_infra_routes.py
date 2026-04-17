@@ -1466,7 +1466,7 @@ async def test_auth_me_returns_workspace_bootstrap_payload(tmp_path: Path) -> No
     assert payload.principal.workspace_id == user.workspace_id
     assert payload.workspace.id == user.workspace_id
     assert payload.feature_flags.api_keys_visible is True
-    assert payload.feature_flags.benchmarks_visible is False
+    assert payload.feature_flags.benchmarks_visible is True
 
 
 @pytest.mark.asyncio
@@ -1643,6 +1643,7 @@ async def test_demo_mode_bootstrap_creates_api_key_and_runs_task_flow(
             api_key_auth_payload = api_key_auth_me.json()
             assert api_key_auth_payload["principal"]["auth_method"] == "api_key"
             assert api_key_auth_payload["feature_flags"]["api_keys_visible"] is False
+            assert api_key_auth_payload["feature_flags"]["benchmarks_visible"] is False
 
             create_task = await client.post(
                 "/tasks/",

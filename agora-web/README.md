@@ -9,7 +9,7 @@ Currently, two official plugins are available:
 
 ## React Compiler
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see  [this documentation](https://react.dev/learn/react-compiler/installation).
 
 ## Expanding the ESLint configuration
 
@@ -75,20 +75,17 @@ export default defineConfig([
 ## API Base URL and Vercel Proxy
 
 - Development default API URL: `http://localhost:8000`
+- Development proxy support: when `VITE_AGORA_API_URL=/api`, Vite proxies `/api/*` to `VITE_AGORA_API_PROXY_TARGET` (default `http://localhost:8000`).
 - Production default API URL: `/api`
-- Override in any environment with `VITE_AGORA_API_URL`
-
-## WorkOS AuthKit Setup
-
-- Set `VITE_WORKOS_CLIENT_ID` in your frontend env file (for example `.env.local`).
-- Set `VITE_WORKOS_REDIRECT_URI` to the dashboard callback URL.
-- Use `/auth` as the user-facing auth page, `/login` as the WorkOS sign-in endpoint, and `/callback` as the AuthKit redirect target.
-- In local development, keep `VITE_WORKOS_USE_DEV_PROXY=true` so Vite proxies `/user_management/*` to WorkOS and avoids browser CORS failures during code exchange.
+- Override request base in any environment with `VITE_AGORA_API_URL`.
+- If you enable proxy mode, Vite forwards `/user_management/*` to WorkOS with explicit upstream timeouts.
 - After AuthKit resolves a user, the dashboard bootstraps itself with `GET /auth/me`.
-- Protected routes render only after `/auth/me` succeeds; if it returns `401`, the app signs the user out and redirects back to `/auth`.
+- Unauthenticated users can land on `/` or `/auth`; both render the auth landing page.
+- Authenticated users are routed to the dashboard at `/`.
 - API requests fetch access tokens on-demand through `getAccessToken()` before sending `Authorization: Bearer <token>` to the backend.
 - API key management now lives at `/api-keys`.
-- Benchmarks are intentionally hidden from normal navigation until backend RBAC exists.
+- Benchmarks live at `/benchmarks` and are visible for human JWT sessions.
+- API key principals do not see benchmark navigation.
 
 WorkOS dashboard checklist for local auth:
 
