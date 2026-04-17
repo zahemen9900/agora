@@ -14,19 +14,27 @@ import {
 } from "recharts";
 import { ExternalLink } from "lucide-react";
 
-import { getBenchmarks, type BenchmarkPayload } from "../lib/api";
+import { ApiRequestError, getBenchmarks, type BenchmarkPayload } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
 export function Benchmarks() {
   const navigate = useNavigate();
   const { authStatus, getAccessToken } = useAuth();
   const [benchmarks, setBenchmarks] = useState<BenchmarkPayload | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [chartsReady, setChartsReady] = useState(false);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setChartsReady(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadBenchmarks() {
       try {
+        setLoadError(null);
         const token = await getAccessToken();
         const payload = await getBenchmarks(token);
         if (!cancelled) {
@@ -34,8 +42,14 @@ export function Benchmarks() {
         }
       } catch (error) {
         if (!cancelled) {
+          if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
+            setLoadError(error.message);
+            setBenchmarks(null);
+            return;
+          }
           console.error(error);
-          setBenchmarks({ summary: { per_mode: {}, per_category: {} } });
+          setLoadError("Benchmark data is currently unavailable.");
+          setBenchmarks(null);
         }
       }
     }
@@ -51,6 +65,7 @@ export function Benchmarks() {
     };
   }, [authStatus, getAccessToken]);
 
+  // All derived state and memos must be declared before any early returns (Rules of Hooks).
   const summary = benchmarks?.post_learning?.summary ?? benchmarks?.summary;
   const modeSummary = summary?.per_mode ?? {};
   const categorySummary = summary?.per_category ?? {};
@@ -85,9 +100,35 @@ export function Benchmarks() {
   }, [benchmarks]);
 
   const historyRuns = useMemo(
-    () => (Array.isArray(benchmarks?.runs) ? benchmarks?.runs.slice(0, 12) : []),
+    () => (Array.isArray(benchmarks?.runs) ? benchmarks.runs.slice(0, 12) : []),
     [benchmarks],
   );
+
+  if (loadError) {
+    return (
+      <div className="max-w-[900px] mx-auto pb-20 w-full">
+        <header className="mb-10">
+          <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
+        </header>
+        <div className="card p-6 border border-border-subtle">
+          <p className="text-text-secondary">{loadError}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!benchmarks) {
+    return (
+      <div className="max-w-[900px] mx-auto pb-20 w-full">
+        <header className="mb-10">
+          <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
+        </header>
+        <div className="card p-6 border border-border-subtle">
+          <p className="text-text-secondary">Loading benchmark data...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-[1000px] mx-auto pb-20 w-full">
@@ -105,37 +146,41 @@ export function Benchmarks() {
             Selector runs should dominate category-specific fixed strategies after learning.
           </p>
           <div className="w-full h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="var(--color-border-subtle)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="category"
-                  stroke="var(--color-text-muted)"
-                  tick={{
-                    fill: "var(--color-text-muted)",
-                    fontSize: 12,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                />
-                <YAxis
-                  stroke="var(--color-text-muted)"
-                  tick={{
-                    fill: "var(--color-text-muted)",
-                    fontSize: 12,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                />
-                <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
-                <Legend iconType="circle" wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: "12px" }} />
-                <Bar dataKey="debate" name="Debate" fill="var(--color-border-muted)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="vote" name="Vote" fill="var(--color-text-muted)" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="selector" name="Selector" fill="var(--color-accent)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {chartsReady ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="var(--color-border-subtle)"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="category"
+                    stroke="var(--color-text-muted)"
+                    tick={{
+                      fill: "var(--color-text-muted)",
+                      fontSize: 12,
+                      fontFamily: "JetBrains Mono",
+                    }}
+                  />
+                  <YAxis
+                    stroke="var(--color-text-muted)"
+                    tick={{
+                      fill: "var(--color-text-muted)",
+                      fontSize: 12,
+                      fontFamily: "JetBrains Mono",
+                    }}
+                  />
+                  <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
+                  <Legend iconType="circle" wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: "12px" }} />
+                  <Bar dataKey="debate" name="Debate" fill="var(--color-border-muted)" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="vote" name="Vote" fill="var(--color-text-muted)" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="selector" name="Selector" fill="var(--color-accent)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="w-full h-full" />
+            )}
           </div>
         </div>
 
@@ -145,42 +190,46 @@ export function Benchmarks() {
             Accuracy before and after the learning update cycle.
           </p>
           <div className="w-full h-[250px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={learningCurveData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="var(--color-border-subtle)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="phase"
-                  stroke="var(--color-text-muted)"
-                  tick={{
-                    fill: "var(--color-text-muted)",
-                    fontSize: 12,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                />
-                <YAxis
-                  stroke="var(--color-text-muted)"
-                  tick={{
-                    fill: "var(--color-text-muted)",
-                    fontSize: 12,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                  domain={[0, 100]}
-                />
-                <Tooltip />
-                <Line
-                  type="monotone"
-                  dataKey="accuracy"
-                  stroke="var(--color-accent)"
-                  strokeWidth={3}
-                  dot={{ fill: "var(--color-void)", stroke: "var(--color-accent)", strokeWidth: 2, r: 4 }}
-                  activeDot={{ r: 6, fill: "var(--color-accent)" }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {chartsReady ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={learningCurveData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="var(--color-border-subtle)"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="phase"
+                    stroke="var(--color-text-muted)"
+                    tick={{
+                      fill: "var(--color-text-muted)",
+                      fontSize: 12,
+                      fontFamily: "JetBrains Mono",
+                    }}
+                  />
+                  <YAxis
+                    stroke="var(--color-text-muted)"
+                    tick={{
+                      fill: "var(--color-text-muted)",
+                      fontSize: 12,
+                      fontFamily: "JetBrains Mono",
+                    }}
+                    domain={[0, 100]}
+                  />
+                  <Tooltip />
+                  <Line
+                    type="monotone"
+                    dataKey="accuracy"
+                    stroke="var(--color-accent)"
+                    strokeWidth={3}
+                    dot={{ fill: "var(--color-void)", stroke: "var(--color-accent)", strokeWidth: 2, r: 4 }}
+                    activeDot={{ r: 6, fill: "var(--color-accent)" }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="w-full h-full" />
+            )}
           </div>
         </div>
 
@@ -190,34 +239,38 @@ export function Benchmarks() {
             Average token cost per mechanism across the latest benchmark export.
           </p>
           <div className="w-full h-[250px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="var(--color-border-subtle)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="mechanism"
-                  stroke="var(--color-text-muted)"
-                  tick={{
-                    fill: "var(--color-text-muted)",
-                    fontSize: 12,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                />
-                <YAxis
-                  stroke="var(--color-text-muted)"
-                  tick={{
-                    fill: "var(--color-text-muted)",
-                    fontSize: 12,
-                    fontFamily: "JetBrains Mono",
-                  }}
-                />
-                <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
-                <Bar dataKey="avgTokens" name="Avg Tokens" fill="var(--color-text-primary)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            {chartsReady ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="var(--color-border-subtle)"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="mechanism"
+                    stroke="var(--color-text-muted)"
+                    tick={{
+                      fill: "var(--color-text-muted)",
+                      fontSize: 12,
+                      fontFamily: "JetBrains Mono",
+                    }}
+                  />
+                  <YAxis
+                    stroke="var(--color-text-muted)"
+                    tick={{
+                      fill: "var(--color-text-muted)",
+                      fontSize: 12,
+                      fontFamily: "JetBrains Mono",
+                    }}
+                  />
+                  <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
+                  <Bar dataKey="avgTokens" name="Avg Tokens" fill="var(--color-text-primary)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="w-full h-full" />
+            )}
           </div>
         </div>
       </div>

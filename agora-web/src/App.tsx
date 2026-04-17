@@ -24,39 +24,46 @@ function AppRoutes() {
   }
 
   const isAuthenticated = authStatus === "authenticated";
-  const canViewBenchmarks = featureFlags?.benchmarks_visible === true;
+  const canViewBenchmarks = isAuthenticated && (featureFlags?.benchmarks_visible ?? true);
+  const canViewApiKeys = isAuthenticated && (featureFlags?.api_keys_visible ?? true);
 
   return (
     <Routes>
       {/* OAuth routes - accessible regardless of auth state */}
-      <Route path="/auth" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />} />
-      <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginRoute />} />
+      <Route path="/auth" element={isAuthenticated ? <Navigate to="/tasks" replace /> : <LoginPage />} />
+      <Route path="/login" element={isAuthenticated ? <Navigate to="/tasks" replace /> : <LoginRoute />} />
       <Route path="/callback" element={<Callback />} />
 
-      {/* Unauthenticated users keep landing on / for the public auth home */}
+      {/* Unauthenticated: show LoginPage at the current URL so rememberReturnTo() captures the
+          original path when the user clicks Sign In (deep link recovery). */}
       {!isAuthenticated && (
-        <>
-          <Route path="/" element={<LoginPage />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </>
+        <Route path="*" element={<LoginPage />} />
       )}
 
       {/* Protected routes - only accessible when authenticated */}
       {isAuthenticated && (
         <>
-          <Route path="/" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
+          <Route path="/" element={<Navigate to="/tasks" replace />} />
+          <Route path="/tasks" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
           <Route path="/task/:taskId" element={<DashboardLayout><LiveDeliberation /></DashboardLayout>} />
           <Route path="/task/:taskId/receipt" element={<DashboardLayout><OnChainReceipt /></DashboardLayout>} />
-          <Route path="/api-keys" element={<DashboardLayout><ApiKeys /></DashboardLayout>} />
+          <Route
+            path="/api-keys"
+            element={
+              canViewApiKeys
+                ? <DashboardLayout><ApiKeys /></DashboardLayout>
+                : <Navigate to="/tasks" replace />
+            }
+          />
           <Route
             path="/benchmarks"
             element={
               canViewBenchmarks
                 ? <DashboardLayout><Benchmarks /></DashboardLayout>
-                : <Navigate to="/" replace />
+                : <Navigate to="/tasks" replace />
             }
           />
-          <Route path="*" element={<Navigate to="/" />} />
+          <Route path="*" element={<Navigate to="/tasks" replace />} />
         </>
       )}
     </Routes>
