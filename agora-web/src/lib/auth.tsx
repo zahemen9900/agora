@@ -244,7 +244,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const redirectUri = resolveRedirectUri(import.meta.env.VITE_WORKOS_REDIRECT_URI);
   const devProxySetting = (import.meta.env.VITE_WORKOS_USE_DEV_PROXY ?? "").trim().toLowerCase();
   const useDevProxy = import.meta.env.DEV
-    && ["1", "true", "yes", "on"].includes(devProxySetting);
+    && !["0", "false", "no", "off"].includes(devProxySetting);
 
   const configuredApiHostname = (import.meta.env.VITE_WORKOS_API_HOSTNAME ?? "").trim();
   const apiHostname = configuredApiHostname || (useDevProxy ? window.location.hostname : undefined);
