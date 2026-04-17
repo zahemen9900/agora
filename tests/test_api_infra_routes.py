@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import ValidationError
 
+from agora.runtime.hasher import TranscriptHasher
 from agora.types import DeliberationResult, MechanismType
 from api import auth
 from api.auth import AuthenticatedUser
@@ -71,7 +72,7 @@ def _signed_webhook_headers(
 ) -> dict[str, str]:
     ts = int(datetime.now(UTC).timestamp()) if timestamp is None else timestamp
     if signature_override is None:
-        signed_payload = f"{ts}.".encode("utf-8") + body
+        signed_payload = f"{ts}.".encode() + body
         digest = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
         signature = f"sha256={digest}"
     else:
@@ -151,6 +152,26 @@ async def test_auth_requires_token_when_auth_required(
 
     assert exc_info.value.status_code == 401
     assert exc_info.value.detail == "Missing bearer token"
+
+
+@pytest.mark.asyncio
+async def test_api_keys_requires_bearer_when_demo_auth_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "auth_required", True)
+    monkeypatch.setattr(auth.settings, "demo_mode", False)
+    monkeypatch.setattr(auth.settings, "environment", "development")
+    app.dependency_overrides.clear()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/api-keys/",
+            json={"name": "phase2-demo"},
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing bearer token"
 
 
 @pytest.mark.asyncio
@@ -1445,7 +1466,28 @@ async def test_auth_me_returns_workspace_bootstrap_payload(tmp_path: Path) -> No
     assert payload.principal.workspace_id == user.workspace_id
     assert payload.workspace.id == user.workspace_id
     assert payload.feature_flags.api_keys_visible is True
-    assert payload.feature_flags.benchmarks_visible is False
+    assert payload.feature_flags.benchmarks_visible is True
+
+
+@pytest.mark.asyncio
+async def test_demo_mode_auth_provisions_workspace_without_bearer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "demo-auth"))
+    auth._store = store
+    monkeypatch.setattr(auth.settings, "auth_required", False)
+    monkeypatch.setattr(auth.settings, "demo_mode", True)
+    monkeypatch.setattr(auth.settings, "environment", "development")
+
+    user = await auth.get_current_user(None)
+    workspace = await store.get_workspace(user.workspace_id)
+
+    assert user.auth_method == "jwt"
+    assert user.user_id == "demo-user"
+    assert user.workspace_id == "demo-user"
+    assert workspace is not None
+    assert workspace["owner_user_id"] == "demo-user"
 
 
 @pytest.mark.asyncio
@@ -1469,3 +1511,201 @@ async def test_api_key_routes_create_list_and_revoke(tmp_path: Path) -> None:
 
     revoked = await api_key_routes.revoke_api_key(created.metadata.key_id, user)
     assert revoked.revoked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_demo_mode_bootstrap_creates_api_key_and_runs_task_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "phase2-demo-flow"))
+    auth._store = store
+    task_routes._store = store
+    monkeypatch.setattr(auth.settings, "auth_required", False)
+    monkeypatch.setattr(auth.settings, "demo_mode", True)
+    monkeypatch.setattr(auth.settings, "environment", "development")
+    monkeypatch.setattr(auth.settings, "api_key_pepper", "test-pepper")
+
+    hasher = TranscriptHasher()
+    transcript_hashes = [
+        hasher.hash_content("agent-1: Paris"),
+        hasher.hash_content("agent-2: Paris"),
+        hasher.hash_content("agent-3: Paris"),
+        hasher.hash_content("agent-4: Paris"),
+    ]
+    merkle_root = hasher.build_merkle_tree(transcript_hashes)
+
+    class _DemoSelectionOnlyOrchestrator:
+        def __init__(self, agent_count: int):
+            self.agent_count = agent_count
+            self.selector = self
+
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | MechanismType | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, mechanism_override
+            if event_sink is not None:
+                await event_sink(
+                    "agent_output",
+                    {
+                        "agent_id": "agent-1",
+                        "role": "voter",
+                        "faction": "vote",
+                        "content": "Paris",
+                    },
+                )
+            return DeliberationResult(
+                task=task,
+                mechanism_used=MechanismType.VOTE,
+                mechanism_selection=make_selection(
+                    mechanism=MechanismType.VOTE,
+                    topic_category="factual",
+                ),
+                final_answer="Paris",
+                confidence=0.96,
+                quorum_reached=True,
+                round_count=1,
+                agent_count=self.agent_count,
+                mechanism_switches=0,
+                merkle_root=merkle_root,
+                transcript_hashes=transcript_hashes,
+                agent_models_used=[
+                    "gemini-3.1-pro-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3-flash-preview",
+                    "claude-sonnet-4-6",
+                ],
+                convergence_history=[],
+                locked_claims=[],
+                total_tokens_used=64,
+                total_latency_ms=15.0,
+                timestamp=datetime.now(UTC),
+            )
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {
+            "tx_hash": "init_tx_demo",
+            "explorer_url": "https://explorer.solana.com/tx/init_tx_demo?cluster=devnet",
+        }
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {
+            "tx_hash": "selection_tx_demo",
+            "explorer_url": "https://explorer.solana.com/tx/selection_tx_demo?cluster=devnet",
+        }
+
+    async def receipt_ok(**_kwargs: object) -> dict[str, str]:
+        return {
+            "tx_hash": "receipt_tx_demo",
+            "explorer_url": "https://explorer.solana.com/tx/receipt_tx_demo?cluster=devnet",
+        }
+
+    async def pay_ok(**_kwargs: object) -> dict[str, str]:
+        return {
+            "tx_hash": "pay_tx_demo",
+            "explorer_url": "https://explorer.solana.com/tx/pay_tx_demo?cluster=devnet",
+        }
+
+    monkeypatch.setattr(task_routes, "AgoraOrchestrator", _DemoSelectionOnlyOrchestrator)
+    monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+    monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+    monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+    monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
+    monkeypatch.setattr(task_routes.bridge, "release_payment", pay_ok)
+
+    transport = httpx.ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            auth_me_response = await client.get("/auth/me")
+            assert auth_me_response.status_code == 200
+            auth_me_payload = auth_me_response.json()
+            assert auth_me_payload["principal"]["user_id"] == "demo-user"
+            assert auth_me_payload["workspace"]["id"] == "demo-user"
+
+            create_key_response = await client.post("/api-keys/", json={"name": "phase2-demo"})
+            assert create_key_response.status_code == 200
+            create_key_payload = create_key_response.json()
+            api_key = create_key_payload["api_key"]
+            key_id = create_key_payload["metadata"]["key_id"]
+            assert api_key.startswith("agora_test_")
+
+            key_headers = {"Authorization": f"Bearer {api_key}"}
+            api_key_auth_me = await client.get("/auth/me", headers=key_headers)
+            assert api_key_auth_me.status_code == 200
+            api_key_auth_payload = api_key_auth_me.json()
+            assert api_key_auth_payload["principal"]["auth_method"] == "api_key"
+            assert api_key_auth_payload["feature_flags"]["api_keys_visible"] is False
+            assert api_key_auth_payload["feature_flags"]["benchmarks_visible"] is False
+
+            create_task = await client.post(
+                "/tasks/",
+                headers=key_headers,
+                json={
+                    "task": "What is the capital of France?",
+                    "agent_count": 4,
+                    "stakes": 0.01,
+                    "mechanism_override": "vote",
+                },
+            )
+            assert create_task.status_code == 200
+            task_id = create_task.json()["task_id"]
+
+            status_after_create = await client.get(
+                f"/tasks/{task_id}",
+                headers=key_headers,
+                params={"detailed": "true"},
+            )
+            assert status_after_create.status_code == 200
+            assert status_after_create.json()["solana_tx_hash"] == "init_tx_demo"
+
+            run_task = await client.post(f"/tasks/{task_id}/run", headers=key_headers)
+            assert run_task.status_code == 200
+            assert run_task.json()["agent_models_used"] == [
+                "gemini-3.1-pro-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3-flash-preview",
+                "claude-sonnet-4-6",
+            ]
+
+            status_after_run = await client.get(
+                f"/tasks/{task_id}",
+                headers=key_headers,
+                params={"detailed": "true"},
+            )
+            assert status_after_run.status_code == 200
+            run_payload = status_after_run.json()
+            assert run_payload["status"] == "completed"
+            assert run_payload["solana_tx_hash"] == "receipt_tx_demo"
+            assert run_payload["result"]["merkle_root"] == merkle_root
+
+            pay_response = await client.post(f"/tasks/{task_id}/pay", headers=key_headers)
+            assert pay_response.status_code == 200
+            assert pay_response.json()["released"] is True
+
+            final_status = await client.get(
+                f"/tasks/{task_id}",
+                headers=key_headers,
+                params={"detailed": "true"},
+            )
+            assert final_status.status_code == 200
+            final_payload = final_status.json()
+            assert final_payload["status"] == "paid"
+            assert final_payload["payment_status"] == "released"
+            assert final_payload["solana_tx_hash"] == "pay_tx_demo"
+
+            revoke_response = await client.post(f"/api-keys/{key_id}/revoke")
+            assert revoke_response.status_code == 200
+            assert revoke_response.json()["revoked_at"] is not None
+
+            rejected = await client.get("/auth/me", headers=key_headers)
+            assert rejected.status_code == 401
+    finally:
+        task_routes._store = None

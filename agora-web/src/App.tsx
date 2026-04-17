@@ -10,9 +10,10 @@ import { TaskSubmit } from "./pages/TaskSubmit";
 import { LiveDeliberation } from "./pages/LiveDeliberation";
 import { OnChainReceipt } from "./pages/OnChainReceipt";
 import { ApiKeys } from "./pages/ApiKeys";
+import { Benchmarks } from "./pages/Benchmarks";
 
 function AppRoutes() {
-  const { isLoading, authStatus } = useAuth();
+  const { isLoading, authStatus, featureFlags } = useAuth();
 
   if (isLoading) {
     return (
@@ -22,22 +23,39 @@ function AppRoutes() {
     );
   }
 
+  const isAuthenticated = authStatus === "authenticated";
+  const canViewBenchmarks = featureFlags?.benchmarks_visible === true;
+
   return (
     <Routes>
       {/* OAuth routes - accessible regardless of auth state */}
-      <Route path="/login" element={<LoginRoute />} />
+      <Route path="/auth" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />} />
+      <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <LoginRoute />} />
       <Route path="/callback" element={<Callback />} />
 
-      {/* Landing page for unauthenticated users */}
-      {authStatus !== "authenticated" && <Route path="*" element={<LoginPage />} />}
+      {/* Unauthenticated users keep landing on / for the public auth home */}
+      {!isAuthenticated && (
+        <>
+          <Route path="/" element={<LoginPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </>
+      )}
 
       {/* Protected routes - only accessible when authenticated */}
-      {authStatus === "authenticated" && (
+      {isAuthenticated && (
         <>
           <Route path="/" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
           <Route path="/task/:taskId" element={<DashboardLayout><LiveDeliberation /></DashboardLayout>} />
           <Route path="/task/:taskId/receipt" element={<DashboardLayout><OnChainReceipt /></DashboardLayout>} />
           <Route path="/api-keys" element={<DashboardLayout><ApiKeys /></DashboardLayout>} />
+          <Route
+            path="/benchmarks"
+            element={
+              canViewBenchmarks
+                ? <DashboardLayout><Benchmarks /></DashboardLayout>
+                : <Navigate to="/" replace />
+            }
+          />
           <Route path="*" element={<Navigate to="/" />} />
         </>
       )}

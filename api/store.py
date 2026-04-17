@@ -56,10 +56,12 @@ class TaskStore:
     ) -> dict[str, Any] | None:
         try:
             payload = blob.download_as_text()
-        except gcs_exceptions.NotFound:
+        except gcs_exceptions.NotFound as exc:
             if allow_missing:
                 return None
-            raise TaskStoreNotFound(f"Missing blob while {operation}: blob={blob.name}")
+            raise TaskStoreNotFound(
+                f"Missing blob while {operation}: blob={blob.name}"
+            ) from exc
         except Exception as exc:
             raise TaskStoreUnavailable(
                 f"Failed to read blob while {operation}: blob={blob.name}"
@@ -259,7 +261,8 @@ class TaskStore:
             )
             if task is None:
                 raise TaskStoreNotFound(
-                    f"Cannot append event: task not found workspace_id={workspace_id} task_id={task_id}"
+                    "Cannot append event: "
+                    f"task not found workspace_id={workspace_id} task_id={task_id}"
                 )
 
             timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
@@ -276,7 +279,8 @@ class TaskStore:
                     blob.reload()
                 except gcs_exceptions.NotFound as exc:
                     raise TaskStoreNotFound(
-                        f"Cannot append event: task disappeared workspace_id={workspace_id} task_id={task_id}"
+                        "Cannot append event: "
+                        f"task disappeared workspace_id={workspace_id} task_id={task_id}"
                     ) from exc
                 except Exception as exc:
                     raise TaskStoreUnavailable(
@@ -426,7 +430,11 @@ class TaskStore:
         return current
 
 
-def get_store(bucket_name: str | None) -> TaskStore | LocalTaskStore:
+def get_store(
+    bucket_name: str | None,
+    *,
+    local_data_dir: str | None = None,
+) -> TaskStore | LocalTaskStore:
     if bucket_name:
         return TaskStore(bucket_name)
-    return LocalTaskStore()
+    return LocalTaskStore(data_dir=local_data_dir or "api/data")

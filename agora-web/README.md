@@ -9,7 +9,7 @@ Currently, two official plugins are available:
 
 ## React Compiler
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see  [this documentation](https://react.dev/learn/react-compiler/installation).
 
 ## Expanding the ESLint configuration
 
@@ -75,18 +75,22 @@ export default defineConfig([
 ## API Base URL and Vercel Proxy
 
 - Development default API URL: `http://localhost:8000`
+- Development proxy support: when `VITE_AGORA_API_URL=/api`, Vite proxies `/api/*` to `VITE_AGORA_API_PROXY_TARGET` (default `http://localhost:8000`).
 - Production default API URL: `/api`
-- Override in any environment with `VITE_AGORA_API_URL`
-
-## WorkOS AuthKit Setup
-
-- Set `VITE_WORKOS_CLIENT_ID` in your frontend env file (for example `.env.local`).
-- Set `VITE_WORKOS_REDIRECT_URI` to the dashboard callback URL.
-- Use `/login` to initiate sign-in and `/callback` as the AuthKit redirect target.
+- Override request base in any environment with `VITE_AGORA_API_URL`.
+- If you enable proxy mode, Vite forwards `/user_management/*` to WorkOS with explicit upstream timeouts.
 - After AuthKit resolves a user, the dashboard bootstraps itself with `GET /auth/me`.
-- Protected routes render only after `/auth/me` succeeds; if it returns `401`, the app signs the user out and redirects back to `/login`.
+- Unauthenticated users can land on `/` or `/auth`; both render the auth landing page.
+- Authenticated users are routed to the dashboard at `/`.
 - API requests fetch access tokens on-demand through `getAccessToken()` before sending `Authorization: Bearer <token>` to the backend.
 - API key management now lives at `/api-keys`.
-- Benchmarks are intentionally hidden from normal navigation until backend RBAC exists.
+- Benchmarks live at `/benchmarks` and are visible for human JWT sessions.
+- API key principals do not see benchmark navigation.
+
+WorkOS dashboard checklist for local auth:
+
+- Add `http://localhost:5173/callback` to Redirect URIs.
+- Add `http://localhost:5173/login` as the Sign-in endpoint.
+- Add `http://localhost:5173` to Allowed Origins.
 
 When deploying on Vercel, `vercel.json` rewrites `/api/*` to the hosted Cloud Run API endpoint so browser calls remain same-origin and avoid CORS preflight failures.

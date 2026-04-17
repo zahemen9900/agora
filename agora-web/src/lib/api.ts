@@ -209,8 +209,10 @@ export async function releaseTaskPayment(
   });
 }
 
-export async function getBenchmarks(): Promise<BenchmarkPayload> {
-  return requestJson<BenchmarkPayload>("/benchmarks");
+export async function getBenchmarks(token: string | null): Promise<BenchmarkPayload> {
+  return requestJson<BenchmarkPayload>("/benchmarks", {
+    headers: authHeaders(token),
+  });
 }
 
 export async function getAuthMe(token: string): Promise<AuthMeResponse> {

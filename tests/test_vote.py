@@ -168,7 +168,14 @@ async def test_call_structured_kimi_coerces_raw_vote() -> None:
 async def test_quorum_check_threshold_works() -> None:
     """Vote run should mark quorum for strongly concentrated weighted outcomes."""
 
-    engine = VoteEngine(agent_count=3, quorum_threshold=0.6)
+    engine = VoteEngine(
+        agent_count=3,
+        quorum_threshold=0.6,
+        flash_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
+        pro_agent=_SuccessfulVoteCaller("gemini-3.1-pro-preview"),
+        claude_agent=_SuccessfulVoteCaller("claude-sonnet-4-6"),
+        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+    )
     selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
 
     async def paris_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:

@@ -122,6 +122,7 @@ class DebateEngine:
             max_rounds: Maximum rounds before forced aggregation.
             flash_agent: Optional pre-configured generation caller.
             pro_agent: Optional pre-configured reasoning caller.
+            kimi_agent: Optional pre-configured challenger caller.
             monitor: Optional convergence monitor instance.
             hasher: Optional transcript hasher instance.
         """

@@ -71,7 +71,7 @@ Implemented on top of the Week 1 foundation:
 
 ### Still Deferred / Not Implemented Yet
 
-- Real Solana integration (currently stubbed).
+- SDK-side `agora/solana/client.py` remains a stub; the API-side Solana bridge and contract flow are active.
 - Full Delphi and MoA engines (currently stubs for later phases).
 - Full LangGraph StateGraph execution as the primary runtime path.
 - Final production packaging/publication work for the SDK release channel.
@@ -284,13 +284,22 @@ RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODEL
 Use this sequence to verify the migrated stack concretely:
 
 ```bash
-cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-gemini-genai-migration
+cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-openrouter-kimi-integration
 
 # 1) Code quality and tests
 python -m ruff check agora api tests
 python -m pytest -s -q
 
-# 2) Strict model, Anchor, and hosted Week 1 E2E demo
+# Optional paid-provider Kimi/OpenRouter checks
+./scripts/run_paid_provider_tests.sh
+
+# 2) Strict local all-provider ensemble proof
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
+
+# 3) Optional direct provider smokes if you want per-provider diagnostics too
+RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_KIMI_SMOKE=always RUN_ALL_MODELS_E2E=never ./scripts/week1_demo.sh
+
+# 4) Strict model, Anchor, and hosted Week 1 E2E demo
 export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
 export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3)"
@@ -359,6 +368,151 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### Strict Phase 2 Demo (Hosted Default + Local Strict Option + Devnet)
+
+Use this script to prove the full Phase 2 path with installed SDK + devnet chain checks.
+The default target is hosted (Cloud Run) and local strict mode remains available.
+
+Hosted mode (default) validates:
+
+- hosted API health + token auth
+- installed-wheel SDK lifecycle (`create -> run -> pay`)
+- 4-model ensemble reporting
+- receipt verification signals
+- initialize/receipt/payment tx confirmation on devnet via Helius
+
+Local mode validates the above plus local bootstrap-only checks:
+
+- local API starts in demo-human mode
+- `/auth/me` bootstraps a real personal workspace
+- `/api-keys/` creates a real workspace API key
+- the API key is revoked and rejected afterward
+
+Run it with:
+
+```bash
+python scripts/phase2_demo.py
+```
+
+Run strict local bootstrap mode explicitly:
+
+```bash
+python scripts/phase2_demo.py --target local
+```
+
+What it requires:
+
+- real Gemini, Claude, and OpenRouter/Kimi credentials
+- a real Helius devnet RPC URL
+- a real Solana keypair source for the API bridge
+
+Credential/bootstrap behavior:
+
+- the script now bootstraps cloud credentials the same way as `week1_demo.sh`:
+  - reuses `GOOGLE_APPLICATION_CREDENTIALS` when already set
+  - otherwise auto-detects a JSON key under `.credentials/`
+  - resolves `GOOGLE_CLOUD_PROJECT` from env, key file, or `gcloud config`
+- if model keys are not already exported, it attempts Secret Manager fetch via `gcloud` using defaults:
+  - `agora-gemini-api-key`
+  - `agora-anthropic-api-key`
+  - `agora-openrouter-api-key`
+- if `HELIUS_RPC_URL` is missing/placeholder, it attempts Secret Manager fetch from `agora-helius-rpc-url`
+- if no local Solana keypair file is present, it defaults to secret-backed keypair config using `agora-solana-devnet-keypair`
+
+Optional secret bootstrap overrides:
+
+- `AGORA_GCLOUD_CREDENTIALS_FILE`
+- `AGORA_GEMINI_SECRET_NAME|PROJECT|VERSION`
+- `AGORA_ANTHROPIC_SECRET_NAME|PROJECT|VERSION`
+- `AGORA_OPENROUTER_SECRET_NAME|PROJECT|VERSION`
+- `AGORA_HELIUS_RPC_SECRET_NAME|PROJECT` and `AGORA_HELIUS_RPC_VERSION`
+- `AGORA_SOLANA_KEYPAIR_SECRET_NAME`
+
+The strict harness fails closed if the configured Solana network is not `devnet`.
+
+The script intentionally uses fake human auth only in `--target local` bootstrap before
+WorkOS is wired. Hosted mode uses a real pre-issued API key.
+
+It writes a machine-readable artifact to:
+
+```bash
+benchmarks/results/phase2_demo.json
+```
+
+The artifact includes normalized top-level acceptance fields for automation and auditing,
+including:
+
+- `workspace_id`
+- `api_key_id` and `api_key_public_id`
+- `task_id`
+- `selected_mechanism`
+- `agent_models_used`
+- `initialize_tx_hash` / `receipt_tx_hash` / `payment_tx_hash`
+- `initialize_explorer_url` / `receipt_explorer_url` / `payment_explorer_url`
+- `receipt_verification`
+- `final_status` and `payment_status`
+- `revocation_proof` and `revoked_key_reuse_status`
+- `run_summary` (compact operator-facing verdict)
+- `event_timeline` (event counts, first/last timestamps, event excerpts)
+- `status_snapshots` (create/run/pay status deltas)
+- `acceptance_checks` (boolean checks for txs, status transitions, receipt signals)
+
+Optional controls:
+
+- `--target hosted|local` (default: hosted)
+- `--api-url https://...` hosted API URL for `--target hosted`
+- `--auth-token agora_test_<id>.<secret>` (or export `AGORA_TEST_API_KEY`) for hosted mode
+- `--bootstrap-if-missing-token` / `--no-bootstrap-if-missing-token`
+- `--bootstrap-jwt-token <human_jwt>` (or export `AGORA_PHASE2_BOOTSTRAP_JWT`)
+- `--bootstrap-key-name <name>` API key name when bootstrap creates a key
+- `--bootstrap-store-secret` / `--no-bootstrap-store-secret`
+- `--bootstrap-secret-name <secret>` and `--bootstrap-secret-project <project>`
+- `--http-timeout-seconds <seconds>` hosted preflight timeout (default: 30)
+- `--http-retries <count>` hosted preflight retry attempts (default: 3)
+- `--output /path/to/artifact.json`
+- `--query "text"` to override the default deterministic quorum-friendly prompt
+- strict defaults are enforced as `--stakes 0.01`, `--agent-count 4`, and `--mechanism vote`
+- to override those for debugging, add `--allow-unsafe-overrides` together with:
+  - `--stakes <value>`
+  - `--agent-count <value>`
+  - `--mechanism vote|debate`
+- `--verbose` to print detailed deliberation/result summaries in terminal
+- `--keep-temp`
+
+Hosted auth setup notes:
+
+- Hosted mode first tries: `--auth-token` -> env token -> Secret Manager token lookup.
+- If no hosted token is found and bootstrap is enabled (default), the script can now:
+  - call `/auth/me` with a human JWT
+  - create a new workspace API key via `/api-keys/`
+  - store that key in Secret Manager
+  - continue the same hosted demo run using the new key
+- Bootstrap requires a human JWT because `/api-keys/*` is a human-authenticated surface.
+- API-key tokens are accepted for task execution, but cannot mint additional API keys.
+
+Hosted auth bootstrap example (fully automated key create + store + run):
+
+```bash
+export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
+export GOOGLE_CLOUD_PROJECT="even-ally-480821-f3"
+export AGORA_PHASE2_BOOTSTRAP_JWT="<human-workos-jwt>"
+
+# This run auto-creates a workspace API key, persists it to Secret Manager,
+# then uses it for the strict hosted flow.
+python scripts/phase2_demo.py \
+  --target hosted \
+  --bootstrap-secret-name agora-test-api-key \
+  --bootstrap-secret-project "$GOOGLE_CLOUD_PROJECT"
+```
+
+The SDK receipt check in this demo uses `verify_receipt(strict=False)` and requires:
+
+- `merkle_match == true`
+- `hosted_metadata_match == true`
+
+Real chain proof verification is still not implemented inside the SDK, so the demo separately
+confirms the initialize-task, receipt-submission, and release-payment transactions through Helius.
+
 ## Environment Variables
 
 Required for live Claude calls (choose one):
@@ -395,15 +549,24 @@ API auth verification settings (WorkOS/AuthKit):
 - AUTH_ISSUER (optional explicit override)
 - AUTH_AUDIENCE (optional explicit override)
 - AUTH_JWKS_URL (optional explicit override; default: `${AUTH_ISSUER}/oauth2/jwks`)
+- AGORA_LOCAL_DATA_DIR (optional local API persistence root; default: `api/data`)
 
 Optional model overrides:
 
 - AGORA_FLASH_MODEL (default: gemini-3-flash-preview)
 - AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
+- DEMO_PRO_MODEL (default: gemini-2.5-pro for `week1_demo.sh`)
 - AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
 - AGORA_KIMI_MODEL (default: moonshotai/kimi-k2-thinking)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
+- AGORA_OPENROUTER_BASE_URL (default: https://openrouter.ai/api/v1)
+- AGORA_OPENROUTER_HTTP_REFERER (optional OpenRouter app attribution header)
+- AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
+- AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; also sends legacy `X-Title`)
+- AGORA_KIMI_REASONING_EFFORT (default: low)
+- AGORA_KIMI_REASONING_EXCLUDE (default: true)
+- AGORA_KIMI_MAX_TOKENS (default: 512)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
 - AGORA_ANTHROPIC_THROTTLE_ENABLED (default: true)
 - AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
@@ -434,6 +597,12 @@ Gemini Secret Manager fetch controls:
 - AGORA_GEMINI_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
 - AGORA_GEMINI_SECRET_VERSION (default: latest)
 
+OpenRouter Secret Manager fetch controls:
+
+- AGORA_OPENROUTER_SECRET_NAME (default: agora-openrouter-api-key)
+- AGORA_OPENROUTER_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
+- AGORA_OPENROUTER_SECRET_VERSION (default: latest)
+
 To let AGORA fetch Gemini key directly from Secret Manager (no local API key export):
 
 ```bash
@@ -451,6 +620,7 @@ Solana/Week 1 API runtime variables:
 - SOLANA_KEYPAIR_SECRET_NAME: optional Secret Manager secret containing keypair bytes/json
 - SOLANA_KEYPAIR_SECRET_PROJECT: optional secret project, falls back to GOOGLE_CLOUD_PROJECT
 - SOLANA_KEYPAIR_SECRET_VERSION: optional secret version, default latest
+- STRICT_CHAIN_WRITES: set `true` to fail the request when chain writes fail
 
 Secret-backed keypair payload formats accepted by the API bridge:
 
@@ -481,7 +651,8 @@ gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
 gcloud run services update agora-api \
   --region us-central1 \
   --project "$PROJECT_ID" \
-  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY"
+  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY,AGORA_API_USE_REAL_ORCHESTRATOR=true,AGORA_API_FORCE_MECHANISM=vote" \
+  --update-secrets "AGORA_GEMINI_API_KEY=agora-gemini-api-key:latest,ANTHROPIC_API_KEY=agora-anthropic-api-key:latest,AGORA_OPENROUTER_API_KEY=agora-openrouter-api-key:latest"
 ```
 
 The Claude caller uses a shared async sliding-window throttle to reduce Anthropic
@@ -533,6 +704,11 @@ error and fall back for that voter.
 
 Gemini API keys are managed from ai.google.dev. If needed, you can keep the key in
 Secret Manager and export it before running AGORA.
+
+OpenRouter keys can be kept in Secret Manager with `agora-openrouter-api-key` and
+fetched automatically at runtime, or exported directly as `AGORA_OPENROUTER_API_KEY`.
+The local/service-account path has verified access to that secret; Cloud Run service
+environment/IAM inspection may still require a privileged GCP identity.
 
 ## Next Tasks for Josh
 

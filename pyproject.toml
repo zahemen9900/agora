@@ -24,7 +24,18 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "build>=1.2",
     "ruff>=0.8",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic-settings>=2.0",
+    "sse-starlette>=2.0",
+    "google-cloud-storage>=2.18",
+    "google-cloud-secret-manager>=2.20",
+    "PyJWT>=2.9",
+    "redis>=5.2",
+    "solders==0.26.0",
+    "solana==0.36.6",
 ]
 
 [tool.setuptools.packages.find]

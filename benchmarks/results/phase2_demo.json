@@ -1,0 +1,12 @@
+{
+  "started_at": "2026-04-15T23:42:29Z",
+  "query": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
+  "stakes": 0.01,
+  "agent_count": 4,
+  "mechanism": "vote",
+  "strict_defaults_enforced": true,
+  "status": "failed",
+  "temp_root": "/tmp/agora-phase2-demo-sc_2cebx",
+  "error": "Phase 2 demo preflight failed:\n- Gemini credential not resolved\n- Solana bridge is not configured with a real HELIUS_RPC_URL and keypair source",
+  "finished_at": "2026-04-15T23:42:29Z"
+}

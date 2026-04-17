@@ -188,6 +188,53 @@ def test_load_keypair_uses_secret_when_file_missing(monkeypatch: pytest.MonkeyPa
     assert loaded.pubkey() == expected.pubkey()
 
 
+def test_load_keypair_secret_falls_back_to_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
+    keypair = Keypair()
+    bridge = SolanaBridge(
+        rpc_url="https://devnet.helius-rpc.com/?api-key=test",
+        program_id="82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd",
+        network="devnet",
+        keypair_path="/tmp/does-not-exist-keypair.json",
+        keypair_secret_name="agora-devnet-keypair",
+        keypair_secret_project="test-project",
+    )
+
+    def _raise_client(*, resource_name: str) -> bytes:
+        raise RuntimeError(f"client failed for {resource_name}")
+
+    monkeypatch.setattr(bridge, "_load_keypair_secret_payload_via_client", _raise_client)
+    monkeypatch.setattr(
+        bridge,
+        "_load_keypair_secret_payload_via_gcloud",
+        lambda: json.dumps(list(bytes(keypair))).encode("utf-8"),
+    )
+
+    loaded = bridge._load_keypair_from_secret()
+    assert loaded.pubkey() == keypair.pubkey()
+
+
+def test_load_keypair_secret_raises_when_all_backends_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = SolanaBridge(
+        rpc_url="https://devnet.helius-rpc.com/?api-key=test",
+        program_id="82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd",
+        network="devnet",
+        keypair_path="/tmp/does-not-exist-keypair.json",
+        keypair_secret_name="agora-devnet-keypair",
+        keypair_secret_project="test-project",
+    )
+
+    def _raise_client(*, resource_name: str) -> bytes:
+        raise RuntimeError(f"client failed for {resource_name}")
+
+    monkeypatch.setattr(bridge, "_load_keypair_secret_payload_via_client", _raise_client)
+    monkeypatch.setattr(bridge, "_load_keypair_secret_payload_via_gcloud", lambda: None)
+
+    with pytest.raises(RuntimeError, match="Failed to read keypair secret"):
+        bridge._load_keypair_from_secret()
+
+
 def test_parse_keypair_secret_payload_from_json_list() -> None:
     keypair = Keypair()
     payload = json.dumps(list(bytes(keypair))).encode("utf-8")
