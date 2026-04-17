@@ -189,6 +189,43 @@ ruff check .
 pytest -s -q
 ```
 
+### RWX cloud CI from local checkout
+
+RWX mirrors the required GitHub Actions jobs in `.rwx/ci.yml`, but runs them from your local shell without pushing first. First install and authenticate the CLI:
+
+```bash
+# WSL/Homebrew path from the RWX docs
+brew install rwx-cloud/tap/rwx
+
+# Or install the Linux binary manually if Homebrew is not available
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/rwx-cloud/rwx/releases/download/latest/rwx-linux-x86_64 -o ~/.local/bin/rwx
+chmod +x ~/.local/bin/rwx
+export PATH="$HOME/.local/bin:$PATH"
+
+rwx login
+rwx whoami
+```
+
+Run the full CI graph:
+
+```bash
+rwx run .rwx/ci.yml --target ci --wait --open
+```
+
+Run one gate while iterating:
+
+```bash
+rwx run .rwx/ci.yml --target python-ci --wait
+rwx run .rwx/ci.yml --target frontend-ci --wait
+rwx run .rwx/ci.yml --target sdk-ci --wait
+rwx run .rwx/ci.yml --target anchor-ci --wait
+```
+
+The first Anchor run will be slow because RWX has to install Solana/Agave and Anchor into the tool cache. After that, the graph is mostly dependency-cache hits unless manifests or lockfiles change.
+
+Important local-dev gotcha: `rwx run` includes modified tracked files via git patching, but it does not include untracked files. Stage or commit new files before relying on a cloud run; `git add -N path/to/file` is enough when you only want intent-to-add visibility.
+
 ### Paid-Provider Integration Tests (Opt-In)
 
 Some vote/debate tests are marked as paid-provider integration checks and require explicit opt-in:
