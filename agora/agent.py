@@ -949,6 +949,244 @@ class AgentCaller:
 
         raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
 
+    async def _call_openrouter(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None,
+        temperature: float | None,
+        stream: bool,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str | BaseModel, dict[str, Any]]:
+        """Execute one OpenRouter call via OpenAI-compatible chat completions."""
+
+        if self._openrouter_client is None:
+            raise AgentCallError("OpenRouter client was not initialized.")
+
+        effective_temperature = self.temperature if temperature is None else temperature
+        backoff_seconds = 0.5
+        max_retries = 3
+
+        for attempt in range(1, max_retries + 1):
+            start = time.perf_counter()
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+
+                request_kwargs: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": effective_temperature,
+                    "max_tokens": self._kimi_max_tokens,
+                    "extra_body": {"reasoning": self._build_openrouter_reasoning_payload()},
+                }
+
+                if response_format is not None:
+                    messages[1] = {
+                        "role": "user",
+                        "content": self._with_structured_json_instructions(
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                        ),
+                    }
+                    request_kwargs["response_format"] = {"type": "json_object"}
+
+                raw_message: Any | None = None
+                if stream:
+                    request_kwargs["stream"] = True
+                    stream_response = await self._openrouter_client.chat.completions.create(
+                        **request_kwargs
+                    )
+                    response_content, raw_message = await self._stream_openrouter_text(
+                        stream_response=stream_response,
+                        stream_callback=stream_callback,
+                    )
+                else:
+                    raw_message = await self._openrouter_client.chat.completions.create(
+                        **request_kwargs
+                    )
+                    if response_format is not None:
+                        response_content = self._parse_openrouter_structured_response(
+                            raw_message=raw_message,
+                            response_format=response_format,
+                        )
+                    else:
+                        response_content = self._extract_openrouter_text(raw_message)
+
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                usage = self._normalize_usage(raw_message, elapsed_ms)
+
+                logger.info(
+                    "agent_call_success",
+                    model=self.model,
+                    provider=self.provider,
+                    input_tokens=usage["input_tokens"],
+                    output_tokens=usage["output_tokens"],
+                    reasoning_tokens=usage.get("reasoning_tokens", 0),
+                    latency_ms=usage["latency_ms"],
+                    streamed=stream,
+                    thinking_trace_present=usage.get("thinking_trace_present", False),
+                )
+                return response_content, usage
+            except OpenAIRateLimitError as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except (OpenAIAPIConnectionError, OpenAIAPITimeoutError, TimeoutError) as exc:
+                if attempt >= max_retries:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+                logger.warning(
+                    "agent_call_retrying",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    backoff_seconds=backoff_seconds,
+                    error=str(exc),
+                )
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds *= 2.0
+            except OpenAIAPIStatusError as exc:
+                status_code = getattr(exc, "status_code", None)
+                retryable_status = isinstance(status_code, int) and (
+                    status_code in {408, 409, 429} or status_code >= 500
+                )
+
+                if retryable_status and attempt < max_retries:
+                    logger.warning(
+                        "agent_call_retrying",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        backoff_seconds=backoff_seconds,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    backoff_seconds *= 2.0
+                    continue
+
+                if retryable_status:
+                    logger.error(
+                        "agent_call_retry_exhausted",
+                        model=self.model,
+                        provider=self.provider,
+                        attempt=attempt,
+                        status_code=status_code,
+                        error=str(exc),
+                    )
+                    raise AgentCallError(
+                        f"Model call failed after retries for model {self.model}."
+                    ) from exc
+
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    status_code=status_code,
+                    error=str(exc),
+                )
+                raise AgentCallError(
+                    f"OpenRouter API returned status {status_code} for model {self.model}."
+                ) from exc
+            except AgentCallError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "agent_call_non_retryable_failure",
+                    model=self.model,
+                    provider=self.provider,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                raise AgentCallError(f"Non-retryable failure for model {self.model}.") from exc
+
+        raise AgentCallError(f"Unexpected retry loop termination for model {self.model}.")
+
+    async def _stream_openrouter_text(
+        self,
+        stream_response: Any,
+        stream_callback: Callable[[str], None] | None,
+    ) -> tuple[str, Any | None]:
+        """Stream OpenRouter text chunks and return full text plus last chunk metadata."""
+
+        chunks: list[str] = []
+        last_chunk: Any | None = None
+
+        async for chunk in stream_response:
+            last_chunk = chunk
+            chunk_text: str | None = None
+            choices = getattr(chunk, "choices", None)
+            if isinstance(choices, list) and choices:
+                first_choice = choices[0]
+                delta = getattr(first_choice, "delta", None)
+                if delta is not None:
+                    chunk_text = getattr(delta, "content", None)
+                elif isinstance(first_choice, dict):
+                    delta_dict = first_choice.get("delta")
+                    if isinstance(delta_dict, dict):
+                        chunk_text = delta_dict.get("content")
+
+            if isinstance(chunk_text, str) and chunk_text:
+                chunks.append(chunk_text)
+                if stream_callback is not None:
+                    try:
+                        stream_callback(chunk_text)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("stream_callback_error", error=str(exc))
+
+        return "".join(chunks), last_chunk
+
+    @staticmethod
+    def _build_openrouter_headers(config: Any) -> dict[str, str]:
+        """Build optional OpenRouter app attribution headers."""
+
+        headers: dict[str, str] = {}
+        if config.openrouter_http_referer:
+            headers["HTTP-Referer"] = config.openrouter_http_referer
+        if config.openrouter_app_title:
+            headers["X-OpenRouter-Title"] = config.openrouter_app_title
+            if config.openrouter_legacy_x_title_enabled:
+                headers["X-Title"] = config.openrouter_app_title
+        return headers
+
+    def _build_openrouter_reasoning_payload(self) -> dict[str, Any]:
+        """Return explicit Kimi reasoning controls to avoid provider defaults."""
+
+        reasoning: dict[str, Any] = {"exclude": self._kimi_reasoning_exclude}
+        if self._kimi_reasoning_effort:
+            reasoning["effort"] = self._kimi_reasoning_effort
+        return reasoning
+
     async def _acquire_anthropic_slot(self, request_kind: str) -> None:
         """Throttle Anthropic requests to reduce server-side rate-limit failures."""
 
@@ -1349,6 +1587,22 @@ class AgentCaller:
                             text = getattr(part, "text", None)
                             if isinstance(text, str):
                                 thinking_trace_chars += len(text)
+
+            choices = getattr(raw_message, "choices", None)
+            if isinstance(choices, list):
+                for choice in choices:
+                    message = getattr(choice, "message", None)
+                    if message is None and isinstance(choice, dict):
+                        message = choice.get("message")
+
+                    if isinstance(message, dict):
+                        reasoning_details = message.get("reasoning_details")
+                    else:
+                        reasoning_details = getattr(message, "reasoning_details", None)
+
+                    if reasoning_details:
+                        thinking_trace_present = True
+                        thinking_trace_chars += len(json.dumps(reasoning_details, default=str))
 
         return {
             "input_tokens": input_tokens,

@@ -103,6 +103,7 @@ class AgoraOrchestrator:
             reasoning_hash=selection.reasoning_hash,
             bandit_recommendation=selection.bandit_recommendation.value,
             bandit_confidence=selection.bandit_confidence,
+            forced_mechanism=forced_mechanism.value if forced_mechanism else None,
         )
 
         result = await self.execute_selection(

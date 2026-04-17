@@ -284,13 +284,22 @@ RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODEL
 Use this sequence to verify the migrated stack concretely:
 
 ```bash
-cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-gemini-genai-migration
+cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-openrouter-kimi-integration
 
 # 1) Code quality and tests
 python -m ruff check agora api tests
 python -m pytest -s -q
 
-# 2) Strict model, Anchor, and hosted Week 1 E2E demo
+# Optional paid-provider Kimi/OpenRouter checks
+./scripts/run_paid_provider_tests.sh
+
+# 2) Strict local all-provider ensemble proof
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
+
+# 3) Optional direct provider smokes if you want per-provider diagnostics too
+RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_KIMI_SMOKE=always RUN_ALL_MODELS_E2E=never ./scripts/week1_demo.sh
+
+# 4) Strict model, Anchor, and hosted Week 1 E2E demo
 export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
 export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3)"
@@ -546,10 +555,18 @@ Optional model overrides:
 
 - AGORA_FLASH_MODEL (default: gemini-3-flash-preview)
 - AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
+- DEMO_PRO_MODEL (default: gemini-2.5-pro for `week1_demo.sh`)
 - AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
 - AGORA_KIMI_MODEL (default: moonshotai/kimi-k2-thinking)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
+- AGORA_OPENROUTER_BASE_URL (default: https://openrouter.ai/api/v1)
+- AGORA_OPENROUTER_HTTP_REFERER (optional OpenRouter app attribution header)
+- AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
+- AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; also sends legacy `X-Title`)
+- AGORA_KIMI_REASONING_EFFORT (default: low)
+- AGORA_KIMI_REASONING_EXCLUDE (default: true)
+- AGORA_KIMI_MAX_TOKENS (default: 512)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
 - AGORA_ANTHROPIC_THROTTLE_ENABLED (default: true)
 - AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
@@ -579,6 +596,12 @@ Gemini Secret Manager fetch controls:
 - AGORA_GEMINI_SECRET_NAME (default: agora-gemini-api-key)
 - AGORA_GEMINI_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
 - AGORA_GEMINI_SECRET_VERSION (default: latest)
+
+OpenRouter Secret Manager fetch controls:
+
+- AGORA_OPENROUTER_SECRET_NAME (default: agora-openrouter-api-key)
+- AGORA_OPENROUTER_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
+- AGORA_OPENROUTER_SECRET_VERSION (default: latest)
 
 To let AGORA fetch Gemini key directly from Secret Manager (no local API key export):
 
@@ -628,7 +651,8 @@ gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
 gcloud run services update agora-api \
   --region us-central1 \
   --project "$PROJECT_ID" \
-  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY"
+  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY,AGORA_API_USE_REAL_ORCHESTRATOR=true,AGORA_API_FORCE_MECHANISM=vote" \
+  --update-secrets "AGORA_GEMINI_API_KEY=agora-gemini-api-key:latest,ANTHROPIC_API_KEY=agora-anthropic-api-key:latest,AGORA_OPENROUTER_API_KEY=agora-openrouter-api-key:latest"
 ```
 
 The Claude caller uses a shared async sliding-window throttle to reduce Anthropic
@@ -680,6 +704,11 @@ error and fall back for that voter.
 
 Gemini API keys are managed from ai.google.dev. If needed, you can keep the key in
 Secret Manager and export it before running AGORA.
+
+OpenRouter keys can be kept in Secret Manager with `agora-openrouter-api-key` and
+fetched automatically at runtime, or exported directly as `AGORA_OPENROUTER_API_KEY`.
+The local/service-account path has verified access to that secret; Cloud Run service
+environment/IAM inspection may still require a privileged GCP identity.
 
 ## Next Tasks for Josh
 

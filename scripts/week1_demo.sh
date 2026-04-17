@@ -488,16 +488,22 @@ log_step "Running lint checks (core + API + tests)"
 
 run_python_tests() {
   log_step "Running all Python tests (your core + Josh infra)"
-  printf "test_model_keys=disabled; fallback warnings in this pytest section are expected.\n"
+  local pytest_model_off_env=(
+    "AGORA_GEMINI_SECRET_NAME="
+    "AGORA_ANTHROPIC_SECRET_NAME="
+    "AGORA_OPENROUTER_SECRET_NAME="
+    "RUN_PAID_PROVIDER_TESTS=0"
+  )
+  printf "test_model_keys=disabled; env and Secret Manager model keys are disabled in this pytest section.\n"
 
   if [[ "$DEMO_VERBOSE_TEST_LOGS" == "1" ]]; then
     printf "test_runtime_logs=verbose\n"
-    "$PYTHON_BIN" -m pytest -s -q
+    env "${pytest_model_off_env[@]}" "$PYTHON_BIN" -m pytest -s -q
     return
   fi
 
   printf "test_runtime_logs=filtered; set DEMO_VERBOSE_TEST_LOGS=1 to show raw runtime logs.\n"
-  "$PYTHON_BIN" - <<'PY'
+  env "${pytest_model_off_env[@]}" "$PYTHON_BIN" - <<'PY'
 import re
 import subprocess
 import sys
