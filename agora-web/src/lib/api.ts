@@ -38,11 +38,93 @@ export interface BenchmarkSummary {
   per_category: Record<string, Record<string, Record<string, number>>>;
 }
 
+export interface BenchmarkStagePayload {
+  runs?: Array<Record<string, unknown>>;
+  summary?: BenchmarkSummary;
+}
+
+export interface BenchmarkDemoReport {
+  artifact?: string;
+  status?: string;
+  final_status?: string;
+  target?: string;
+  query?: string;
+  mechanism?: string;
+  agent_count?: number;
+  stakes?: number;
+  started_at?: string;
+  completed_at?: string;
+  run_summary?: Record<string, unknown>;
+  tx_summary?: Record<string, unknown>;
+  acceptance_checks?: Record<string, unknown>;
+  run_result?: Record<string, unknown>;
+  status_after_run?: Record<string, unknown>;
+  status_after_pay?: Record<string, unknown>;
+}
+
 export interface BenchmarkPayload {
   runs?: Array<Record<string, unknown>>;
   summary?: BenchmarkSummary;
-  pre_learning?: { summary: BenchmarkSummary };
-  post_learning?: { summary: BenchmarkSummary };
+  pre_learning?: BenchmarkStagePayload;
+  post_learning?: BenchmarkStagePayload;
+  learning_updates?: BenchmarkStagePayload;
+  generated_at?: string;
+  demo_report?: BenchmarkDemoReport;
+}
+
+export interface AuthConfigPayload {
+  workos_client_id: string;
+  workos_authkit_domain: string;
+  auth_issuer: string;
+  auth_audience: string;
+  auth_jwks_url: string;
+}
+
+export type BenchmarkRunStatusName = "queued" | "running" | "completed" | "failed";
+
+export interface BenchmarkRunStatusPayload {
+  run_id: string;
+  status: BenchmarkRunStatusName;
+  created_at: string;
+  updated_at: string;
+  error?: string | null;
+  artifact_id?: string | null;
+}
+
+export interface BenchmarkCatalogEntry {
+  artifact_id: string;
+  scope: "global" | "user";
+  owner_user_id?: string | null;
+  source: string;
+  created_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  status?: string | null;
+}
+
+export interface BenchmarkCatalogPayload {
+  global_recent: BenchmarkCatalogEntry[];
+  global_frequency: BenchmarkCatalogEntry[];
+  user_recent: BenchmarkCatalogEntry[];
+  user_frequency: BenchmarkCatalogEntry[];
+  user_tests_recent: BenchmarkRunStatusPayload[];
+  user_tests_frequency: BenchmarkRunStatusPayload[];
+}
+
+export interface BenchmarkRunRequestPayload {
+  training_per_category?: number;
+  holdout_per_category?: number;
+  agent_count?: number;
+  live_agents?: boolean;
+  seed?: number;
+}
+
+export interface BenchmarkRunResponsePayload {
+  run_id: string;
+  status: BenchmarkRunStatusName;
+  created_at: string;
 }
 
 export interface StreamHandle {
@@ -155,8 +237,12 @@ export async function releaseTaskPayment(
   });
 }
 
-export async function getBenchmarks(token: string | null): Promise<BenchmarkPayload> {
-  return requestJson<BenchmarkPayload>("/benchmarks", {
+export async function getBenchmarks(
+  token: string | null,
+  includeDemo = true,
+): Promise<BenchmarkPayload> {
+  const path = includeDemo ? "/benchmarks?include_demo=true" : "/benchmarks";
+  return requestJson<BenchmarkPayload>(path, {
     headers: authHeaders(token),
   });
 }
@@ -165,6 +251,10 @@ export async function getAuthMe(token: string): Promise<AuthMeResponse> {
   return requestJson<AuthMeResponse>("/auth/me", {
     headers: authHeaders(token),
   });
+}
+
+export async function getAuthConfig(): Promise<AuthConfigPayload> {
+  return requestJson<AuthConfigPayload>("/auth/config");
 }
 
 export async function listApiKeys(token: string): Promise<ApiKeyMetadataResponse[]> {
@@ -193,6 +283,35 @@ export async function revokeApiKey(
 ): Promise<ApiKeyMetadataResponse> {
   return requestJson<ApiKeyMetadataResponse>(`/api-keys/${keyId}/revoke`, {
     method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkCatalog(token: string | null): Promise<BenchmarkCatalogPayload> {
+  return requestJson<BenchmarkCatalogPayload>("/benchmarks/catalog", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function triggerBenchmarkRun(
+  token: string,
+  payload: BenchmarkRunRequestPayload = {},
+): Promise<BenchmarkRunResponsePayload> {
+  return requestJson<BenchmarkRunResponsePayload>("/benchmarks/run", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getBenchmarkRunStatus(
+  token: string,
+  runId: string,
+): Promise<BenchmarkRunStatusPayload> {
+  return requestJson<BenchmarkRunStatusPayload>(`/benchmarks/runs/${runId}`, {
     headers: authHeaders(token),
   });
 }

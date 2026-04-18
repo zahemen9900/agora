@@ -156,3 +156,72 @@ class ApiKeyCreateResponse(BaseModel):
 
     api_key: str
     metadata: ApiKeyMetadataResponse
+
+
+class AuthConfigResponse(BaseModel):
+    """Public auth bootstrap configuration for frontend clients."""
+
+    workos_client_id: str
+    workos_authkit_domain: str
+    auth_issuer: str
+    auth_audience: str
+    auth_jwks_url: str
+
+
+BenchmarkScopeName = Literal["global", "user"]
+BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
+
+
+class BenchmarkRunRequest(BaseModel):
+    """Request payload for triggering an async benchmark run."""
+
+    training_per_category: int = Field(default=1, ge=1, le=20)
+    holdout_per_category: int = Field(default=1, ge=1, le=10)
+    agent_count: int = Field(default=3, ge=1, le=10)
+    live_agents: bool = True
+    seed: int = 42
+
+
+class BenchmarkRunResponse(BaseModel):
+    """Initial acknowledgement for an async benchmark run trigger."""
+
+    run_id: str
+    status: BenchmarkRunStatusName
+    created_at: datetime
+
+
+class BenchmarkRunStatusResponse(BaseModel):
+    """Status payload for a benchmark run."""
+
+    run_id: str
+    status: BenchmarkRunStatusName
+    created_at: datetime
+    updated_at: datetime
+    error: str | None = None
+    artifact_id: str | None = None
+
+
+class BenchmarkCatalogEntry(BaseModel):
+    """Normalized benchmark artifact metadata for UI lists."""
+
+    artifact_id: str
+    scope: BenchmarkScopeName
+    owner_user_id: str | None = None
+    source: str = "unknown"
+    created_at: datetime
+    run_count: int = Field(default=0, ge=0)
+    mechanism_counts: dict[str, int] = Field(default_factory=dict)
+    model_counts: dict[str, int] = Field(default_factory=dict)
+    frequency_score: int = Field(default=0, ge=0)
+    status: str | None = None
+
+
+class BenchmarkCatalogResponse(BaseModel):
+    """Benchmark catalog payload with recent and frequency-sorted views."""
+
+    global_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    global_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    user_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    user_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    user_tests_recent: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
+    user_tests_frequency: list[BenchmarkRunStatusResponse] = Field(default_factory=list)

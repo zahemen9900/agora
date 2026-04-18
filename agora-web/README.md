@@ -42,9 +42,26 @@ npm run preview
 | Variable | Default | Description |
 | --- | --- | --- |
 | `VITE_AGORA_API_URL` | `/api` | Override the API base URL in any environment |
-| `VITE_AGORA_API_PROXY_TARGET` | `http://localhost:8000` | Vite dev proxy target for `/api/*` |
+| `VITE_AGORA_BACKEND_SOURCE` | `local` | Backend source selector for dev proxy: `local` or `gcloud` |
+| `VITE_AGORA_LOCAL_API_URL` | `http://localhost:8000` | Local backend URL used when source is `local` |
+| `VITE_AGORA_GCLOUD_API_URL` | `https://agora-api-rztfxer7ra-uc.a.run.app` | Hosted backend URL used when source is `gcloud` |
+| `VITE_AGORA_API_PROXY_TARGET` | unset | Optional hard override for `/api/*`; takes precedence over source selector |
 
-In development, Vite proxies `/api/*` to `VITE_AGORA_API_PROXY_TARGET`. You can point it at a hosted backend when needed:
+In development, Vite proxies `/api/*` based on `VITE_AGORA_BACKEND_SOURCE`.
+
+Use hosted backend:
+
+```bash
+VITE_AGORA_BACKEND_SOURCE=gcloud npm run dev
+```
+
+Use local backend:
+
+```bash
+VITE_AGORA_BACKEND_SOURCE=local npm run dev
+```
+
+You can still force a specific proxy target when needed:
 
 ```bash
 VITE_AGORA_API_PROXY_TARGET=https://agora-api-rztfxer7ra-uc.a.run.app npm run dev

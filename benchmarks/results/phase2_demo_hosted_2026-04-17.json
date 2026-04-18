@@ -1,5 +1,5 @@
 {
-  "started_at": "2026-04-17T14:57:30Z",
+  "started_at": "2026-04-17T16:26:45Z",
   "query": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
   "stakes": 0.01,
   "agent_count": 4,
@@ -8,7 +8,7 @@
   "strict_defaults_enforced": true,
   "status": "failed",
   "api_url": "https://agora-api-rztfxer7ra-uc.a.run.app",
-  "temp_root": "/tmp/agora-phase2-demo-epm621zg",
+  "temp_root": "/tmp/agora-phase2-demo-srkqj06v",
   "credential_bootstrap": {
     "gcloud_available": true,
     "gcloud_auth_status": "ok",
@@ -23,5 +23,5 @@
     "solana_keypair_source": "secret-configured"
   },
   "error": "Hosted phase 2 demo requires an auth token. Set AGORA_TEST_API_KEY, pass --auth-token, or configure AGORA_TEST_API_KEY_SECRET_NAME for Secret Manager lookup. Set AGORA_PHASE2_BOOTSTRAP_JWT (human JWT) to auto-create and store one. Hosted mode cannot auto-generate a key from API-key auth alone because /api-keys requires a human JWT session. If you want to skip hosted token requirements, run --target local.",
-  "finished_at": "2026-04-17T14:57:41Z"
+  "finished_at": "2026-04-17T16:26:54Z"
 }

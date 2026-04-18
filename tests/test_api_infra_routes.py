@@ -33,6 +33,7 @@ from api.main import app
 from api.models import ApiKeyCreateRequest, TaskCreateRequest
 from api.routes import api_keys as api_key_routes
 from api.routes import auth_session
+from api.routes import benchmarks as benchmark_routes
 from api.routes import tasks as task_routes
 from api.routes import webhooks as webhook_routes
 from api.store_local import LocalTaskStore
@@ -1921,6 +1922,201 @@ async def test_auth_me_returns_workspace_bootstrap_payload(tmp_path: Path) -> No
     assert payload.workspace.id == user.workspace_id
     assert payload.feature_flags.api_keys_visible is True
     assert payload.feature_flags.benchmarks_visible is True
+
+
+@pytest.mark.asyncio
+async def test_auth_config_returns_resolved_backend_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth.settings, "workos_client_id", "client_123")
+    monkeypatch.setattr(auth.settings, "workos_authkit_domain", "example.authkit.app")
+    monkeypatch.setattr(auth.settings, "auth_issuer", "")
+    monkeypatch.setattr(auth.settings, "auth_audience", "")
+    monkeypatch.setattr(auth.settings, "auth_jwks_url", "")
+
+    payload = await auth_session.auth_config()
+
+    assert payload.workos_client_id == "client_123"
+    assert payload.workos_authkit_domain == "https://example.authkit.app"
+    assert payload.auth_issuer == "https://example.authkit.app"
+    assert payload.auth_audience == "client_123"
+    assert payload.auth_jwks_url == "https://example.authkit.app/oauth2/jwks"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_catalog_returns_recent_and_frequency_views(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    await store.save_global_benchmark_artifact(
+        "global-one",
+        {
+            "artifact_id": "global-one",
+            "scope": "global",
+            "source": "test",
+            "created_at": "2026-04-18T00:00:00+00:00",
+            "status": "completed",
+            "benchmark_payload": {
+                "runs": [
+                    {"mechanism_used": "selector", "model": "model-a"},
+                    {"mechanism_used": "selector", "model": "model-b"},
+                    {"mechanism_used": "vote", "model": "model-a"},
+                ]
+            },
+        },
+    )
+    await store.save_global_benchmark_artifact(
+        "global-two",
+        {
+            "artifact_id": "global-two",
+            "scope": "global",
+            "source": "test",
+            "created_at": "2026-04-17T00:00:00+00:00",
+            "status": "completed",
+            "benchmark_payload": {
+                "runs": [{"mechanism_used": "debate", "model": "model-c"}],
+            },
+        },
+    )
+    await store.save_user_benchmark_artifact(
+        "user-1",
+        "user-one",
+        {
+            "artifact_id": "user-one",
+            "scope": "user",
+            "owner_user_id": "user-1",
+            "source": "user_triggered",
+            "created_at": "2026-04-18T01:00:00+00:00",
+            "status": "completed",
+            "benchmark_payload": {
+                "runs": [
+                    {"mechanism_used": "selector", "model": "model-a"},
+                    {"mechanism_used": "selector", "model": "model-a"},
+                ],
+            },
+        },
+    )
+    await store.save_user_test_result(
+        "user-1",
+        "run-one",
+        {
+            "run_id": "run-one",
+            "status": "completed",
+            "artifact_id": "user-one",
+            "created_at": "2026-04-18T01:00:00+00:00",
+            "updated_at": "2026-04-18T01:05:00+00:00",
+            "frequency_score": 5,
+        },
+    )
+
+    response = await client.get("/benchmarks/catalog")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["global_recent"][0]["artifact_id"] == "global-one"
+    assert payload["global_frequency"][0]["artifact_id"] == "global-one"
+    assert payload["user_recent"][0]["artifact_id"] == "user-one"
+    assert payload["user_tests_recent"][0]["run_id"] == "run-one"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_run_endpoint_persists_status_and_artifacts(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    async def fake_execute_benchmark_run(
+        *,
+        workspace_id: str,
+        run_id: str,
+        request: benchmark_routes.BenchmarkRunRequest,
+    ) -> None:
+        del request
+        store = task_routes.get_task_store()
+        await store.save_global_benchmark_artifact(
+            run_id,
+            {
+                "artifact_id": run_id,
+                "scope": "global",
+                "source": "user_triggered",
+                "status": "completed",
+                "created_at": "2026-04-18T02:00:00+00:00",
+                "benchmark_payload": {
+                    "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+                },
+            },
+        )
+        await store.save_user_benchmark_artifact(
+            workspace_id,
+            run_id,
+            {
+                "artifact_id": run_id,
+                "scope": "user",
+                "owner_user_id": workspace_id,
+                "source": "user_triggered",
+                "status": "completed",
+                "created_at": "2026-04-18T02:00:00+00:00",
+                "benchmark_payload": {
+                    "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+                },
+            },
+        )
+        await store.save_user_test_result(
+            workspace_id,
+            run_id,
+            {
+                "run_id": run_id,
+                "status": "completed",
+                "artifact_id": run_id,
+                "created_at": "2026-04-18T02:00:00+00:00",
+                "updated_at": "2026-04-18T02:01:00+00:00",
+                "frequency_score": 2,
+            },
+        )
+
+    monkeypatch.setattr(benchmark_routes, "_execute_benchmark_run", fake_execute_benchmark_run)
+
+    run_response = await client.post(
+        "/benchmarks/run",
+        json={
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+            "agent_count": 1,
+            "live_agents": False,
+            "seed": 7,
+        },
+    )
+    assert run_response.status_code == 200
+    run_payload = run_response.json()
+    run_id = run_payload["run_id"]
+
+    status_payload: dict[str, object] = {}
+    for _ in range(20):
+        status_response = await client.get(f"/benchmarks/runs/{run_id}")
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        if status_payload.get("status") == "completed":
+            break
+        await asyncio.sleep(0.01)
+
+    assert status_payload["status"] == "completed"
+    assert status_payload["artifact_id"] == run_id
+
+    catalog_response = await client.get("/benchmarks/catalog")
+    assert catalog_response.status_code == 200
+    catalog_payload = catalog_response.json()
+    assert any(
+        entry["artifact_id"] == run_id for entry in catalog_payload["global_recent"]
+    )
+    assert any(
+        entry["artifact_id"] == run_id for entry in catalog_payload["user_recent"]
+    )
 
 
 @pytest.mark.asyncio

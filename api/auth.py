@@ -139,6 +139,20 @@ def _auth_jwks_url(issuer: str) -> str:
     return _jwks_url_from_issuer(issuer)
 
 
+def get_resolved_auth_config() -> dict[str, str]:
+    """Return normalized auth settings used for JWT verification/bootstrap."""
+
+    issuer = _auth_issuer()
+    audience = _auth_audience()
+    return {
+        "workos_client_id": settings.workos_client_id.strip(),
+        "workos_authkit_domain": _normalize_url(settings.workos_authkit_domain),
+        "auth_issuer": issuer,
+        "auth_audience": audience,
+        "auth_jwks_url": _auth_jwks_url(issuer),
+    }
+
+
 def _auth_jwks_candidates(issuers: list[str]) -> list[str]:
     """Resolve ordered JWKS candidates from explicit and derived issuer URLs."""
 

@@ -238,6 +238,149 @@ async def test_benchmarks_route_uses_file_fallback_not_completed_tasks(
 
 
 @pytest.mark.asyncio
+async def test_benchmarks_route_include_demo_keeps_stage_runs_without_synthesized_top_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-include-demo-stage-runs"))
+    original_results_dir = benchmark_routes._RESULTS_DIR
+    task_routes._store = store
+    benchmark_routes._RESULTS_DIR = tmp_path
+
+    summary = {
+        "post_learning": {
+            "runs": [
+                {
+                    "task": "Stage run task",
+                    "mode": "debate",
+                    "latency_ms": 12,
+                    "merkle_root": "stage-root",
+                }
+            ],
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.7}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.7}}},
+            },
+        }
+    }
+
+    demo_payload = {
+        "target": "local",
+        "query": "Demo query",
+        "mechanism": "vote",
+        "sdk_flow": {
+            "status_after_run": {
+                "task_id": "demo-task",
+                "task_text": "Demo query",
+                "mechanism": "vote",
+                "merkle_root": "demo-root",
+            },
+            "run_result": {
+                "mechanism": "vote",
+                "latency_ms": 44,
+                "merkle_root": "demo-root",
+            },
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_benchmark_summary(summary)
+        (tmp_path / "phase2_demo_local_2026-04-17.json").write_text(
+            json.dumps(demo_payload),
+            encoding="utf-8",
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks?include_demo=true",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["post_learning"]["runs"][0]["task"] == "Stage run task"
+        assert payload["demo_report"]["artifact"] == "phase2_demo_local_2026-04-17.json"
+        assert "runs" not in payload
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_DIR = original_results_dir
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-include-demo-synthesized"))
+    original_results_dir = benchmark_routes._RESULTS_DIR
+    task_routes._store = store
+    benchmark_routes._RESULTS_DIR = tmp_path
+
+    summary = {
+        "summary": {
+            "per_mode": {"selector": {"accuracy": 0.51}},
+            "per_category": {"math": {"selector": {"accuracy": 0.49}}},
+        }
+    }
+
+    demo_payload = {
+        "target": "local",
+        "query": "Synthesized run query",
+        "mechanism": "vote",
+        "final_status": "completed",
+        "sdk_flow": {
+            "status_after_run": {
+                "task_id": "demo-task-2",
+                "task_text": "Synthesized run query",
+                "mechanism": "vote",
+                "merkle_root": "demo-root-2",
+                "status": "completed",
+            },
+            "status_after_pay": {
+                "status": "completed",
+            },
+            "run_result": {
+                "mechanism": "vote",
+                "latency_ms": 87,
+                "merkle_root": "demo-root-2",
+                "confidence": 0.91,
+                "final_answer": "AGORA_DEMO_OK",
+            },
+        },
+        "tx_summary": {
+            "receipt_explorer_url": "https://explorer.solana.com/tx/example",
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_benchmark_summary(summary)
+        (tmp_path / "phase2_demo_local_2026-04-17.json").write_text(
+            json.dumps(demo_payload),
+            encoding="utf-8",
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks?include_demo=true",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["demo_report"]["artifact"] == "phase2_demo_local_2026-04-17.json"
+        assert payload["runs"][0]["task"] == "Synthesized run query"
+        assert payload["runs"][0]["mode"] == "vote"
+        assert payload["runs"][0]["task_id"] == "demo-task-2"
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_DIR = original_results_dir
+
+
+@pytest.mark.asyncio
 async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path) -> None:
     async def deterministic_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
