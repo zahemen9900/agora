@@ -23,8 +23,13 @@ export interface DeliberationResultResponse {
   decision_hash: string | null;
   agent_count: number;
   agent_models_used: Array<string>;
+  model_token_usage: Record<string, number>;
+  model_latency_ms: Record<string, number>;
   total_tokens_used: number;
   latency_ms: number;
+  payment_amount: number;
+  payment_status: "locked" | "released" | "none";
+  informational_model_payouts: Record<string, number>;
   round_count: number;
   mechanism_switches: number;
   transcript_hashes: Array<string>;

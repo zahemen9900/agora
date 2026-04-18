@@ -12,7 +12,7 @@ import {
   LineChart,
   Line,
 } from "recharts";
-import { ExternalLink } from "lucide-react";
+import { AlertTriangle, Bot, Brain, Cpu, ExternalLink, Sparkles } from "lucide-react";
 
 import {
   ApiRequestError,
@@ -33,11 +33,66 @@ interface BenchmarkRunRow {
   key: string;
   task: string;
   mode: string;
+  status: string;
+  confidence: number | null;
+  totalTokens: number;
+  models: string[];
+  error: string | null;
+  eventCount: number | null;
+  paymentStatus: string | null;
   latencyMs: number;
   merkleRoot: string | null;
   explorerUrl: string | null;
   taskId: string | null;
   raw: Record<string, unknown>;
+}
+
+type ProviderName = "gemini" | "claude" | "kimi" | "other";
+
+interface ModelTelemetryRow {
+  model: string;
+  tokens: number;
+  provider: ProviderName;
+}
+
+function providerFromModel(model: string): ProviderName {
+  const normalized = model.toLowerCase();
+  if (normalized.includes("gemini")) {
+    return "gemini";
+  }
+  if (normalized.includes("claude")) {
+    return "claude";
+  }
+  if (normalized.includes("kimi") || normalized.includes("moonshot")) {
+    return "kimi";
+  }
+  return "other";
+}
+
+function providerTone(provider: ProviderName): string {
+  if (provider === "gemini") {
+    return "text-cyan-300 border-cyan-500/40 bg-cyan-500/10";
+  }
+  if (provider === "claude") {
+    return "text-fuchsia-300 border-fuchsia-500/40 bg-fuchsia-500/10";
+  }
+  if (provider === "kimi") {
+    return "text-amber-300 border-amber-500/40 bg-amber-500/10";
+  }
+  return "text-text-secondary border-border-muted bg-surface";
+}
+
+function ProviderGlyph({ provider }: { provider: ProviderName }) {
+  if (provider === "gemini") {
+    return <Sparkles size={12} />;
+  }
+  if (provider === "claude") {
+    return <Bot size={12} />;
+  }
+  if (provider === "kimi") {
+    return <Brain size={12} />;
+  }
+  return <Cpu size={12} />;
 }
 
 export function Benchmarks() {
@@ -52,6 +107,7 @@ export function Benchmarks() {
   const [selectedRunKey, setSelectedRunKey] = useState<string | null>(null);
   const [activeBenchmarkRun, setActiveBenchmarkRun] = useState<BenchmarkRunStatusPayload | null>(null);
   const [isTriggeringBenchmark, setIsTriggeringBenchmark] = useState(false);
+  const [benchmarkAgentCount, setBenchmarkAgentCount] = useState(4);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setChartsReady(true));
@@ -123,7 +179,10 @@ export function Benchmarks() {
         throw new Error("Authentication token is unavailable.");
       }
 
-      const run = await triggerBenchmarkRun(token);
+      const run = await triggerBenchmarkRun(token, {
+        agent_count: benchmarkAgentCount,
+        live_agents: true,
+      });
       setActiveBenchmarkRun({
         run_id: run.run_id,
         status: run.status,
@@ -138,7 +197,7 @@ export function Benchmarks() {
     } finally {
       setIsTriggeringBenchmark(false);
     }
-  }, [getAccessToken]);
+  }, [benchmarkAgentCount, getAccessToken]);
 
   useEffect(() => {
     if (!activeBenchmarkRun) {
@@ -254,6 +313,11 @@ export function Benchmarks() {
     [historyRuns, selectedRunKey],
   );
 
+  const selectedRunModelTelemetry = useMemo<ModelTelemetryRow[]>(
+    () => (selectedRun ? buildModelTelemetry(selectedRun) : []),
+    [selectedRun],
+  );
+
   const demoTxRows = useMemo(
     () => buildTxRows(demoReport),
     [demoReport],
@@ -271,7 +335,7 @@ export function Benchmarks() {
 
   if (loadError) {
     return (
-      <div className="max-w-[900px] mx-auto pb-20 w-full">
+      <div className="max-w-225 mx-auto pb-20 w-full">
         <header className="mb-10">
           <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
         </header>
@@ -284,7 +348,7 @@ export function Benchmarks() {
 
   if (!benchmarks) {
     return (
-      <div className="max-w-[900px] mx-auto pb-20 w-full">
+      <div className="max-w-225 mx-auto pb-20 w-full">
         <header className="mb-10">
           <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
         </header>
@@ -296,10 +360,10 @@ export function Benchmarks() {
   }
 
   return (
-    <div className="max-w-[1000px] mx-auto pb-20 w-full">
+    <div className="max-w-250 mx-auto pb-20 w-full">
       <header className="mb-10">
         <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
-        <p className="text-text-secondary text-lg max-w-[600px]">
+        <p className="text-text-secondary text-lg max-w-150">
           Comparison, ablation, and learning metrics generated from the Phase 2 benchmark suite.
         </p>
       </header>
@@ -312,16 +376,34 @@ export function Benchmarks() {
               Trigger a new benchmark run and persist artifacts in global and user-specific cloud paths.
             </p>
           </div>
-          <button
-            type="button"
-            className="btn-primary"
-            disabled={isTriggeringBenchmark}
-            onClick={() => {
-              void handleTriggerBenchmark();
-            }}
-          >
-            {isTriggeringBenchmark ? "Starting..." : "Run Benchmark"}
-          </button>
+          <div className="flex flex-col sm:items-end gap-3">
+            <div className="flex items-center gap-2">
+              <span className="mono text-[11px] text-text-muted">AGENTS</span>
+              {[4, 8, 12].map((count) => (
+                <button
+                  key={count}
+                  type="button"
+                  onClick={() => setBenchmarkAgentCount(count)}
+                  className={`mono px-2.5 py-1 text-xs rounded-md border transition-colors ${benchmarkAgentCount === count
+                    ? "border-accent text-accent bg-accent-muted"
+                    : "border-border-muted text-text-secondary hover:border-accent"}`}
+                >
+                  {count}
+                </button>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={isTriggeringBenchmark}
+              onClick={() => {
+                void handleTriggerBenchmark();
+              }}
+            >
+              {isTriggeringBenchmark ? "Starting..." : "Run Benchmark"}
+            </button>
+          </div>
         </div>
 
         {activeBenchmarkRun ? (
@@ -334,6 +416,7 @@ export function Benchmarks() {
             <div className="mono text-xs text-text-muted">
               Updated {formatDateTime(activeBenchmarkRun.updated_at)}
               {activeBenchmarkRun.artifact_id ? ` • artifact ${activeBenchmarkRun.artifact_id}` : ""}
+              {` • config ${benchmarkAgentCount} agents`}
             </div>
             {activeBenchmarkRun.error ? (
               <div className="mono text-xs text-red-300 mt-2">{activeBenchmarkRun.error}</div>
@@ -381,7 +464,7 @@ export function Benchmarks() {
           <p className="text-sm text-text-secondary mb-8">
             Selector runs should dominate category-specific fixed strategies after learning.
           </p>
-          <div className="w-full h-[300px]">
+          <div className="w-full h-75">
             {chartsReady ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
@@ -425,7 +508,7 @@ export function Benchmarks() {
           <p className="text-sm text-text-secondary mb-8">
             Accuracy before and after the learning update cycle.
           </p>
-          <div className="w-full h-[250px]">
+          <div className="w-full h-62.5">
             {chartsReady ? (
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={learningCurveData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
@@ -474,7 +557,7 @@ export function Benchmarks() {
           <p className="text-sm text-text-secondary mb-8">
             Average token cost per mechanism across the latest benchmark export.
           </p>
-          <div className="w-full h-[250px]">
+          <div className="w-full h-62.5">
             {chartsReady ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
@@ -514,11 +597,14 @@ export function Benchmarks() {
       <div className="card p-4 sm:p-8 w-full overflow-x-auto">
         <h3 className="mb-6 text-lg font-semibold">Recent Benchmark Runs</h3>
 
-        <table className="w-full min-w-[700px] border-collapse text-left">
+        <table className="w-full min-w-245 border-collapse text-left">
           <thead>
             <tr className="border-b border-border-subtle mono text-text-muted text-sm">
               <th className="py-3 px-4 font-medium text-xs tracking-wider">TASK</th>
               <th className="py-3 px-4 font-medium text-xs tracking-wider">MODE</th>
+              <th className="py-3 px-4 font-medium text-xs tracking-wider">STATUS</th>
+              <th className="py-3 px-4 font-medium text-xs tracking-wider">TOKENS</th>
+              <th className="py-3 px-4 font-medium text-xs tracking-wider">CONFIDENCE</th>
               <th className="py-3 px-4 font-medium text-xs tracking-wider">LATENCY</th>
               <th className="py-3 px-4 font-medium text-xs tracking-wider">RECEIPT</th>
             </tr>
@@ -526,14 +612,14 @@ export function Benchmarks() {
           <tbody>
             {historyRuns.length === 0 ? (
               <tr>
-                <td className="py-8 px-4 text-text-secondary" colSpan={4}>
+                <td className="py-8 px-4 text-text-secondary" colSpan={7}>
                   No benchmark runs available in the current payload yet.
                 </td>
               </tr>
             ) : historyRuns.map((run) => (
               <tr
                 key={run.key}
-                className={`border-b border-border-subtle transition-colors ${run.taskId || run.explorerUrl || run.merkleRoot ? "cursor-pointer hover:bg-elevated" : ""}`}
+                className={`border-b border-border-subtle transition-colors ${run.taskId || run.explorerUrl || run.merkleRoot ? "cursor-pointer hover:bg-elevated" : ""} ${run.error ? "bg-red-500/5" : ""}`}
                 onClick={() => {
                   if (run.taskId) {
                     navigate(`/task/${run.taskId}/receipt`);
@@ -553,6 +639,17 @@ export function Benchmarks() {
                 </td>
                 <td className="py-4 px-4">
                   <span className="badge">{titleCase(run.mode || "run")}</span>
+                </td>
+                <td className="py-4 px-4">
+                  <span className={`badge ${run.status.toLowerCase() === "failed" || run.error ? "border-red-500/40 text-red-300" : ""}`}>
+                    {titleCase(run.status || "unknown")}
+                  </span>
+                </td>
+                <td className="py-4 px-4 mono text-sm">
+                  {formatInt(run.totalTokens)}
+                </td>
+                <td className="py-4 px-4 mono text-sm">
+                  {formatPercent(run.confidence)}
                 </td>
                 <td className="py-4 px-4 mono text-sm">
                   {run.latencyMs.toFixed(0)} ms
@@ -597,24 +694,82 @@ export function Benchmarks() {
             Inspect the selected benchmark run payload and receipt metadata.
           </p>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
             <div className="border border-border-subtle rounded-md p-4 bg-void">
               <div className="mono text-xs text-text-muted mb-2">TASK</div>
-              <div className="text-sm break-words">{selectedRun.task}</div>
+              <div className="text-sm wrap-break-word">{selectedRun.task}</div>
             </div>
             <div className="border border-border-subtle rounded-md p-4 bg-void">
               <div className="mono text-xs text-text-muted mb-2">MECHANISM</div>
               <div className="text-sm">{titleCase(selectedRun.mode)}</div>
             </div>
             <div className="border border-border-subtle rounded-md p-4 bg-void">
+              <div className="mono text-xs text-text-muted mb-2">STATUS</div>
+              <div className={`text-sm ${selectedRun.status.toLowerCase() === "failed" || selectedRun.error ? "text-red-300" : "text-text-primary"}`}>
+                {titleCase(selectedRun.status || "unknown")}
+              </div>
+            </div>
+            <div className="border border-border-subtle rounded-md p-4 bg-void">
+              <div className="mono text-xs text-text-muted mb-2">CONFIDENCE</div>
+              <div className="text-sm">{formatPercent(selectedRun.confidence)}</div>
+            </div>
+            <div className="border border-border-subtle rounded-md p-4 bg-void">
+              <div className="mono text-xs text-text-muted mb-2">TOKENS</div>
+              <div className="text-sm">{formatInt(selectedRun.totalTokens)}</div>
+            </div>
+            <div className="border border-border-subtle rounded-md p-4 bg-void">
               <div className="mono text-xs text-text-muted mb-2">LATENCY</div>
               <div className="text-sm">{selectedRun.latencyMs.toFixed(0)} ms</div>
             </div>
             <div className="border border-border-subtle rounded-md p-4 bg-void">
+              <div className="mono text-xs text-text-muted mb-2">EVENT COUNT</div>
+              <div className="text-sm">{selectedRun.eventCount === null ? "n/a" : formatInt(selectedRun.eventCount)}</div>
+            </div>
+            <div className="border border-border-subtle rounded-md p-4 bg-void">
+              <div className="mono text-xs text-text-muted mb-2">PAYMENT STATUS</div>
+              <div className="text-sm">{titleCase(selectedRun.paymentStatus ?? "unknown")}</div>
+            </div>
+            <div className="border border-border-subtle rounded-md p-4 bg-void lg:col-span-2">
               <div className="mono text-xs text-text-muted mb-2">MERKLE ROOT</div>
               <div className="mono text-xs break-all text-text-secondary">{selectedRun.merkleRoot ?? "Unavailable"}</div>
             </div>
           </div>
+
+          {selectedRun.error ? (
+            <div className="border border-red-500/40 rounded-md p-3 bg-red-500/10 mb-6">
+              <div className="flex items-start gap-2 text-red-300">
+                <AlertTriangle size={14} className="mt-0.5" />
+                <div>
+                  <div className="mono text-xs mb-1">RUN ERROR</div>
+                  <div className="mono text-xs whitespace-pre-wrap wrap-break-word">{selectedRun.error}</div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {selectedRunModelTelemetry.length > 0 ? (
+            <div className="border border-border-subtle rounded-md p-4 bg-void mb-6">
+              <div className="mono text-xs text-text-muted mb-3">
+                MODEL TELEMETRY
+              </div>
+              <div className="space-y-2">
+                {selectedRunModelTelemetry.map((entry) => (
+                  <div
+                    key={entry.model}
+                    className={`rounded-md border px-3 py-2 flex items-center justify-between gap-3 ${providerTone(entry.provider)}`}
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <ProviderGlyph provider={entry.provider} />
+                      <span className="mono text-xs truncate">{entry.model}</span>
+                    </div>
+                    <span className="mono text-[11px] text-text-muted">
+                      {formatInt(entry.tokens)} tokens
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="flex flex-wrap gap-3 mb-6">
             {selectedRun.taskId ? (
@@ -651,7 +806,7 @@ export function Benchmarks() {
 
           <div className="border border-border-subtle rounded-md p-4 bg-void overflow-x-auto">
             <div className="mono text-xs text-text-muted mb-2">RAW RUN PAYLOAD</div>
-            <pre className="mono text-xs text-text-secondary whitespace-pre-wrap break-words m-0">
+            <pre className="mono text-xs text-text-secondary whitespace-pre-wrap wrap-break-word m-0">
               {JSON.stringify(selectedRun.raw, null, 2)}
             </pre>
           </div>
@@ -669,7 +824,7 @@ export function Benchmarks() {
             {demoHighlights.map((highlight) => (
               <div key={highlight.label} className="border border-border-subtle rounded-lg p-4 bg-void">
                 <div className="mono text-xs text-text-muted mb-2">{highlight.label}</div>
-                <div className="text-sm text-text-primary break-words">{highlight.value}</div>
+                <div className="text-sm text-text-primary wrap-break-word">{highlight.value}</div>
               </div>
             ))}
           </div>
@@ -798,8 +953,10 @@ function extractRuns(
   }
 
   const runResult = getRecord(demoReport?.run_result);
+  const runSummary = getRecord(demoReport?.run_summary);
   const statusAfterRun = getRecord(demoReport?.status_after_run);
   const statusAfterPay = getRecord(demoReport?.status_after_pay);
+  const timeline = getRecord((demoReport as Record<string, unknown> | undefined)?.event_timeline);
 
   if (Object.keys(runResult).length === 0 && Object.keys(statusAfterRun).length === 0) {
     return [];
@@ -810,10 +967,22 @@ function extractRuns(
       task_id: getString(statusAfterRun.task_id) ?? getString(statusAfterPay.task_id),
       task: getString(statusAfterRun.task_text) ?? getString(demoReport?.query) ?? "Benchmark demo run",
       mode: getString(runResult.mechanism) ?? getString(statusAfterRun.mechanism) ?? getString(demoReport?.mechanism) ?? "selector",
-      latency_ms: getNumber(runResult.latency_ms) ?? 0,
+      latency_ms:
+        getNumber(runResult.latency_ms)
+        ?? getNumber(runSummary.latency_ms)
+        ?? getNumber(runSummary.total_latency_ms)
+        ?? 0,
+      total_tokens_used: getNumber(runResult.total_tokens_used) ?? getNumber(runSummary.total_tokens_used) ?? 0,
+      confidence: getNumber(runResult.confidence) ?? getNumber(runSummary.confidence),
+      agent_models_used: getStringArray(runResult.agent_models_used).length > 0
+        ? getStringArray(runResult.agent_models_used)
+        : getStringArray(runSummary.agent_models_used),
       merkle_root: getString(runResult.merkle_root) ?? getString(statusAfterRun.merkle_root),
-      explorer_url: getString(statusAfterRun.explorer_url),
+      explorer_url: getString(statusAfterRun.explorer_url) ?? getString(statusAfterPay.explorer_url),
       status: getString(statusAfterPay.status) ?? getString(statusAfterRun.status) ?? getString(demoReport?.final_status),
+      payment_status: getString(statusAfterPay.payment_status) ?? getString(statusAfterRun.payment_status),
+      event_count: getNumber(timeline.event_count) ?? getNumber(runSummary.event_count),
+      error: getString((demoReport as Record<string, unknown> | undefined)?.error),
     },
   ];
 }
@@ -823,13 +992,35 @@ function normalizeRun(run: Record<string, unknown>, index: number): BenchmarkRun
   const mode = getString(run.mechanism_used) ?? getString(run.mechanism) ?? getString(run.mode) ?? "run";
   const task = getString(run.task) ?? getString(run.task_text) ?? `Benchmark run ${index + 1}`;
   const merkleRoot = getString(run.merkle_root);
+  const modelCounts = getRecord(run.model_counts);
+  const modelsFromCounts = Object.entries(modelCounts)
+    .filter(([, value]) => typeof value === "number" && Number.isFinite(value) && value > 0)
+    .map(([name]) => name);
+  const models = (() => {
+    const fromAgentModels = getStringArray(run.agent_models_used);
+    if (fromAgentModels.length > 0) {
+      return fromAgentModels;
+    }
+    if (modelsFromCounts.length > 0) {
+      return modelsFromCounts;
+    }
+    return getStringArray(run.models);
+  })();
+
   return {
     key: `${taskId ?? `run-${index}`}-${mode}`,
     task,
     mode,
-    latencyMs: getNumber(run.latency_ms) ?? 0,
+    status: getString(run.status) ?? getString(run.final_status) ?? "unknown",
+    confidence: getNumber(run.confidence),
+    totalTokens: getNumber(run.total_tokens_used) ?? getNumber(run.tokens_used) ?? 0,
+    models,
+    error: getString(run.error),
+    eventCount: getNumber(run.event_count),
+    paymentStatus: getString(run.payment_status),
+    latencyMs: getNumber(run.latency_ms) ?? getNumber(run.total_latency_ms) ?? 0,
     merkleRoot,
-    explorerUrl: getString(run.explorer_url),
+    explorerUrl: getString(run.explorer_url) ?? getString(run.receipt_explorer_url),
     taskId,
     raw: run,
   };
@@ -1053,6 +1244,59 @@ function buildDemoHighlights(demoReport: BenchmarkDemoReport | undefined): Array
       value: formatInt(getNumber(runResult.total_tokens_used) ?? getNumber(summary.total_tokens_used)),
     },
   ];
+}
+
+function getStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+}
+
+function getNumericRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => typeof entry === "number" && Number.isFinite(entry) && entry >= 0)
+      .map(([key, entry]) => [key, entry as number]),
+  );
+}
+
+function buildModelTelemetry(run: BenchmarkRunRow): ModelTelemetryRow[] {
+  const candidateMaps = [
+    getNumericRecord(run.raw.model_token_usage),
+    getNumericRecord(run.raw.per_model_tokens),
+    getNumericRecord(run.raw.model_tokens),
+    getNumericRecord(run.raw.token_distribution),
+  ];
+
+  const tokenMap = candidateMaps.find((entry) => Object.keys(entry).length > 0) ?? {};
+  if (Object.keys(tokenMap).length > 0) {
+    return Object.entries(tokenMap)
+      .sort((left, right) => right[1] - left[1])
+      .map(([model, tokens]) => ({
+        model,
+        tokens,
+        provider: providerFromModel(model),
+      }));
+  }
+
+  if (run.models.length === 0) {
+    return [];
+  }
+
+  const evenSplit = run.models.length > 0 ? Math.floor(run.totalTokens / run.models.length) : 0;
+  const remainder = run.models.length > 0 ? run.totalTokens % run.models.length : 0;
+
+  return run.models.map((model, index) => ({
+    model,
+    tokens: Math.max(0, evenSplit + (index < remainder ? 1 : 0)),
+    provider: providerFromModel(model),
+  }));
 }
 
 function getRecord(value: unknown): Record<string, unknown> {

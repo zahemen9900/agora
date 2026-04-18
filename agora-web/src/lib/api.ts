@@ -131,6 +131,9 @@ export interface StreamHandle {
   close: () => void;
 }
 
+const STREAM_MAX_RECONNECT_ATTEMPTS = 6;
+const STREAM_RECONNECT_BASE_DELAY_MS = 500;
+
 export class ApiRequestError extends Error {
   status: number;
   detail: unknown;
@@ -353,22 +356,52 @@ async function sha256Hex(value: string): Promise<string> {
     .join("");
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeStreamEventPayload(
+  rawPayload: unknown,
+): { payload: Record<string, unknown>; timestamp: string | null } | null {
+  const root = asRecord(rawPayload);
+  if (!root) {
+    return null;
+  }
+
+  const timestamp = typeof root.timestamp === "string" ? root.timestamp : null;
+
+  // New envelope shape from backend stream endpoint.
+  const envelopePayload = asRecord(root.payload);
+  if (envelopePayload) {
+    return { payload: envelopePayload, timestamp };
+  }
+
+  // Legacy envelope shape fallback.
+  const legacyPayload = asRecord(root.data);
+  if (legacyPayload && "timestamp" in root) {
+    return { payload: legacyPayload, timestamp };
+  }
+
+  // Older direct event payloads.
+  return { payload: root, timestamp };
+}
+
+function eventSignature(
+  eventType: string,
+  payload: Record<string, unknown>,
+  timestamp: string | null,
+): string {
+  return `${eventType}:${timestamp ?? ""}:${JSON.stringify(payload)}`;
+}
+
 export async function streamDeliberation(
   taskId: string,
   token: string | null,
   onEvent: (event: TaskEvent) => void,
 ): Promise<StreamHandle> {
-  const ticketResponse = await requestJson<StreamTicketResponse>(
-    `/tasks/${taskId}/stream-ticket`,
-    {
-      method: "POST",
-      headers: authHeaders(token),
-    },
-  );
-  const url = new URL(`${API_URL}/tasks/${taskId}/stream`, window.location.origin);
-  url.searchParams.set("ticket", ticketResponse.ticket);
-
-  const source = new EventSource(url.toString());
   const eventTypes = [
     "mechanism_selected",
     "agent_output",
@@ -382,26 +415,143 @@ export async function streamDeliberation(
     "complete",
   ];
 
-  for (const eventType of eventTypes) {
-    source.addEventListener(eventType, (event) => {
-      const message = event as MessageEvent<string>;
-      onEvent({
-        event: eventType,
-        data: JSON.parse(message.data) as Record<string, unknown>,
-        timestamp: null,
-      });
-    });
-  }
+  let source: EventSource | null = null;
+  let closed = false;
+  let sawTerminalEvent = false;
+  let reconnectAttempts = 0;
+  let reconnectTimer: number | null = null;
+  const seenSignatures = new Set<string>();
 
-  source.onerror = () => {
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const closeSource = () => {
+    if (source) {
+      source.close();
+      source = null;
+    }
+  };
+
+  const emitStreamError = (message: string) => {
     onEvent({
       event: "error",
-      data: { message: "Stream disconnected" },
+      data: { message },
       timestamp: null,
     });
   };
 
+  const scheduleReconnect = (reason: string) => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+
+    closeSource();
+    reconnectAttempts += 1;
+    if (reconnectAttempts > STREAM_MAX_RECONNECT_ATTEMPTS) {
+      emitStreamError(`Stream disconnected: ${reason}`);
+      return;
+    }
+
+    const delayMs = Math.min(
+      8_000,
+      STREAM_RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1),
+    );
+    clearReconnectTimer();
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, delayMs);
+  };
+
+  const handleEventMessage = (eventType: string, event: Event) => {
+    const message = event as MessageEvent<string>;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(message.data);
+    } catch {
+      emitStreamError(`Stream payload parse failure for ${eventType}`);
+      return;
+    }
+
+    const normalized = normalizeStreamEventPayload(parsed);
+    if (!normalized) {
+      emitStreamError(`Stream payload shape mismatch for ${eventType}`);
+      return;
+    }
+
+    const signature = eventSignature(eventType, normalized.payload, normalized.timestamp);
+    if (seenSignatures.has(signature)) {
+      return;
+    }
+    seenSignatures.add(signature);
+
+    onEvent({
+      event: eventType,
+      data: normalized.payload,
+      timestamp: normalized.timestamp,
+    });
+
+    if (eventType === "complete") {
+      sawTerminalEvent = true;
+      closeSource();
+      clearReconnectTimer();
+    }
+  };
+
+  const connect = async () => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+
+    let ticketResponse: StreamTicketResponse;
+    try {
+      ticketResponse = await requestJson<StreamTicketResponse>(
+        `/tasks/${taskId}/stream-ticket`,
+        {
+          method: "POST",
+          headers: authHeaders(token),
+        },
+      );
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError ? error.message : "Failed to request stream ticket";
+      scheduleReconnect(message);
+      return;
+    }
+
+    const url = new URL(`${API_URL}/tasks/${taskId}/stream`, window.location.origin);
+    url.searchParams.set("ticket", ticketResponse.ticket);
+
+    closeSource();
+    source = new EventSource(url.toString());
+
+    for (const eventType of eventTypes) {
+      source.addEventListener(eventType, (event) => {
+        handleEventMessage(eventType, event);
+      });
+    }
+
+    source.onerror = () => {
+      if (closed || sawTerminalEvent) {
+        return;
+      }
+      scheduleReconnect("connection error");
+    };
+
+    reconnectAttempts = 0;
+  };
+
+  await connect();
+
   return {
-    close: () => source.close(),
+    close: () => {
+      closed = true;
+      clearReconnectTimer();
+      closeSource();
+    },
   };
 }

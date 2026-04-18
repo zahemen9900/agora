@@ -33,6 +33,7 @@ from api.coordination import (
 from api.models import (
     DeliberationResultResponse,
     MechanismName,
+    PaymentStatusName,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskEvent,
@@ -269,8 +270,53 @@ async def _enforce_task_run_rate_limit(workspace_id: str) -> None:
     )
 
 
-def _result_to_response(task_id: str, result: DeliberationResult) -> DeliberationResultResponse:
+def _derive_informational_payouts(
+    *,
+    payment_amount: float,
+    model_token_usage: dict[str, int],
+    agent_models_used: list[str],
+) -> dict[str, float]:
+    """Derive display-only per-model payout allocations for UI telemetry panels."""
+
+    if payment_amount <= 0.0:
+        return {}
+
+    normalized_tokens = {
+        model: max(0, int(tokens)) for model, tokens in model_token_usage.items() if model
+    }
+    token_total = sum(normalized_tokens.values())
+    if token_total > 0:
+        return {
+            model: (payment_amount * tokens) / token_total
+            for model, tokens in normalized_tokens.items()
+        }
+
+    unique_models = [model for model in dict.fromkeys(agent_models_used) if model]
+    if not unique_models:
+        return {}
+
+    even_split = payment_amount / len(unique_models)
+    return {model: even_split for model in unique_models}
+
+
+def _result_to_response(
+    task_id: str,
+    result: DeliberationResult,
+    *,
+    payment_amount: float = 0.0,
+    payment_status: PaymentStatusName = "none",
+) -> DeliberationResultResponse:
     """Convert runtime result into API response shape."""
+
+    model_token_usage = {model: int(tokens) for model, tokens in result.model_token_usage.items()}
+    model_latency_ms = {
+        model: float(latency) for model, latency in result.model_latency_ms.items()
+    }
+    informational_model_payouts = _derive_informational_payouts(
+        payment_amount=payment_amount,
+        model_token_usage=model_token_usage,
+        agent_models_used=result.agent_models_used,
+    )
 
     return DeliberationResultResponse(
         task_id=task_id,
@@ -282,8 +328,13 @@ def _result_to_response(task_id: str, result: DeliberationResult) -> Deliberatio
         decision_hash=_hash_text(result.final_answer),
         agent_count=result.agent_count,
         agent_models_used=result.agent_models_used,
+        model_token_usage=model_token_usage,
+        model_latency_ms=model_latency_ms,
         total_tokens_used=result.total_tokens_used,
         latency_ms=result.total_latency_ms,
+        payment_amount=max(0.0, payment_amount),
+        payment_status=payment_status,
+        informational_model_payouts=informational_model_payouts,
         round_count=result.round_count,
         mechanism_switches=result.mechanism_switches,
         transcript_hashes=result.transcript_hashes,
@@ -329,6 +380,18 @@ def _event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any
         data=event_data,
         timestamp=datetime.now(UTC),
     ).model_dump(mode="json")
+
+
+def _to_sse_message(event: dict[str, Any]) -> dict[str, Any]:
+    """Normalize stored/live envelopes to SSE messages with explicit timestamps."""
+
+    return {
+        "event": str(event.get("event", "update")),
+        "data": {
+            "payload": event.get("data", {}),
+            "timestamp": event.get("timestamp"),
+        },
+    }
 
 
 def _forced_mechanism() -> MechanismType | None:
@@ -795,7 +858,12 @@ async def run_task(
             await _release_run_lock_once()
         raise HTTPException(status_code=500, detail="Task execution failed") from exc
 
-    result_response = _result_to_response(task_id, result)
+    result_response = _result_to_response(
+        task_id,
+        result,
+        payment_amount=task.payment_amount,
+        payment_status=task.payment_status,
+    )
 
     if bridge.is_configured():
         try:
@@ -1006,11 +1074,7 @@ async def stream_task(
     async def event_generator() -> Any:
         events = await store.get_events(workspace_id, task_id)
         for event in events:
-            yield {
-                "event": event.get("event", "update"),
-                "data": event.get("data", {}),
-                "timestamp": event.get("timestamp"),
-            }
+            yield _to_sse_message(event)
 
         if any(event.get("event") == "complete" for event in events):
             return
@@ -1032,11 +1096,7 @@ async def stream_task(
                         continue
 
                     for event in latest[next_event_index:]:
-                        payload = {
-                            "event": event.get("event", "update"),
-                            "data": event.get("data", {}),
-                            "timestamp": event.get("timestamp"),
-                        }
+                        payload = _to_sse_message(event)
                         next_event_index += 1
                         yield payload
                         if payload["event"] in {"complete", "error"}:
@@ -1045,9 +1105,10 @@ async def stream_task(
 
                 if item is None:
                     break
-                yield item
+                payload = _to_sse_message(item)
+                yield payload
                 next_event_index += 1
-                if item.get("event") in {"complete", "error"}:
+                if payload["event"] in {"complete", "error"}:
                     break
         finally:
             stream.unsubscribe(stream_id, queue)

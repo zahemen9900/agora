@@ -152,6 +152,8 @@ class DeliberationResult(BaseModel):
     merkle_root: str
     transcript_hashes: list[str]
     agent_models_used: list[str] = Field(default_factory=list)
+    model_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_latency_ms: dict[str, float] = Field(default_factory=dict)
     convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
     locked_claims: list[VerifiedClaim] = Field(default_factory=list)
     total_tokens_used: int = Field(ge=0)

@@ -30,7 +30,7 @@ from api.coordination import (
     reset_coordination_backend_cache_for_tests,
 )
 from api.main import app
-from api.models import ApiKeyCreateRequest, TaskCreateRequest
+from api.models import ApiKeyCreateRequest, BenchmarkRunRequest, TaskCreateRequest
 from api.routes import api_keys as api_key_routes
 from api.routes import auth_session
 from api.routes import benchmarks as benchmark_routes
@@ -760,6 +760,100 @@ def test_task_create_request_rejects_oversized_task() -> None:
         TaskCreateRequest(task="x" * 12_001, agent_count=3, stakes=0.0)
 
 
+def test_task_create_request_defaults_and_agent_boundaries() -> None:
+    assert TaskCreateRequest(task="default agent count check").agent_count == 4
+    assert TaskCreateRequest(task="max agent count check", agent_count=12).agent_count == 12
+
+    with pytest.raises(ValidationError):
+        TaskCreateRequest(task="invalid agent count", agent_count=13)
+
+
+def test_benchmark_run_request_defaults_and_agent_boundaries() -> None:
+    assert BenchmarkRunRequest().agent_count == 4
+    assert BenchmarkRunRequest(agent_count=12).agent_count == 12
+
+    with pytest.raises(ValidationError):
+        BenchmarkRunRequest(agent_count=13)
+
+
+def test_result_to_response_includes_model_telemetry_and_informational_payouts() -> None:
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+    result = DeliberationResult(
+        task="telemetry",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="A",
+        confidence=0.72,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=4,
+        mechanism_switches=0,
+        merkle_root="root",
+        transcript_hashes=["h1", "h2"],
+        agent_models_used=["gemini-3.1-pro-preview", "claude-sonnet-4-6"],
+        model_token_usage={"gemini-3.1-pro-preview": 300, "claude-sonnet-4-6": 100},
+        model_latency_ms={"gemini-3.1-pro-preview": 1200.0, "claude-sonnet-4-6": 600.0},
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=400,
+        total_latency_ms=1800.0,
+    )
+
+    response = task_routes._result_to_response(
+        "task-telemetry",
+        result,
+        payment_amount=0.01,
+        payment_status="locked",
+    )
+    assert response.model_token_usage == {
+        "gemini-3.1-pro-preview": 300,
+        "claude-sonnet-4-6": 100,
+    }
+    assert response.model_latency_ms == {
+        "gemini-3.1-pro-preview": 1200.0,
+        "claude-sonnet-4-6": 600.0,
+    }
+    assert response.payment_amount == 0.01
+    assert response.payment_status == "locked"
+    assert response.informational_model_payouts == {
+        "gemini-3.1-pro-preview": pytest.approx(0.0075),
+        "claude-sonnet-4-6": pytest.approx(0.0025),
+    }
+
+
+def test_result_to_response_even_splits_payout_when_token_breakdown_missing() -> None:
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+    result = DeliberationResult(
+        task="fallback payout",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="A",
+        confidence=0.72,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=2,
+        mechanism_switches=0,
+        merkle_root="root",
+        transcript_hashes=["h1", "h2"],
+        agent_models_used=["gemini-3.1-pro-preview", "claude-sonnet-4-6"],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=0,
+        total_latency_ms=100.0,
+    )
+
+    response = task_routes._result_to_response(
+        "task-fallback",
+        result,
+        payment_amount=0.02,
+        payment_status="locked",
+    )
+    assert response.informational_model_payouts == {
+        "gemini-3.1-pro-preview": pytest.approx(0.01),
+        "claude-sonnet-4-6": pytest.approx(0.01),
+    }
+
+
 @pytest.mark.asyncio
 async def test_run_rejects_task_already_in_progress(
     tmp_path: Path,
@@ -1230,8 +1324,24 @@ async def test_stream_task_replays_timestamped_event_envelopes(
         task_routes._store = None
         await task_routes._reset_coordination_state_for_tests()
 
-    assert replayed_events == [first_event, second_event]
-    assert all(set(item) == {"event", "data", "timestamp"} for item in replayed_events)
+    assert replayed_events == [
+        {
+            "event": "agent_output",
+            "data": {
+                "payload": first_event["data"],
+                "timestamp": first_event["timestamp"],
+            },
+        },
+        {
+            "event": "complete",
+            "data": {
+                "payload": second_event["data"],
+                "timestamp": second_event["timestamp"],
+            },
+        },
+    ]
+    assert all(set(item) == {"event", "data"} for item in replayed_events)
+    assert all(set(item["data"]) == {"payload", "timestamp"} for item in replayed_events)
 
 
 @pytest.mark.asyncio
@@ -1278,7 +1388,15 @@ async def test_stream_ticket_is_one_use_and_namespaced(
         assert "ticket" in ticket
         monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
         first = await task_routes.stream_task(task_id, ticket=ticket["ticket"])
-        assert [item async for item in first.content] == task_payload["events"]
+        assert [item async for item in first.content] == [
+            {
+                "event": "complete",
+                "data": {
+                    "payload": task_payload["events"][0]["data"],
+                    "timestamp": task_payload["events"][0]["timestamp"],
+                },
+            }
+        ]
         with pytest.raises(HTTPException) as exc_info:
             await task_routes.stream_task(task_id, ticket=ticket["ticket"])
     finally:

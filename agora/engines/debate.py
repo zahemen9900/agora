@@ -168,6 +168,8 @@ class DebateEngine:
 
         token_counter = 0
         latency_ms = 0.0
+        model_token_usage: dict[str, int] = {}
+        model_latency_ms: dict[str, float] = {}
 
         initial_outputs, usage = await self._assign_initial_answers(
             task,
@@ -175,6 +177,11 @@ class DebateEngine:
         )
         token_counter += usage["tokens"]
         latency_ms += usage["latency_ms"]
+        self._accumulate_model_usage(
+            model_token_usage,
+            model_latency_ms,
+            usage,
+        )
 
         for output in initial_outputs:
             state.transcript_hashes.append(self.hasher.hash_agent_output(output))
@@ -202,6 +209,11 @@ class DebateEngine:
         )
         token_counter += usage["tokens"]
         latency_ms += usage["latency_ms"]
+        self._accumulate_model_usage(
+            model_token_usage,
+            model_latency_ms,
+            usage,
+        )
         for output in opening_outputs:
             state.transcript_hashes.append(self.hasher.hash_agent_output(output))
             if output.role == "proponent":
@@ -232,6 +244,11 @@ class DebateEngine:
                 )
                 token_counter += usage["tokens"]
                 latency_ms += usage["latency_ms"]
+                self._accumulate_model_usage(
+                    model_token_usage,
+                    model_latency_ms,
+                    usage,
+                )
                 state.cross_examinations.append(cross_output)
                 state.transcript_hashes.append(self.hasher.hash_agent_output(cross_output))
                 await self._emit_cross_examination(event_sink, cross_output)
@@ -261,6 +278,11 @@ class DebateEngine:
             )
             token_counter += usage["tokens"]
             latency_ms += usage["latency_ms"]
+            self._accumulate_model_usage(
+                model_token_usage,
+                model_latency_ms,
+                usage,
+            )
 
             round_outputs: list[AgentOutput] = []
             for output in rebuttal_outputs:
@@ -324,6 +346,8 @@ class DebateEngine:
             opp_answer=opp_answer,
             prior_tokens=token_counter,
             prior_latency_ms=latency_ms,
+            prior_model_token_usage=model_token_usage,
+            prior_model_latency_ms=model_latency_ms,
             custom_agents=custom_agents,
         )
         return DebateEngineOutcome(state=state, result=result, reason="completed")
@@ -361,7 +385,7 @@ class DebateEngine:
         self,
         task: str,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
-    ) -> tuple[list[AgentOutput], dict[str, float | int]]:
+    ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate independent initial answers for faction assignment."""
 
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
@@ -407,6 +431,9 @@ class DebateEngine:
         results = await asyncio.gather(*(one_call(idx) for idx in range(self.agent_count)))
         outputs = [output for output, _usage in results]
         usage_totals = self._merge_usage([usage for _output, usage in results])
+        model_tokens, model_latency = self._merge_usage_by_output(results)
+        usage_totals["model_tokens"] = model_tokens
+        usage_totals["model_latency_ms"] = model_latency
         return outputs, usage_totals
 
     def _assign_factions(
@@ -499,7 +526,7 @@ class DebateEngine:
         pro_answer: str,
         opp_answer: str,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
-    ) -> tuple[list[AgentOutput], dict[str, float | int]]:
+    ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate faction opening statements in parallel."""
 
         async def one_call(agent_id: str, side: str) -> tuple[AgentOutput, dict[str, Any]]:
@@ -559,6 +586,9 @@ class DebateEngine:
         )
         outputs = [output for output, _usage in results]
         usage_totals = self._merge_usage([usage for _output, usage in results])
+        model_tokens, model_latency = self._merge_usage_by_output(results)
+        usage_totals["model_tokens"] = model_tokens
+        usage_totals["model_latency_ms"] = model_latency
         return outputs, usage_totals
 
     async def _cross_examination(
@@ -640,6 +670,10 @@ class DebateEngine:
             content_hash=self.hasher.hash_content(content),
             timestamp=datetime.now(UTC),
         )
+        usage["model_tokens"] = {output.agent_model: int(usage.get("tokens", 0))}
+        usage["model_latency_ms"] = {
+            output.agent_model: float(usage.get("latency_ms", 0.0))
+        }
         return output, usage
 
     async def _rebuttal_round(
@@ -652,7 +686,7 @@ class DebateEngine:
         opp_answer: str,
         locked_claims: list[VerifiedClaim],
         custom_agents: Sequence[CustomAgentCallable] | None = None,
-    ) -> tuple[list[AgentOutput], dict[str, float | int]]:
+    ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate faction rebuttals responding to cross-examination."""
 
         async def one_call(agent_id: str, side: str) -> tuple[AgentOutput, dict[str, Any]]:
@@ -715,6 +749,9 @@ class DebateEngine:
         )
         outputs = [output for output, _usage in results]
         usage_totals = self._merge_usage([usage for _output, usage in results])
+        model_tokens, model_latency = self._merge_usage_by_output(results)
+        usage_totals["model_tokens"] = model_tokens
+        usage_totals["model_latency_ms"] = model_latency
         return outputs, usage_totals
 
     async def _final_aggregation(
@@ -725,8 +762,10 @@ class DebateEngine:
         opp_answer: str,
         prior_tokens: int,
         prior_latency_ms: float,
+        prior_model_token_usage: dict[str, int],
+        prior_model_latency_ms: dict[str, float],
         custom_agents: Sequence[CustomAgentCallable] | None = None,
-    ) -> tuple[DeliberationResult, dict[str, float | int]]:
+    ) -> tuple[DeliberationResult, dict[str, Any]]:
         """Aggregate trajectory, synthesize final answer, and build result."""
 
         pro_outputs = state.factions.get("pro", []) + state.rebuttals.get("pro", [])
@@ -784,6 +823,16 @@ class DebateEngine:
 
         total_tokens = prior_tokens + int(usage["tokens"])
         total_latency_ms = prior_latency_ms + float(usage["latency_ms"])
+        model_token_usage = dict(prior_model_token_usage)
+        model_latency_ms = dict(prior_model_latency_ms)
+        synthesis_usage = dict(usage)
+        model_name = synthesis_usage.get("model")
+        if isinstance(model_name, str) and model_name:
+            synthesis_usage["model_tokens"] = {model_name: int(synthesis_usage.get("tokens", 0))}
+            synthesis_usage["model_latency_ms"] = {
+                model_name: float(synthesis_usage.get("latency_ms", 0.0))
+            }
+        self._accumulate_model_usage(model_token_usage, model_latency_ms, synthesis_usage)
         agent_models_used = list(
             dict.fromkeys(
                 [
@@ -810,6 +859,8 @@ class DebateEngine:
             merkle_root=state.merkle_root,
             transcript_hashes=state.transcript_hashes,
             agent_models_used=agent_models_used,
+            model_token_usage=model_token_usage,
+            model_latency_ms=model_latency_ms,
             convergence_history=state.convergence_history,
             locked_claims=state.locked_claims,
             total_tokens_used=total_tokens,
@@ -830,13 +881,18 @@ class DebateEngine:
         """Call an agent with structured output and graceful fallback."""
 
         if custom_agent is not None:
-            return await invoke_custom_agent(
+            response, usage = await invoke_custom_agent(
                 custom_agent,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_model=response_model,
                 fallback=fallback,
             )
+            return response, {
+                "tokens": int(usage.get("tokens", 0)),
+                "latency_ms": float(usage.get("latency_ms", 0.0)),
+                "model": "custom-agent",
+            }
 
         try:
             caller = self._get_caller(tier)
@@ -851,6 +907,7 @@ class DebateEngine:
                     "tokens": int(usage.get("input_tokens", 0))
                     + int(usage.get("output_tokens", 0)),
                     "latency_ms": float(usage.get("latency_ms", 0.0)),
+                    "model": self._model_name(tier),
                 }
             logger.warning("structured_response_type_mismatch", expected=response_model.__name__)
         except AgentCallError as exc:
@@ -861,7 +918,11 @@ class DebateEngine:
                 error=str(exc),
             )
 
-        return fallback, {"tokens": 0, "latency_ms": 0.0}
+        return fallback, {
+            "tokens": 0,
+            "latency_ms": 0.0,
+            "model": "custom-agent" if custom_agent is not None else self._model_name(tier),
+        }
 
     async def _call_cross_exam(
         self,
@@ -885,6 +946,7 @@ class DebateEngine:
             return self._coerce_cross_exam_response(response_text, fallback), {
                 "tokens": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
                 "latency_ms": float(usage.get("latency_ms", 0.0)),
+                "model": self._model_name("kimi"),
             }
         except AgentCallError as exc:
             logger.warning(
@@ -894,7 +956,11 @@ class DebateEngine:
                 error=str(exc),
             )
 
-        return fallback, {"tokens": 0, "latency_ms": 0.0}
+        return fallback, {
+            "tokens": 0,
+            "latency_ms": 0.0,
+            "model": self._model_name("kimi"),
+        }
 
     @staticmethod
     def _coerce_cross_exam_response(
@@ -1084,12 +1150,50 @@ class DebateEngine:
         return "Clarify your weakest claim and provide stronger support."
 
     @staticmethod
-    def _merge_usage(entries: list[dict[str, Any]]) -> dict[str, float | int]:
+    def _merge_usage(entries: list[dict[str, Any]]) -> dict[str, Any]:
         """Merge token and latency accounting across calls."""
 
         total_tokens = sum(int(entry.get("tokens", 0)) for entry in entries)
         total_latency = sum(float(entry.get("latency_ms", 0.0)) for entry in entries)
         return {"tokens": total_tokens, "latency_ms": total_latency}
+
+    @staticmethod
+    def _merge_usage_by_output(
+        entries: list[tuple[AgentOutput, dict[str, Any]]],
+    ) -> tuple[dict[str, int], dict[str, float]]:
+        """Merge model usage metrics from per-output usage tuples."""
+
+        model_tokens: dict[str, int] = {}
+        model_latency_ms: dict[str, float] = {}
+        for output, usage in entries:
+            model = output.agent_model
+            model_tokens[model] = model_tokens.get(model, 0) + int(usage.get("tokens", 0))
+            model_latency_ms[model] = model_latency_ms.get(model, 0.0) + float(
+                usage.get("latency_ms", 0.0)
+            )
+        return model_tokens, model_latency_ms
+
+    @staticmethod
+    def _accumulate_model_usage(
+        model_tokens: dict[str, int],
+        model_latency_ms: dict[str, float],
+        usage: dict[str, Any],
+    ) -> None:
+        """Accumulate one stage usage payload into aggregate model usage maps."""
+
+        stage_tokens = usage.get("model_tokens")
+        if isinstance(stage_tokens, dict):
+            for model, tokens in stage_tokens.items():
+                if not isinstance(model, str):
+                    continue
+                model_tokens[model] = model_tokens.get(model, 0) + int(tokens)
+
+        stage_latency = usage.get("model_latency_ms")
+        if isinstance(stage_latency, dict):
+            for model, latency in stage_latency.items():
+                if not isinstance(model, str):
+                    continue
+                model_latency_ms[model] = model_latency_ms.get(model, 0.0) + float(latency)
 
     @staticmethod
     def _score_faction_outputs(outputs: list[AgentOutput]) -> float:

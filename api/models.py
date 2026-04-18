@@ -18,7 +18,7 @@ class TaskCreateRequest(BaseModel):
     """Payload for creating a persisted task."""
 
     task: str = Field(min_length=1, max_length=12_000)
-    agent_count: int = Field(default=3, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=12)
     stakes: float = Field(default=0.0, ge=0.0)
     mechanism_override: MechanismName | None = None
 
@@ -54,8 +54,13 @@ class DeliberationResultResponse(BaseModel):
     decision_hash: str | None = None
     agent_count: int = Field(ge=1, default=1)
     agent_models_used: list[str] = Field(default_factory=list)
+    model_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_latency_ms: dict[str, float] = Field(default_factory=dict)
     total_tokens_used: int = Field(ge=0, default=0)
     latency_ms: float = Field(ge=0.0, default=0.0)
+    payment_amount: float = Field(ge=0.0, default=0.0)
+    payment_status: PaymentStatusName = "none"
+    informational_model_payouts: dict[str, float] = Field(default_factory=dict)
     round_count: int = Field(ge=1, default=1)
     mechanism_switches: int = Field(ge=0, default=0)
     transcript_hashes: list[str] = Field(default_factory=list)
@@ -177,7 +182,7 @@ class BenchmarkRunRequest(BaseModel):
 
     training_per_category: int = Field(default=1, ge=1, le=20)
     holdout_per_category: int = Field(default=1, ge=1, le=10)
-    agent_count: int = Field(default=3, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=12)
     live_agents: bool = True
     seed: int = 42
 
