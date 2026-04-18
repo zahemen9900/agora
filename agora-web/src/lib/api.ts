@@ -38,6 +38,20 @@ export interface BenchmarkSummary {
   per_category: Record<string, Record<string, Record<string, number>>>;
 }
 
+export type BenchmarkDomainName = "math" | "factual" | "reasoning" | "code" | "creative" | "demo";
+
+export interface BenchmarkDomainPromptPayload {
+  template_id?: string | null;
+  prompt?: string | null;
+}
+
+export interface BenchmarkCostEstimatePayload {
+  estimated_cost_usd?: number | null;
+  model_estimated_costs_usd?: Record<string, number>;
+  pricing_version?: string | null;
+  estimated_at?: string | null;
+}
+
 export interface BenchmarkStagePayload {
   runs?: Array<Record<string, unknown>>;
   summary?: BenchmarkSummary;
@@ -89,6 +103,12 @@ export interface BenchmarkRunStatusPayload {
   updated_at: string;
   error?: string | null;
   artifact_id?: string | null;
+  request?: Record<string, unknown> | null;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens?: number | null;
+  thinking_tokens?: number | null;
+  cost?: BenchmarkCostEstimatePayload | null;
 }
 
 export interface BenchmarkCatalogEntry {
@@ -102,6 +122,12 @@ export interface BenchmarkCatalogEntry {
   model_counts: Record<string, number>;
   frequency_score: number;
   status?: string | null;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens?: number;
+  thinking_tokens?: number;
+  models?: string[];
+  cost?: BenchmarkCostEstimatePayload | null;
 }
 
 export interface BenchmarkCatalogPayload {
@@ -119,12 +145,47 @@ export interface BenchmarkRunRequestPayload {
   agent_count?: number;
   live_agents?: boolean;
   seed?: number;
+  domain_prompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>>;
 }
 
 export interface BenchmarkRunResponsePayload {
   run_id: string;
   status: BenchmarkRunStatusName;
   created_at: string;
+}
+
+export interface BenchmarkPromptTemplatePayload {
+  id: string;
+  title: string;
+  prompt: string;
+}
+
+export interface BenchmarkPromptTemplatesPayload {
+  domains: Record<BenchmarkDomainName, BenchmarkPromptTemplatePayload[]>;
+}
+
+export interface BenchmarkDetailPayload {
+  benchmark_id: string;
+  artifact_id?: string | null;
+  scope: "global" | "user";
+  source: string;
+  status?: string | null;
+  owner_user_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens: number;
+  thinking_tokens: number;
+  models: string[];
+  request?: Record<string, unknown> | null;
+  summary: Record<string, unknown>;
+  benchmark_payload: Record<string, unknown>;
+  cost?: BenchmarkCostEstimatePayload | null;
 }
 
 export interface StreamHandle {
@@ -290,8 +351,29 @@ export async function revokeApiKey(
   });
 }
 
-export async function getBenchmarkCatalog(token: string | null): Promise<BenchmarkCatalogPayload> {
-  return requestJson<BenchmarkCatalogPayload>("/benchmarks/catalog", {
+export async function getBenchmarkCatalog(
+  token: string | null,
+  limit = 25,
+): Promise<BenchmarkCatalogPayload> {
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  return requestJson<BenchmarkCatalogPayload>(`/benchmarks/catalog?limit=${normalizedLimit}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkPromptTemplates(
+  token: string | null,
+): Promise<BenchmarkPromptTemplatesPayload> {
+  return requestJson<BenchmarkPromptTemplatesPayload>("/benchmarks/prompt-templates", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkDetail(
+  token: string | null,
+  benchmarkId: string,
+): Promise<BenchmarkDetailPayload> {
+  return requestJson<BenchmarkDetailPayload>(`/benchmarks/${encodeURIComponent(benchmarkId)}`, {
     headers: authHeaders(token),
   });
 }
@@ -397,6 +479,10 @@ function eventSignature(
   return `${eventType}:${timestamp ?? ""}:${JSON.stringify(payload)}`;
 }
 
+function hasStringMessageData(event: Event): event is MessageEvent<string> {
+  return typeof (event as MessageEvent<unknown>).data === "string";
+}
+
 export async function streamDeliberation(
   taskId: string,
   token: string | null,
@@ -468,11 +554,39 @@ export async function streamDeliberation(
   };
 
   const handleEventMessage = (eventType: string, event: Event) => {
-    const message = event as MessageEvent<string>;
+    if (!hasStringMessageData(event)) {
+      // Native EventSource transport errors also use the "error" event type
+      // but do not include payload data. Let `source.onerror` handle reconnects.
+      if (eventType === "error") {
+        return;
+      }
+      emitStreamError(`Stream payload missing data for ${eventType}`);
+      return;
+    }
+
+    const message = event;
+    const rawData = message.data.trim();
+    if (rawData.length === 0) {
+      if (eventType === "error") {
+        return;
+      }
+      emitStreamError(`Stream payload missing data for ${eventType}`);
+      return;
+    }
+
     let parsed: unknown;
     try {
-      parsed = JSON.parse(message.data);
+      parsed = JSON.parse(rawData);
     } catch {
+      if (eventType === "error") {
+        // Some server/edge layers emit plain-text error payloads.
+        onEvent({
+          event: "error",
+          data: { message: rawData },
+          timestamp: null,
+        });
+        return;
+      }
       emitStreamError(`Stream payload parse failure for ${eventType}`);
       return;
     }

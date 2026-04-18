@@ -127,6 +127,45 @@ function eventCardTone(eventType: string): string {
   return "border-l-border-muted";
 }
 
+function detailLabelForEvent(event: TimelineEvent): string {
+  if (event.type === "mechanism_selected") {
+    return "selection rationale";
+  }
+  if (event.type === "agent_output") {
+    return "agent output metadata";
+  }
+  if (event.type === "cross_examination") {
+    return "cross-examination analysis";
+  }
+  if (event.type === "convergence_update") {
+    return "convergence metrics";
+  }
+  if (event.type === "mechanism_switch") {
+    return "switch rationale";
+  }
+  if (event.type === "quorum_reached") {
+    return "quorum evidence";
+  }
+  if (event.type === "receipt_committed") {
+    return "receipt metadata";
+  }
+  if (event.type === "payment_released") {
+    return "payment metadata";
+  }
+  if (event.type === "complete") {
+    return "completion metadata";
+  }
+  if (event.type === "error") {
+    return "error diagnostics";
+  }
+
+  const details = event.details ?? {};
+  if ("reasoning" in details || "selector_reasoning_hash" in details) {
+    return "reasoning trace";
+  }
+  return "event payload";
+}
+
 function formatTimestamp(value: string | null): string {
   if (!value) {
     return "now";
@@ -666,7 +705,7 @@ export function LiveDeliberation() {
                 {entry.details ? (
                   <details className="rounded-md border border-border-subtle bg-void p-2">
                     <summary className="mono text-[11px] text-text-muted cursor-pointer">
-                      reasoning trace
+                      {detailLabelForEvent(entry)}
                     </summary>
                     <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap wrap-break-word mt-2">
                       {JSON.stringify(entry.details, null, 2)}
