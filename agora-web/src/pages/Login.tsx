@@ -94,7 +94,6 @@ export function LoginPage() {
           </div>
         </header>
 
-        {/* HERO CONTENT — 2-col on md+, stacked on mobile */}
         <div className="flex-1 flex items-center max-w-[1200px] mx-auto w-full relative z-10 py-16">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-20 items-center w-full">
 
