@@ -8,12 +8,16 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 
 import {
+  ApiRequestError,
+  getAuthConfig,
   getAuthMe,
+  type AuthConfigPayload,
   type FeatureFlagsResponse,
   type PrincipalResponse,
   type WorkspaceResponse,
@@ -86,7 +90,7 @@ function returnToFromState(state: unknown): string | null {
   return sanitizeReturnTo(candidate);
 }
 
-export function consumeReturnTo(): string {
+function consumeReturnTo(): string {
   const value = window.sessionStorage.getItem(RETURN_TO_STORAGE_KEY);
   window.sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
   return sanitizeReturnTo(value);
@@ -115,12 +119,52 @@ function resolveRedirectUri(configuredRedirectUri: string | undefined): string {
   }
 }
 
+function isBackendUnavailableError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return message.includes("request failed: 502")
+    || message.includes("failed to fetch")
+    || message.includes("networkerror");
+}
+
+function shouldResolveAuthFromBackend(configuredClientId: string): boolean {
+  const source = (import.meta.env.VITE_WORKOS_CONFIG_SOURCE ?? "").trim().toLowerCase();
+  if (["backend", "server", "api"].includes(source)) {
+    return true;
+  }
+
+  const backendSource = (import.meta.env.VITE_AGORA_BACKEND_SOURCE ?? "").trim().toLowerCase();
+  if (backendSource === "gcloud") {
+    return true;
+  }
+
+  if (!configuredClientId.trim()) {
+    return true;
+  }
+
+  return false;
+}
+
+function buildFallbackAuthConfig(clientId: string): AuthConfigPayload {
+  return {
+    workos_client_id: clientId,
+    workos_authkit_domain: "",
+    auth_issuer: "",
+    auth_audience: "",
+    auth_jwks_url: "",
+  };
+}
+
 function AuthStateProvider({ children }: { children: ReactNode }) {
   const workosAuth = useWorkOSAuth();
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const [principal, setPrincipal] = useState<PrincipalResponse | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [featureFlags, setFeatureFlags] = useState<FeatureFlagsResponse | null>(null);
+  const bootstrappedSubjectRef = useRef<string | null>(null);
+  const backendUnavailableWarnedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,12 +179,22 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
         setWorkspace(null);
         setFeatureFlags(null);
         setAuthStatus("unauthenticated");
+        bootstrappedSubjectRef.current = null;
+        backendUnavailableWarnedRef.current = false;
         return;
       }
 
+      const bootstrapSubject = workosAuth.user.id ?? workosAuth.user.email ?? "authenticated";
+      if (bootstrappedSubjectRef.current === bootstrapSubject) {
+        setAuthStatus("authenticated");
+        return;
+      }
+
+      bootstrappedSubjectRef.current = bootstrapSubject;
+
       setAuthStatus("loading");
       try {
-        const token = await workosAuth.getAccessToken();
+        const token = await workosAuth.getAccessToken({ forceRefresh: true });
         if (!token) {
           await workosAuth.signOut();
           if (!cancelled) {
@@ -164,14 +218,44 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
           setPrincipal(session.principal);
           setWorkspace(session.workspace);
           setFeatureFlags(session.feature_flags);
+          backendUnavailableWarnedRef.current = false;
         } catch (error) {
           if (cancelled) {
             return;
           }
+
+          if (error instanceof ApiRequestError && error.status === 401) {
+            setPrincipal(null);
+            setWorkspace(null);
+            setFeatureFlags(null);
+            if (!backendUnavailableWarnedRef.current) {
+              console.warn(
+                "Auth bootstrap warning: backend rejected the access token on /auth/me. "
+                + "Keeping WorkOS session active to avoid logout loops. "
+                + "Check backend AUTH_ISSUER/AUTH_AUDIENCE/AUTH_JWKS_URL and API target.",
+                error,
+              );
+              backendUnavailableWarnedRef.current = true;
+            }
+            return;
+          }
+
           setPrincipal(null);
           setWorkspace(null);
           setFeatureFlags(null);
-          console.warn("Auth bootstrap warning: /auth/me failed", error);
+
+          if (isBackendUnavailableError(error)) {
+            if (!backendUnavailableWarnedRef.current) {
+              console.warn(
+                "Auth bootstrap skipped: backend is unavailable via /api. "
+                + "Set VITE_AGORA_API_PROXY_TARGET/VITE_AGORA_API_URL to a reachable backend "
+                + "(for local backend use http://localhost:8000).",
+              );
+              backendUnavailableWarnedRef.current = true;
+            }
+          } else {
+            console.warn("Auth bootstrap warning: /auth/me failed", error);
+          }
         }
       } catch {
         await workosAuth.signOut();
@@ -188,7 +272,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [workosAuth]);
+  }, [workosAuth.getAccessToken, workosAuth.isLoading, workosAuth.signOut, workosAuth.user]);
 
   const contextValue = useMemo<AuthContextType>(() => ({
     user: workosAuth.user ?? null,
@@ -218,7 +302,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
         return null;
       }
       try {
-        const token = await workosAuth.getAccessToken();
+        const token = await workosAuth.getAccessToken({ forceRefresh: true });
         return token ?? null;
       } catch {
         return null;
@@ -240,7 +324,91 @@ export function useAuth(): AuthContextType {
 
 // AuthProvider wraps WorkOS AuthKitProvider with correct configuration
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const clientId = import.meta.env.VITE_WORKOS_CLIENT_ID;
+  const configuredClientId = (import.meta.env.VITE_WORKOS_CLIENT_ID ?? "").trim();
+  const [resolvedAuthConfig, setResolvedAuthConfig] = useState<AuthConfigPayload | null>(null);
+  const [authConfigError, setAuthConfigError] = useState<string | null>(null);
+  const mismatchWarnedRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function resolveAuthConfig() {
+      setAuthConfigError(null);
+      const fallback = buildFallbackAuthConfig(configuredClientId);
+      const shouldUseBackendConfig = shouldResolveAuthFromBackend(configuredClientId);
+
+      if (!shouldUseBackendConfig) {
+        if (!configuredClientId) {
+          setAuthConfigError(
+            "Missing VITE_WORKOS_CLIENT_ID environment variable. "
+            + "Set VITE_WORKOS_CLIENT_ID or enable backend auth config bootstrap.",
+          );
+          return;
+        }
+        if (!cancelled) {
+          setResolvedAuthConfig(fallback);
+        }
+        return;
+      }
+
+      try {
+        const backendConfig = await getAuthConfig();
+        const backendClientId = (backendConfig.workos_client_id ?? "").trim();
+        if (!backendClientId && !configuredClientId) {
+          throw new Error("Backend auth config returned no WorkOS client id.");
+        }
+
+        if (
+          configuredClientId
+          && backendClientId
+          && configuredClientId !== backendClientId
+          && !mismatchWarnedRef.current
+        ) {
+          console.warn(
+            "VITE_WORKOS_CLIENT_ID differs from backend /auth/config workos_client_id. "
+            + "Using backend value to avoid token audience mismatch.",
+            {
+              envClientId: configuredClientId,
+              backendClientId,
+            },
+          );
+          mismatchWarnedRef.current = true;
+        }
+
+        if (!cancelled) {
+          setResolvedAuthConfig({
+            ...backendConfig,
+            workos_client_id: backendClientId || configuredClientId,
+          });
+        }
+      } catch (error) {
+        if (!configuredClientId) {
+          if (!cancelled) {
+            setAuthConfigError(
+              "Unable to resolve WorkOS configuration from backend /auth/config. "
+              + "Set VITE_WORKOS_CLIENT_ID locally or ensure backend auth settings are configured.",
+            );
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          console.warn(
+            "Falling back to VITE_WORKOS_CLIENT_ID after /auth/config lookup failure.",
+            error,
+          );
+          setResolvedAuthConfig(fallback);
+        }
+      }
+    }
+
+    void resolveAuthConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, [configuredClientId]);
+
+  const clientId = resolvedAuthConfig?.workos_client_id ?? "";
   const redirectUri = resolveRedirectUri(import.meta.env.VITE_WORKOS_REDIRECT_URI);
   const devProxySetting = (import.meta.env.VITE_WORKOS_USE_DEV_PROXY ?? "").trim().toLowerCase();
   const useDevProxy = import.meta.env.DEV
@@ -262,6 +430,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     ? ["1", "true", "yes", "on"].includes(configuredHttpsRaw)
     : undefined;
   const apiHttps = configuredHttps ?? (useDevProxy ? window.location.protocol === "https:" : undefined);
+
+  if (authConfigError) {
+    throw new Error(authConfigError);
+  }
+
+  if (!resolvedAuthConfig) {
+    return (
+      <div className="max-w-[900px] mx-auto px-4 py-16">
+        <div className="card p-6 border border-border-subtle">
+          <p className="text-text-secondary">Initializing authentication settings...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!clientId) {
     throw new Error(

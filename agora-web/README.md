@@ -1,98 +1,84 @@
-# React + TypeScript + Vite
+# Agora Web
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Frontend for the Agora multi-agent deliberation platform. Users submit questions or decisions, Agora routes them to a panel of AI agents that deliberate via **debate** or **vote**, and the outcome is committed to Solana with a verifiable Merkle receipt.
 
-Currently, two official plugins are available:
+**Stack:** React 19 · TypeScript · Vite · React Router · WorkOS AuthKit · Recharts · Framer Motion · Tailwind CSS
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+---
 
-## React Compiler
+## Pages
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see  [this documentation](https://react.dev/learn/react-compiler/installation).
+| Route | Description |
+| --- | --- |
+| `/` | Task submission dashboard (authenticated) or auth landing (unauthenticated) |
+| `/task/:taskId` | Live deliberation — streams agent arguments in real time with a convergence meter |
+| `/task/:taskId/receipt` | On-chain receipt — Merkle root, transcript hashes, Solana tx link, payment release |
+| `/api-keys` | Create, copy, and revoke API keys for programmatic access |
+| `/benchmarks` | Accuracy × mechanism charts, selector learning curve, cost efficiency (human sessions only) |
+| `/auth`, `/login` | WorkOS AuthKit login flow |
+| `/callback` | OAuth redirect handler |
 
-## Expanding the ESLint configuration
+## Key features
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- **Auto-routing** — The backend selector analyzes each task and picks `DEBATE` or `VOTE` with a confidence score; the UI reveals the routing decision before navigating to the live view.
+- **Streaming deliberation** — Agent messages stream in via SSE with typewriter rendering and a live entropy/convergence meter.
+- **Verifiable receipts** — Each completed task has a Merkle root over its transcript hashes. The receipt page lets users verify the root client-side and release escrowed SOL payments.
+- **API key management** — Workspace-scoped keys for programmatic task submission; API key principals do not see benchmark navigation.
+- **Benchmarks** — Bar and line charts (Recharts) comparing debate vs. vote vs. selector accuracy across task categories, plus token cost and selector learning-curve data.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+---
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Development
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev        # http://localhost:5173
+npm run build
+npm run preview
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### Environment variables
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+| Variable | Default | Description |
+| --- | --- | --- |
+| `VITE_AGORA_API_URL` | `/api` | Override the API base URL in any environment |
+| `VITE_AGORA_BACKEND_SOURCE` | `local` | Backend source selector for dev proxy: `local` or `gcloud` |
+| `VITE_AGORA_LOCAL_API_URL` | `http://localhost:8000` | Local backend URL used when source is `local` |
+| `VITE_AGORA_GCLOUD_API_URL` | `https://agora-api-rztfxer7ra-uc.a.run.app` | Hosted backend URL used when source is `gcloud` |
+| `VITE_AGORA_API_PROXY_TARGET` | unset | Optional hard override for `/api/*`; takes precedence over source selector |
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+In development, Vite proxies `/api/*` based on `VITE_AGORA_BACKEND_SOURCE`.
+
+Use hosted backend:
+
+```bash
+VITE_AGORA_BACKEND_SOURCE=gcloud npm run dev
 ```
 
-## API Base URL and Vercel Proxy
+Use local backend:
 
-- Development default API URL: `/api` (same-origin from `http://localhost:5173`).
-- Development proxy support: Vite forwards `/api/*` to `VITE_AGORA_API_PROXY_TARGET` (default `http://localhost:8000`) for backend access.
-- Production default API URL: `/api`
-- Override request base in any environment with `VITE_AGORA_API_URL`.
-- If you enable proxy mode, Vite forwards `/user_management/*` to WorkOS with explicit upstream timeouts.
-- After AuthKit resolves a user, the dashboard bootstraps itself with `GET /auth/me`.
-- Unauthenticated users can land on `/` or `/auth`; both render the auth landing page.
-- Authenticated users are routed to the dashboard at `/`.
-- API requests fetch access tokens on-demand through `getAccessToken()` before sending `Authorization: Bearer <token>` to the backend.
-- API key management now lives at `/api-keys`.
-- Benchmarks live at `/benchmarks` and are visible for human JWT sessions.
-- API key principals do not see benchmark navigation.
+```bash
+VITE_AGORA_BACKEND_SOURCE=local npm run dev
+```
 
-WorkOS dashboard checklist for local auth:
+You can still force a specific proxy target when needed:
 
-- Add `http://localhost:5173/callback` to Redirect URIs.
-- Add `http://localhost:5173/login` as the Sign-in endpoint.
-- Add `http://localhost:5173` to Allowed Origins.
+```bash
+VITE_AGORA_API_PROXY_TARGET=https://agora-api-rztfxer7ra-uc.a.run.app npm run dev
+```
 
-For local AuthKit troubleshooting, prefer `http://localhost:5173` for both sign-in and callback URLs. The backend API can still run on `http://localhost:8000` behind the `/api` Vite proxy.
+If you see `502` errors for `/auth/me`, the proxied backend is unreachable — check the variable above.
 
-When deploying on Vercel, `vercel.json` rewrites `/api/*` to the hosted Cloud Run API endpoint so browser calls remain same-origin and avoid CORS preflight failures.
+### WorkOS AuthKit setup (local)
+
+Add the following in your WorkOS dashboard:
+
+- **Redirect URI:** `http://localhost:5173/callback`
+- **Sign-in endpoint:** `http://localhost:5173/login`
+- **Allowed origin:** `http://localhost:5173`
+
+---
+
+## Production (Vercel)
+
+`vercel.json` rewrites `/api/*` to the hosted Cloud Run endpoint so all browser requests stay same-origin and avoid CORS preflight. No extra config needed beyond setting the WorkOS env vars in the Vercel project settings.

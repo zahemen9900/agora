@@ -72,7 +72,7 @@ Implemented on top of the Week 1 foundation:
 ### Still Deferred / Not Implemented Yet
 
 - SDK-side `agora/solana/client.py` remains a stub; the API-side Solana bridge and contract flow are active.
-- Full Delphi and MoA engines (currently stubs for later phases).
+- Internal Delphi and MoA scaffolding for a later implementation phase; current public support is Debate and Vote.
 - Full LangGraph StateGraph execution as the primary runtime path.
 - Final production packaging/publication work for the SDK release channel.
 
@@ -123,8 +123,8 @@ agora/
   engines/
     debate.py            # Debate mechanism
     vote.py              # Vote mechanism
-    delphi.py            # Stub (future)
-    moa.py               # Stub (future)
+    delphi.py            # Internal Week 3 scaffold (not publicly supported yet)
+    moa.py               # Internal Week 3 scaffold (not publicly supported yet)
   runtime/
     monitor.py           # Convergence + switch logic
     hasher.py            # Transcript hashing + Merkle root/receipt
@@ -188,6 +188,43 @@ export AGORA_API_KEY_DEFAULT_TTL_DAYS=90
 ruff check .
 pytest -s -q
 ```
+
+### RWX cloud CI from local checkout
+
+RWX mirrors the required GitHub Actions jobs in `.rwx/ci.yml`, but runs them from your local shell without pushing first. First install and authenticate the CLI:
+
+```bash
+# WSL/Homebrew path from the RWX docs
+brew install rwx-cloud/tap/rwx
+
+# Or install the Linux binary manually if Homebrew is not available
+mkdir -p ~/.local/bin
+curl -fsSL https://github.com/rwx-cloud/rwx/releases/download/latest/rwx-linux-x86_64 -o ~/.local/bin/rwx
+chmod +x ~/.local/bin/rwx
+export PATH="$HOME/.local/bin:$PATH"
+
+rwx login
+rwx whoami
+```
+
+Run the full CI graph:
+
+```bash
+rwx run .rwx/ci.yml --target ci --wait --open
+```
+
+Run one gate while iterating:
+
+```bash
+rwx run .rwx/ci.yml --target python-ci --wait
+rwx run .rwx/ci.yml --target frontend-ci --wait
+rwx run .rwx/ci.yml --target sdk-ci --wait
+rwx run .rwx/ci.yml --target anchor-ci --wait
+```
+
+The first Anchor run will be slow because RWX has to install Solana/Agave and Anchor into the tool cache. After that, the graph is mostly dependency-cache hits unless manifests or lockfiles change.
+
+Important local-dev gotcha: `rwx run` includes modified tracked files via git patching, but it does not include untracked files. Stage or commit new files before relying on a cloud run; `git add -N path/to/file` is enough when you only want intent-to-add visibility.
 
 ### Paid-Provider Integration Tests (Opt-In)
 

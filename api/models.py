@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-MechanismName = Literal["debate", "vote", "delphi", "moa"]
+MechanismName = Literal["debate", "vote"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 PaymentStatusName = Literal["locked", "released", "none"]
 AuthMethodName = Literal["jwt", "api_key"]
@@ -18,7 +18,7 @@ class TaskCreateRequest(BaseModel):
     """Payload for creating a persisted task."""
 
     task: str = Field(min_length=1, max_length=12_000)
-    agent_count: int = Field(default=3, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=12)
     stakes: float = Field(default=0.0, ge=0.0)
     mechanism_override: MechanismName | None = None
 
@@ -46,7 +46,7 @@ class DeliberationResultResponse(BaseModel):
     """Serialized deliberation result used by API and SDK callers."""
 
     task_id: str
-    mechanism: str
+    mechanism: MechanismName
     final_answer: str
     confidence: float = Field(ge=0.0, le=1.0)
     quorum_reached: bool
@@ -54,8 +54,13 @@ class DeliberationResultResponse(BaseModel):
     decision_hash: str | None = None
     agent_count: int = Field(ge=1, default=1)
     agent_models_used: list[str] = Field(default_factory=list)
+    model_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_latency_ms: dict[str, float] = Field(default_factory=dict)
     total_tokens_used: int = Field(ge=0, default=0)
     latency_ms: float = Field(ge=0.0, default=0.0)
+    payment_amount: float = Field(ge=0.0, default=0.0)
+    payment_status: PaymentStatusName = "none"
+    informational_model_payouts: dict[str, float] = Field(default_factory=dict)
     round_count: int = Field(ge=1, default=1)
     mechanism_switches: int = Field(ge=0, default=0)
     transcript_hashes: list[str] = Field(default_factory=list)
@@ -70,7 +75,7 @@ class TaskStatusResponse(BaseModel):
     task_text: str
     workspace_id: str = ""
     created_by: str = ""
-    mechanism: str
+    mechanism: MechanismName
     mechanism_override: MechanismName | None = None
     status: TaskStatusName
     selector_reasoning: str
@@ -156,3 +161,72 @@ class ApiKeyCreateResponse(BaseModel):
 
     api_key: str
     metadata: ApiKeyMetadataResponse
+
+
+class AuthConfigResponse(BaseModel):
+    """Public auth bootstrap configuration for frontend clients."""
+
+    workos_client_id: str
+    workos_authkit_domain: str
+    auth_issuer: str
+    auth_audience: str
+    auth_jwks_url: str
+
+
+BenchmarkScopeName = Literal["global", "user"]
+BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
+
+
+class BenchmarkRunRequest(BaseModel):
+    """Request payload for triggering an async benchmark run."""
+
+    training_per_category: int = Field(default=1, ge=1, le=20)
+    holdout_per_category: int = Field(default=1, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=12)
+    live_agents: bool = True
+    seed: int = 42
+
+
+class BenchmarkRunResponse(BaseModel):
+    """Initial acknowledgement for an async benchmark run trigger."""
+
+    run_id: str
+    status: BenchmarkRunStatusName
+    created_at: datetime
+
+
+class BenchmarkRunStatusResponse(BaseModel):
+    """Status payload for a benchmark run."""
+
+    run_id: str
+    status: BenchmarkRunStatusName
+    created_at: datetime
+    updated_at: datetime
+    error: str | None = None
+    artifact_id: str | None = None
+
+
+class BenchmarkCatalogEntry(BaseModel):
+    """Normalized benchmark artifact metadata for UI lists."""
+
+    artifact_id: str
+    scope: BenchmarkScopeName
+    owner_user_id: str | None = None
+    source: str = "unknown"
+    created_at: datetime
+    run_count: int = Field(default=0, ge=0)
+    mechanism_counts: dict[str, int] = Field(default_factory=dict)
+    model_counts: dict[str, int] = Field(default_factory=dict)
+    frequency_score: int = Field(default=0, ge=0)
+    status: str | None = None
+
+
+class BenchmarkCatalogResponse(BaseModel):
+    """Benchmark catalog payload with recent and frequency-sorted views."""
+
+    global_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    global_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    user_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    user_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    user_tests_recent: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
+    user_tests_frequency: list[BenchmarkRunStatusResponse] = Field(default_factory=list)

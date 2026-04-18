@@ -309,8 +309,8 @@ class SolanaBridge:
     ) -> Instruction:
         if consensus_threshold <= 0 or consensus_threshold > 100:
             raise ValueError("consensus_threshold must be in range [1, 100]")
-        if agent_count <= 0 or agent_count > 10:
-            raise ValueError("agent_count must be in range [1, 10]")
+        if agent_count <= 0 or agent_count > 12:
+            raise ValueError("agent_count must be in range [1, 12]")
         if payment_amount_lamports < 0:
             raise ValueError("payment_amount_lamports must be non-negative")
         if recipient == SYSTEM_PROGRAM_ID:

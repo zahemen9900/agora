@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from api.config import settings
+from api.coordination import coordination_redis_required
 
 logger = structlog.get_logger(__name__)
 
@@ -24,6 +25,7 @@ class DeliberationStream:
         self._listener_task: asyncio.Task[None] | None = None
         self._redis = None
         self._pubsub = None
+        self._config_signature = self._current_config_signature()
         self._channel_prefix = (
             f"{settings.coordination_namespace.strip() or 'agora'}:stream:"
         )
@@ -43,6 +45,19 @@ class DeliberationStream:
                 )
                 self._redis = None
                 self._pubsub = None
+
+    @staticmethod
+    def _current_config_signature() -> tuple[str, str, str]:
+        return (
+            settings.coordination_backend.strip().lower(),
+            settings.redis_url.strip(),
+            settings.coordination_namespace.strip(),
+        )
+
+    def matches_current_config(self) -> bool:
+        """Return whether the manager matches current settings."""
+
+        return self._config_signature == self._current_config_signature()
 
     def _redis_enabled(self) -> bool:
         return self._redis is not None and self._pubsub is not None
@@ -197,6 +212,9 @@ _stream = DeliberationStream()
 def get_stream_manager() -> DeliberationStream:
     """Return the singleton stream manager."""
 
+    global _stream
+    if not _stream.matches_current_config():
+        _stream = DeliberationStream()
     return _stream
 
 
@@ -204,3 +222,14 @@ async def reset_stream_manager_for_tests() -> None:
     """Clear stream manager state in tests to prevent cross-test leakage."""
 
     await _stream.reset_state()
+
+
+def validate_streaming_configuration() -> None:
+    """Fail fast when hosted streaming cannot initialize distributed fan-out."""
+
+    manager = get_stream_manager()
+    if coordination_redis_required() and not manager._redis_enabled():
+        raise RuntimeError(
+            "Hosted environments require Redis-backed streaming fan-out; "
+            "configure AGORA_COORDINATION_BACKEND=redis and AGORA_REDIS_URL."
+        )

@@ -8,7 +8,7 @@ import math
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -154,6 +154,17 @@ class VoteEngine:
             agent_models_used=list(
                 dict.fromkeys(output.agent_model for output in vote_outputs)
             ),
+            model_token_usage={
+                str(model): int(tokens)
+                for model, tokens in cast(dict[str, int], usage.get("model_tokens", {})).items()
+            },
+            model_latency_ms={
+                str(model): float(latency)
+                for model, latency in cast(
+                    dict[str, float],
+                    usage.get("model_latency_ms", {}),
+                ).items()
+            },
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=token_counter,
@@ -194,7 +205,7 @@ class VoteEngine:
         self,
         task: str,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
-    ) -> tuple[list[AgentOutput], dict[str, float | int]]:
+    ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate one independent vote per agent in parallel."""
 
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
@@ -238,6 +249,16 @@ class VoteEngine:
         results = await asyncio.gather(*(one_call(idx) for idx in range(self.agent_count)))
         outputs = [output for output, _usage in results]
         usage_totals = self._merge_usage([usage for _output, usage in results])
+        model_tokens: dict[str, int] = {}
+        model_latency_ms: dict[str, float] = {}
+        for output, usage in results:
+            model = output.agent_model
+            model_tokens[model] = model_tokens.get(model, 0) + int(usage.get("tokens", 0))
+            model_latency_ms[model] = model_latency_ms.get(model, 0.0) + float(
+                usage.get("latency_ms", 0.0)
+            )
+        usage_totals["model_tokens"] = model_tokens
+        usage_totals["model_latency_ms"] = model_latency_ms
         return outputs, usage_totals
 
     def _calibrate_confidence(self, state: VoteState) -> None:
@@ -354,13 +375,18 @@ class VoteEngine:
         """Call selected tier with structured output and fallback on failure."""
 
         if custom_agent is not None:
-            return await invoke_custom_agent(
+            response, usage = await invoke_custom_agent(
                 custom_agent,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_model=response_model,
                 fallback=fallback,
             )
+            return response, {
+                "tokens": int(usage.get("tokens", 0)),
+                "latency_ms": float(usage.get("latency_ms", 0.0)),
+                "model": "custom-agent",
+            }
 
         if tier == "kimi" and response_model is _VoteResponse:
             assert isinstance(fallback, _VoteResponse)
@@ -386,6 +412,7 @@ class VoteEngine:
                     "tokens": int(usage.get("input_tokens", 0))
                     + int(usage.get("output_tokens", 0)),
                     "latency_ms": float(usage.get("latency_ms", 0.0)),
+                    "model": self._model_name(tier),
                 }
             logger.warning(
                 "vote_structured_response_type_mismatch", expected=response_model.__name__
@@ -415,7 +442,11 @@ class VoteEngine:
                         response_model=response_model.__name__,
                     )
 
-        return fallback, {"tokens": 0, "latency_ms": 0.0}
+        return fallback, {
+            "tokens": 0,
+            "latency_ms": 0.0,
+            "model": self._model_name(tier),
+        }
 
     async def _call_kimi_vote(
         self,
@@ -438,6 +469,7 @@ class VoteEngine:
         return vote, {
             "tokens": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
             "latency_ms": float(usage.get("latency_ms", 0.0)),
+            "model": self._model_name("kimi"),
         }
 
     @staticmethod
@@ -542,7 +574,7 @@ class VoteEngine:
         return 1.0 / (1.0 + math.exp(-adjusted))
 
     @staticmethod
-    def _merge_usage(entries: list[dict[str, Any]]) -> dict[str, float | int]:
+    def _merge_usage(entries: list[dict[str, Any]]) -> dict[str, Any]:
         """Merge token and latency accounting across calls."""
 
         total_tokens = sum(int(entry.get("tokens", 0)) for entry in entries)

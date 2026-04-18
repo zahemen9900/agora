@@ -17,6 +17,7 @@ class LocalTaskStore:
     def __init__(self, data_dir: str = "api/data") -> None:
         self.root = Path(data_dir).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self._agora_root = self.root / "agora"
 
     def _user_dir(self, user_id: str) -> Path:
         safe_user_id = validate_storage_id(user_id, field_name="user_id")
@@ -42,6 +43,32 @@ class LocalTaskStore:
     def _api_key_index_path(self, public_id: str) -> Path:
         safe_public_id = validate_storage_id(public_id, field_name="public_id")
         return safe_child_path(self.root, "api_keys", "by_public_id", f"{safe_public_id}.json")
+
+    def _global_benchmark_path(self, artifact_id: str) -> Path:
+        safe_artifact_id = validate_storage_id(artifact_id, field_name="artifact_id")
+        return safe_child_path(self._agora_root, "benchmarks", f"{safe_artifact_id}.json")
+
+    def _user_benchmark_path(self, user_id: str, artifact_id: str) -> Path:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        safe_artifact_id = validate_storage_id(artifact_id, field_name="artifact_id")
+        return safe_child_path(
+            self._agora_root,
+            "users",
+            safe_user_id,
+            "benchmarks",
+            f"{safe_artifact_id}.json",
+        )
+
+    def _user_test_path(self, user_id: str, run_id: str) -> Path:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        safe_run_id = validate_storage_id(run_id, field_name="run_id")
+        return safe_child_path(
+            self._agora_root,
+            "users",
+            safe_user_id,
+            "tests",
+            f"{safe_run_id}.json",
+        )
 
     @staticmethod
     def _personal_workspace_id(user_id: str) -> str:
@@ -267,6 +294,124 @@ class LocalTaskStore:
     async def get_benchmark_summary(self) -> dict[str, Any] | None:
         path = self.root / "benchmarks" / "summary.json"
         return self._read_json(path, allow_missing=True, operation="get_benchmark_summary")
+
+    async def save_global_benchmark_artifact(
+        self,
+        artifact_id: str,
+        artifact: dict[str, Any],
+    ) -> None:
+        self._write_json(
+            self._global_benchmark_path(artifact_id),
+            artifact,
+            operation="save_global_benchmark_artifact",
+        )
+
+    async def list_global_benchmark_artifacts(self, limit: int = 50) -> list[dict[str, Any]]:
+        benchmark_dir = safe_child_path(self._agora_root, "benchmarks")
+        if not benchmark_dir.exists():
+            return []
+
+        files = sorted(
+            benchmark_dir.glob("*.json"),
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        artifacts: list[dict[str, Any]] = []
+        for file in files[:limit]:
+            artifact = self._read_json(
+                file,
+                allow_missing=True,
+                operation="list_global_benchmark_artifacts.read_artifact",
+            )
+            if artifact is None:
+                continue
+            artifacts.append(artifact)
+        return artifacts
+
+    async def save_user_benchmark_artifact(
+        self,
+        user_id: str,
+        artifact_id: str,
+        artifact: dict[str, Any],
+    ) -> None:
+        self._write_json(
+            self._user_benchmark_path(user_id, artifact_id),
+            artifact,
+            operation="save_user_benchmark_artifact",
+        )
+
+    async def list_user_benchmark_artifacts(
+        self,
+        user_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        benchmark_dir = safe_child_path(self._agora_root, "users", safe_user_id, "benchmarks")
+        if not benchmark_dir.exists():
+            return []
+
+        files = sorted(
+            benchmark_dir.glob("*.json"),
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        artifacts: list[dict[str, Any]] = []
+        for file in files[:limit]:
+            artifact = self._read_json(
+                file,
+                allow_missing=True,
+                operation="list_user_benchmark_artifacts.read_artifact",
+            )
+            if artifact is None:
+                continue
+            artifacts.append(artifact)
+        return artifacts
+
+    async def save_user_test_result(
+        self,
+        user_id: str,
+        run_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        self._write_json(
+            self._user_test_path(user_id, run_id),
+            result,
+            operation="save_user_test_result",
+        )
+
+    async def get_user_test_result(self, user_id: str, run_id: str) -> dict[str, Any] | None:
+        return self._read_json(
+            self._user_test_path(user_id, run_id),
+            allow_missing=True,
+            operation="get_user_test_result",
+        )
+
+    async def list_user_test_results(
+        self,
+        user_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        safe_user_id = validate_storage_id(user_id, field_name="user_id")
+        test_dir = safe_child_path(self._agora_root, "users", safe_user_id, "tests")
+        if not test_dir.exists():
+            return []
+
+        files = sorted(
+            test_dir.glob("*.json"),
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        results: list[dict[str, Any]] = []
+        for file in files[:limit]:
+            result = self._read_json(
+                file,
+                allow_missing=True,
+                operation="list_user_test_results.read_test",
+            )
+            if result is None:
+                continue
+            results.append(result)
+        return results
 
     async def save_api_key(self, workspace_id: str, key_id: str, data: dict[str, Any]) -> None:
         self._write_json(

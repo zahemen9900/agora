@@ -1,0 +1,207 @@
+on:
+  cli:
+    init:
+      commit-sha: ${{ event.git.sha }}
+  github:
+    push:
+      if: ${{ event.git.branch == 'main' || event.git.branch == 'develop' }}
+      init:
+        commit-sha: ${{ event.git.sha }}
+    pull_request:
+      init:
+        commit-sha: ${{ event.git.sha }}
+
+base:
+  image: ubuntu:24.04
+  config: rwx/base 1.0.0
+
+tasks:
+  - key: code
+    call: git/clone 2.0.7
+    with:
+      repository: https://github.com/zahemen9900/agora.git
+      ref: ${{ init.commit-sha }}
+
+  - key: python
+    call: python/install 1.4.1
+    with:
+      python-version: "3.11.14"
+
+  - key: node
+    call: nodejs/install 1.1.13
+    with:
+      node-version: "22.12.0"
+
+  - key: rust
+    call: rust-lang/install 1.0.6
+    with:
+      rust-version: "1.88.0"
+
+  - key: python-deps
+    use: [code, python]
+    run: |
+      python -m venv .venv
+      .venv/bin/python -m pip install --upgrade pip
+      .venv/bin/python -m pip install uv
+      .venv/bin/uv pip install --python .venv/bin/python -e ".[dev]"
+      .venv/bin/uv pip install --python .venv/bin/python -r api/requirements.txt
+      echo "$PWD/.venv/bin" > "$RWX_ENV/PATH"
+    filter:
+      - pyproject.toml
+      - api/requirements.txt
+
+  - key: check-generated-frontend-api-types
+    use: [code, python-deps]
+    run: python scripts/generate_frontend_api_types.py --check
+
+  - key: python-lint
+    use: [code, python-deps]
+    run: ruff check agora/ api/ benchmarks/ tests/ scripts/
+
+  - key: python-test
+    use: [code, python-deps]
+    run: pytest tests/ -v
+    env:
+      GOOGLE_CLOUD_PROJECT: test-project
+
+  - key: python-ci
+    after:
+      - check-generated-frontend-api-types
+      - python-lint
+      - python-test
+    run: echo "python CI passed"
+
+  - key: frontend-deps
+    use: [code, node]
+    run: |
+      cd agora-web
+      npm ci
+    filter:
+      - agora-web/package.json
+      - agora-web/package-lock.json
+
+  - key: frontend-build
+    use: [code, node, frontend-deps]
+    run: |
+      cd agora-web
+      npm run build
+
+  - key: frontend-ci
+    after: frontend-build
+    run: echo "frontend CI passed"
+
+  - key: sdk-build-deps
+    use: python
+    run: python -m pip install --upgrade pip build
+
+  - key: sdk-build
+    use: [code, python, sdk-build-deps]
+    run: python -m build sdk
+
+  - key: sdk-ci
+    after: sdk-build
+    run: echo "SDK CI passed"
+
+  - key: anchor-system-packages
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y \
+        build-essential \
+        clang \
+        curl \
+        libssl-dev \
+        libudev-dev \
+        llvm \
+        pkg-config \
+        protobuf-compiler
+      sudo apt-get clean
+
+  - key: anchor-toolchain
+    use: [code, rust, anchor-system-packages]
+    run: |
+      if ! command -v rustup >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --default-toolchain 1.88.0
+      fi
+      . "$HOME/.cargo/env"
+      rustup default 1.88.0
+
+      sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.13/install)"
+
+      cargo install --git https://github.com/coral-xyz/anchor \
+        --tag v1.0.0 \
+        anchor-cli \
+        avm \
+        --locked \
+        --force
+
+      export AGAVE_BIN="$HOME/.local/share/solana/install/active_release/bin"
+      export CARGO_BIN="$HOME/.cargo/bin"
+      export PATH="$CARGO_BIN:$AGAVE_BIN:$PATH"
+      printf "%s:%s\n" "$CARGO_BIN" "$AGAVE_BIN" > "$RWX_ENV/PATH"
+
+      solana --version
+      anchor --version
+    filter:
+      - contract/Anchor.toml
+      - contract/Cargo.lock
+      - contract/Cargo.toml
+      - contract/programs/agora/Cargo.toml
+
+  - key: contract-deps
+    use: [code, node]
+    run: |
+      cd contract
+      npm ci
+    filter:
+      - contract/package.json
+      - contract/package-lock.json
+
+  - key: anchor-build
+    use: [code, node, rust, anchor-toolchain, contract-deps]
+    run: |
+      cd contract
+      mkdir -p "$HOME/.config/solana" target/deploy
+      solana-keygen new \
+        --no-bip39-passphrase \
+        --silent \
+        --outfile "$HOME/.config/solana/devnet-keypair.json" \
+        --force
+      printf "%s\n" "$AGORA_ANCHOR_PROGRAM_KEYPAIR" > target/deploy/agora-keypair.json
+      anchor build \
+        --provider.cluster localnet \
+        --provider.wallet "$HOME/.config/solana/devnet-keypair.json"
+    env:
+      AGORA_ANCHOR_PROGRAM_KEYPAIR: ${{ secrets.AGORA_ANCHOR_PROGRAM_KEYPAIR }}
+
+  - key: anchor-test
+    use: [code, node, rust, anchor-toolchain, contract-deps]
+    run: |
+      cd contract
+      mkdir -p "$HOME/.config/solana" target/deploy
+      solana-keygen new \
+        --no-bip39-passphrase \
+        --silent \
+        --outfile "$HOME/.config/solana/devnet-keypair.json" \
+        --force
+      printf "%s\n" "$AGORA_ANCHOR_PROGRAM_KEYPAIR" > target/deploy/agora-keypair.json
+      anchor test \
+        --provider.cluster localnet \
+        --provider.wallet "$HOME/.config/solana/devnet-keypair.json" \
+        --validator legacy
+    env:
+      AGORA_ANCHOR_PROGRAM_KEYPAIR: ${{ secrets.AGORA_ANCHOR_PROGRAM_KEYPAIR }}
+
+  - key: anchor-ci
+    after:
+      - anchor-build
+      - anchor-test
+    run: echo "Anchor CI passed"
+
+  - key: ci
+    after:
+      - python-ci
+      - anchor-ci
+      - frontend-ci
+      - sdk-ci
+    run: echo "all CI tasks passed"

@@ -217,8 +217,16 @@ marimo/_lsp/
 __marimo__/
 .qodo
 support/
-.claude
-.codex
+# Keep .claude/.codex content trackable by default.
+# Ignore only reusable skill docs and sensitive key material in these folders.
+.claude/**/SKILL.md
+.claude/**/SKILL-*.md
+.claude/**/*.pem
+.claude/**/*.key
+.codex/**/SKILL.md
+.codex/**/SKILL-*.md
+.codex/**/*.pem
+.codex/**/*.key
 .credentials
 agora-web/read_pdf.js
 docs/*.pdf
@@ -226,3 +234,4 @@ node_modules
 .env.local
 
 .github/agents
+.vercel

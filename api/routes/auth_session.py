@@ -6,11 +6,35 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.auth import AuthenticatedUser, get_auth_store, get_current_user, principal_payload
-from api.models import AuthMeResponse, FeatureFlagsResponse, PrincipalResponse, WorkspaceResponse
+from api.auth import (
+    AuthenticatedUser,
+    get_auth_store,
+    get_current_user,
+    get_resolved_auth_config,
+    principal_payload,
+)
+from api.models import (
+    AuthConfigResponse,
+    AuthMeResponse,
+    FeatureFlagsResponse,
+    PrincipalResponse,
+    WorkspaceResponse,
+)
 
 router = APIRouter()
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+
+
+@router.get("/auth/config", response_model=AuthConfigResponse)
+async def auth_config() -> AuthConfigResponse:
+    """Return frontend-safe auth bootstrap configuration."""
+
+    resolved = get_resolved_auth_config()
+    if not resolved["workos_client_id"]:
+        raise HTTPException(status_code=503, detail="Auth client id is not configured")
+    if not resolved["workos_authkit_domain"]:
+        raise HTTPException(status_code=503, detail="AuthKit domain is not configured")
+    return AuthConfigResponse.model_validate(resolved)
 
 
 @router.get("/auth/me", response_model=AuthMeResponse)

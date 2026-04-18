@@ -230,11 +230,21 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         opp_answer="Architecture B",
         prior_tokens=3,
         prior_latency_ms=4.0,
+        prior_model_token_usage={"gemini-3-flash-preview": 3},
+        prior_model_latency_ms={"gemini-3-flash-preview": 4.0},
     )
 
     assert result.final_answer == "Use the reliability-first architecture."
     assert result.mechanism_used is MechanismType.DEBATE
     assert result.total_tokens_used == 15
+    assert result.model_token_usage == {
+        "gemini-3-flash-preview": 3,
+        "gemini-3.1-pro-preview": 12,
+    }
+    assert result.model_latency_ms == {
+        "gemini-3-flash-preview": 4.0,
+        "gemini-3.1-pro-preview": 11.0,
+    }
     assert usage["tokens"] == 12
     assert result.agent_models_used == [
         "gemini-3-flash-preview",

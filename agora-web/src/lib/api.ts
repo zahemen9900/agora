@@ -1,118 +1,32 @@
 const API_URL = import.meta.env.VITE_AGORA_API_URL ?? "/api";
 
-export type MechanismName = "debate" | "vote" | "delphi" | "moa";
-export type TaskStatusName = "pending" | "in_progress" | "completed" | "failed" | "paid";
-export type PaymentStatusName = "locked" | "released" | "none";
-export type AuthMethodName = "jwt" | "api_key";
-export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "api_keys:read" | "api_keys:write";
+import type {
+  ApiKeyCreateResponse,
+  ApiKeyMetadataResponse,
+  AuthMeResponse,
+  DeliberationResultResponse,
+  TaskCreateResponse,
+  TaskEvent,
+  TaskStatusResponse,
+} from "./api.generated";
 
-export interface TaskCreateResponse {
-  task_id: string;
-  mechanism: MechanismName;
-  confidence: number;
-  reasoning: string;
-  selector_reasoning_hash: string;
-  status: TaskStatusName;
-}
-
-export interface TaskEvent {
-  event: string;
-  data: Record<string, unknown>;
-  timestamp?: string | null;
-}
-
-export interface DeliberationResultResponse {
-  task_id: string;
-  mechanism: MechanismName;
-  final_answer: string;
-  confidence: number;
-  quorum_reached: boolean;
-  merkle_root: string | null;
-  decision_hash: string | null;
-  agent_count: number;
-  agent_models_used: string[];
-  total_tokens_used: number;
-  latency_ms: number;
-  round_count: number;
-  mechanism_switches: number;
-  transcript_hashes: string[];
-  convergence_history: Array<Record<string, unknown>>;
-  locked_claims: Array<Record<string, unknown>>;
-}
-
-export interface TaskStatusResponse {
-  task_id: string;
-  task_text: string;
-  workspace_id: string;
-  mechanism: MechanismName;
-  mechanism_override: MechanismName | null;
-  status: TaskStatusName;
-  selector_reasoning: string;
-  selector_reasoning_hash: string;
-  selector_confidence: number;
-  merkle_root: string | null;
-  decision_hash: string | null;
-  quorum_reached: boolean | null;
-  agent_count: number;
-  round_count: number;
-  mechanism_switches: number;
-  transcript_hashes: string[];
-  solana_tx_hash: string | null;
-  explorer_url: string | null;
-  payment_amount: number;
-  payment_status: PaymentStatusName;
-  created_at: string;
-  completed_at: string | null;
-  result: DeliberationResultResponse | null;
-  events: TaskEvent[];
-}
-
-export interface PrincipalResponse {
-  auth_method: AuthMethodName;
-  workspace_id: string;
-  user_id: string | null;
-  display_name: string;
-  email: string;
-  scopes: ApiKeyScopeName[];
-  api_key_id: string | null;
-}
-
-export interface WorkspaceResponse {
-  id: string;
-  display_name: string;
-  kind: "personal";
-  owner_user_id: string;
-  created_at: string;
-}
-
-export interface FeatureFlagsResponse {
-  benchmarks_visible: boolean;
-  api_keys_visible: boolean;
-}
-
-export interface AuthMeResponse {
-  principal: PrincipalResponse;
-  workspace: WorkspaceResponse;
-  feature_flags: FeatureFlagsResponse;
-}
-
-export interface ApiKeyMetadataResponse {
-  key_id: string;
-  workspace_id: string;
-  name: string;
-  public_id: string;
-  scopes: ApiKeyScopeName[];
-  created_by_user_id: string;
-  created_at: string;
-  last_used_at: string | null;
-  expires_at: string | null;
-  revoked_at: string | null;
-}
-
-export interface ApiKeyCreateResponse {
-  api_key: string;
-  metadata: ApiKeyMetadataResponse;
-}
+export type {
+  ApiKeyCreateResponse,
+  ApiKeyMetadataResponse,
+  ApiKeyScopeName,
+  AuthMethodName,
+  AuthMeResponse,
+  FeatureFlagsResponse,
+  MechanismName,
+  PaymentStatusName,
+  PrincipalResponse,
+  TaskStatusName,
+  TaskCreateResponse,
+  TaskEvent,
+  TaskStatusResponse,
+  WorkspaceResponse,
+  DeliberationResultResponse,
+} from "./api.generated";
 
 interface StreamTicketResponse {
   ticket: string;
@@ -124,15 +38,175 @@ export interface BenchmarkSummary {
   per_category: Record<string, Record<string, Record<string, number>>>;
 }
 
+export type BenchmarkDomainName = "math" | "factual" | "reasoning" | "code" | "creative" | "demo";
+
+export interface BenchmarkDomainPromptPayload {
+  template_id?: string | null;
+  prompt?: string | null;
+}
+
+export interface BenchmarkCostEstimatePayload {
+  estimated_cost_usd?: number | null;
+  model_estimated_costs_usd?: Record<string, number>;
+  pricing_version?: string | null;
+  estimated_at?: string | null;
+}
+
+export interface BenchmarkStagePayload {
+  runs?: Array<Record<string, unknown>>;
+  summary?: BenchmarkSummary;
+}
+
+export interface BenchmarkDemoReport {
+  artifact?: string;
+  status?: string;
+  final_status?: string;
+  target?: string;
+  query?: string;
+  mechanism?: string;
+  agent_count?: number;
+  stakes?: number;
+  started_at?: string;
+  completed_at?: string;
+  run_summary?: Record<string, unknown>;
+  tx_summary?: Record<string, unknown>;
+  acceptance_checks?: Record<string, unknown>;
+  run_result?: Record<string, unknown>;
+  status_after_run?: Record<string, unknown>;
+  status_after_pay?: Record<string, unknown>;
+}
+
 export interface BenchmarkPayload {
   runs?: Array<Record<string, unknown>>;
   summary?: BenchmarkSummary;
-  pre_learning?: { summary: BenchmarkSummary };
-  post_learning?: { summary: BenchmarkSummary };
+  pre_learning?: BenchmarkStagePayload;
+  post_learning?: BenchmarkStagePayload;
+  learning_updates?: BenchmarkStagePayload;
+  generated_at?: string;
+  demo_report?: BenchmarkDemoReport;
+}
+
+export interface AuthConfigPayload {
+  workos_client_id: string;
+  workos_authkit_domain: string;
+  auth_issuer: string;
+  auth_audience: string;
+  auth_jwks_url: string;
+}
+
+export type BenchmarkRunStatusName = "queued" | "running" | "completed" | "failed";
+
+export interface BenchmarkRunStatusPayload {
+  run_id: string;
+  status: BenchmarkRunStatusName;
+  created_at: string;
+  updated_at: string;
+  error?: string | null;
+  artifact_id?: string | null;
+  request?: Record<string, unknown> | null;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens?: number | null;
+  thinking_tokens?: number | null;
+  cost?: BenchmarkCostEstimatePayload | null;
+}
+
+export interface BenchmarkCatalogEntry {
+  artifact_id: string;
+  scope: "global" | "user";
+  owner_user_id?: string | null;
+  source: string;
+  created_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  status?: string | null;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens?: number;
+  thinking_tokens?: number;
+  models?: string[];
+  cost?: BenchmarkCostEstimatePayload | null;
+}
+
+export interface BenchmarkCatalogPayload {
+  global_recent: BenchmarkCatalogEntry[];
+  global_frequency: BenchmarkCatalogEntry[];
+  user_recent: BenchmarkCatalogEntry[];
+  user_frequency: BenchmarkCatalogEntry[];
+  user_tests_recent: BenchmarkRunStatusPayload[];
+  user_tests_frequency: BenchmarkRunStatusPayload[];
+}
+
+export interface BenchmarkRunRequestPayload {
+  training_per_category?: number;
+  holdout_per_category?: number;
+  agent_count?: number;
+  live_agents?: boolean;
+  seed?: number;
+  domain_prompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>>;
+}
+
+export interface BenchmarkRunResponsePayload {
+  run_id: string;
+  status: BenchmarkRunStatusName;
+  created_at: string;
+}
+
+export interface BenchmarkPromptTemplatePayload {
+  id: string;
+  title: string;
+  prompt: string;
+}
+
+export interface BenchmarkPromptTemplatesPayload {
+  domains: Record<BenchmarkDomainName, BenchmarkPromptTemplatePayload[]>;
+}
+
+export interface BenchmarkDetailPayload {
+  benchmark_id: string;
+  artifact_id?: string | null;
+  scope: "global" | "user";
+  source: string;
+  status?: string | null;
+  owner_user_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens: number;
+  thinking_tokens: number;
+  models: string[];
+  request?: Record<string, unknown> | null;
+  summary: Record<string, unknown>;
+  benchmark_payload: Record<string, unknown>;
+  cost?: BenchmarkCostEstimatePayload | null;
 }
 
 export interface StreamHandle {
   close: () => void;
+}
+
+const STREAM_MAX_RECONNECT_ATTEMPTS = 6;
+const STREAM_RECONNECT_BASE_DELAY_MS = 500;
+
+export class ApiRequestError extends Error {
+  status: number;
+  detail: unknown;
+  path: string;
+
+  constructor(status: number, message: string, path: string, detail: unknown = null) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.detail = detail;
+    this.path = path;
+  }
 }
 
 function authHeaders(token: string | null): HeadersInit {
@@ -145,8 +219,28 @@ async function requestJson<T>(
 ): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, init);
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
+    const raw = await response.text();
+    let detail: unknown = null;
+
+    if (raw) {
+      try {
+        detail = JSON.parse(raw) as unknown;
+      } catch {
+        detail = raw;
+      }
+    }
+
+    const detailMessage = (
+      typeof detail === "object"
+      && detail !== null
+      && "detail" in detail
+      && typeof (detail as { detail?: unknown }).detail === "string"
+    )
+      ? (detail as { detail: string }).detail
+      : null;
+
+    const message = detailMessage ?? (raw || `Request failed: ${response.status}`);
+    throw new ApiRequestError(response.status, message, path, detail);
   }
   return (await response.json()) as T;
 }
@@ -207,8 +301,12 @@ export async function releaseTaskPayment(
   });
 }
 
-export async function getBenchmarks(token: string | null): Promise<BenchmarkPayload> {
-  return requestJson<BenchmarkPayload>("/benchmarks", {
+export async function getBenchmarks(
+  token: string | null,
+  includeDemo = true,
+): Promise<BenchmarkPayload> {
+  const path = includeDemo ? "/benchmarks?include_demo=true" : "/benchmarks";
+  return requestJson<BenchmarkPayload>(path, {
     headers: authHeaders(token),
   });
 }
@@ -217,6 +315,10 @@ export async function getAuthMe(token: string): Promise<AuthMeResponse> {
   return requestJson<AuthMeResponse>("/auth/me", {
     headers: authHeaders(token),
   });
+}
+
+export async function getAuthConfig(): Promise<AuthConfigPayload> {
+  return requestJson<AuthConfigPayload>("/auth/config");
 }
 
 export async function listApiKeys(token: string): Promise<ApiKeyMetadataResponse[]> {
@@ -245,6 +347,56 @@ export async function revokeApiKey(
 ): Promise<ApiKeyMetadataResponse> {
   return requestJson<ApiKeyMetadataResponse>(`/api-keys/${keyId}/revoke`, {
     method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkCatalog(
+  token: string | null,
+  limit = 25,
+): Promise<BenchmarkCatalogPayload> {
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  return requestJson<BenchmarkCatalogPayload>(`/benchmarks/catalog?limit=${normalizedLimit}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkPromptTemplates(
+  token: string | null,
+): Promise<BenchmarkPromptTemplatesPayload> {
+  return requestJson<BenchmarkPromptTemplatesPayload>("/benchmarks/prompt-templates", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkDetail(
+  token: string | null,
+  benchmarkId: string,
+): Promise<BenchmarkDetailPayload> {
+  return requestJson<BenchmarkDetailPayload>(`/benchmarks/${encodeURIComponent(benchmarkId)}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function triggerBenchmarkRun(
+  token: string,
+  payload: BenchmarkRunRequestPayload = {},
+): Promise<BenchmarkRunResponsePayload> {
+  return requestJson<BenchmarkRunResponsePayload>("/benchmarks/run", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getBenchmarkRunStatus(
+  token: string,
+  runId: string,
+): Promise<BenchmarkRunStatusPayload> {
+  return requestJson<BenchmarkRunStatusPayload>(`/benchmarks/runs/${runId}`, {
     headers: authHeaders(token),
   });
 }
@@ -286,22 +438,56 @@ async function sha256Hex(value: string): Promise<string> {
     .join("");
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeStreamEventPayload(
+  rawPayload: unknown,
+): { payload: Record<string, unknown>; timestamp: string | null } | null {
+  const root = asRecord(rawPayload);
+  if (!root) {
+    return null;
+  }
+
+  const timestamp = typeof root.timestamp === "string" ? root.timestamp : null;
+
+  // New envelope shape from backend stream endpoint.
+  const envelopePayload = asRecord(root.payload);
+  if (envelopePayload) {
+    return { payload: envelopePayload, timestamp };
+  }
+
+  // Legacy envelope shape fallback.
+  const legacyPayload = asRecord(root.data);
+  if (legacyPayload && "timestamp" in root) {
+    return { payload: legacyPayload, timestamp };
+  }
+
+  // Older direct event payloads.
+  return { payload: root, timestamp };
+}
+
+function eventSignature(
+  eventType: string,
+  payload: Record<string, unknown>,
+  timestamp: string | null,
+): string {
+  return `${eventType}:${timestamp ?? ""}:${JSON.stringify(payload)}`;
+}
+
+function hasStringMessageData(event: Event): event is MessageEvent<string> {
+  return typeof (event as MessageEvent<unknown>).data === "string";
+}
+
 export async function streamDeliberation(
   taskId: string,
   token: string | null,
   onEvent: (event: TaskEvent) => void,
 ): Promise<StreamHandle> {
-  const ticketResponse = await requestJson<StreamTicketResponse>(
-    `/tasks/${taskId}/stream-ticket`,
-    {
-      method: "POST",
-      headers: authHeaders(token),
-    },
-  );
-  const url = new URL(`${API_URL}/tasks/${taskId}/stream`, window.location.origin);
-  url.searchParams.set("ticket", ticketResponse.ticket);
-
-  const source = new EventSource(url.toString());
   const eventTypes = [
     "mechanism_selected",
     "agent_output",
@@ -315,24 +501,171 @@ export async function streamDeliberation(
     "complete",
   ];
 
-  for (const eventType of eventTypes) {
-    source.addEventListener(eventType, (event) => {
-      const message = event as MessageEvent<string>;
-      onEvent({
-        event: eventType,
-        data: JSON.parse(message.data) as Record<string, unknown>,
-      });
-    });
-  }
+  let source: EventSource | null = null;
+  let closed = false;
+  let sawTerminalEvent = false;
+  let reconnectAttempts = 0;
+  let reconnectTimer: number | null = null;
+  const seenSignatures = new Set<string>();
 
-  source.onerror = () => {
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const closeSource = () => {
+    if (source) {
+      source.close();
+      source = null;
+    }
+  };
+
+  const emitStreamError = (message: string) => {
     onEvent({
       event: "error",
-      data: { message: "Stream disconnected" },
+      data: { message },
+      timestamp: null,
     });
   };
 
+  const scheduleReconnect = (reason: string) => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+
+    closeSource();
+    reconnectAttempts += 1;
+    if (reconnectAttempts > STREAM_MAX_RECONNECT_ATTEMPTS) {
+      emitStreamError(`Stream disconnected: ${reason}`);
+      return;
+    }
+
+    const delayMs = Math.min(
+      8_000,
+      STREAM_RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1),
+    );
+    clearReconnectTimer();
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, delayMs);
+  };
+
+  const handleEventMessage = (eventType: string, event: Event) => {
+    if (!hasStringMessageData(event)) {
+      // Native EventSource transport errors also use the "error" event type
+      // but do not include payload data. Let `source.onerror` handle reconnects.
+      if (eventType === "error") {
+        return;
+      }
+      emitStreamError(`Stream payload missing data for ${eventType}`);
+      return;
+    }
+
+    const message = event;
+    const rawData = message.data.trim();
+    if (rawData.length === 0) {
+      if (eventType === "error") {
+        return;
+      }
+      emitStreamError(`Stream payload missing data for ${eventType}`);
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      if (eventType === "error") {
+        // Some server/edge layers emit plain-text error payloads.
+        onEvent({
+          event: "error",
+          data: { message: rawData },
+          timestamp: null,
+        });
+        return;
+      }
+      emitStreamError(`Stream payload parse failure for ${eventType}`);
+      return;
+    }
+
+    const normalized = normalizeStreamEventPayload(parsed);
+    if (!normalized) {
+      emitStreamError(`Stream payload shape mismatch for ${eventType}`);
+      return;
+    }
+
+    const signature = eventSignature(eventType, normalized.payload, normalized.timestamp);
+    if (seenSignatures.has(signature)) {
+      return;
+    }
+    seenSignatures.add(signature);
+
+    onEvent({
+      event: eventType,
+      data: normalized.payload,
+      timestamp: normalized.timestamp,
+    });
+
+    if (eventType === "complete") {
+      sawTerminalEvent = true;
+      closeSource();
+      clearReconnectTimer();
+    }
+  };
+
+  const connect = async () => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+
+    let ticketResponse: StreamTicketResponse;
+    try {
+      ticketResponse = await requestJson<StreamTicketResponse>(
+        `/tasks/${taskId}/stream-ticket`,
+        {
+          method: "POST",
+          headers: authHeaders(token),
+        },
+      );
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError ? error.message : "Failed to request stream ticket";
+      scheduleReconnect(message);
+      return;
+    }
+
+    const url = new URL(`${API_URL}/tasks/${taskId}/stream`, window.location.origin);
+    url.searchParams.set("ticket", ticketResponse.ticket);
+
+    closeSource();
+    source = new EventSource(url.toString());
+
+    for (const eventType of eventTypes) {
+      source.addEventListener(eventType, (event) => {
+        handleEventMessage(eventType, event);
+      });
+    }
+
+    source.onerror = () => {
+      if (closed || sawTerminalEvent) {
+        return;
+      }
+      scheduleReconnect("connection error");
+    };
+
+    reconnectAttempts = 0;
+  };
+
+  await connect();
+
   return {
-    close: () => source.close(),
+    close: () => {
+      closed = true;
+      clearReconnectTimer();
+      closeSource();
+    },
   };
 }

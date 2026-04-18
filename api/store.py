@@ -19,6 +19,7 @@ logger = structlog.get_logger(__name__)
 
 class TaskStore:
     _APPEND_EVENT_MAX_RETRIES = 3
+    _AGORA_NAMESPACE_PREFIX = "agora"
 
     def __init__(self, bucket_name: str) -> None:
         self.client = storage.Client()
@@ -137,6 +138,21 @@ class TaskStore:
     def _personal_workspace_id(user_id: str) -> str:
         safe_user_id = validate_storage_id(user_id, field_name="user_id")
         return safe_user_id
+
+    @classmethod
+    def _global_benchmark_blob_name(cls, artifact_id: str) -> str:
+        safe_artifact_id = validate_storage_id(artifact_id, field_name="artifact_id")
+        return f"{cls._AGORA_NAMESPACE_PREFIX}/benchmarks/{safe_artifact_id}.json"
+
+    @classmethod
+    def _user_benchmark_blob_name(cls, user_id: str, artifact_id: str) -> str:
+        safe_artifact_id = validate_storage_id(artifact_id, field_name="artifact_id")
+        return f"{cls._AGORA_NAMESPACE_PREFIX}/{cls._user_prefix(user_id)}/benchmarks/{safe_artifact_id}.json"
+
+    @classmethod
+    def _user_test_blob_name(cls, user_id: str, run_id: str) -> str:
+        safe_run_id = validate_storage_id(run_id, field_name="run_id")
+        return f"{cls._AGORA_NAMESPACE_PREFIX}/{cls._user_prefix(user_id)}/tests/{safe_run_id}.json"
 
     async def upsert_user(
         self,
@@ -363,6 +379,116 @@ class TaskStore:
         if summary is None:
             logger.debug("benchmark_summary_not_found")
         return summary
+
+    async def save_global_benchmark_artifact(
+        self,
+        artifact_id: str,
+        artifact: dict[str, Any],
+    ) -> None:
+        blob = self.bucket.blob(self._global_benchmark_blob_name(artifact_id))
+        self._upload_blob_json(
+            blob,
+            artifact,
+            operation="save_global_benchmark_artifact",
+        )
+
+    async def list_global_benchmark_artifacts(self, limit: int = 50) -> list[dict[str, Any]]:
+        prefix = f"{self._AGORA_NAMESPACE_PREFIX}/benchmarks/"
+        blobs = self._list_blobs(prefix=prefix, operation="list_global_benchmark_artifacts")
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        artifacts: list[dict[str, Any]] = []
+        for blob in blobs[:limit]:
+            artifact = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_global_benchmark_artifacts.read_artifact",
+            )
+            if artifact is None:
+                continue
+            artifacts.append(artifact)
+        return artifacts
+
+    async def save_user_benchmark_artifact(
+        self,
+        user_id: str,
+        artifact_id: str,
+        artifact: dict[str, Any],
+    ) -> None:
+        blob = self.bucket.blob(self._user_benchmark_blob_name(user_id, artifact_id))
+        self._upload_blob_json(
+            blob,
+            artifact,
+            operation="save_user_benchmark_artifact",
+        )
+
+    async def list_user_benchmark_artifacts(
+        self,
+        user_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        prefix = f"{self._AGORA_NAMESPACE_PREFIX}/{self._user_prefix(user_id)}/benchmarks/"
+        blobs = self._list_blobs(prefix=prefix, operation="list_user_benchmark_artifacts")
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        artifacts: list[dict[str, Any]] = []
+        for blob in blobs[:limit]:
+            artifact = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_user_benchmark_artifacts.read_artifact",
+            )
+            if artifact is None:
+                continue
+            artifacts.append(artifact)
+        return artifacts
+
+    async def save_user_test_result(
+        self,
+        user_id: str,
+        run_id: str,
+        result: dict[str, Any],
+    ) -> None:
+        blob = self.bucket.blob(self._user_test_blob_name(user_id, run_id))
+        self._upload_blob_json(blob, result, operation="save_user_test_result")
+
+    async def get_user_test_result(self, user_id: str, run_id: str) -> dict[str, Any] | None:
+        blob = self.bucket.blob(self._user_test_blob_name(user_id, run_id))
+        return self._download_blob_json(
+            blob,
+            allow_missing=True,
+            operation="get_user_test_result",
+        )
+
+    async def list_user_test_results(
+        self,
+        user_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        prefix = f"{self._AGORA_NAMESPACE_PREFIX}/{self._user_prefix(user_id)}/tests/"
+        blobs = self._list_blobs(prefix=prefix, operation="list_user_test_results")
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        records: list[dict[str, Any]] = []
+        for blob in blobs[:limit]:
+            record = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_user_test_results.read_test",
+            )
+            if record is None:
+                continue
+            records.append(record)
+        return records
 
     async def save_api_key(self, workspace_id: str, key_id: str, data: dict[str, Any]) -> None:
         key_blob = self.bucket.blob(self._api_key_blob_name(workspace_id, key_id))

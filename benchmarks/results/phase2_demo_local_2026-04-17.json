@@ -1,14 +1,13 @@
 {
-  "started_at": "2026-04-18T03:26:10Z",
+  "started_at": "2026-04-17T14:38:01Z",
   "query": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
   "stakes": 0.01,
   "agent_count": 4,
   "mechanism": "vote",
-  "target": "hosted",
+  "target": "local",
   "strict_defaults_enforced": true,
   "status": "passed",
-  "api_url": "https://agora-api-rztfxer7ra-uc.a.run.app",
-  "temp_root": "/tmp/agora-phase2-demo-ynehuerv",
+  "temp_root": "/tmp/agora-phase2-demo-ec0_zk9t",
   "credential_bootstrap": {
     "gcloud_available": true,
     "gcloud_auth_status": "ok",
@@ -23,16 +22,19 @@
     "solana_keypair_source": "secret-configured"
   },
   "preflight": {
-    "target": "hosted",
-    "api_url": "https://agora-api-rztfxer7ra-uc.a.run.app",
-    "helius_rpc_url": "https://devnet.helius-rpc.com/?api-key=964f8d37-afaa-42f2-93bb-1b850700bc94",
-    "solana_network": "devnet",
-    "expected_models": [],
-    "auth_token_hint": "agora_test_Wj9QiTyy9Hiy",
-    "auth_token_source": "secret-manager:gcloud"
+    "expected_models": [
+      "gemini-3.1-pro-preview",
+      "moonshotai/kimi-k2-thinking",
+      "gemini-3-flash-preview",
+      "claude-sonnet-4-6"
+    ],
+    "helius_rpc_url": "redacted",
+    "program_id": "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd",
+    "solana_network": "devnet"
   },
   "wheel_path": "/home/zahemen/projects/dl-lib/agora/sdk/dist/agora_sdk-0.1.0a1-py3-none-any.whl",
-  "sdk_venv_python": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/bin/python",
+  "sdk_venv_python": "/tmp/agora-phase2-demo-ec0_zk9t/sdk-venv/bin/python",
+  "api_log_path": "/tmp/agora-phase2-demo-ec0_zk9t/phase2_demo_api.log",
   "health": {
     "status": "ok",
     "service": "agora-api",
@@ -41,35 +43,54 @@
   },
   "demo_auth_me": {
     "principal": {
-      "auth_method": "api_key",
-      "workspace_id": "hosted-phase2",
-      "user_id": null,
-      "display_name": "phase2-hosted-ci",
-      "email": "",
+      "auth_method": "jwt",
+      "workspace_id": "demo-user",
+      "user_id": "demo-user",
+      "display_name": "Demo User",
+      "email": "demo@example.com",
       "scopes": [
         "tasks:read",
         "tasks:write",
         "api_keys:read",
         "api_keys:write"
       ],
-      "api_key_id": "aa75832b364e4909a4884d975312cc6a"
+      "api_key_id": null
     },
     "workspace": {
-      "id": "hosted-phase2",
-      "display_name": "Hosted Phase2's Workspace",
+      "id": "demo-user",
+      "display_name": "Demo User's Workspace",
       "kind": "personal",
-      "owner_user_id": "hosted-phase2",
-      "created_at": "2026-04-18T01:22:17.127905Z"
+      "owner_user_id": "demo-user",
+      "created_at": "2026-04-17T14:40:12.455190Z"
     },
     "feature_flags": {
-      "benchmarks_visible": false,
-      "api_keys_visible": false
+      "benchmarks_visible": true,
+      "api_keys_visible": true
     }
   },
-  "workspace_id": "hosted-phase2",
+  "workspace_id": "demo-user",
+  "api_key_metadata": {
+    "key_id": "d3d701eb5eccf821668d1aef7b8c9148",
+    "workspace_id": "demo-user",
+    "name": "phase2-demo",
+    "public_id": "nVLKYRQYU8jk",
+    "scopes": [
+      "tasks:read",
+      "tasks:write",
+      "api_keys:read",
+      "api_keys:write"
+    ],
+    "created_by_user_id": "demo-user",
+    "created_at": "2026-04-17T14:40:12.463341Z",
+    "last_used_at": null,
+    "expires_at": "2027-04-17T14:40:12.463348Z",
+    "revoked_at": null
+  },
+  "api_key_public_id": "nVLKYRQYU8jk",
+  "api_key_id": "d3d701eb5eccf821668d1aef7b8c9148",
   "sdk_flow": {
     "created": {
-      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
       "mechanism": "vote",
       "confidence": 1.0,
       "reasoning": "Mechanism override applied at task creation: forced vote execution.",
@@ -77,12 +98,12 @@
       "status": "pending"
     },
     "run_result": {
-      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
       "mechanism": "vote",
       "final_answer": "AGORA_DEMO_OK",
-      "confidence": 0.6416612684716163,
+      "confidence": 0.817070099113417,
       "quorum_reached": true,
-      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
       "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
       "agent_count": 4,
       "agent_models_used": [
@@ -91,24 +112,24 @@
         "gemini-3-flash-preview",
         "claude-sonnet-4-6"
       ],
-      "total_tokens_used": 414,
-      "latency_ms": 7298.086336999972,
+      "total_tokens_used": 1274,
+      "latency_ms": 38187.891932961065,
       "round_count": 1,
       "mechanism_switches": 0,
       "transcript_hashes": [
         "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
         "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
-        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "0a863a638374b70b1a07ffe784a82f576700dbf5009554c0d16ee14af01c820e",
         "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
       ],
       "convergence_history": [],
       "locked_claims": []
     },
     "status_after_create": {
-      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
       "task_text": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
-      "workspace_id": "hosted-phase2",
-      "created_by": "api_key:aa75832b364e4909a4884d975312cc6a",
+      "workspace_id": "demo-user",
+      "created_by": "api_key:d3d701eb5eccf821668d1aef7b8c9148",
       "mechanism": "vote",
       "mechanism_override": "vote",
       "status": "pending",
@@ -122,40 +143,40 @@
       "round_count": 0,
       "mechanism_switches": 0,
       "transcript_hashes": [],
-      "solana_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
-      "explorer_url": "https://explorer.solana.com/tx/3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW?cluster=devnet",
+      "solana_tx_hash": "5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP",
+      "explorer_url": "https://explorer.solana.com/tx/5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP?cluster=devnet",
       "payment_amount": 0.01,
       "payment_status": "locked",
-      "created_at": "2026-04-18T03:26:51.489258Z",
+      "created_at": "2026-04-17T14:40:21.928782Z",
       "completed_at": null,
       "result": null,
       "events": [
         {
           "event": "mechanism_selected",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
             "mechanism": "vote",
             "mechanism_override": "vote",
             "confidence": 1.0,
             "reasoning": "Mechanism override applied at task creation: forced vote execution.",
             "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e"
           },
-          "timestamp": "2026-04-18T03:26:51.644730Z"
+          "timestamp": "2026-04-17T14:40:21.929693Z"
         }
       ]
     },
     "status_after_run": {
-      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
       "task_text": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
-      "workspace_id": "hosted-phase2",
-      "created_by": "api_key:aa75832b364e4909a4884d975312cc6a",
+      "workspace_id": "demo-user",
+      "created_by": "api_key:d3d701eb5eccf821668d1aef7b8c9148",
       "mechanism": "vote",
       "mechanism_override": "vote",
       "status": "completed",
       "selector_reasoning": "Mechanism override applied at task creation: forced vote execution.",
       "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e",
       "selector_confidence": 1.0,
-      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
       "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
       "quorum_reached": true,
       "agent_count": 4,
@@ -164,22 +185,22 @@
       "transcript_hashes": [
         "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
         "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
-        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "0a863a638374b70b1a07ffe784a82f576700dbf5009554c0d16ee14af01c820e",
         "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
       ],
-      "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
-      "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
+      "solana_tx_hash": "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G",
+      "explorer_url": "https://explorer.solana.com/tx/4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G?cluster=devnet",
       "payment_amount": 0.01,
       "payment_status": "locked",
-      "created_at": "2026-04-18T03:26:51.489258Z",
-      "completed_at": "2026-04-18T03:27:00.908944Z",
+      "created_at": "2026-04-17T14:40:21.928782Z",
+      "completed_at": "2026-04-17T14:40:48.161405Z",
       "result": {
-        "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+        "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
         "mechanism": "vote",
         "final_answer": "AGORA_DEMO_OK",
-        "confidence": 0.6416612684716163,
+        "confidence": 0.817070099113417,
         "quorum_reached": true,
-        "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+        "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
         "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
         "agent_count": 4,
         "agent_models_used": [
@@ -188,14 +209,14 @@
           "gemini-3-flash-preview",
           "claude-sonnet-4-6"
         ],
-        "total_tokens_used": 414,
-        "latency_ms": 7298.086336999972,
+        "total_tokens_used": 1274,
+        "latency_ms": 38187.891932961065,
         "round_count": 1,
         "mechanism_switches": 0,
         "transcript_hashes": [
           "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
           "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
-          "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+          "0a863a638374b70b1a07ffe784a82f576700dbf5009554c0d16ee14af01c820e",
           "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
         ],
         "convergence_history": [],
@@ -205,14 +226,14 @@
         {
           "event": "mechanism_selected",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
             "mechanism": "vote",
             "mechanism_override": "vote",
             "confidence": 1.0,
             "reasoning": "Mechanism override applied at task creation: forced vote execution.",
             "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e"
           },
-          "timestamp": "2026-04-18T03:26:51.644730Z"
+          "timestamp": "2026-04-17T14:40:21.929693Z"
         },
         {
           "event": "agent_output",
@@ -226,7 +247,7 @@
             "confidence": 1.0,
             "predicted_group_answer": "AGORA_DEMO_OK"
           },
-          "timestamp": "2026-04-18T03:26:59.143652Z"
+          "timestamp": "2026-04-17T14:40:46.341184Z"
         },
         {
           "event": "agent_output",
@@ -240,7 +261,7 @@
             "confidence": 0.52,
             "predicted_group_answer": "Option A"
           },
-          "timestamp": "2026-04-18T03:26:59.363176Z"
+          "timestamp": "2026-04-17T14:40:46.346156Z"
         },
         {
           "event": "agent_output",
@@ -250,11 +271,11 @@
             "role": "voter",
             "faction": "vote",
             "round_number": 1,
-            "content": "Option A",
-            "confidence": 0.6,
-            "predicted_group_answer": "Option A"
+            "content": "AGORA_DEMO_OK",
+            "confidence": 1.0,
+            "predicted_group_answer": "AGORA_DEMO_OK"
           },
-          "timestamp": "2026-04-18T03:26:59.571362Z"
+          "timestamp": "2026-04-17T14:40:46.352776Z"
         },
         {
           "event": "agent_output",
@@ -268,51 +289,51 @@
             "confidence": 1.0,
             "predicted_group_answer": "AGORA_DEMO_OK"
           },
-          "timestamp": "2026-04-18T03:26:59.783635Z"
+          "timestamp": "2026-04-17T14:40:46.361835Z"
         },
         {
           "event": "quorum_reached",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
             "final_answer": "AGORA_DEMO_OK",
-            "confidence": 0.6416612684716163,
+            "confidence": 0.817070099113417,
             "mechanism": "vote",
             "quorum_reached": true
           },
-          "timestamp": "2026-04-18T03:27:01.116570Z"
+          "timestamp": "2026-04-17T14:40:48.163107Z"
         },
         {
           "event": "receipt_committed",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
-            "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
-            "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
-            "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet"
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
+            "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
+            "solana_tx_hash": "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G",
+            "explorer_url": "https://explorer.solana.com/tx/4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G?cluster=devnet"
           },
-          "timestamp": "2026-04-18T03:27:01.333018Z"
+          "timestamp": "2026-04-17T14:40:48.189964Z"
         },
         {
           "event": "complete",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
             "status": "completed"
           },
-          "timestamp": "2026-04-18T03:27:01.567924Z"
+          "timestamp": "2026-04-17T14:40:48.202558Z"
         }
       ]
     },
     "status_after_pay": {
-      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
       "task_text": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
-      "workspace_id": "hosted-phase2",
-      "created_by": "api_key:aa75832b364e4909a4884d975312cc6a",
+      "workspace_id": "demo-user",
+      "created_by": "api_key:d3d701eb5eccf821668d1aef7b8c9148",
       "mechanism": "vote",
       "mechanism_override": "vote",
       "status": "paid",
       "selector_reasoning": "Mechanism override applied at task creation: forced vote execution.",
       "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e",
       "selector_confidence": 1.0,
-      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
       "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
       "quorum_reached": true,
       "agent_count": 4,
@@ -321,22 +342,22 @@
       "transcript_hashes": [
         "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
         "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
-        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "0a863a638374b70b1a07ffe784a82f576700dbf5009554c0d16ee14af01c820e",
         "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
       ],
-      "solana_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
-      "explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet",
+      "solana_tx_hash": "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ",
+      "explorer_url": "https://explorer.solana.com/tx/zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ?cluster=devnet",
       "payment_amount": 0.01,
       "payment_status": "released",
-      "created_at": "2026-04-18T03:26:51.489258Z",
-      "completed_at": "2026-04-18T03:27:00.908944Z",
+      "created_at": "2026-04-17T14:40:21.928782Z",
+      "completed_at": "2026-04-17T14:40:48.161405Z",
       "result": {
-        "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+        "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
         "mechanism": "vote",
         "final_answer": "AGORA_DEMO_OK",
-        "confidence": 0.6416612684716163,
+        "confidence": 0.817070099113417,
         "quorum_reached": true,
-        "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+        "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
         "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
         "agent_count": 4,
         "agent_models_used": [
@@ -345,14 +366,14 @@
           "gemini-3-flash-preview",
           "claude-sonnet-4-6"
         ],
-        "total_tokens_used": 414,
-        "latency_ms": 7298.086336999972,
+        "total_tokens_used": 1274,
+        "latency_ms": 38187.891932961065,
         "round_count": 1,
         "mechanism_switches": 0,
         "transcript_hashes": [
           "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
           "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
-          "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+          "0a863a638374b70b1a07ffe784a82f576700dbf5009554c0d16ee14af01c820e",
           "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
         ],
         "convergence_history": [],
@@ -362,14 +383,14 @@
         {
           "event": "mechanism_selected",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
             "mechanism": "vote",
             "mechanism_override": "vote",
             "confidence": 1.0,
             "reasoning": "Mechanism override applied at task creation: forced vote execution.",
             "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e"
           },
-          "timestamp": "2026-04-18T03:26:51.644730Z"
+          "timestamp": "2026-04-17T14:40:21.929693Z"
         },
         {
           "event": "agent_output",
@@ -383,7 +404,7 @@
             "confidence": 1.0,
             "predicted_group_answer": "AGORA_DEMO_OK"
           },
-          "timestamp": "2026-04-18T03:26:59.143652Z"
+          "timestamp": "2026-04-17T14:40:46.341184Z"
         },
         {
           "event": "agent_output",
@@ -397,7 +418,7 @@
             "confidence": 0.52,
             "predicted_group_answer": "Option A"
           },
-          "timestamp": "2026-04-18T03:26:59.363176Z"
+          "timestamp": "2026-04-17T14:40:46.346156Z"
         },
         {
           "event": "agent_output",
@@ -407,11 +428,11 @@
             "role": "voter",
             "faction": "vote",
             "round_number": 1,
-            "content": "Option A",
-            "confidence": 0.6,
-            "predicted_group_answer": "Option A"
+            "content": "AGORA_DEMO_OK",
+            "confidence": 1.0,
+            "predicted_group_answer": "AGORA_DEMO_OK"
           },
-          "timestamp": "2026-04-18T03:26:59.571362Z"
+          "timestamp": "2026-04-17T14:40:46.352776Z"
         },
         {
           "event": "agent_output",
@@ -425,45 +446,45 @@
             "confidence": 1.0,
             "predicted_group_answer": "AGORA_DEMO_OK"
           },
-          "timestamp": "2026-04-18T03:26:59.783635Z"
+          "timestamp": "2026-04-17T14:40:46.361835Z"
         },
         {
           "event": "quorum_reached",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
             "final_answer": "AGORA_DEMO_OK",
-            "confidence": 0.6416612684716163,
+            "confidence": 0.817070099113417,
             "mechanism": "vote",
             "quorum_reached": true
           },
-          "timestamp": "2026-04-18T03:27:01.116570Z"
+          "timestamp": "2026-04-17T14:40:48.163107Z"
         },
         {
           "event": "receipt_committed",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
-            "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
-            "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
-            "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet"
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
+            "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
+            "solana_tx_hash": "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G",
+            "explorer_url": "https://explorer.solana.com/tx/4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G?cluster=devnet"
           },
-          "timestamp": "2026-04-18T03:27:01.333018Z"
+          "timestamp": "2026-04-17T14:40:48.189964Z"
         },
         {
           "event": "complete",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
             "status": "completed"
           },
-          "timestamp": "2026-04-18T03:27:01.567924Z"
+          "timestamp": "2026-04-17T14:40:48.202558Z"
         },
         {
           "event": "payment_released",
           "data": {
-            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
-            "tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
-            "explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet"
+            "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
+            "tx_hash": "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ",
+            "explorer_url": "https://explorer.solana.com/tx/zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ?cluster=devnet"
           },
-          "timestamp": "2026-04-18T03:27:06.417033Z"
+          "timestamp": "2026-04-17T14:40:50.771489Z"
         }
       ]
     },
@@ -489,16 +510,16 @@
         }
       },
       "final_answer": "AGORA_DEMO_OK",
-      "confidence": 0.6416612684716163,
+      "confidence": 0.817070099113417,
       "quorum_reached": true,
       "round_count": 1,
       "agent_count": 4,
       "mechanism_switches": 0,
-      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87",
       "transcript_hashes": [
         "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
         "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
-        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "0a863a638374b70b1a07ffe784a82f576700dbf5009554c0d16ee14af01c820e",
         "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
       ],
       "agent_models_used": [
@@ -509,9 +530,9 @@
       ],
       "convergence_history": [],
       "locked_claims": [],
-      "total_tokens_used": 414,
-      "total_latency_ms": 7298.086336999972,
-      "timestamp": "2026-04-18T03:27:02.749433Z"
+      "total_tokens_used": 1274,
+      "total_latency_ms": 38187.891932961065,
+      "timestamp": "2026-04-17T14:40:48.250409Z"
     },
     "receipt_verification": {
       "valid": true,
@@ -521,20 +542,20 @@
     },
     "payment": {
       "released": true,
-      "tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm"
+      "tx_hash": "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ"
     },
-    "latest_task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
-    "task_id_for_result": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+    "latest_task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
+    "task_id_for_result": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
     "module_paths": {
-      "agora": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/__init__.py",
-      "arbitrator": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/sdk/arbitrator.py"
+      "agora": "/tmp/agora-phase2-demo-ec0_zk9t/sdk-venv/lib/python3.11/site-packages/agora/__init__.py",
+      "arbitrator": "/tmp/agora-phase2-demo-ec0_zk9t/sdk-venv/lib/python3.11/site-packages/agora/sdk/arbitrator.py"
     }
   },
   "sdk_runner_stdout": "",
   "sdk_runner_stderr": "",
   "sdk_module_paths": {
-    "agora": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/__init__.py",
-    "arbitrator": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/sdk/arbitrator.py"
+    "agora": "/tmp/agora-phase2-demo-ec0_zk9t/sdk-venv/lib/python3.11/site-packages/agora/__init__.py",
+    "arbitrator": "/tmp/agora-phase2-demo-ec0_zk9t/sdk-venv/lib/python3.11/site-packages/agora/sdk/arbitrator.py"
   },
   "event_timeline": {
     "event_count": 9,
@@ -547,17 +568,17 @@
       "quorum_reached": 1,
       "receipt_committed": 1
     },
-    "first_timestamp": "2026-04-18T03:26:51.644730Z",
-    "last_timestamp": "2026-04-18T03:27:06.417033Z",
-    "event_span_seconds": 14.772,
+    "first_timestamp": "2026-04-17T14:40:21.929693Z",
+    "last_timestamp": "2026-04-17T14:40:50.771489Z",
+    "event_span_seconds": 28.842,
     "mechanism_switch_count": 0,
     "error_event_count": 0,
     "first_events": [
       {
         "event": "mechanism_selected",
-        "timestamp": "2026-04-18T03:26:51.644730Z",
+        "timestamp": "2026-04-17T14:40:21.929693Z",
         "data_excerpt": {
-          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
           "mechanism": "vote",
           "confidence": 1.0,
           "mechanism_override": "vote",
@@ -567,7 +588,7 @@
       },
       {
         "event": "agent_output",
-        "timestamp": "2026-04-18T03:26:59.143652Z",
+        "timestamp": "2026-04-17T14:40:46.341184Z",
         "data_excerpt": {
           "agent_id": "agent-1",
           "role": "voter",
@@ -579,7 +600,7 @@
       },
       {
         "event": "agent_output",
-        "timestamp": "2026-04-18T03:26:59.363176Z",
+        "timestamp": "2026-04-17T14:40:46.346156Z",
         "data_excerpt": {
           "agent_id": "agent-2",
           "role": "voter",
@@ -591,19 +612,19 @@
       },
       {
         "event": "agent_output",
-        "timestamp": "2026-04-18T03:26:59.571362Z",
+        "timestamp": "2026-04-17T14:40:46.352776Z",
         "data_excerpt": {
           "agent_id": "agent-3",
           "role": "voter",
           "faction": "vote",
-          "confidence": 0.6,
+          "confidence": 1.0,
           "agent_model": "gemini-3-flash-preview",
-          "content": "Option A"
+          "content": "AGORA_DEMO_OK"
         }
       },
       {
         "event": "agent_output",
-        "timestamp": "2026-04-18T03:26:59.783635Z",
+        "timestamp": "2026-04-17T14:40:46.361835Z",
         "data_excerpt": {
           "agent_id": "agent-4",
           "role": "voter",
@@ -617,7 +638,7 @@
     "last_events": [
       {
         "event": "agent_output",
-        "timestamp": "2026-04-18T03:26:59.783635Z",
+        "timestamp": "2026-04-17T14:40:46.361835Z",
         "data_excerpt": {
           "agent_id": "agent-4",
           "role": "voter",
@@ -629,40 +650,40 @@
       },
       {
         "event": "quorum_reached",
-        "timestamp": "2026-04-18T03:27:01.116570Z",
+        "timestamp": "2026-04-17T14:40:48.163107Z",
         "data_excerpt": {
-          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
           "mechanism": "vote",
-          "confidence": 0.6416612684716163,
+          "confidence": 0.817070099113417,
           "quorum_reached": true,
           "final_answer": "AGORA_DEMO_OK"
         }
       },
       {
         "event": "receipt_committed",
-        "timestamp": "2026-04-18T03:27:01.333018Z",
+        "timestamp": "2026-04-17T14:40:48.189964Z",
         "data_excerpt": {
-          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
-          "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
-          "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
-          "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f"
+          "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
+          "solana_tx_hash": "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G",
+          "explorer_url": "https://explorer.solana.com/tx/4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G?cluster=devnet",
+          "merkle_root": "f96149a96a7f7cec04a49e47fc49958b5e81d61e6f22d5de48c10912fa11af87"
         }
       },
       {
         "event": "complete",
-        "timestamp": "2026-04-18T03:27:01.567924Z",
+        "timestamp": "2026-04-17T14:40:48.202558Z",
         "data_excerpt": {
-          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
           "status": "completed"
         }
       },
       {
         "event": "payment_released",
-        "timestamp": "2026-04-18T03:27:06.417033Z",
+        "timestamp": "2026-04-17T14:40:50.771489Z",
         "data_excerpt": {
-          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
-          "tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
-          "explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet"
+          "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
+          "tx_hash": "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ",
+          "explorer_url": "https://explorer.solana.com/tx/zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ?cluster=devnet"
         }
       }
     ]
@@ -681,35 +702,35 @@
       "status": "pending",
       "payment_status": "locked",
       "mechanism": "vote",
-      "solana_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
+      "solana_tx_hash": "5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP",
       "event_count": 1
     },
     "status_after_run": {
       "status": "completed",
       "payment_status": "locked",
       "mechanism": "vote",
-      "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+      "solana_tx_hash": "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G",
       "event_count": 8
     },
     "status_after_pay": {
       "status": "paid",
       "payment_status": "released",
       "mechanism": "vote",
-      "solana_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
+      "solana_tx_hash": "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ",
       "event_count": 9
     }
   },
   "run_summary": {
-    "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+    "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
     "mechanism": "vote",
     "final_status": "paid",
     "payment_status": "released",
     "final_answer": "AGORA_DEMO_OK",
-    "confidence": 0.6416612684716163,
+    "confidence": 0.817070099113417,
     "round_count": 1,
     "mechanism_switches": 0,
-    "total_tokens_used": 414,
-    "latency_ms": 7298.086336999972,
+    "total_tokens_used": 1274,
+    "latency_ms": 38187.891932961065,
     "agent_models_used": [
       "gemini-3.1-pro-preview",
       "moonshotai/kimi-k2-thinking",
@@ -727,13 +748,13 @@
       "quorum_reached",
       "receipt_committed"
     ],
-    "event_span_seconds": 14.772,
+    "event_span_seconds": 28.842,
     "latest_events": [
-      "2026-04-18T03:26:59.783635Z::agent_output",
-      "2026-04-18T03:27:01.116570Z::quorum_reached",
-      "2026-04-18T03:27:01.333018Z::receipt_committed",
-      "2026-04-18T03:27:01.567924Z::complete",
-      "2026-04-18T03:27:06.417033Z::payment_released"
+      "2026-04-17T14:40:46.361835Z::agent_output",
+      "2026-04-17T14:40:48.163107Z::quorum_reached",
+      "2026-04-17T14:40:48.189964Z::receipt_committed",
+      "2026-04-17T14:40:48.202558Z::complete",
+      "2026-04-17T14:40:50.771489Z::payment_released"
     ],
     "receipt_verification": {
       "merkle_match": true,
@@ -749,7 +770,7 @@
       "receipt_hosted_metadata_match": true
     }
   },
-  "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+  "task_id": "5873c526329627c501a0c0ff79c87d03c32cd408b351bff215989116b24f20ab",
   "selected_mechanism": "vote",
   "final_status": "paid",
   "payment_status": "released",
@@ -760,12 +781,12 @@
     "on_chain_match": null
   },
   "tx_summary": {
-    "initialize_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
-    "initialize_explorer_url": "https://explorer.solana.com/tx/3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW?cluster=devnet",
-    "receipt_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
-    "receipt_explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
-    "payment_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
-    "payment_explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet",
+    "initialize_tx_hash": "5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP",
+    "initialize_explorer_url": "https://explorer.solana.com/tx/5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP?cluster=devnet",
+    "receipt_tx_hash": "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G",
+    "receipt_explorer_url": "https://explorer.solana.com/tx/4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G?cluster=devnet",
+    "payment_tx_hash": "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ",
+    "payment_explorer_url": "https://explorer.solana.com/tx/zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ?cluster=devnet",
     "agent_models_used": [
       "gemini-3.1-pro-preview",
       "moonshotai/kimi-k2-thinking",
@@ -779,18 +800,18 @@
     "gemini-3-flash-preview",
     "claude-sonnet-4-6"
   ],
-  "initialize_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
-  "initialize_explorer_url": "https://explorer.solana.com/tx/3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW?cluster=devnet",
-  "receipt_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
-  "receipt_explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
-  "payment_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
-  "payment_explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet",
+  "initialize_tx_hash": "5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP",
+  "initialize_explorer_url": "https://explorer.solana.com/tx/5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP?cluster=devnet",
+  "receipt_tx_hash": "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G",
+  "receipt_explorer_url": "https://explorer.solana.com/tx/4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G?cluster=devnet",
+  "payment_tx_hash": "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ",
+  "payment_explorer_url": "https://explorer.solana.com/tx/zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ?cluster=devnet",
   "chain_confirmations": {
     "initialize": {
-      "blockTime": 1776482808,
+      "blockTime": 1776436818,
       "meta": {
-        "computeUnitsConsumed": 16564,
-        "costUnits": 18268,
+        "computeUnitsConsumed": 19564,
+        "costUnits": 21268,
         "err": null,
         "fee": 5000,
         "innerInstructions": [
@@ -840,11 +861,11 @@
           "Program 11111111111111111111111111111111 success",
           "Program 11111111111111111111111111111111 invoke [2]",
           "Program 11111111111111111111111111111111 success",
-          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd consumed 16564 of 200000 compute units",
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd consumed 19564 of 200000 compute units",
           "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd success"
         ],
         "postBalances": [
-          11672260854,
+          11695357974,
           2749200,
           10953520,
           1,
@@ -852,7 +873,7 @@
         ],
         "postTokenBalances": [],
         "preBalances": [
-          11685968574,
+          11709065694,
           0,
           0,
           1,
@@ -864,13 +885,13 @@
           "Ok": null
         }
       },
-      "slot": 456295818,
+      "slot": 456174318,
       "transaction": {
         "message": {
           "accountKeys": [
             "Bij9gHQ1YuZ169YAhJ7YdSzDJ7PMHXV5qzuYJrDrC3JG",
-            "5D38QLiBScRMUajhwKddj7ANEbLawo6Sxuen1jTh8aHw",
-            "8h88QnYRhEZ9yRHgkz9cT2Mdu8XE5dxCLn8eV5vH7Er7",
+            "827yPzufD5vqQPdkEyT5UGBobUztxUBY9MrdzLnc6iyd",
+            "Cg6GPHLkeWwoGUYEHqvTTrTpv33ATiPvY6E9RexCSA4L",
             "11111111111111111111111111111111",
             "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
           ],
@@ -887,22 +908,22 @@
                 0,
                 3
               ],
-              "data": "TwqY9awpUaZxCrgcAsMytwNMzzjwpVkggvqBRN7Y7cSnoB6ZD8nwyLna3Y2Uvbh33b2hpsLuQnRnfLMj4zMwqVyrKB4yh8WCriLJpty5PzSuuKGgx3VoFCVFANFPzgrgBZ6Bqt1QgBDqxXA9rVyTqBd5EcZqJ",
+              "data": "TwqY9awpUaYzBdRtR2ZF19D5jBbcuEovXpQtSSbuiapXrtiJTZs5RMcf5W18FVTC7PuEwgHsahsXtf8uN65M1drWe1JVZXq4fLud74S5AZJaj9B3ZZLQaQ5ACwtPXDNP6T22wnKDgkz2aFV8b4g8MRbqBoLQ8",
               "programIdIndex": 4,
               "stackHeight": 1
             }
           ],
-          "recentBlockhash": "3VjyKA5zhPQZ2vGbEVMeFDUnxTPAETTMHr6HVE5FiH2p"
+          "recentBlockhash": "2uCjzFCEoGKBUS3qcyHeeg86q5pmEdP19vwCs8hmVqwf"
         },
         "signatures": [
-          "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW"
+          "5cYxMXejEURuUwchT7tD1vCYrxmHA8DLhiWkijCb2ToGiNMDRSpfPrDMDtLAs7KrRC3pnZgf7DerBuUARfRbSbfP"
         ]
       },
-      "transactionIndex": 20,
+      "transactionIndex": 5,
       "version": "legacy"
     },
     "receipt": {
-      "blockTime": 1776482819,
+      "blockTime": 1776436847,
       "meta": {
         "computeUnitsConsumed": 5126,
         "costUnits": 6528,
@@ -920,13 +941,13 @@
           "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd success"
         ],
         "postBalances": [
-          11672250854,
+          11695347974,
           2749200,
           1141440
         ],
         "postTokenBalances": [],
         "preBalances": [
-          11672255854,
+          11695352974,
           2749200,
           1141440
         ],
@@ -936,12 +957,12 @@
           "Ok": null
         }
       },
-      "slot": 456295848,
+      "slot": 456174394,
       "transaction": {
         "message": {
           "accountKeys": [
             "Bij9gHQ1YuZ169YAhJ7YdSzDJ7PMHXV5qzuYJrDrC3JG",
-            "5D38QLiBScRMUajhwKddj7ANEbLawo6Sxuen1jTh8aHw",
+            "827yPzufD5vqQPdkEyT5UGBobUztxUBY9MrdzLnc6iyd",
             "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
           ],
           "header": {
@@ -955,22 +976,22 @@
                 1,
                 0
               ],
-              "data": "FioA8L3XJiH7MCDe5r6y7Ua1VXmk9i5DsyjNRDFzR3wUB3SctegBUB4V2d5RwVsu3Jssx4sLZUoGiufdTkaDH88UvNJa39sBwTcqzE4vPPvN5WBWULPmmHtfAAW6opQwFsPoffi9npt2hkxvk",
+              "data": "FioA8L3XJiGpA43xWALy69rjxUu9coNyt8YzuZwxkci1TJTMujJPoNTLgCA2bq5whL3NM5XhnrTL8JivghXKpXorJx6o3MxMhKxbT7TSnMVMc4jeWyUCyzQEJwEqcPz1quN64BN3kpHRMg2Xz",
               "programIdIndex": 2,
               "stackHeight": 1
             }
           ],
-          "recentBlockhash": "9GGyoqfEReDhkkQX8AkMypyYzjwnZEd3B111mD9CSeBG"
+          "recentBlockhash": "8wuuPWdDUxzYtsqkbqmR2chJUSk6q6CtF5mD2Rec5svH"
         },
         "signatures": [
-          "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M"
+          "4Vhk93Ac9q2e762D7q5hpKGbSi79M81EdvZhiJJkm8pcNRD2yWGVpXF4cFs4yaAW82mc3ueXc8Rw2d8aHrhU6s2G"
         ]
       },
-      "transactionIndex": 31,
+      "transactionIndex": 40,
       "version": "legacy"
     },
     "payment": {
-      "blockTime": 1776482824,
+      "blockTime": 1776436849,
       "meta": {
         "computeUnitsConsumed": 8183,
         "costUnits": 9869,
@@ -988,7 +1009,7 @@
           "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd success"
         ],
         "postBalances": [
-          11683199374,
+          11706296494,
           2749200,
           0,
           1,
@@ -996,7 +1017,7 @@
         ],
         "postTokenBalances": [],
         "preBalances": [
-          11672250854,
+          11695347974,
           2749200,
           10953520,
           1,
@@ -1008,13 +1029,13 @@
           "Ok": null
         }
       },
-      "slot": 456295862,
+      "slot": 456174400,
       "transaction": {
         "message": {
           "accountKeys": [
             "Bij9gHQ1YuZ169YAhJ7YdSzDJ7PMHXV5qzuYJrDrC3JG",
-            "5D38QLiBScRMUajhwKddj7ANEbLawo6Sxuen1jTh8aHw",
-            "8h88QnYRhEZ9yRHgkz9cT2Mdu8XE5dxCLn8eV5vH7Er7",
+            "827yPzufD5vqQPdkEyT5UGBobUztxUBY9MrdzLnc6iyd",
+            "Cg6GPHLkeWwoGUYEHqvTTrTpv33ATiPvY6E9RexCSA4L",
             "11111111111111111111111111111111",
             "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
           ],
@@ -1032,25 +1053,43 @@
                 0,
                 3
               ],
-              "data": "2CZFrLGjRAmmEokMKXkR3VKHm1iVm13YGVCzh9XPviu1sPTXUSMLskR",
+              "data": "2CZFrLGjRAmbEnxVaU4ASP19TKzpZFGPUrPTJDWo7xAUYffQTWqicKc",
               "programIdIndex": 4,
               "stackHeight": 1
             }
           ],
-          "recentBlockhash": "HKTw7Q4624S1rugcRhnY8Gg2PJo4d5YpQzuvkPGpyH4W"
+          "recentBlockhash": "5F2JZkuty6FVcYGEGeJEjmKPNiS5FiQSXLxjAvYEW9j6"
         },
         "signatures": [
-          "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm"
+          "zvZhCvZjxoPiQ1J4fZV1XR9ucPjuCTTEcwZRHv7CuW1HNEmYeCenFtVzkg3K7v7YaYDguKnDmjWPF4p5QvPZTvZ"
         ]
       },
-      "transactionIndex": 13,
+      "transactionIndex": 35,
       "version": "legacy"
     }
   },
-  "revoked_key_reuse_status": null,
-  "revocation_proof": {
-    "status": "skipped",
-    "reason": "Hosted target uses a pre-issued token. API key issuance/revocation proof is validated in local target mode."
+  "api_key_revocation": {
+    "key_id": "d3d701eb5eccf821668d1aef7b8c9148",
+    "workspace_id": "demo-user",
+    "name": "phase2-demo",
+    "public_id": "nVLKYRQYU8jk",
+    "scopes": [
+      "tasks:read",
+      "tasks:write",
+      "api_keys:read",
+      "api_keys:write"
+    ],
+    "created_by_user_id": "demo-user",
+    "created_at": "2026-04-17T14:40:12.463341Z",
+    "last_used_at": "2026-04-17T14:40:50.792812Z",
+    "expires_at": "2027-04-17T14:40:12.463348Z",
+    "revoked_at": "2026-04-17T14:40:55.454813Z"
   },
-  "finished_at": "2026-04-18T03:27:09Z"
+  "revoked_key_reuse_status": 401,
+  "revocation_proof": {
+    "api_key_id": "d3d701eb5eccf821668d1aef7b8c9148",
+    "revoked_at": "2026-04-17T14:40:55.454813Z",
+    "reuse_http_status": 401
+  },
+  "finished_at": "2026-04-17T14:40:55Z"
 }

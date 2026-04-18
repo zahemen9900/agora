@@ -25,6 +25,9 @@ jobs:
           uv pip install --system -e ".[dev]"
           uv pip install --system -r api/requirements.txt
 
+      - name: Check generated frontend API types
+        run: python scripts/generate_frontend_api_types.py --check
+
       - name: Lint
         run: ruff check agora/ api/ benchmarks/ tests/ scripts/
 

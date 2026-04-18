@@ -6,9 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY api/requirements.txt ./requirements.txt
-COPY api/constraints.txt ./constraints.txt
-RUN pip install --no-cache-dir -c constraints.txt -r requirements.txt
+COPY api/requirements.lock ./requirements.lock
+RUN pip install --no-cache-dir -r requirements.lock
 
 COPY pyproject.toml README.md ./
 COPY agora ./agora
