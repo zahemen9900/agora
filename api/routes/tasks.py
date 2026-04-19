@@ -14,9 +14,9 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
+from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
 from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.orchestrator import AgoraOrchestrator
-from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
 from agora.selector.features import extract_features
 from agora.types import (
     SUPPORTED_MECHANISMS,
@@ -65,6 +65,7 @@ _INITIALIZE_TASK_OPERATION = "initialize_task"
 _RECORD_SELECTION_OPERATION = "record_selection"
 _SUBMIT_RECEIPT_OPERATION = "submit_receipt"
 _RELEASE_PAYMENT_OPERATION = "release_payment"
+_SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state"
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -339,6 +340,14 @@ def _result_to_response(
 ) -> DeliberationResultResponse:
     """Convert runtime result into API response shape."""
 
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
+
     model_token_usage = {model: int(tokens) for model, tokens in result.model_token_usage.items()}
     model_latency_ms = {model: float(latency) for model, latency in result.model_latency_ms.items()}
     model_telemetry_raw = build_model_telemetry(
@@ -374,9 +383,10 @@ def _result_to_response(
             for model, telemetry in model_telemetry_raw.items()
         },
         total_tokens_used=result.total_tokens_used,
-        input_tokens_used=max(0, int(getattr(result, "input_tokens_used", 0) or 0)),
-        output_tokens_used=max(0, int(getattr(result, "output_tokens_used", 0) or 0)),
-        thinking_tokens_used=max(0, int(getattr(result, "thinking_tokens_used", 0) or 0)),
+        reasoning_presets=result.reasoning_presets,
+        input_tokens_used=_optional_int(getattr(result, "input_tokens_used", None)),
+        output_tokens_used=_optional_int(getattr(result, "output_tokens_used", None)),
+        thinking_tokens_used=_optional_int(getattr(result, "thinking_tokens_used", None)),
         latency_ms=result.total_latency_ms,
         cost=cost_payload,
         payment_amount=max(0.0, payment_amount),
@@ -389,6 +399,14 @@ def _result_to_response(
             metric.model_dump(mode="json") for metric in result.convergence_history
         ],
         locked_claims=[claim.model_dump(mode="json") for claim in result.locked_claims],
+        mechanism_trace=[
+            segment.model_dump(mode="json") for segment in result.mechanism_trace
+        ],
+        execution_mode=result.execution_mode,
+        selector_source=result.selector_source,
+        fallback_count=result.fallback_count,
+        fallback_events=[event.model_dump(mode="json") for event in result.fallback_events],
+        mechanism_override_source=result.mechanism_override_source,
     )
 
 
@@ -504,6 +522,32 @@ async def _save_task_status(
     task: TaskStatusResponse,
 ) -> None:
     await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+
+
+async def _load_selector_state(
+    store: TaskStore | LocalTaskStore,
+    orchestrator: AgoraOrchestrator,
+) -> None:
+    """Load durable selector bandit state when available."""
+
+    state_payload = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
+    if state_payload is None:
+        return
+    if not hasattr(orchestrator.selector, "bandit"):
+        return
+    orchestrator.selector.bandit.load_state_payload(state_payload)
+
+
+async def _save_selector_state(
+    store: TaskStore | LocalTaskStore,
+    orchestrator: AgoraOrchestrator,
+) -> None:
+    """Persist selector bandit state for future orchestrators."""
+
+    await store.save_runtime_state(
+        _SELECTOR_BANDIT_STATE_KEY,
+        cast(dict[str, Any], orchestrator.selector.bandit.to_state()),
+    )
 
 
 async def _attempt_chain_operation(
@@ -681,29 +725,6 @@ async def _finalize_result_chain_operations(
         )
         return
 
-    if ensure_missing:
-        _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
-    if _SUBMIT_RECEIPT_OPERATION in task.chain_operations:
-        await _attempt_chain_operation(
-            store=store,
-            workspace_id=workspace_id,
-            task_id=task_id,
-            task=task,
-            operation_key=_SUBMIT_RECEIPT_OPERATION,
-            call=lambda: bridge.submit_receipt(
-                task_id=task_id,
-                merkle_root=result_response.merkle_root or "",
-                decision_hash=result_response.decision_hash or "",
-                quorum_reached=result_response.quorum_reached,
-                final_mechanism=result_response.mechanism,
-            ),
-            strict_failure_detail="Failed to submit receipt on Solana",
-            on_success=lambda result: _apply_chain_tx(task, result),
-        )
-
-    if not _chain_operation_succeeded(task, _SUBMIT_RECEIPT_OPERATION):
-        return
-
     for switch_index, switch_event in enumerate(switch_events):
         operation_key = _switch_operation_key(switch_index)
         if ensure_missing:
@@ -727,6 +748,32 @@ async def _finalize_result_chain_operations(
                 round_number=int(data.get("round_number", result_response.round_count)),
             ),
             strict_failure_detail="Failed to record mechanism switch on Solana",
+        )
+
+    if any(
+        not _chain_operation_succeeded(task, _switch_operation_key(switch_index))
+        for switch_index, _switch_event in enumerate(switch_events)
+    ):
+        return
+
+    if ensure_missing:
+        _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
+    if _SUBMIT_RECEIPT_OPERATION in task.chain_operations:
+        await _attempt_chain_operation(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            task=task,
+            operation_key=_SUBMIT_RECEIPT_OPERATION,
+            call=lambda: bridge.submit_receipt(
+                task_id=task_id,
+                merkle_root=result_response.merkle_root or "",
+                decision_hash=result_response.decision_hash or "",
+                quorum_reached=result_response.quorum_reached,
+                final_mechanism=result_response.mechanism,
+            ),
+            strict_failure_detail="Failed to submit receipt on Solana",
+            on_success=lambda result: _apply_chain_tx(task, result),
         )
 
 
@@ -855,6 +902,37 @@ def _request_mechanism_override(request: TaskCreateRequest) -> MechanismType | N
     )
 
 
+def _selector_source(
+    *,
+    selection: MechanismSelection,
+    forced_override: MechanismType | None,
+    requested_override: MechanismType | None,
+) -> str:
+    """Classify how the mechanism selection was produced."""
+
+    if forced_override is not None:
+        return "env_pin"
+    if requested_override is not None:
+        return "forced_override"
+    if "Reasoning model unavailable" in selection.reasoning:
+        return "bandit_fallback"
+    return "llm_reasoning"
+
+
+def _mechanism_override_source(
+    *,
+    forced_override: MechanismType | None,
+    requested_override: MechanismType | None,
+) -> str | None:
+    """Expose the source of a pinned mechanism when present."""
+
+    if forced_override is not None:
+        return "env_pin"
+    if requested_override is not None:
+        return "request"
+    return None
+
+
 async def _pinned_selection(
     *,
     task_text: str,
@@ -944,6 +1022,29 @@ async def _mark_task_failed(
     await stream.close(_stream_key(workspace_id, task_id))
 
 
+def _build_orchestrator(
+    *,
+    agent_count: int,
+    allow_offline_fallback: bool,
+    reasoning_presets: Any,
+) -> AgoraOrchestrator:
+    """Build orchestrator while tolerating older test doubles without fallback kwargs."""
+
+    try:
+        return AgoraOrchestrator(
+            agent_count=agent_count,
+            allow_offline_fallback=allow_offline_fallback,
+            reasoning_presets=reasoning_presets,
+        )
+    except TypeError as exc:
+        if "allow_offline_fallback" not in str(exc):
+            raise
+        return AgoraOrchestrator(
+            agent_count=agent_count,
+            reasoning_presets=reasoning_presets,
+        )
+
+
 @router.post("", response_model=TaskCreateResponse)
 @router.post("/", response_model=TaskCreateResponse, include_in_schema=False)
 async def create_task(
@@ -962,10 +1063,12 @@ async def create_task(
     effective_override = forced_override or requested_override
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
 
-    orchestrator = AgoraOrchestrator(
+    orchestrator = _build_orchestrator(
         agent_count=request.agent_count,
+        allow_offline_fallback=request.allow_offline_fallback,
         reasoning_presets=reasoning_presets,
     )
+    await _load_selector_state(store, orchestrator)
     if effective_override is None:
         selection = await orchestrator.selector.select(
             task_text=request.task,
@@ -984,6 +1087,20 @@ async def create_task(
         status_code=500,
         source="selector",
     )
+    selector_source = _selector_source(
+        selection=selection,
+        forced_override=forced_override,
+        requested_override=requested_override,
+    )
+    mechanism_override_source = _mechanism_override_source(
+        forced_override=forced_override,
+        requested_override=requested_override,
+    )
+    if selector_source == "bandit_fallback" and not request.allow_offline_fallback:
+        raise HTTPException(
+            status_code=503,
+            detail="Selector provider fallback occurred but allow_offline_fallback=false",
+        )
 
     task_status = TaskStatusResponse(
         task_id=task_id,
@@ -994,6 +1111,11 @@ async def create_task(
         mechanism_override=(
             _mechanism_name(effective_override) if effective_override is not None else None
         ),
+        allow_mechanism_switch=request.allow_mechanism_switch,
+        allow_offline_fallback=request.allow_offline_fallback,
+        quorum_threshold=request.quorum_threshold,
+        selector_source=selector_source,
+        mechanism_override_source=mechanism_override_source,
         status="pending",
         selector_reasoning=selection.reasoning,
         selector_reasoning_hash=selection.reasoning_hash,
@@ -1040,9 +1162,11 @@ async def create_task(
             "mechanism_override": (
                 effective_override.value if effective_override is not None else None
             ),
+            "mechanism_override_source": mechanism_override_source,
             "confidence": selection.confidence,
             "reasoning": selection.reasoning,
             "selector_reasoning_hash": selection.reasoning_hash,
+            "selector_source": selector_source,
         },
     )
 
@@ -1053,6 +1177,8 @@ async def create_task(
         reasoning=selection.reasoning,
         selector_reasoning_hash=selection.reasoning_hash,
         status="pending",
+        selector_source=selector_source,
+        mechanism_override_source=mechanism_override_source,
     )
 
 
@@ -1227,10 +1353,16 @@ async def run_task(
             event_data=data,
         )
 
-    orchestrator = AgoraOrchestrator(
+    orchestrator = _build_orchestrator(
         agent_count=task.agent_count,
+        allow_offline_fallback=task.allow_offline_fallback,
         reasoning_presets=task.reasoning_presets,
     )
+    await _load_selector_state(store, orchestrator)
+    if hasattr(orchestrator, "build_vote_engine"):
+        orchestrator.vote_engine = orchestrator.build_vote_engine(
+            quorum_threshold=task.quorum_threshold,
+        )
     try:
         task.status = "in_progress"
         await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
@@ -1256,7 +1388,7 @@ async def run_task(
                 task=task.task_text,
                 selection=selection,
                 event_sink=runtime_event_sink,
-                allow_switch=True,
+                allow_switch=task.allow_mechanism_switch,
             )
         else:
             result = await orchestrator.run(
@@ -1267,6 +1399,20 @@ async def run_task(
             )
         if lease_lost:
             raise RuntimeError("Task execution lease lost")
+        if result.fallback_count > 0 and not task.allow_offline_fallback:
+            raise RuntimeError(
+                "Provider fallback occurred but allow_offline_fallback=false"
+            )
+        result = result.model_copy(
+            update={
+                "selector_source": task.selector_source,
+                "mechanism_override_source": (
+                    "env_pin"
+                    if forced_mechanism is not None
+                    else task.mechanism_override_source
+                ),
+            }
+        )
     except HTTPException as exc:
         try:
             await _mark_task_failed(
@@ -1302,7 +1448,6 @@ async def run_task(
         payment_status=task.payment_status,
     )
 
-    task.status = "completed"
     task.mechanism = result_response.mechanism
     task.quorum_reached = result_response.quorum_reached
     task.merkle_root = result_response.merkle_root
@@ -1310,7 +1455,6 @@ async def run_task(
     task.round_count = result_response.round_count
     task.mechanism_switches = result_response.mechanism_switches
     task.transcript_hashes = result_response.transcript_hashes
-    task.completed_at = datetime.now(UTC)
     task.result = result_response
     task.events = [
         TaskEvent.model_validate(event)
@@ -1318,9 +1462,9 @@ async def run_task(
     ]
     switch_events = [event for event in task.events if event.event == "mechanism_switch"]
     if bridge.is_configured():
-        _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
         for switch_index, _switch_event in enumerate(switch_events):
             _ensure_chain_operation(task, _switch_operation_key(switch_index))
+        _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
 
     await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
 
@@ -1348,6 +1492,10 @@ async def run_task(
             finally:
                 await _release_run_lock_once()
             raise
+
+    task.status = "completed"
+    task.completed_at = datetime.now(UTC)
+    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
 
     await persist_and_emit(
         store=store,

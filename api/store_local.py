@@ -79,6 +79,10 @@ class LocalTaskStore:
             f"{safe_run_id}.json",
         )
 
+    def _runtime_state_path(self, key: str) -> Path:
+        safe_key = validate_storage_id(key, field_name="runtime_state_key")
+        return safe_child_path(self._agora_root, "runtime", f"{safe_key}.json")
+
     @staticmethod
     def _personal_workspace_id(user_id: str) -> str:
         safe_user_id = validate_storage_id(user_id, field_name="user_id")
@@ -345,6 +349,20 @@ class LocalTaskStore:
         path = self.root / "benchmarks" / "summary.json"
         return self._read_json(path, allow_missing=True, operation="get_benchmark_summary")
 
+    async def save_runtime_state(self, key: str, payload: dict[str, Any]) -> None:
+        self._write_json(
+            self._runtime_state_path(key),
+            payload,
+            operation="save_runtime_state",
+        )
+
+    async def get_runtime_state(self, key: str) -> dict[str, Any] | None:
+        return self._read_json(
+            self._runtime_state_path(key),
+            allow_missing=True,
+            operation="get_runtime_state",
+        )
+
     async def save_global_benchmark_artifact(
         self,
         artifact_id: str,
@@ -454,7 +472,12 @@ class LocalTaskStore:
             operation="get_user_test_result",
         )
 
-    async def append_user_test_event(self, user_id: str, run_id: str, event: dict[str, Any]) -> None:
+    async def append_user_test_event(
+        self,
+        user_id: str,
+        run_id: str,
+        event: dict[str, Any],
+    ) -> None:
         path = self._user_test_path(user_id, run_id)
         if not path.exists():
             raise TaskStoreNotFound(

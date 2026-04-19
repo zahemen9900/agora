@@ -506,10 +506,35 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
     async def deterministic_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
         return {
-            "answer": "Option A",
+            "answer": "Constraint-matching answer",
             "confidence": 0.84,
-            "predicted_group_answer": "Option A",
+            "predicted_group_answer": "Constraint-matching answer",
             "reasoning": "Deterministic test agent.",
+            "claim": "The answer follows the explicit benchmark constraint.",
+            "evidence": "The benchmark prompt states the decisive constraint directly.",
+            "defense": "The critique does not break the explicit benchmark constraint.",
+            "final_answer": "Constraint-matching answer",
+            "summary": "The deterministic local agent selected the constraint-matching answer.",
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": "benchmark pro claim",
+                    "flaw": "Needs explicit constraint support.",
+                    "attack_axis": "constraint_fit",
+                    "counterexample": "A candidate satisfying more prompt constraints.",
+                    "failure_mode": "The claim is plausible but insufficiently grounded.",
+                    "question": "Which prompt constraint makes the pro claim decisive?",
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": "benchmark opp claim",
+                    "flaw": "Relies on an unstated assumption.",
+                    "attack_axis": "hidden_assumption",
+                    "counterexample": "A boundary condition where the assumption fails.",
+                    "failure_mode": "The claim wins only if the hidden assumption holds.",
+                    "question": "Which assumption must hold for the opp claim to win?",
+                },
+            ],
         }
 
     training, holdout = BenchmarkRunner.build_phase2_task_split(
@@ -539,12 +564,37 @@ async def test_phase2_validation_seeded_mode_raises_on_merkle_divergence(
     async def changing_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
         call_counter["value"] += 1
-        answer = f"Option {call_counter['value']}"
+        answer = f"Changing candidate {call_counter['value']}"
         return {
             "answer": answer,
             "confidence": 0.55,
             "predicted_group_answer": answer,
             "reasoning": "Intentional non-deterministic test agent.",
+            "claim": answer,
+            "evidence": "Intentional non-deterministic evidence.",
+            "defense": "Intentional non-deterministic defense.",
+            "final_answer": answer,
+            "summary": "Intentional non-deterministic synthesis.",
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": answer,
+                    "flaw": "Intentional drift.",
+                    "attack_axis": "determinism",
+                    "counterexample": "A repeat run with different content.",
+                    "failure_mode": "Merkle root divergence.",
+                    "question": "Does the repeated run produce the same transcript hash?",
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": answer,
+                    "flaw": "Intentional drift.",
+                    "attack_axis": "determinism",
+                    "counterexample": "A repeat run with different content.",
+                    "failure_mode": "Merkle root divergence.",
+                    "question": "Does the repeated run produce the same transcript hash?",
+                },
+            ],
         }
 
     orchestrator = AgoraOrchestrator(agent_count=3)
@@ -765,6 +815,9 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
         "agent_count": 4,
         "stakes": 0.01,
         "mechanism_override": "vote",
+        "allow_mechanism_switch": True,
+        "allow_offline_fallback": False,
+        "quorum_threshold": 0.6,
     }
     assert seen_calls[2][2]["params"] == {"detailed": "true"}
 
@@ -1201,6 +1254,23 @@ async def test_agora_node_passes_strict_and_wallet_config() -> None:
     try:
         assert node.arbitrator.config.strict_verification is False
         assert node.arbitrator.config.solana_wallet == "wallet-test"
+    finally:
+        await node.arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agora_node_passes_phase2_control_config() -> None:
+    node = AgoraNode(
+        mechanism="vote",
+        agent_count=3,
+        allow_mechanism_switch=False,
+        allow_offline_fallback=True,
+        quorum_threshold=0.75,
+    )
+    try:
+        assert node.arbitrator.config.allow_mechanism_switch is False
+        assert node.arbitrator.config.allow_offline_fallback is True
+        assert node.arbitrator.config.quorum_threshold == 0.75
     finally:
         await node.arbitrator.aclose()
 

@@ -24,6 +24,9 @@ class TaskCreateRequest(BaseModel):
     agent_count: int = Field(default=4, ge=1, le=12)
     stakes: float = Field(default=0.0, ge=0.0)
     mechanism_override: MechanismName | None = None
+    allow_mechanism_switch: bool = True
+    allow_offline_fallback: bool = False
+    quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     reasoning_presets: ReasoningPresetOverrides | None = None
 
 
@@ -36,6 +39,8 @@ class TaskCreateResponse(BaseModel):
     reasoning: str
     selector_reasoning_hash: str
     status: TaskStatusName
+    selector_source: str = "llm_reasoning"
+    mechanism_override_source: str | None = None
 
 
 class TaskEvent(BaseModel):
@@ -71,13 +76,14 @@ class DeliberationResultResponse(BaseModel):
     agent_models_used: list[str] = Field(default_factory=list)
     model_token_usage: dict[str, int] = Field(default_factory=dict)
     model_latency_ms: dict[str, float] = Field(default_factory=dict)
-    model_telemetry: dict[str, "ModelTelemetryResponse"] = Field(default_factory=dict)
+    model_telemetry: dict[str, ModelTelemetryResponse] = Field(default_factory=dict)
     total_tokens_used: int = Field(ge=0, default=0)
-    input_tokens_used: int = Field(ge=0, default=0)
-    output_tokens_used: int = Field(ge=0, default=0)
-    thinking_tokens_used: int = Field(ge=0, default=0)
+    reasoning_presets: ReasoningPresets | None = None
+    input_tokens_used: int | None = Field(default=None, ge=0)
+    output_tokens_used: int | None = Field(default=None, ge=0)
+    thinking_tokens_used: int | None = Field(default=None, ge=0)
     latency_ms: float = Field(ge=0.0, default=0.0)
-    cost: "BenchmarkCostEstimateResponse | None" = None
+    cost: BenchmarkCostEstimateResponse | None = None
     payment_amount: float = Field(ge=0.0, default=0.0)
     payment_status: PaymentStatusName = "none"
     informational_model_payouts: dict[str, float] = Field(default_factory=dict)
@@ -86,6 +92,12 @@ class DeliberationResultResponse(BaseModel):
     transcript_hashes: list[str] = Field(default_factory=list)
     convergence_history: list[dict[str, Any]] = Field(default_factory=list)
     locked_claims: list[dict[str, Any]] = Field(default_factory=list)
+    mechanism_trace: list[dict[str, Any]] = Field(default_factory=list)
+    execution_mode: str = "live"
+    selector_source: str = "llm_reasoning"
+    fallback_count: int = Field(default=0, ge=0)
+    fallback_events: list[dict[str, Any]] = Field(default_factory=list)
+    mechanism_override_source: str | None = None
 
 
 class TaskStatusResponse(BaseModel):
@@ -97,6 +109,11 @@ class TaskStatusResponse(BaseModel):
     created_by: str = ""
     mechanism: MechanismName
     mechanism_override: MechanismName | None = None
+    allow_mechanism_switch: bool = True
+    allow_offline_fallback: bool = False
+    quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    selector_source: str = "llm_reasoning"
+    mechanism_override_source: str | None = None
     status: TaskStatusName
     selector_reasoning: str
     selector_reasoning_hash: str
@@ -229,9 +246,9 @@ class ModelTelemetryResponse(BaseModel):
     """Normalized per-model telemetry shared by task and benchmark surfaces."""
 
     total_tokens: int = Field(default=0, ge=0)
-    input_tokens: int = Field(default=0, ge=0)
-    output_tokens: int = Field(default=0, ge=0)
-    thinking_tokens: int = Field(default=0, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    thinking_tokens: int | None = Field(default=None, ge=0)
     latency_ms: float = Field(default=0.0, ge=0.0)
     estimated_cost_usd: float | None = Field(default=None, ge=0.0)
     estimation_mode: CostEstimationModeName | None = None

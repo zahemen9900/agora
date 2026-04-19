@@ -100,13 +100,14 @@ export function BenchmarkDetail() {
     navigate(`/benchmarks/${detail.artifact_id}`, { replace: true });
   }, [benchmarkId, detail?.artifact_id, detail?.run_id, detail?.status, navigate]);
 
+  const detailRunId = detail?.run_id ?? benchmarkId;
+  const detailStatus = detail?.status;
+
   useEffect(() => {
-    const runId = detail?.run_id ?? benchmarkId;
-    const runStatus = detail?.status;
-    if (authStatus !== "authenticated" || !detail) {
+    if (authStatus !== "authenticated" || !detailRunId) {
       return;
     }
-    if (!runId || (runStatus !== "queued" && runStatus !== "running")) {
+    if (detailStatus !== "queued" && detailStatus !== "running") {
       return;
     }
 
@@ -115,7 +116,7 @@ export function BenchmarkDetail() {
 
     void (async () => {
       const token = await getAccessToken();
-      handle = await streamBenchmarkRun(runId, token, (event) => {
+      handle = await streamBenchmarkRun(detailRunId, token, (event) => {
         if (cancelled) {
           return;
         }
@@ -164,7 +165,7 @@ export function BenchmarkDetail() {
       cancelled = true;
       handle?.close();
     };
-  }, [authStatus, benchmarkId, detail?.run_id, detail?.status, getAccessToken, loadDetail]);
+  }, [authStatus, detailRunId, detailStatus, getAccessToken, loadDetail]);
 
   const summary = useMemo<NormalizedSummary>(() => {
     return normalizeSummary(detail?.summary, detail?.benchmark_payload);
@@ -313,9 +314,9 @@ export function BenchmarkDetail() {
             </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm text-text-secondary">
-            <div>Tokens {formatInt(detail.total_tokens)}</div>
-            <div>Thinking {formatInt(detail.thinking_tokens)}</div>
-            <div>Latency {formatLatency(detail.total_latency_ms ?? null)}</div>
+            <div>Tokens {formatMaybeRuntimeInt(detail.total_tokens, detail.status)}</div>
+            <div>Thinking {formatMaybeRuntimeInt(detail.thinking_tokens, detail.status)}</div>
+            <div>Latency {formatMaybeRuntimeLatency(detail.total_latency_ms ?? null, detail.status)}</div>
             <div>Cost {formatUsd(detail.cost?.estimated_cost_usd ?? null)}</div>
           </div>
         </div>
@@ -326,9 +327,9 @@ export function BenchmarkDetail() {
         <MetricCard label="Runs" value={formatInt(detail.run_count)} />
         <MetricCard label="Agents" value={formatMaybeInt(detail.agent_count)} />
         <MetricCard label="Mechanism" value={detail.latest_mechanism ? titleCase(detail.latest_mechanism) : "n/a"} />
-        <MetricCard label="Total Tokens" value={formatInt(detail.total_tokens)} />
-        <MetricCard label="Thinking Tokens" value={formatInt(detail.thinking_tokens)} />
-        <MetricCard label="Latency" value={formatLatency(detail.total_latency_ms ?? null)} />
+        <MetricCard label="Total Tokens" value={formatMaybeRuntimeInt(detail.total_tokens, detail.status)} />
+        <MetricCard label="Thinking Tokens" value={formatMaybeRuntimeInt(detail.thinking_tokens, detail.status)} />
+        <MetricCard label="Latency" value={formatMaybeRuntimeLatency(detail.total_latency_ms ?? null, detail.status)} />
         <MetricCard label="Budget / Agent" value={formatUsd(estimatedBudgetPerAgent)} />
         <MetricCard label="Estimated Cost" value={formatUsd(detail.cost?.estimated_cost_usd ?? null)} />
       </div>
@@ -471,8 +472,10 @@ export function BenchmarkDetail() {
                     <span className="mono text-[10px] text-text-muted">{telemetry.estimation_mode ?? "n/a"}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
-                    <div>Total {formatInt(telemetry.total_tokens ?? 0)}</div>
-                    <div>Thinking {formatInt(telemetry.thinking_tokens ?? 0)}</div>
+                    <div>Total {formatMaybeInt(telemetry.total_tokens)}</div>
+                    <div>Input {formatMaybeInt(telemetry.input_tokens)}</div>
+                    <div>Output {formatMaybeInt(telemetry.output_tokens)}</div>
+                    <div>Thinking {formatMaybeInt(telemetry.thinking_tokens)}</div>
                     <div>Latency {formatLatency(telemetry.latency_ms ?? null)}</div>
                     <div>Cost {formatUsd(telemetry.estimated_cost_usd ?? null)}</div>
                   </div>
@@ -681,6 +684,26 @@ function formatMaybeInt(value: number | null | undefined): string {
 
 function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function formatMaybeRuntimeInt(
+  value: number | null | undefined,
+  status: BenchmarkDetailPayload["status"] | null | undefined,
+): string {
+  if ((status === "queued" || status === "running") && (value === null || value === undefined || value <= 0)) {
+    return "n/a";
+  }
+  return formatInt(value);
+}
+
+function formatMaybeRuntimeLatency(
+  value: number | null | undefined,
+  status: BenchmarkDetailPayload["status"] | null | undefined,
+): string {
+  if ((status === "queued" || status === "running") && (value === null || value === undefined || value <= 0)) {
+    return "n/a";
+  }
+  return formatLatency(value);
 }
 
 function titleCase(value: string): string {

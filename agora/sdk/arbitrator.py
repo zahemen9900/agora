@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,7 +21,9 @@ from agora.selector.features import extract_features
 from agora.types import (
     ConvergenceMetrics,
     DeliberationResult,
+    FallbackEvent,
     MechanismSelection,
+    MechanismTraceSegment,
     MechanismType,
     ReasoningPresetOverrides,
     ReasoningPresets,
@@ -65,6 +68,9 @@ class ArbitratorConfig(BaseModel):
     mechanism: MechanismName | None = None
     agent_count: int = 4
     reasoning_presets: ReasoningPresetOverrides | None = None
+    allow_mechanism_switch: bool = True
+    allow_offline_fallback: bool = False
+    quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     auth_token: str | None = None
     strict_verification: bool = True
     rpc_url: str = ""
@@ -83,6 +89,8 @@ class HostedTaskCreateResponse(BaseModel):
     reasoning: str = ""
     selector_reasoning_hash: str = ""
     status: TaskStatusName = "pending"
+    selector_source: str = "llm_reasoning"
+    mechanism_override_source: str | None = None
 
 
 class HostedDeliberationResult(BaseModel):
@@ -106,6 +114,12 @@ class HostedDeliberationResult(BaseModel):
     transcript_hashes: list[str] = Field(default_factory=list)
     convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
     locked_claims: list[VerifiedClaim] = Field(default_factory=list)
+    mechanism_trace: list[MechanismTraceSegment] = Field(default_factory=list)
+    execution_mode: str = "live"
+    selector_source: str = "llm_reasoning"
+    fallback_count: int = 0
+    fallback_events: list[FallbackEvent] = Field(default_factory=list)
+    mechanism_override_source: str | None = None
 
 
 class HostedChainOperationRecord(BaseModel):
@@ -132,6 +146,11 @@ class HostedTaskStatus(BaseModel):
     created_by: str = ""
     mechanism: MechanismName = "debate"
     mechanism_override: MechanismName | None = None
+    allow_mechanism_switch: bool = True
+    allow_offline_fallback: bool = False
+    quorum_threshold: float = 0.6
+    selector_source: str = "llm_reasoning"
+    mechanism_override_source: str | None = None
     status: TaskStatusName = "pending"
     selector_reasoning: str = ""
     selector_reasoning_hash: str = ""
@@ -266,6 +285,9 @@ class AgoraArbitrator:
         mechanism: MechanismName | None = None,
         agent_count: int = 4,
         reasoning_presets: ReasoningPresetOverrides | None = None,
+        allow_mechanism_switch: bool = True,
+        allow_offline_fallback: bool = False,
+        quorum_threshold: float = 0.6,
         auth_token: str | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
@@ -278,6 +300,9 @@ class AgoraArbitrator:
             mechanism=mechanism,
             agent_count=agent_count,
             reasoning_presets=reasoning_presets,
+            allow_mechanism_switch=allow_mechanism_switch,
+            allow_offline_fallback=allow_offline_fallback,
+            quorum_threshold=quorum_threshold,
             auth_token=auth_token,
             strict_verification=strict_verification,
             rpc_url=rpc_url,
@@ -316,6 +341,9 @@ class AgoraArbitrator:
         mechanism: MechanismName | None = None,
         agent_count: int | None = None,
         reasoning_presets: ReasoningPresetOverrides | dict[str, Any] | None = None,
+        allow_mechanism_switch: bool | None = None,
+        allow_offline_fallback: bool | None = None,
+        quorum_threshold: float | None = None,
     ) -> HostedTaskCreateResponse:
         """Create a hosted task without executing it."""
 
@@ -323,6 +351,19 @@ class AgoraArbitrator:
             "task": task,
             "agent_count": agent_count or self.config.agent_count,
             "stakes": stakes,
+            "allow_mechanism_switch": (
+                self.config.allow_mechanism_switch
+                if allow_mechanism_switch is None
+                else allow_mechanism_switch
+            ),
+            "allow_offline_fallback": (
+                self.config.allow_offline_fallback
+                if allow_offline_fallback is None
+                else allow_offline_fallback
+            ),
+            "quorum_threshold": (
+                self.config.quorum_threshold if quorum_threshold is None else quorum_threshold
+            ),
         }
         effective_mechanism = mechanism or self.config.mechanism
         if effective_mechanism is not None:
@@ -482,6 +523,9 @@ class AgoraArbitrator:
         task: str,
         agents: list[Callable[..., Any]] | None = None,
         stakes: float = 0.0,
+        allow_mechanism_switch: bool | None = None,
+        allow_offline_fallback: bool | None = None,
+        quorum_threshold: float | None = None,
     ) -> DeliberationResult:
         """Run arbitration remotely through the API or locally with custom agents."""
 
@@ -489,16 +533,72 @@ class AgoraArbitrator:
             local_agent_count = len(agents) if agents else self.config.agent_count
             orchestrator = AgoraOrchestrator(
                 agent_count=local_agent_count,
+                allow_offline_fallback=(
+                    self.config.allow_offline_fallback
+                    if allow_offline_fallback is None
+                    else allow_offline_fallback
+                ),
                 reasoning_presets=self.config.reasoning_presets,
             )
-            return await orchestrator.run(
-                task=task,
-                stakes=stakes,
-                mechanism_override=self.config.mechanism,
-                agents=agents,
+            orchestrator.vote_engine = orchestrator.build_vote_engine(
+                quorum_threshold=(
+                    self.config.quorum_threshold if quorum_threshold is None else quorum_threshold
+                )
+            )
+            effective_allow_switch = (
+                self.config.allow_mechanism_switch
+                if allow_mechanism_switch is None
+                else allow_mechanism_switch
+            )
+            if self.config.mechanism is None and not effective_allow_switch:
+                selection = await orchestrator._select_mechanism(
+                    task=task,
+                    normalized_stakes=max(0.0, stakes),
+                    mechanism_override=None,
+                )
+                result = await orchestrator.execute_selection(
+                    task=task,
+                    selection=selection,
+                    agents=agents,
+                    allow_switch=False,
+                )
+            else:
+                result = await orchestrator.run(
+                    task=task,
+                    stakes=stakes,
+                    mechanism_override=self.config.mechanism,
+                    agents=agents,
+                )
+            if (
+                result.fallback_count > 0
+                and not (
+                    self.config.allow_offline_fallback
+                    if allow_offline_fallback is None
+                    else allow_offline_fallback
+                )
+            ):
+                raise RuntimeError("Local fallback occurred but allow_offline_fallback=false")
+            selector_source = "llm_reasoning"
+            if self.config.mechanism is not None:
+                selector_source = "forced_override"
+            elif "Reasoning model unavailable" in result.mechanism_selection.reasoning:
+                selector_source = "bandit_fallback"
+            return result.model_copy(
+                update={
+                    "selector_source": selector_source,
+                    "mechanism_override_source": (
+                        "sdk" if self.config.mechanism is not None else None
+                    ),
+                }
             )
 
-        created = await self.create_task(task, stakes=stakes)
+        created = await self.create_task(
+            task,
+            stakes=stakes,
+            allow_mechanism_switch=allow_mechanism_switch,
+            allow_offline_fallback=allow_offline_fallback,
+            quorum_threshold=quorum_threshold,
+        )
         await self.run_task(created.task_id)
         return await self.get_task_result(created.task_id)
 
@@ -818,6 +918,27 @@ class AgoraArbitrator:
             return False
 
         transcript_hashes = [str(item) for item in transcript_hashes_raw]
+        mechanism_trace_raw = result_payload.get("mechanism_trace")
+        if mechanism_trace_raw is None and result.mechanism_switches == 0:
+            mechanism_trace_raw = []
+        if not isinstance(mechanism_trace_raw, list):
+            return False
+        traced_hash_count = 0
+        for segment in mechanism_trace_raw:
+            if not isinstance(segment, dict):
+                return False
+            segment_hashes = segment.get("transcript_hashes")
+            if not isinstance(segment_hashes, list):
+                return False
+            traced_hash_count += len(segment_hashes)
+        if mechanism_trace_raw:
+            if result.mechanism_switches > 0:
+                traced_hash_count += result.mechanism_switches
+            if traced_hash_count != len(transcript_hashes):
+                return False
+        elif result.mechanism_switches > 0:
+            return False
+
         expected_decision_hash = self._hasher.hash_content(result.final_answer)
         recomputed_root = self._hasher.build_merkle_tree(transcript_hashes)
 
@@ -881,6 +1002,12 @@ class AgoraArbitrator:
             agent_models_used=list(status.result.agent_models_used),
             convergence_history=list(status.result.convergence_history),
             locked_claims=list(status.result.locked_claims),
+            mechanism_trace=list(status.result.mechanism_trace),
+            execution_mode=status.result.execution_mode,  # type: ignore[arg-type]
+            selector_source=status.result.selector_source,  # type: ignore[arg-type]
+            fallback_count=int(status.result.fallback_count),
+            fallback_events=list(status.result.fallback_events),
+            mechanism_override_source=status.result.mechanism_override_source,  # type: ignore[arg-type]
             total_tokens_used=int(status.result.total_tokens_used),
             total_latency_ms=float(status.result.latency_ms),
         )
@@ -902,6 +1029,9 @@ class AgoraNode:
         solana_wallet: str | None = None,
         mechanism: MechanismName | None = None,
         agent_count: int = 4,
+        allow_mechanism_switch: bool = True,
+        allow_offline_fallback: bool = False,
+        quorum_threshold: float = 0.6,
         auth_token: str | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
@@ -913,6 +1043,9 @@ class AgoraNode:
             solana_wallet=solana_wallet,
             mechanism=mechanism,
             agent_count=agent_count,
+            allow_mechanism_switch=allow_mechanism_switch,
+            allow_offline_fallback=allow_offline_fallback,
+            quorum_threshold=quorum_threshold,
             auth_token=auth_token,
             strict_verification=strict_verification,
             rpc_url=rpc_url,

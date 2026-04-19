@@ -119,8 +119,10 @@ def debate_devil_prompt(
     system = (
         f"{_BASE_POLICY} "
         "Your role is devil's advocate. Attack both factions symmetrically. "
-        "Find the weakest claim, "
-        "state the flaw, and ask the sharpest question that would stress-test it."
+        "Do not ask generic evidence questions. Find the weakest claim, identify the precise "
+        "failure mode, and ask a task-specific question that probes evidence gaps, hidden "
+        "assumptions, counterexamples, boundary conditions, or incentive failures. "
+        "Prefer questions that combine more than one attack axis when the task warrants it."
     )
     user = (
         f"Task: {task}\n"
@@ -128,7 +130,8 @@ def debate_devil_prompt(
         f"Pro statements: {pro_outputs}\n"
         f"Opp statements: {opp_outputs}\n"
         "Respond as {'analyses': [{'faction': 'pro'|'opp', 'weakest_claim': str, 'flaw': str, "
-        "'question': str}]}"
+        "'attack_axis': str, 'counterexample': str, 'failure_mode': str, 'question': str}]}. "
+        "Each question must be concrete, task-aware, and materially different from the others."
     )
     return PromptBundle(system=system, user=user)
 
@@ -146,7 +149,9 @@ def debate_rebuttal_prompt(
         f"{_BASE_POLICY} "
         "Your role is debate rebuttal. Defend your faction answer directly "
         "against the targeted critique. "
-        "Respect locked claims and do not relitigate them."
+        "Respect locked claims, answer the critique point-by-point, and only revise the faction "
+        "answer when the evidence actually forces it. Avoid boilerplate and avoid repeating the "
+        "same generic fallback sentence."
     )
     user = (
         f"Task: {task}\n"

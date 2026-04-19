@@ -20,11 +20,13 @@ class StateMonitor:
         """Initialize monitor state."""
 
         self._last_entropy: float | None = None
+        self._last_distribution: dict[str, float] | None = None
 
     def reset(self) -> None:
         """Reset monitor state for a new task execution."""
 
         self._last_entropy = None
+        self._last_distribution = None
 
     def compute_metrics(self, agent_outputs: list[AgentOutput]) -> ConvergenceMetrics:
         """Compute convergence metrics from current round outputs.
@@ -42,28 +44,80 @@ class StateMonitor:
         if not agent_outputs:
             raise ValueError("compute_metrics requires at least one agent output")
 
-        normalized_answers = [self.extract_answer_signal(output) for output in agent_outputs]
-        counts = Counter(normalized_answers)
-        total = len(normalized_answers)
+        weighted_counts: Counter[str] = Counter()
+        for output in agent_outputs:
+            normalized_answer = self.extract_answer_signal(output)
+            weight = min(1.0, max(0.0, output.confidence))
+            weighted_counts[normalized_answer] += weight if weight > 0.0 else 1e-9
+        total_weight = sum(weighted_counts.values())
+        distribution = {
+            answer: weight / total_weight for answer, weight in weighted_counts.items()
+        }
 
-        probabilities = [count / total for count in counts.values()]
+        probabilities = list(distribution.values())
         entropy = -sum(p * math.log2(p) for p in probabilities if p > 0.0)
         dominant_share = max(probabilities)
 
         if self._last_entropy is None:
-            info_gain_delta = 0.0
+            entropy_delta = 0.0
+            js_divergence = 0.0
+            answer_churn = 0.0
         else:
-            info_gain_delta = abs(entropy - self._last_entropy)
+            entropy_delta = self._last_entropy - entropy
+            previous_distribution = self._last_distribution or {}
+            js_divergence = self._jensen_shannon_divergence(
+                previous_distribution,
+                distribution,
+            )
+            answer_churn = self._answer_churn(previous_distribution, distribution)
         self._last_entropy = entropy
+        self._last_distribution = distribution
 
         round_number = max(output.round_number for output in agent_outputs)
         return ConvergenceMetrics(
             round_number=round_number,
             disagreement_entropy=entropy,
-            information_gain_delta=info_gain_delta,
-            unique_answers=len(counts),
+            entropy_delta=entropy_delta,
+            js_divergence=js_divergence,
+            answer_churn=answer_churn,
+            information_gain_delta=js_divergence,
+            unique_answers=len(distribution),
             dominant_answer_share=dominant_share,
+            answer_distribution=distribution,
         )
+
+    @staticmethod
+    def _jensen_shannon_divergence(
+        previous: dict[str, float],
+        current: dict[str, float],
+    ) -> float:
+        """Compute bounded distribution movement between consecutive rounds."""
+
+        keys = set(previous) | set(current)
+        if not keys:
+            return 0.0
+
+        def kl_divergence(p_dist: dict[str, float], q_dist: dict[str, float]) -> float:
+            divergence = 0.0
+            for key in keys:
+                p = p_dist.get(key, 0.0)
+                q = q_dist.get(key, 0.0)
+                if p > 0.0 and q > 0.0:
+                    divergence += p * math.log2(p / q)
+            return divergence
+
+        midpoint = {key: 0.5 * (previous.get(key, 0.0) + current.get(key, 0.0)) for key in keys}
+        return 0.5 * kl_divergence(previous, midpoint) + 0.5 * kl_divergence(
+            current,
+            midpoint,
+        )
+
+    @staticmethod
+    def _answer_churn(previous: dict[str, float], current: dict[str, float]) -> float:
+        """Return total distribution mass that moved between answers."""
+
+        keys = set(previous) | set(current)
+        return 0.5 * sum(abs(current.get(key, 0.0) - previous.get(key, 0.0)) for key in keys)
 
     @staticmethod
     def extract_answer_signal(output: AgentOutput) -> str:
@@ -96,15 +150,29 @@ class StateMonitor:
             return payload if payload.strip() else None
 
         if isinstance(payload, dict):
-            for key in ("faction_answer", "answer", "final_answer", "claim"):
+            for key in ("current_answer", "answer", "final_answer", "claim"):
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
                     return value
 
-            for value in payload.values():
+            for key, value in payload.items():
+                if key in {
+                    "assigned_answer",
+                    "faction_answer",
+                    "defense",
+                    "evidence",
+                    "reasoning",
+                    "summary",
+                }:
+                    continue
                 extracted = StateMonitor._extract_signal_from_payload(value)
                 if extracted is not None:
                     return extracted
+
+            for key in ("assigned_answer", "faction_answer"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
 
         if isinstance(payload, list):
             for item in payload:
@@ -144,7 +212,11 @@ class StateMonitor:
             return False, "Insufficient rounds for plateau detection"
 
         trailing = convergence_history[-plateau_rounds:]
-        if all(metric.information_gain_delta < plateau_threshold for metric in trailing):
+        if all(
+            abs(metric.entropy_delta) < plateau_threshold
+            and metric.js_divergence < plateau_threshold
+            for metric in trailing
+        ):
             return True, "Information gain plateau detected"
 
         return False, "Continue deliberation"

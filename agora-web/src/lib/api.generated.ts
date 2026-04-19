@@ -49,9 +49,10 @@ export interface DeliberationResultResponse {
   model_latency_ms: Record<string, number>;
   model_telemetry: Record<string, ModelTelemetryResponse>;
   total_tokens_used: number;
-  input_tokens_used: number;
-  output_tokens_used: number;
-  thinking_tokens_used: number;
+  reasoning_presets: ReasoningPresets | null;
+  input_tokens_used: number | null;
+  output_tokens_used: number | null;
+  thinking_tokens_used: number | null;
   latency_ms: number;
   cost: BenchmarkCostEstimateResponse | null;
   payment_amount: number;
@@ -75,9 +76,9 @@ export interface BenchmarkCostEstimateResponse {
 
 export interface ModelTelemetryResponse {
   total_tokens: number;
-  input_tokens: number;
-  output_tokens: number;
-  thinking_tokens: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  thinking_tokens: number | null;
   latency_ms: number;
   estimated_cost_usd: number | null;
   estimation_mode: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;

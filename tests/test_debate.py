@@ -152,7 +152,8 @@ async def test_cross_examination_uses_kimi_devil_advocate() -> None:
 
     kimi_response = (
         '[{"faction":"pro","weakest_claim":"claim A","flaw":"unsupported",'
-        '"question":"What evidence supports claim A?"}]'
+        '"attack_axis":"evidence_gap","counterexample":"A concrete counterexample matters.",'
+        '"failure_mode":"Unsupported claim","question":"What evidence supports claim A?"}]'
     )
     kimi = _FakeDebateCaller("moonshotai/kimi-k2-thinking", kimi_response)
     pro = _FakeDebateCaller(
@@ -231,6 +232,9 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         prior_tokens=3,
         prior_latency_ms=4.0,
         prior_model_token_usage={"gemini-3.1-flash-lite-preview": 3},
+        prior_model_input_token_usage={},
+        prior_model_output_token_usage={},
+        prior_model_thinking_token_usage={},
         prior_model_latency_ms={"gemini-3.1-flash-lite-preview": 4.0},
     )
 
@@ -302,6 +306,133 @@ async def test_full_debate_run_on_simple_math_task() -> None:
     assert outcome.result.final_answer != ""
     assert outcome.result.merkle_root != ""
     assert len(outcome.result.transcript_hashes) > 0
+
+
+@pytest.mark.asyncio
+async def test_custom_agents_short_circuit_debate_provider_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local custom-agent debate must not silently reach hosted providers."""
+
+    async def local_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "Architecture A",
+            "confidence": 0.9,
+            "claim": "Architecture A is more robust.",
+            "evidence": "Local evidence.",
+            "defense": "Local defense.",
+            "final_answer": "Choose Architecture A.",
+            "summary": "Local synthesis.",
+            "predicted_group_answer": "Architecture A",
+            "reasoning": "Local execution only.",
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": "Architecture A reliability claim",
+                    "flaw": "Needs a named failure boundary.",
+                    "attack_axis": "failure_isolation",
+                    "counterexample": "A simpler architecture with equal isolation.",
+                    "failure_mode": "The isolation claim is asserted but not measured.",
+                    "question": "Which measured failure boundary makes Architecture A safer?",
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": "Architecture B simplicity claim",
+                    "flaw": "Simplicity may hide recovery coupling.",
+                    "attack_axis": "operational_risk",
+                    "counterexample": "A downstream outage that propagates through shared state.",
+                    "failure_mode": "The simplicity claim ignores blast radius.",
+                    "question": "Which operational constraint keeps Architecture B from cascading?",
+                },
+            ],
+        }
+
+    def fail_provider_lookup(self: DebateEngine, tier: str) -> object:
+        del self
+        raise AssertionError(f"provider tier should not be used: {tier}")
+
+    monkeypatch.setattr(DebateEngine, "_get_caller", fail_provider_lookup)
+
+    engine = DebateEngine(agent_count=3, max_rounds=2)
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+
+    outcome = await engine.run(
+        "Choose an architecture.",
+        selection,
+        custom_agents=[local_agent, local_agent, local_agent],
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.final_answer != ""
+    assert "custom-agent" in outcome.result.agent_models_used
+
+
+@pytest.mark.asyncio
+async def test_provider_fallback_disabled_blocks_debate_artifacts() -> None:
+    """Production default should fail before emitting deterministic debate fallback."""
+
+    engine = DebateEngine(
+        agent_count=3,
+        flash_agent=_FailingCaller(model="gemini-3.1-flash-lite-preview"),
+        pro_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
+        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+    )
+    fallback = _OpeningResponse(
+        claim="placeholder claim",
+        evidence="placeholder evidence",
+        confidence=0.2,
+    )
+
+    with pytest.raises(AgentCallError, match="Provider fallback disabled"):
+        await engine._call_structured(
+            tier="pro",
+            system_prompt="Return JSON.",
+            user_prompt="Argue for the assigned answer.",
+            response_model=_OpeningResponse,
+            fallback=fallback,
+        )
+
+
+@pytest.mark.asyncio
+async def test_offline_debate_fallback_is_task_grounded_not_placeholder() -> None:
+    """Explicit offline fallback should avoid shallow screenshot-visible strings."""
+
+    engine = DebateEngine(
+        agent_count=3,
+        max_rounds=1,
+        flash_agent=_FailingCaller(model="gemini-3.1-flash-lite-preview"),
+        pro_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
+        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        allow_offline_fallback=True,
+    )
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+
+    outcome = await engine.run(
+        "Pick the safest migration plan for a high-traffic SQL system.",
+        selection,
+        allow_switch=False,
+    )
+    assert outcome.result is not None
+    transcript = "\n".join(
+        [
+            *[output.content for output in outcome.state.factions.get("pro", [])],
+            *[output.content for output in outcome.state.factions.get("opp", [])],
+            *[output.content for output in outcome.state.cross_examinations],
+            *[output.content for output in outcome.state.rebuttals.get("pro", [])],
+            *[output.content for output in outcome.state.rebuttals.get("opp", [])],
+            outcome.result.final_answer,
+        ]
+    ).lower()
+
+    assert outcome.result.fallback_count > 0
+    assert "heuristic fallback evidence generated locally" not in transcript
+    assert "fallback rebuttal" not in transcript
+    assert "option a" not in transcript
+    assert "option b" not in transcript
+    assert "offline evidence sketch" in transcript
 
 
 @pytest.mark.asyncio

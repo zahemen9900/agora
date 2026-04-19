@@ -36,15 +36,18 @@ interface TimelineEvent {
   agentId?: string;
   agentModel?: string;
   confidence?: number;
+  stage?: string;
+  draftKey?: string;
+  isDraft?: boolean;
 }
 
 interface ModelUsageSummary {
   model: string;
   provider: ProviderName;
-  tokens: number;
-  inputTokens: number;
-  outputTokens: number;
-  thinkingTokens: number;
+  tokens: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  thinkingTokens: number | null;
   usdCost: number | null;
   solPayout: number;
   latencyMs: number | null;
@@ -59,6 +62,13 @@ function safeNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function formatMaybeInt(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "n/a";
+  }
+  return Math.round(value).toLocaleString();
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
@@ -70,8 +80,20 @@ function eventCardTone(eventType: string): string {
   if (eventType === "agent_output") {
     return "border-l-cyan-400";
   }
+  if (eventType === "agent_output_delta") {
+    return "border-l-cyan-400";
+  }
   if (eventType === "cross_examination") {
     return "border-l-amber-400";
+  }
+  if (eventType === "cross_examination_delta") {
+    return "border-l-amber-400";
+  }
+  if (eventType === "thinking_delta") {
+    return "border-l-emerald-400";
+  }
+  if (eventType === "usage_delta") {
+    return "border-l-violet-400";
   }
   if (eventType === "convergence_update") {
     return "border-l-violet-400";
@@ -98,8 +120,14 @@ function detailLabelForEvent(event: TimelineEvent): string {
   if (event.type === "agent_output") {
     return "agent output metadata";
   }
+  if (event.type === "agent_output_delta") {
+    return "live draft payload";
+  }
   if (event.type === "cross_examination") {
     return "cross-examination analysis";
+  }
+  if (event.type === "cross_examination_delta") {
+    return "live cross-examination payload";
   }
   if (event.type === "convergence_update") {
     return "convergence metrics";
@@ -116,6 +144,12 @@ function detailLabelForEvent(event: TimelineEvent): string {
   if (event.type === "payment_released") {
     return "payment metadata";
   }
+  if (event.type === "thinking_delta") {
+    return "thinking stream";
+  }
+  if (event.type === "usage_delta") {
+    return "usage telemetry";
+  }
   if (event.type === "complete") {
     return "completion metadata";
   }
@@ -128,6 +162,71 @@ function detailLabelForEvent(event: TimelineEvent): string {
     return "reasoning trace";
   }
   return "event payload";
+}
+
+function formatUsageLine(details: Record<string, unknown> | undefined): string | null {
+  if (!details) {
+    return null;
+  }
+
+  const totalTokens = details.total_tokens;
+  const inputTokens = details.input_tokens;
+  const outputTokens = details.output_tokens;
+  const thinkingTokens = details.thinking_tokens;
+  const latencyMs = details.latency_ms;
+
+  const hasAnyTokenInfo =
+    typeof totalTokens === "number"
+    || typeof inputTokens === "number"
+    || typeof outputTokens === "number"
+    || typeof thinkingTokens === "number"
+    || typeof latencyMs === "number";
+
+  if (!hasAnyTokenInfo) {
+    return null;
+  }
+
+  const totalLabel = typeof totalTokens === "number" ? `${Math.round(totalTokens).toLocaleString()} tokens` : "tokens n/a";
+  const splitLabel = `in ${typeof inputTokens === "number" ? Math.round(inputTokens).toLocaleString() : "n/a"}`
+    + ` / out ${typeof outputTokens === "number" ? Math.round(outputTokens).toLocaleString() : "n/a"}`
+    + ` / thinking ${typeof thinkingTokens === "number" ? Math.round(thinkingTokens).toLocaleString() : "n/a"}`;
+  const latencyLabel = typeof latencyMs === "number" ? `${Math.round(latencyMs)} ms` : "latency n/a";
+
+  return `${totalLabel} · ${splitLabel} · ${latencyLabel}`;
+}
+
+function mergeEventDetails(
+  previous: Record<string, unknown> | undefined,
+  next: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!previous && !next) {
+    return undefined;
+  }
+  if (!previous) {
+    return next;
+  }
+  if (!next) {
+    return previous;
+  }
+  return { ...previous, ...next };
+}
+
+function upsertTimelineEvent(
+  timeline: TimelineEvent[],
+  nextEvent: TimelineEvent,
+): TimelineEvent[] {
+  const index = timeline.findIndex((entry) => entry.key === nextEvent.key);
+  if (index === -1) {
+    return [...timeline, nextEvent];
+  }
+
+  const previous = timeline[index];
+  const merged: TimelineEvent = {
+    ...previous,
+    ...nextEvent,
+    details: mergeEventDetails(previous.details, nextEvent.details),
+  };
+  return timeline.map((entry, entryIndex) => (entryIndex === index ? merged : entry));
 }
 
 function formatTimestamp(value: string | null): string {
@@ -143,6 +242,21 @@ function formatTimestamp(value: string | null): string {
 
 function buildEventKey(event: TaskEvent): string {
   return `${event.event}:${event.timestamp ?? ""}:${JSON.stringify(event.data)}`;
+}
+
+function draftKeyForEvent(event: TaskEvent): string | null {
+  const data = asRecord(event.data) ?? {};
+  const agentId = safeString(data.agent_id, "");
+  const stage = safeString(data.stage, "");
+  const roundNumber = Number.isFinite(Number(data.round_number)) ? Number(data.round_number) : NaN;
+  if (!agentId || !stage || Number.isNaN(roundNumber)) {
+    return null;
+  }
+  return `${agentId}:${stage}:${roundNumber}`;
+}
+
+function eventKeyForTimeline(event: TaskEvent): string {
+  return draftKeyForEvent(event) ?? buildEventKey(event);
 }
 
 function mapTaskEvent(event: TaskEvent): TimelineEvent {
@@ -165,7 +279,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
 
   if (event.event === "agent_output") {
     return {
-      key: buildEventKey(event),
+      key: eventKeyForTimeline(event),
       type: event.event,
       title: `${safeString(data.agent_id, "agent")} · ${safeString(data.role, "agent")}`,
       summary: safeString(data.content, "Agent produced output"),
@@ -174,6 +288,26 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       agentId: safeString(data.agent_id, "agent"),
       agentModel: safeString(data.agent_model, ""),
       confidence: safeNumber(data.confidence, 0),
+      stage: safeString(data.stage, ""),
+    };
+  }
+
+  if (event.event === "agent_output_delta") {
+    const contentSoFar = safeString(data.content_so_far, safeString(data.content_delta, ""));
+    const thinkingSoFar = safeString(data.thinking_so_far, "");
+    return {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · ${safeString(data.stage, "stream")}`,
+      summary: contentSoFar || thinkingSoFar || "Streaming draft",
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      agentModel: safeString(data.agent_model, ""),
+      confidence: safeNumber(data.confidence, 0),
+      stage: safeString(data.stage, ""),
+      draftKey: eventKeyForTimeline(event),
+      isDraft: true,
     };
   }
 
@@ -194,7 +328,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       .join(" | ");
 
     return {
-      key: buildEventKey(event),
+      key: eventKeyForTimeline(event),
       type: event.event,
       title: "Devil's advocate",
       summary: summary || "Cross-examination issued",
@@ -202,17 +336,79 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       details: payload,
       agentId: safeString(data.agent_id, "devils-advocate"),
       agentModel: safeString(data.agent_model, ""),
+      stage: safeString(data.stage, "cross_examination"),
+    };
+  }
+
+  if (event.event === "cross_examination_delta") {
+    const contentSoFar = safeString(data.content_so_far, safeString(data.content_delta, ""));
+    const thinkingSoFar = safeString(data.thinking_so_far, "");
+    return {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: "Devil's advocate",
+      summary: contentSoFar || thinkingSoFar || "Cross-examination drafting",
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "devils-advocate"),
+      agentModel: safeString(data.agent_model, ""),
+      stage: safeString(data.stage, "cross_examination"),
+      draftKey: eventKeyForTimeline(event),
+      isDraft: true,
+    };
+  }
+
+  if (event.event === "thinking_delta") {
+    return {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · thinking`,
+      summary: safeString(data.thinking_so_far, safeString(data.thinking_delta, "Thinking...")),
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      agentModel: safeString(data.agent_model, ""),
+      stage: safeString(data.stage, "thinking"),
+      draftKey: eventKeyForTimeline(event),
+      isDraft: true,
+    };
+  }
+
+  if (event.event === "usage_delta") {
+    const totalTokens = typeof data.total_tokens === "number" ? data.total_tokens : null;
+    const inputTokens = data.input_tokens === null || data.input_tokens === undefined
+      ? "n/a"
+      : String(Math.round(safeNumber(data.input_tokens, 0)));
+    const outputTokens = data.output_tokens === null || data.output_tokens === undefined
+      ? "n/a"
+      : String(Math.round(safeNumber(data.output_tokens, 0)));
+    const thinkingTokens = data.thinking_tokens === null || data.thinking_tokens === undefined
+      ? "n/a"
+      : String(Math.round(safeNumber(data.thinking_tokens, 0)));
+    const latency = safeNumber(data.latency_ms, 0);
+    return {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · usage`,
+      summary: `${totalTokens !== null ? `${Math.round(totalTokens).toLocaleString()} tokens` : "tokens n/a"} · ${Math.round(latency)} ms · ${inputTokens}/${outputTokens} in/out · ${thinkingTokens} thinking`,
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      agentModel: safeString(data.agent_model, ""),
+      stage: safeString(data.stage, "usage"),
+      draftKey: eventKeyForTimeline(event),
+      isDraft: true,
     };
   }
 
   if (event.event === "convergence_update") {
     const entropy = safeNumber(data.disagreement_entropy, 0);
-    const infoGain = safeNumber(data.information_gain_delta, 0);
+    const novelty = safeNumber(data.information_gain_delta, 0);
     return {
       key: buildEventKey(event),
       type: event.event,
       title: `Convergence round ${safeNumber(data.round_number, 0)}`,
-      summary: `Entropy ${entropy.toFixed(2)} · Info gain ${infoGain.toFixed(2)}`,
+      summary: `Entropy ${entropy.toFixed(2)} · Novelty ${novelty.toFixed(2)}`,
       timestamp: event.timestamp,
       details: data,
     };
@@ -346,7 +542,8 @@ export function LiveDeliberation() {
       return;
     }
     seenEventKeysRef.current.add(eventKey);
-    setTimeline((current) => [...current, mapTaskEvent(eventWithTimestamp)]);
+    const mappedEvent = mapTaskEvent(eventWithTimestamp);
+    setTimeline((current) => upsertTimelineEvent(current, mappedEvent));
 
     const data = asRecord(event.data) ?? {};
 
@@ -412,14 +609,14 @@ export function LiveDeliberation() {
       taskMechanismRef.current = status.mechanism;
       setTask(status);
       seenEventKeysRef.current = new Set();
-      const hydratedTimeline: TimelineEvent[] = [];
+      let hydratedTimeline: TimelineEvent[] = [];
       for (const persistedEvent of status.events) {
         const eventKey = buildEventKey(persistedEvent);
         if (seenEventKeysRef.current.has(eventKey)) {
           continue;
         }
         seenEventKeysRef.current.add(eventKey);
-        hydratedTimeline.push(mapTaskEvent(persistedEvent));
+        hydratedTimeline = upsertTimelineEvent(hydratedTimeline, mapTaskEvent(persistedEvent));
       }
       setTimeline(hydratedTimeline);
 
@@ -483,10 +680,10 @@ export function LiveDeliberation() {
       return {
         model,
         provider: providerFromModel(model),
-        tokens: typeof telemetry?.total_tokens === "number" ? Math.max(0, telemetry.total_tokens) : 0,
-        inputTokens: typeof telemetry?.input_tokens === "number" ? Math.max(0, telemetry.input_tokens) : 0,
-        outputTokens: typeof telemetry?.output_tokens === "number" ? Math.max(0, telemetry.output_tokens) : 0,
-        thinkingTokens: typeof telemetry?.thinking_tokens === "number" ? Math.max(0, telemetry.thinking_tokens) : 0,
+        tokens: typeof telemetry?.total_tokens === "number" ? Math.max(0, telemetry.total_tokens) : null,
+        inputTokens: typeof telemetry?.input_tokens === "number" ? Math.max(0, telemetry.input_tokens) : null,
+        outputTokens: typeof telemetry?.output_tokens === "number" ? Math.max(0, telemetry.output_tokens) : null,
+        thinkingTokens: typeof telemetry?.thinking_tokens === "number" ? Math.max(0, telemetry.thinking_tokens) : null,
         usdCost: typeof telemetry?.estimated_cost_usd === "number" ? Math.max(0, telemetry.estimated_cost_usd) : null,
         solPayout: hasBackendPayout ? Math.max(0, backendPayout) : payoutPerModel,
         latencyMs: typeof telemetry?.latency_ms === "number" ? Math.max(0, telemetry.latency_ms) : null,
@@ -565,14 +762,22 @@ export function LiveDeliberation() {
       {task?.result && (
         <div className="card p-5 mb-8 border border-border-subtle">
           <div className="mono text-xs text-text-muted mb-3">RUN SUMMARY</div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-4">
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">TOTAL TOKENS</div>
               <div className="mono text-sm text-text-primary">{task.result.total_tokens_used}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
+              <div className="mono text-[10px] text-text-muted mb-1">INPUT TOKENS</div>
+              <div className="mono text-sm text-text-primary">{formatMaybeInt(task.result.input_tokens_used)}</div>
+            </div>
+            <div className="rounded-md border border-border-subtle p-3 bg-void">
+              <div className="mono text-[10px] text-text-muted mb-1">OUTPUT TOKENS</div>
+              <div className="mono text-sm text-text-primary">{formatMaybeInt(task.result.output_tokens_used)}</div>
+            </div>
+            <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">THINKING TOKENS</div>
-              <div className="mono text-sm text-text-primary">{task.result.thinking_tokens_used}</div>
+              <div className="mono text-sm text-text-primary">{formatMaybeInt(task.result.thinking_tokens_used)}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">LATENCY</div>
@@ -596,6 +801,22 @@ export function LiveDeliberation() {
             </div>
           </div>
 
+          {task.result.reasoning_presets ? (
+            <div className="mb-4">
+              <div className="mono text-[11px] text-text-muted mb-2">REASONING PRESETS</div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(task.result.reasoning_presets).map(([providerKey, preset]) => (
+                  <span
+                    key={providerKey}
+                    className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary"
+                  >
+                    {providerKey.replace(/_/g, " ")}: {preset}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {modelUsage.length > 0 && (
             <div>
               <div className="mono text-[11px] text-text-muted mb-2">
@@ -612,9 +833,14 @@ export function LiveDeliberation() {
                       <span className="mono text-xs truncate">{entry.model}</span>
                     </div>
                     <div className="mono text-[11px] text-text-muted flex flex-wrap items-center gap-3">
-                      <span>{entry.tokens} tokens</span>
-                      <span>{entry.inputTokens}/{entry.outputTokens} in/out</span>
-                      <span>{entry.thinkingTokens} thinking</span>
+                      <span>{entry.tokens !== null ? `${entry.tokens.toLocaleString()} tokens` : "n/a"}</span>
+                      <span>
+                        {entry.inputTokens !== null ? entry.inputTokens.toLocaleString() : "n/a"}
+                        /
+                        {entry.outputTokens !== null ? entry.outputTokens.toLocaleString() : "n/a"}
+                        in/out
+                      </span>
+                      <span>{entry.thinkingTokens !== null ? `${entry.thinkingTokens.toLocaleString()} thinking` : "n/a thinking"}</span>
                       <span>{entry.latencyMs !== null ? `${Math.round(entry.latencyMs)} ms` : "n/a"}</span>
                       <span>${entry.usdCost !== null ? entry.usdCost.toFixed(6) : "n/a"}</span>
                       <span className="flex items-center gap-1">
@@ -641,7 +867,7 @@ export function LiveDeliberation() {
       <ConvergenceMeter
         entropy={convergence.entropy}
         prevEntropy={convergence.prevEntropy}
-        infoGain={convergence.infoGain}
+        novelty={convergence.infoGain}
         lockedClaims={convergence.lockedClaims.length}
       />
 
@@ -650,6 +876,7 @@ export function LiveDeliberation() {
         <div className="space-y-3">
           {timeline.map((entry) => {
             const provider = providerFromModel(entry.agentModel ?? "");
+            const usageLine = formatUsageLine(entry.details);
             return (
               <motion.div
                 key={entry.key}
@@ -665,6 +892,11 @@ export function LiveDeliberation() {
                     <span className="mono text-xs text-text-muted uppercase tracking-wide">
                       {entry.title}
                     </span>
+                    {entry.isDraft ? (
+                      <span className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 mono text-[10px] text-accent">
+                        LIVE
+                      </span>
+                    ) : null}
                     {entry.agentModel ? (
                       <span
                         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${providerTone(provider)}`}
@@ -680,6 +912,12 @@ export function LiveDeliberation() {
                 <div className="text-text-primary mb-2 whitespace-pre-wrap break-words">
                   {entry.summary}
                 </div>
+
+                {usageLine ? (
+                  <div className="mono text-[11px] text-text-muted mb-2">
+                    {usageLine}
+                  </div>
+                ) : null}
 
                 {typeof entry.confidence === "number" ? (
                   <div className="mono text-[11px] text-text-muted mb-2">

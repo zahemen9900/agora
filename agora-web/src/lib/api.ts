@@ -60,9 +60,9 @@ export interface BenchmarkCostEstimatePayload {
 
 export interface ModelTelemetryPayload {
   total_tokens?: number;
-  input_tokens?: number;
-  output_tokens?: number;
-  thinking_tokens?: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  thinking_tokens?: number | null;
   latency_ms?: number;
   estimated_cost_usd?: number | null;
   estimation_mode?: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
@@ -668,7 +668,11 @@ export async function streamDeliberation(
   const eventTypes = [
     "mechanism_selected",
     "agent_output",
+    "agent_output_delta",
     "cross_examination",
+    "cross_examination_delta",
+    "thinking_delta",
+    "usage_delta",
     "convergence_update",
     "mechanism_switch",
     "quorum_reached",

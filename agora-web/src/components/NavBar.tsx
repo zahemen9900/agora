@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { LogOut, Menu, User as UserIcon, X } from 'lucide-react';
@@ -7,14 +7,10 @@ import { ThemeToggle } from './ui/ThemeToggle';
 export function NavBar() {
   const { user, signOut, featureFlags } = useAuth();
   const location = useLocation();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuState, setMenuState] = useState({ isOpen: false, pathname: location.pathname });
+  const menuOpen = menuState.isOpen && menuState.pathname === location.pathname;
   const canViewBenchmarks = featureFlags?.benchmarks_visible ?? true;
   const canViewApiKeys = featureFlags?.api_keys_visible ?? true;
-
-  // Close mobile menu on route change
-  useEffect(() => {
-    setMenuOpen(false);
-  }, [location.pathname]);
 
   const isNavActive = (path: string) =>
     location.pathname === path || location.pathname.startsWith(path + '/');
@@ -95,7 +91,7 @@ export function NavBar() {
           <ThemeToggle />
 
           <button
-            onClick={() => setMenuOpen(o => !o)}
+            onClick={() => setMenuState(({ isOpen }) => ({ isOpen: !isOpen, pathname: location.pathname }))}
             className="md:hidden flex items-center text-text-secondary hover:text-text-primary transition-colors p-1"
             aria-label={menuOpen ? 'Close menu' : 'Open menu'}
           >

@@ -163,6 +163,11 @@ class TaskStore:
         safe_run_id = validate_storage_id(run_id, field_name="run_id")
         return f"{cls._AGORA_NAMESPACE_PREFIX}/{cls._user_prefix(user_id)}/tests/{safe_run_id}.json"
 
+    @classmethod
+    def _runtime_state_blob_name(cls, key: str) -> str:
+        safe_key = validate_storage_id(key, field_name="runtime_state_key")
+        return f"{cls._AGORA_NAMESPACE_PREFIX}/runtime/{safe_key}.json"
+
     async def upsert_user(
         self,
         user_id: str,
@@ -427,6 +432,18 @@ class TaskStore:
             logger.debug("benchmark_summary_not_found")
         return summary
 
+    async def save_runtime_state(self, key: str, payload: dict[str, Any]) -> None:
+        blob = self.bucket.blob(self._runtime_state_blob_name(key))
+        self._upload_blob_json(blob, payload, operation="save_runtime_state")
+
+    async def get_runtime_state(self, key: str) -> dict[str, Any] | None:
+        blob = self.bucket.blob(self._runtime_state_blob_name(key))
+        return self._download_blob_json(
+            blob,
+            allow_missing=True,
+            operation="get_runtime_state",
+        )
+
     async def save_global_benchmark_artifact(
         self,
         artifact_id: str,
@@ -533,7 +550,12 @@ class TaskStore:
             operation="get_user_test_result",
         )
 
-    async def append_user_test_event(self, user_id: str, run_id: str, event: dict[str, Any]) -> None:
+    async def append_user_test_event(
+        self,
+        user_id: str,
+        run_id: str,
+        event: dict[str, Any],
+    ) -> None:
         blob = self.bucket.blob(self._user_test_blob_name(user_id, run_id))
 
         for attempt in range(1, self._APPEND_EVENT_MAX_RETRIES + 1):

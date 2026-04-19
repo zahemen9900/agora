@@ -62,6 +62,7 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             task_features=make_features("reasoning"),
             factions={"pro": [], "opp": []},
             rebuttals={"pro": [], "opp": []},
+            transcript_hashes=["d0"],
         )
         return DebateEngineOutcome(
             state=debate_state,
@@ -69,6 +70,11 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             switch_to_vote=True,
             suggested_mechanism=MechanismType.VOTE,
             reason="forced switch",
+            agent_models_used=["debate-model"],
+            model_token_usage={"debate-model": 7},
+            model_latency_ms={"debate-model": 3.0},
+            total_tokens_used=7,
+            total_latency_ms=3.0,
         )
 
     async def fake_vote_run(task: str, selection):
@@ -86,10 +92,12 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             mechanism_switches=0,
             merkle_root="abc123",
             transcript_hashes=["h1", "h2"],
+            model_token_usage={"vote-model": 5},
+            model_latency_ms={"vote-model": 2.0},
             convergence_history=[],
             locked_claims=[],
-            total_tokens_used=10,
-            total_latency_ms=5.0,
+            total_tokens_used=5,
+            total_latency_ms=2.0,
             timestamp=datetime.now(UTC),
         )
         return VoteEngineOutcome(
@@ -97,6 +105,11 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             result=result,
             switch_to_debate=False,
             reason="quorum_reached",
+            agent_models_used=["vote-model"],
+            model_token_usage={"vote-model": 5},
+            model_latency_ms={"vote-model": 2.0},
+            total_tokens_used=5,
+            total_latency_ms=2.0,
         )
 
     monkeypatch.setattr(orchestrator.selector, "select", fake_select)
@@ -107,6 +120,15 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
 
     assert result.mechanism_used == MechanismType.VOTE
     assert result.mechanism_switches == 1
+    assert len(result.transcript_hashes) == 4
+    assert result.transcript_hashes[0] == "d0"
+    assert result.transcript_hashes[-2:] == ["h1", "h2"]
+    assert result.merkle_root == orchestrator.hasher.build_merkle_tree(result.transcript_hashes)
+    assert result.mechanism_trace[0].mechanism == MechanismType.DEBATE
+    assert result.mechanism_trace[0].switch_reason == "forced switch"
+    assert result.mechanism_trace[0].switch_reason_hash is not None
+    assert result.model_token_usage == {"debate-model": 7, "vote-model": 5}
+    assert result.total_tokens_used == 12
 
 
 @pytest.mark.asyncio
@@ -122,7 +144,11 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
 
     async def fake_vote_run(task: str, selection):
         del task, selection
-        vote_state = VoteState(task="switch test", task_features=make_features("reasoning"))
+        vote_state = VoteState(
+            task="switch test",
+            task_features=make_features("reasoning"),
+            transcript_hashes=["v1"],
+        )
         vote_result = DeliberationResult(
             task="switch test",
             mechanism_used=MechanismType.VOTE,
@@ -135,9 +161,11 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             mechanism_switches=0,
             merkle_root="vote-root",
             transcript_hashes=["v1"],
+            model_token_usage={"vote-model": 4},
+            model_latency_ms={"vote-model": 2.0},
             convergence_history=[],
             locked_claims=[],
-            total_tokens_used=5,
+            total_tokens_used=4,
             total_latency_ms=2.0,
             timestamp=datetime.now(UTC),
         )
@@ -146,6 +174,11 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             result=vote_result,
             switch_to_debate=True,
             reason="quorum_not_reached",
+            agent_models_used=["vote-model"],
+            model_token_usage={"vote-model": 4},
+            model_latency_ms={"vote-model": 2.0},
+            total_tokens_used=4,
+            total_latency_ms=2.0,
         )
 
     async def fake_debate_run(task: str, selection, allow_switch: bool = True):
@@ -190,6 +223,13 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
 
     assert result.mechanism_used == MechanismType.DEBATE
     assert result.mechanism_switches == 1
+    assert len(result.transcript_hashes) == 4
+    assert result.transcript_hashes[0] == "v1"
+    assert result.transcript_hashes[-2:] == ["d1", "d2"]
+    assert result.merkle_root == orchestrator.hasher.build_merkle_tree(result.transcript_hashes)
+    assert result.mechanism_trace[0].mechanism == MechanismType.VOTE
+    assert result.mechanism_trace[0].switch_reason == "quorum_not_reached"
+    assert result.model_token_usage == {"vote-model": 4}
 
 
 @pytest.mark.asyncio

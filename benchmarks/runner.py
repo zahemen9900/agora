@@ -249,7 +249,12 @@ class BenchmarkRunner:
                 ground_truth=task_item.get("ground_truth"),
                 agents=self.agents,
             )
-            learned_record = self._build_run_record(task_index, "selector_learn", task_item, learned)
+            learned_record = self._build_run_record(
+                task_index,
+                "selector_learn",
+                task_item,
+                learned,
+            )
             learning_updates.append(learned_record)
             if progress_callback is not None:
                 await progress_callback(
@@ -274,7 +279,11 @@ class BenchmarkRunner:
                     "domain_progress",
                     self._progress_payload(
                         phase="post_learning",
-                        completed=len(pre_learning_runs) + len(learning_updates) + len(holdout_runs),
+                        completed=(
+                            len(pre_learning_runs)
+                            + len(learning_updates)
+                            + len(holdout_runs)
+                        ),
                         total=len(training_tasks) * 2 + len(holdout_tasks),
                         latest_run=holdout_record,
                         accumulated_runs=pre_learning_runs + learning_updates + holdout_runs,
@@ -328,7 +337,9 @@ class BenchmarkRunner:
                 "thinking_tokens": sum(
                     int(run.get("thinking_tokens_used") or 0) for run in accumulated_runs
                 ),
-                "total_latency_ms": sum(float(run.get("latency_ms") or 0.0) for run in accumulated_runs),
+                "total_latency_ms": sum(
+                    float(run.get("latency_ms") or 0.0) for run in accumulated_runs
+                ),
                 "model_token_usage": {
                     model: int(tokens)
                     for model, tokens in BenchmarkRunner._aggregate_model_usage(
@@ -393,7 +404,7 @@ class BenchmarkRunner:
 
             total_cost, model_costs, model_usage, thinking_tokens = _record_cost_telemetry(result)
             model_telemetry = build_model_telemetry(
-                models=list((result.get("agent_models_used") or [])),
+                models=list(result.get("agent_models_used") or []),
                 model_token_usage=model_usage,
                 model_latency_ms=result.get("model_latency_ms") or {},
                 fallback_total_tokens=int(result.get("total_tokens_used", 0)),
@@ -434,7 +445,9 @@ class BenchmarkRunner:
                     "model_telemetry": model_telemetry,
                     "thinking_tokens_used": thinking_tokens,
                     "estimated_cost_usd": total_cost or cost_payload["estimated_cost_usd"],
-                    "model_estimated_costs_usd": model_costs or cost_payload["model_estimated_costs_usd"],
+                    "model_estimated_costs_usd": (
+                        model_costs or cost_payload["model_estimated_costs_usd"]
+                    ),
                     "pricing_version": cost_payload["pricing_version"],
                     "cost_estimated_at": cost_payload["estimated_at"].isoformat(),
                     "estimation_mode": cost_payload["estimation_mode"],
@@ -540,6 +553,24 @@ class BenchmarkRunner:
                 for model, latency in result.model_latency_ms.items()
                 if isinstance(latency, (int, float)) and latency >= 0
             },
+            "convergence_history": [
+                metric.model_dump(mode="json") for metric in result.convergence_history
+            ],
+            "mechanism_trace": [
+                segment.model_dump(mode="json") for segment in result.mechanism_trace
+            ],
+            "transcript_hash_count": len(result.transcript_hashes),
+            "execution_mode": (
+                "offline_benchmark"
+                if self.agents is not None and result.execution_mode == "live"
+                else result.execution_mode
+            ),
+            "selector_source": result.selector_source,
+            "fallback_count": result.fallback_count,
+            "fallback_events": [
+                event.model_dump(mode="json") for event in result.fallback_events
+            ],
+            "mechanism_override_source": result.mechanism_override_source,
             "model_telemetry": model_telemetry,
             "model_thinking_token_usage": model_thinking_usage,
             "thinking_tokens_used": thinking_tokens_used,

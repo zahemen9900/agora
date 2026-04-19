@@ -54,6 +54,9 @@ except ImportError:  # pragma: no cover
 
 logger = structlog.get_logger(__name__)
 
+_STREAM_EVENT_PREFIX = "\u001eAGORA_STREAM_EVENT\u001e"
+_STREAM_EVENT_SEPARATOR = "\u001f"
+
 
 class AgentCallError(RuntimeError):
     """Raised when an LLM call fails after retries."""
@@ -304,9 +307,6 @@ class AgentCaller:
             AgentCallError: If all retry attempts fail.
         """
 
-        if stream and response_format is not None:
-            raise ValueError("Streaming is currently supported for unstructured text calls only.")
-
         if self.provider == "claude":
             return await self._call_claude(
                 system_prompt=system_prompt,
@@ -368,7 +368,7 @@ class AgentCaller:
                     config_kwargs["thinking_config"] = thinking_config
 
                 raw_message: Any | None = None
-                if response_format is not None:
+                if response_format is not None and not stream:
                     config_kwargs["response_mime_type"] = "application/json"
                     config_kwargs["response_schema"] = response_format
                     response_config = genai_types.GenerateContentConfig(**config_kwargs)
@@ -388,6 +388,12 @@ class AgentCaller:
                         stream_config=stream_config,
                         stream_callback=stream_callback,
                     )
+                    if response_format is not None:
+                        response_content = self._parse_structured_text_payload(
+                            text=response_content,
+                            response_format=response_format,
+                            provider_label="Gemini",
+                        )
                 else:
                     response_config = genai_types.GenerateContentConfig(**config_kwargs)
                     raw_message = await self._gemini_client.aio.models.generate_content(
@@ -526,13 +532,49 @@ class AgentCaller:
         chunks: list[str] = []
         last_chunk: Any | None = None
 
-        stream_response = self._gemini_client.aio.models.generate_content_stream(
+        stream_response = await self._gemini_client.aio.models.generate_content_stream(
             model=self.model,
             contents=user_prompt,
             config=stream_config,
         )
         async for chunk in stream_response:
             last_chunk = chunk
+
+            saw_explicit_parts = False
+            candidates = getattr(chunk, "candidates", None)
+            if isinstance(candidates, list):
+                for candidate in candidates:
+                    content = getattr(candidate, "content", None)
+                    parts = getattr(content, "parts", None)
+                    if not isinstance(parts, list) or not parts:
+                        continue
+                    saw_explicit_parts = True
+                    for part in parts:
+                        part_text = getattr(part, "text", None)
+                        if not isinstance(part_text, str) or not part_text:
+                            continue
+
+                        if bool(getattr(part, "thought", False)):
+                            if stream_callback is not None:
+                                try:
+                                    stream_callback(
+                                        f"{_STREAM_EVENT_PREFIX}thinking_delta"
+                                        f"{_STREAM_EVENT_SEPARATOR}{part_text}"
+                                    )
+                                except Exception as exc:  # pragma: no cover
+                                    logger.warning("stream_callback_error", error=str(exc))
+                            continue
+
+                        chunks.append(part_text)
+                        if stream_callback is not None:
+                            try:
+                                stream_callback(part_text)
+                            except Exception as exc:  # pragma: no cover
+                                logger.warning("stream_callback_error", error=str(exc))
+
+            if saw_explicit_parts:
+                continue
+
             chunk_text = getattr(chunk, "text", None)
             if isinstance(chunk_text, str) and chunk_text:
                 chunks.append(chunk_text)
@@ -552,19 +594,11 @@ class AgentCaller:
         """Parse and validate Gemini JSON output into a Pydantic model."""
 
         raw_text = getattr(raw_message, "text", "")
-        if not isinstance(raw_text, str) or not raw_text.strip():
-            raise AgentCallError("Gemini structured response was empty.")
-
-        json_payload = self._extract_json_payload(raw_text)
-        try:
-            return response_format.model_validate_json(json_payload)
-        except ValidationError as exc:
-            raise AgentCallError(
-                "Gemini structured response did not match expected format "
-                f"{response_format.__name__}."
-            ) from exc
-        except Exception as exc:
-            raise AgentCallError("Gemini structured response was not valid JSON.") from exc
+        return self._parse_structured_text_payload(
+            text=raw_text,
+            response_format=response_format,
+            provider_label="Gemini",
+        )
 
     async def _call_openrouter(
         self,
@@ -773,7 +807,7 @@ class AgentCaller:
             try:
                 raw_message: Any | None = None
                 response_content: str | BaseModel = ""
-                if response_format is not None:
+                if response_format is not None and not stream:
                     parsed_via_sdk = False
                     messages_api = getattr(self._anthropic_client, "messages", None)
                     parse_api = getattr(messages_api, "parse", None)
@@ -831,12 +865,26 @@ class AgentCaller:
                             response_format=response_format,
                         )
                 elif stream:
+                    structured_user_prompt = (
+                        self._with_structured_json_instructions(
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                        )
+                        if response_format is not None
+                        else user_prompt
+                    )
                     response_content, raw_message = await self._stream_anthropic_text(
                         system_prompt=system_prompt,
-                        user_prompt=user_prompt,
+                        user_prompt=structured_user_prompt,
                         temperature=effective_temperature,
                         stream_callback=stream_callback,
                     )
+                    if response_format is not None:
+                        response_content = self._parse_structured_text_payload(
+                            text=response_content,
+                            response_format=response_format,
+                            provider_label="Claude",
+                        )
                 else:
                     raw_message = await self._anthropic_messages_create(
                         system_prompt=system_prompt,
@@ -994,7 +1042,7 @@ class AgentCaller:
                     "extra_body": {"reasoning": self._build_openrouter_reasoning_payload()},
                 }
 
-                if response_format is not None:
+                if response_format is not None and not stream:
                     messages[1] = {
                         "role": "user",
                         "content": self._with_structured_json_instructions(
@@ -1003,6 +1051,14 @@ class AgentCaller:
                         ),
                     }
                     request_kwargs["response_format"] = {"type": "json_object"}
+                elif response_format is not None:
+                    messages[1] = {
+                        "role": "user",
+                        "content": self._with_structured_json_instructions(
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                        ),
+                    }
 
                 raw_message: Any | None = None
                 if stream:
@@ -1014,6 +1070,12 @@ class AgentCaller:
                         stream_response=stream_response,
                         stream_callback=stream_callback,
                     )
+                    if response_format is not None:
+                        response_content = self._parse_structured_text_payload(
+                            text=response_content,
+                            response_format=response_format,
+                            provider_label="OpenRouter",
+                        )
                 else:
                     raw_message = await self._openrouter_client.chat.completions.create(
                         **request_kwargs
@@ -1209,17 +1271,17 @@ class AgentCaller:
         if normalized_level:
             attempts.extend(
                 [
-                    {"thinking_level": normalized_level},
-                    {"thinkingLevel": normalized_level},
-                    {"thinking_level": normalized_level.upper()},
-                    {"thinkingLevel": normalized_level.upper()},
+                    {"include_thoughts": True, "thinking_level": normalized_level},
+                    {"include_thoughts": True, "thinkingLevel": normalized_level},
+                    {"include_thoughts": True, "thinking_level": normalized_level.upper()},
+                    {"include_thoughts": True, "thinkingLevel": normalized_level.upper()},
                 ]
             )
         elif self.enable_thinking and self.thinking_budget is not None:
             attempts.extend(
                 [
-                    {"thinking_budget": self.thinking_budget},
-                    {"thinkingBudget": self.thinking_budget},
+                    {"include_thoughts": True, "thinking_budget": self.thinking_budget},
+                    {"include_thoughts": True, "thinkingBudget": self.thinking_budget},
                 ]
             )
 
@@ -1335,8 +1397,6 @@ class AgentCaller:
         if self._anthropic_client is None:
             raise AgentCallError("Anthropic client was not initialized.")
 
-        await self._acquire_anthropic_slot(request_kind="messages.stream")
-
         chunks: list[str] = []
         stream_api = self._anthropic_client.messages.stream
         stream_kwargs = self._anthropic_kwargs_with_optional_output_config(
@@ -1351,13 +1411,37 @@ class AgentCaller:
             },
         )
         async with stream_api(**stream_kwargs) as stream_response:
-            async for text_chunk in stream_response.text_stream:
-                chunks.append(text_chunk)
-                if stream_callback is not None:
-                    try:
-                        stream_callback(text_chunk)
-                    except Exception as exc:  # pragma: no cover
-                        logger.warning("stream_callback_error", error=str(exc))
+            await self._acquire_anthropic_slot(request_kind="messages.stream")
+            async for event in stream_response:
+                event_type = getattr(event, "type", None)
+                if event_type != "content_block_delta":
+                    continue
+
+                delta = getattr(event, "delta", None)
+                delta_type = getattr(delta, "type", None)
+                if delta_type == "text_delta":
+                    text_chunk = getattr(delta, "text", None)
+                    if isinstance(text_chunk, str) and text_chunk:
+                        chunks.append(text_chunk)
+                        if stream_callback is not None:
+                            try:
+                                stream_callback(text_chunk)
+                            except Exception as exc:  # pragma: no cover
+                                logger.warning("stream_callback_error", error=str(exc))
+                elif delta_type == "thinking_delta":
+                    thinking_chunk = getattr(delta, "thinking", None)
+                    if (
+                        isinstance(thinking_chunk, str)
+                        and thinking_chunk
+                        and stream_callback is not None
+                    ):
+                        try:
+                            stream_callback(
+                                f"{_STREAM_EVENT_PREFIX}thinking_delta"
+                                f"{_STREAM_EVENT_SEPARATOR}{thinking_chunk}"
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            logger.warning("stream_callback_error", error=str(exc))
             final_message = await stream_response.get_final_message()
 
         return "".join(chunks), final_message
@@ -1440,19 +1524,11 @@ class AgentCaller:
         """Parse and validate structured Claude JSON output into a Pydantic model."""
 
         raw_text = self._extract_anthropic_text(raw_message)
-        json_payload = self._extract_json_payload(raw_text)
-        try:
-            parsed = json.loads(json_payload)
-        except json.JSONDecodeError as exc:
-            raise AgentCallError("Claude structured response was not valid JSON.") from exc
-
-        try:
-            return response_format.model_validate(parsed)
-        except ValidationError as exc:
-            raise AgentCallError(
-                "Claude structured response did not match expected format "
-                f"{response_format.__name__}."
-            ) from exc
+        return self._parse_structured_text_payload(
+            text=raw_text,
+            response_format=response_format,
+            provider_label="Claude",
+        )
 
     def _parse_openrouter_structured_response(
         self,
@@ -1462,11 +1538,31 @@ class AgentCaller:
         """Parse and validate structured OpenRouter JSON output into a Pydantic model."""
 
         raw_text = self._extract_openrouter_text(raw_message)
-        json_payload = self._extract_json_payload(raw_text)
+        return self._parse_structured_text_payload(
+            text=raw_text,
+            response_format=response_format,
+            provider_label="OpenRouter",
+        )
+
+    def _parse_structured_text_payload(
+        self,
+        *,
+        text: str,
+        response_format: type[BaseModel],
+        provider_label: str,
+    ) -> BaseModel:
+        """Parse a structured JSON payload from plain text."""
+
+        if not isinstance(text, str) or not text.strip():
+            raise AgentCallError(f"{provider_label} structured response was empty.")
+
+        json_payload = self._extract_json_payload(text)
         try:
             parsed = json.loads(json_payload)
         except json.JSONDecodeError as exc:
-            raise AgentCallError("OpenRouter structured response was not valid JSON.") from exc
+            raise AgentCallError(
+                f"{provider_label} structured response was not valid JSON."
+            ) from exc
 
         if isinstance(parsed, list) and "analyses" in response_format.model_fields:
             parsed = {"analyses": parsed}
@@ -1475,7 +1571,7 @@ class AgentCaller:
             return response_format.model_validate(parsed)
         except ValidationError as exc:
             raise AgentCallError(
-                "OpenRouter structured response did not match expected format "
+                f"{provider_label} structured response did not match expected format "
                 f"{response_format.__name__}."
             ) from exc
 
@@ -1556,92 +1652,180 @@ class AgentCaller:
     def _normalize_usage(self, raw_message: Any | None, latency_ms: float) -> dict[str, Any]:
         """Normalize token usage metadata across provider response formats."""
 
-        input_tokens = 0
-        output_tokens = 0
-        reasoning_tokens = 0
+        def _field_present(source: Any, name: str) -> bool:
+            if isinstance(source, dict):
+                return name in source
+
+            fields_set = getattr(source, "model_fields_set", None)
+            if not isinstance(fields_set, (set, frozenset)):
+                fields_set = getattr(source, "__fields_set__", None)
+            if isinstance(fields_set, (set, frozenset)):
+                return name in fields_set
+
+            return hasattr(source, name)
+
+        def _pick_int(source: Any, *names: str) -> int | None:
+            for name in names:
+                if isinstance(source, dict):
+                    if name not in source:
+                        continue
+                    value = source.get(name)
+                else:
+                    if not _field_present(source, name):
+                        continue
+                    value = getattr(source, name, None)
+                if value is None:
+                    continue
+                try:
+                    return max(0, int(value))
+                except (TypeError, ValueError):
+                    continue
+            return None
+
+        def _coalesce_int(*values: int | None) -> int | None:
+            for value in values:
+                if value is not None:
+                    return value
+            return None
+
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        thinking_tokens: int | None = None
+        reasoning_tokens: int | None = None
+        total_tokens: int | None = None
 
         if raw_message is not None:
             usage_metadata = getattr(raw_message, "usage_metadata", None)
-            if isinstance(usage_metadata, dict):
-                input_tokens = int(
-                    usage_metadata.get("input_tokens")
-                    or usage_metadata.get("prompt_token_count")
-                    or usage_metadata.get("prompt_tokens")
-                    or 0
+            if usage_metadata is not None:
+                input_tokens = _coalesce_int(
+                    input_tokens,
+                    _pick_int(
+                        usage_metadata,
+                        "input_tokens",
+                        "prompt_token_count",
+                        "promptTokenCount",
+                        "prompt_tokens",
+                        "promptTokens",
+                    ),
                 )
-                output_tokens = int(
-                    usage_metadata.get("output_tokens")
-                    or usage_metadata.get("candidates_token_count")
-                    or usage_metadata.get("completion_tokens")
-                    or 0
+                output_tokens = _coalesce_int(
+                    output_tokens,
+                    _pick_int(
+                        usage_metadata,
+                        "output_tokens",
+                        "response_token_count",
+                        "responseTokenCount",
+                        "candidates_token_count",
+                        "candidatesTokenCount",
+                        "completion_tokens",
+                        "completionTokens",
+                    ),
                 )
-            elif usage_metadata is not None:
-                input_tokens = int(
-                    getattr(usage_metadata, "input_tokens", None)
-                    or getattr(usage_metadata, "prompt_token_count", None)
-                    or getattr(usage_metadata, "prompt_tokens", None)
-                    or 0
+                thinking_tokens = _coalesce_int(
+                    thinking_tokens,
+                    _pick_int(
+                        usage_metadata,
+                        "thinking_tokens",
+                        "thoughts_token_count",
+                        "thoughtsTokenCount",
+                        "reasoning_tokens",
+                        "reasoningTokens",
+                    ),
                 )
-                output_tokens = int(
-                    getattr(usage_metadata, "output_tokens", None)
-                    or getattr(usage_metadata, "candidates_token_count", None)
-                    or getattr(usage_metadata, "completion_tokens", None)
-                    or 0
+                total_tokens = _coalesce_int(
+                    total_tokens,
+                    _pick_int(
+                        usage_metadata,
+                        "total_tokens",
+                        "total_token_count",
+                        "totalTokenCount",
+                    ),
                 )
 
             response_metadata = getattr(raw_message, "response_metadata", None)
             if isinstance(response_metadata, dict):
-                response_usage: dict[str, Any] = {}
-                metadata_usage = response_metadata.get("usage")
-                if isinstance(metadata_usage, dict):
-                    response_usage = metadata_usage
-                input_tokens = input_tokens or int(
-                    response_usage.get("input_tokens")
-                    or response_usage.get("prompt_tokens")
-                    or response_usage.get("prompt_token_count")
-                    or 0
+                response_usage = response_metadata.get("usage")
+                input_tokens = _coalesce_int(
+                    input_tokens,
+                    _pick_int(
+                        response_usage,
+                        "input_tokens",
+                        "prompt_tokens",
+                        "prompt_token_count",
+                    ),
                 )
-                output_tokens = output_tokens or int(
-                    response_usage.get("output_tokens")
-                    or response_usage.get("completion_tokens")
-                    or response_usage.get("candidates_token_count")
-                    or 0
+                output_tokens = _coalesce_int(
+                    output_tokens,
+                    _pick_int(
+                        response_usage,
+                        "output_tokens",
+                        "response_token_count",
+                        "responseTokenCount",
+                        "completion_tokens",
+                        "candidates_token_count",
+                    ),
+                )
+                thinking_tokens = _coalesce_int(
+                    thinking_tokens,
+                    _pick_int(
+                        response_usage,
+                        "thinking_tokens",
+                        "thoughts_token_count",
+                        "reasoning_tokens",
+                    ),
+                )
+                total_tokens = _coalesce_int(
+                    total_tokens,
+                    _pick_int(response_usage, "total_tokens", "total_token_count"),
                 )
 
             usage = getattr(raw_message, "usage", None)
-            if isinstance(usage, dict):
-                input_tokens = input_tokens or int(
-                    usage.get("input_tokens") or usage.get("prompt_tokens") or 0
+            if usage is not None:
+                input_tokens = _coalesce_int(
+                    input_tokens,
+                    _pick_int(usage, "input_tokens", "prompt_tokens"),
                 )
-                output_tokens = output_tokens or int(
-                    usage.get("output_tokens") or usage.get("completion_tokens") or 0
+                output_tokens = _coalesce_int(
+                    output_tokens,
+                    _pick_int(usage, "output_tokens", "completion_tokens"),
                 )
-                completion_details = usage.get("completion_tokens_details")
-                if isinstance(completion_details, dict):
-                    reasoning_tokens = int(completion_details.get("reasoning_tokens") or 0)
-            elif usage is not None:
-                input_tokens = input_tokens or int(
-                    getattr(usage, "input_tokens", None)
-                    or getattr(usage, "prompt_tokens", None)
-                    or 0
+                thinking_tokens = _coalesce_int(
+                    thinking_tokens,
+                    _pick_int(usage, "thinking_tokens", "reasoning_tokens"),
                 )
-                output_tokens = output_tokens or int(
-                    getattr(usage, "output_tokens", None)
-                    or getattr(usage, "completion_tokens", None)
-                    or 0
-                )
+                total_tokens = _coalesce_int(total_tokens, _pick_int(usage, "total_tokens"))
                 completion_details = getattr(usage, "completion_tokens_details", None)
+                if completion_details is None and isinstance(usage, dict):
+                    completion_details = usage.get("completion_tokens_details")
                 if completion_details is not None:
-                    details_reasoning_tokens = 0
-                    if isinstance(completion_details, dict):
-                        details_reasoning_tokens = int(
-                            completion_details.get("reasoning_tokens") or 0
-                        )
-                    reasoning_tokens = int(
-                        getattr(completion_details, "reasoning_tokens", None)
-                        or details_reasoning_tokens
-                        or 0
+                    reasoning_tokens = _coalesce_int(
+                        reasoning_tokens,
+                        _pick_int(completion_details, "reasoning_tokens"),
                     )
+
+        if thinking_tokens is None and reasoning_tokens is not None:
+            thinking_tokens = reasoning_tokens
+        if reasoning_tokens is None and thinking_tokens is not None:
+            reasoning_tokens = thinking_tokens
+        if total_tokens is not None:
+            if input_tokens is None and output_tokens is not None and thinking_tokens is not None:
+                derived_input = total_tokens - output_tokens - thinking_tokens
+                if derived_input >= 0:
+                    input_tokens = derived_input
+            if output_tokens is None and input_tokens is not None and thinking_tokens is not None:
+                derived_output = total_tokens - input_tokens - thinking_tokens
+                if derived_output >= 0:
+                    output_tokens = derived_output
+            if thinking_tokens is None and input_tokens is not None and output_tokens is not None:
+                derived_thinking = total_tokens - input_tokens - output_tokens
+                if derived_thinking >= 0:
+                    thinking_tokens = derived_thinking
+        if total_tokens is None:
+            total_tokens = sum(
+                value
+                for value in (input_tokens, output_tokens, thinking_tokens)
+                if value is not None
+            )
 
         thinking_trace_present = False
         thinking_trace_chars = 0
@@ -1660,7 +1844,6 @@ class AgentCaller:
                     else:
                         thinking_trace_chars = len(json.dumps(thought_payload, default=str))
 
-            # Gemini can surface thinking blocks directly in message content.
             content = getattr(raw_message, "content", None)
             if isinstance(content, list):
                 for item in content:
@@ -1711,7 +1894,10 @@ class AgentCaller:
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
+            "thinking_tokens": thinking_tokens,
             "reasoning_tokens": reasoning_tokens,
+            "total_tokens": total_tokens,
+            "tokens": total_tokens,
             "model": self.model,
             "latency_ms": latency_ms,
             "provider": self.provider,

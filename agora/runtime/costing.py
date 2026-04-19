@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 PricingMode = Literal["exact", "approx_total_tokens", "unavailable", "mixed"]
 
@@ -57,7 +58,12 @@ _PRICING_CATALOG: tuple[PricingCatalogEntry, ...] = (
     ),
     PricingCatalogEntry(
         family="moonshotai/kimi-k2-thinking",
-        aliases=("moonshotai/kimi-k2-thinking", "moonshotai/kimi-k2", "kimi-k2-thinking", "kimi-k2"),
+        aliases=(
+            "moonshotai/kimi-k2-thinking",
+            "moonshotai/kimi-k2",
+            "kimi-k2-thinking",
+            "kimi-k2",
+        ),
         input_usd_per_million=0.60,
         output_usd_per_million=2.50,
         thinking_billed_as_output=True,
@@ -99,20 +105,24 @@ def pricing_catalog_metadata() -> dict[str, Any]:
 def estimate_model_cost(
     *,
     model_name: str,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    thinking_tokens: int = 0,
-    total_tokens: int = 0,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    thinking_tokens: int | None = None,
+    total_tokens: int | None = None,
 ) -> tuple[float | None, PricingMode, PricingCatalogEntry]:
     """Estimate one model's USD cost from detailed or coarse token telemetry."""
 
     entry = resolve_pricing_entry(model_name)
-    clean_input = max(0, int(input_tokens))
-    clean_output = max(0, int(output_tokens))
-    clean_thinking = max(0, int(thinking_tokens))
-    clean_total = max(0, int(total_tokens))
+    clean_input = None if input_tokens is None else max(0, int(input_tokens))
+    clean_output = None if output_tokens is None else max(0, int(output_tokens))
+    clean_thinking = None if thinking_tokens is None else max(0, int(thinking_tokens))
+    clean_total = None if total_tokens is None else max(0, int(total_tokens))
 
-    if clean_input > 0 or clean_output > 0 or clean_thinking > 0:
+    if (
+        clean_input is not None
+        and clean_output is not None
+        and clean_thinking is not None
+    ):
         billable_output = clean_output + (clean_thinking if entry.thinking_billed_as_output else 0)
         cost = (
             (clean_input / 1_000_000) * entry.input_usd_per_million
@@ -120,7 +130,7 @@ def estimate_model_cost(
         )
         return round(cost, 8), "exact", entry
 
-    if clean_total <= 0:
+    if clean_total is None or clean_total <= 0:
         return None, "unavailable", entry
 
     cost = (clean_total / 1_000_000) * entry.blended_usd_per_million
@@ -139,10 +149,10 @@ def estimate_cost_for_models(
     for model_name, telemetry in model_telemetry.items():
         cost, mode, entry = estimate_model_cost(
             model_name=model_name,
-            input_tokens=int(telemetry.get("input_tokens", 0) or 0),
-            output_tokens=int(telemetry.get("output_tokens", 0) or 0),
-            thinking_tokens=int(telemetry.get("thinking_tokens", 0) or 0),
-            total_tokens=int(telemetry.get("total_tokens", 0) or 0),
+            input_tokens=telemetry.get("input_tokens"),
+            output_tokens=telemetry.get("output_tokens"),
+            thinking_tokens=telemetry.get("thinking_tokens"),
+            total_tokens=telemetry.get("total_tokens"),
         )
         source_urls[model_name] = entry.source_url
         observed_modes.add(mode)
@@ -174,9 +184,9 @@ def build_model_telemetry(
     models: list[str] | tuple[str, ...] | None = None,
     model_token_usage: Mapping[str, int] | None = None,
     model_latency_ms: Mapping[str, float] | None = None,
-    model_input_tokens: Mapping[str, int] | None = None,
-    model_output_tokens: Mapping[str, int] | None = None,
-    model_thinking_tokens: Mapping[str, int] | None = None,
+    model_input_tokens: Mapping[str, int | None] | None = None,
+    model_output_tokens: Mapping[str, int | None] | None = None,
+    model_thinking_tokens: Mapping[str, int | None] | None = None,
     fallback_total_tokens: int = 0,
 ) -> dict[str, dict[str, Any]]:
     """Build normalized per-model telemetry from sparse runtime inputs."""
@@ -207,12 +217,21 @@ def build_model_telemetry(
             total_usage[model] = base + (1 if index < remainder else 0)
 
     telemetry: dict[str, dict[str, Any]] = {}
+
+    def _maybe_token_value(mapping: Mapping[str, int | None] | None, model: str) -> int | None:
+        if mapping is None or model not in mapping:
+            return None
+        value = mapping.get(model)
+        if value is None:
+            return None
+        return max(0, int(value))
+
     for model in ordered_models:
         telemetry[model] = {
             "total_tokens": total_usage.get(model, 0),
-            "input_tokens": max(0, int((model_input_tokens or {}).get(model, 0) or 0)),
-            "output_tokens": max(0, int((model_output_tokens or {}).get(model, 0) or 0)),
-            "thinking_tokens": max(0, int((model_thinking_tokens or {}).get(model, 0) or 0)),
+            "input_tokens": _maybe_token_value(model_input_tokens, model),
+            "output_tokens": _maybe_token_value(model_output_tokens, model),
+            "thinking_tokens": _maybe_token_value(model_thinking_tokens, model),
             "latency_ms": max(0.0, float((model_latency_ms or {}).get(model, 0.0) or 0.0)),
         }
 
@@ -222,9 +241,9 @@ def build_model_telemetry(
             telemetry[model]["estimated_cost_usd"] = cost
             telemetry[model]["estimation_mode"] = (
                 "exact"
-                if telemetry[model]["input_tokens"]
-                or telemetry[model]["output_tokens"]
-                or telemetry[model]["thinking_tokens"]
+                if telemetry[model]["input_tokens"] is not None
+                or telemetry[model]["output_tokens"] is not None
+                or telemetry[model]["thinking_tokens"] is not None
                 else "approx_total_tokens"
             )
     for model in telemetry:

@@ -8,23 +8,29 @@ interface TypewriterTextProps {
 }
 
 export function TypewriterText({ text, speed = 15, onComplete, className = '' }: TypewriterTextProps) {
+  return (
+    <TypewriterTextInner
+      key={text}
+      text={text}
+      speed={speed}
+      onComplete={onComplete}
+      className={className}
+    />
+  );
+}
+
+function TypewriterTextInner({
+  text,
+  speed,
+  onComplete,
+  className,
+}: TypewriterTextProps & { speed: number; className: string }) {
   const [displayedText, setDisplayedText] = useState('');
-  const [isTyping, setIsTyping] = useState(true);
-  const textRef = useRef(text);
+  const [isTyping, setIsTyping] = useState(text.length > 0);
   const indexRef = useRef(0);
 
   useEffect(() => {
-    // Reset if text changes entirely
-    if (textRef.current !== text) {
-        setDisplayedText('');
-        indexRef.current = 0;
-        setIsTyping(true);
-        textRef.current = text;
-    }
-    
-    // Auto-complete if it's already done
-    if (indexRef.current >= text.length) {
-      setIsTyping(false);
+    if (text.length === 0) {
       return;
     }
 

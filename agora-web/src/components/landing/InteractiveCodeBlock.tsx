@@ -41,12 +41,13 @@ type Stage =
 export function InteractiveCodeBlock() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState<Stage>({ type: 'idle' });
-  const [paused, setPaused] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [triggered, setTriggered] = useState(false);
+  const triggeredRef = useRef(false);
   const pausedRef = useRef(false);
 
-  pausedRef.current = paused;
+  const setPausedState = (nextPaused: boolean) => {
+    pausedRef.current = nextPaused;
+  };
 
   const delay = useCallback((ms: number) => {
     return new Promise<void>((resolve) => {
@@ -104,25 +105,25 @@ export function InteractiveCodeBlock() {
     if (!el) return;
     const obs = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting && !triggered) {
-          setTriggered(true);
+        if (entry.isIntersecting && !triggeredRef.current) {
+          triggeredRef.current = true;
           obs.disconnect();
+          void runSequence();
         }
       },
       { threshold: 0.2 },
     );
     obs.observe(el);
     return () => obs.disconnect();
-  }, [triggered]);
-
-  useEffect(() => {
-    if (triggered) runSequence();
-  }, [triggered, runSequence]);
+  }, [runSequence]);
 
   const handleReset = () => {
     setStage({ type: 'idle' });
-    setTriggered(false);
-    setTimeout(() => setTriggered(true), 50);
+    triggeredRef.current = false;
+    setTimeout(() => {
+      triggeredRef.current = true;
+      void runSequence();
+    }, 50);
   };
 
   const handleCopy = () => {
@@ -199,8 +200,8 @@ export function InteractiveCodeBlock() {
         <div
           className="p-6 mono"
           style={{ fontSize: '12.5px', lineHeight: '1.7', minHeight: '320px' }}
-          onMouseEnter={() => setPaused(true)}
-          onMouseLeave={() => setPaused(false)}
+          onMouseEnter={() => setPausedState(true)}
+          onMouseLeave={() => setPausedState(false)}
         >
           {/* Line 1: pip install */}
           {showInstall && (
@@ -310,14 +311,11 @@ function TypingLine({ text, done, speed, color }: { text: string; done: boolean;
   const [displayed, setDisplayed] = useState('');
   const [finished, setFinished] = useState(false);
   const idxRef = useRef(0);
+  const visibleText = done ? text : displayed;
+  const showCursor = !done && !finished;
 
   useEffect(() => {
-    if (done && !finished) {
-      setDisplayed(text);
-      setFinished(true);
-      idxRef.current = text.length;
-      return;
-    }
+    if (done) return;
     if (finished) return;
     const timer = setInterval(() => {
       if (idxRef.current < text.length) {
@@ -333,8 +331,8 @@ function TypingLine({ text, done, speed, color }: { text: string; done: boolean;
 
   return (
     <span style={{ color }}>
-      {displayed}
-      {!finished && (
+      {visibleText}
+      {showCursor && (
         <span
           className="inline-block w-1.5 h-3 ml-px"
           style={{ background: 'var(--text-secondary)', animation: 'pulse-glow 0.8s infinite' }}

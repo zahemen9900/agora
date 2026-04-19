@@ -49,6 +49,7 @@ OptionalBearerCredentials = Annotated[
 
 _RESULTS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "results"
 _RESULTS_PATH = _RESULTS_DIR / "phase2_validation.json"
+_SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state"
 _LEGACY_ARTIFACT_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 _RUN_STATUS_VALUES = {"queued", "running", "completed", "failed"}
 _BENCHMARK_DOMAIN_ORDER: tuple[BenchmarkDomainName, ...] = (
@@ -360,6 +361,14 @@ def _safe_positive_int(value: Any) -> int | None:
     return candidate if candidate > 0 else None
 
 
+def _first_positive_int(*values: Any) -> int | None:
+    for value in values:
+        candidate = _safe_positive_int(value)
+        if candidate is not None:
+            return candidate
+    return None
+
+
 def _cost_from_object(value: Any) -> BenchmarkCostEstimateResponse | None:
     if not isinstance(value, dict):
         return None
@@ -537,9 +546,9 @@ def _apply_domain_prompts(
         enriched = dict(task)
         if selected_question:
             enriched["question"] = selected_question
-        enriched["prompt_template_id"] = prompt_config.get("template_id")
-        enriched["prompt_template_title"] = prompt_config.get("template_title")
-        enriched["prompt_source"] = prompt_config.get("source")
+        enriched["question_template_id"] = prompt_config.get("template_id")
+        enriched["question_template_title"] = prompt_config.get("template_title")
+        enriched["question_source"] = prompt_config.get("source")
         transformed.append(enriched)
     return transformed
 
@@ -604,11 +613,11 @@ def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
                     "latency_ms": 0.0,
                 },
             )
-            bucket["total_tokens"] += telemetry.total_tokens
-            bucket["input_tokens"] += telemetry.input_tokens
-            bucket["output_tokens"] += telemetry.output_tokens
-            bucket["thinking_tokens"] += telemetry.thinking_tokens
-            bucket["latency_ms"] += telemetry.latency_ms
+            bucket["total_tokens"] += telemetry.total_tokens or 0
+            bucket["input_tokens"] += telemetry.input_tokens or 0
+            bucket["output_tokens"] += telemetry.output_tokens or 0
+            bucket["thinking_tokens"] += telemetry.thinking_tokens or 0
+            bucket["latency_ms"] += telemetry.latency_ms or 0.0
         cost_block = _cost_from_object(run)
         if cost_block is None:
             continue
@@ -640,13 +649,14 @@ def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     benchmark_config = _as_dict(payload.get("benchmark_config"))
-    agent_count = _safe_positive_int(benchmark_config.get("agent_count"))
-    if agent_count is None:
-        for run in runs:
-            candidate = _safe_positive_int(run.get("agent_count"))
-            if candidate is not None:
-                agent_count = candidate
-                break
+    agent_count = _first_positive_int(
+        benchmark_config.get("agent_count"),
+        *(
+            run.get("agent_count")
+            for run in runs
+            if isinstance(run, dict)
+        ),
+    )
 
     return {
         "runs": runs,
@@ -810,6 +820,12 @@ def _build_benchmark_detail_response(
 
     if telemetry.get("agent_count") is None and isinstance(record_request, dict):
         telemetry["agent_count"] = _safe_positive_int(record_request.get("agent_count"))
+    agent_count = _first_positive_int(
+        telemetry.get("agent_count"),
+        record_request.get("agent_count") if isinstance(record_request, dict) else None,
+        run_record.get("agent_count") if isinstance(run_record, dict) else None,
+    )
+    telemetry["agent_count"] = agent_count
     artifact_created_at = artifact.get("created_at") if isinstance(artifact, dict) else None
     payload_generated_at = payload.get("generated_at") if isinstance(payload, dict) else None
     created_at = _parse_timestamp(
@@ -874,7 +890,7 @@ def _build_benchmark_detail_response(
         model_counts=telemetry["model_counts"],
         frequency_score=telemetry["frequency_score"],
         latest_mechanism=telemetry["latest_mechanism"],
-        agent_count=telemetry["agent_count"],
+        agent_count=agent_count,
         total_tokens=telemetry["total_tokens"],
         thinking_tokens=telemetry["thinking_tokens"],
         total_latency_ms=telemetry.get("total_latency_ms", 0.0),
@@ -1119,6 +1135,8 @@ def _to_catalog_entry(
         if isinstance(owner_user_id, str) and owner_user_id.strip()
         else None
     )
+    agent_count = _safe_positive_int(telemetry.get("agent_count"))
+    telemetry["agent_count"] = agent_count
 
     return BenchmarkCatalogEntry(
         artifact_id=artifact_id,
@@ -1136,7 +1154,7 @@ def _to_catalog_entry(
         frequency_score=telemetry["frequency_score"],
         status=str(artifact.get("status")) if artifact.get("status") is not None else None,
         latest_mechanism=telemetry["latest_mechanism"],
-        agent_count=telemetry["agent_count"],
+        agent_count=agent_count,
         total_tokens=telemetry["total_tokens"],
         thinking_tokens=telemetry["thinking_tokens"],
         total_latency_ms=telemetry.get("total_latency_ms", 0.0),
@@ -1333,9 +1351,8 @@ async def _persist_and_emit_benchmark_event(
 
 
 async def _offline_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
-    """Deterministic fallback agent for reproducible benchmark triggers."""
+    """Deterministic schema-aware agent for reproducible offline benchmark runs."""
 
-    del system_prompt
     lowered = user_prompt.lower()
     if "capital of france" in lowered:
         answer = "Paris"
@@ -1346,7 +1363,73 @@ async def _offline_agent(system_prompt: str, user_prompt: str) -> dict[str, obje
     elif "2+2" in lowered:
         answer = "4"
     else:
-        answer = "Option A"
+        task_line = next(
+            (
+                line.split(":", maxsplit=1)[1].strip()
+                for line in user_prompt.splitlines()
+                if line.lower().startswith("task:")
+            ),
+            user_prompt.strip(),
+        )
+        answer = f"Lowest-risk answer satisfying: {task_line[:140] or 'benchmark task'}"
+
+    role = system_prompt.lower()
+    if "devil's advocate" in role:
+        return {
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": "offline pro benchmark claim",
+                    "flaw": "The claim must identify the task constraint it optimizes.",
+                    "attack_axis": "constraint_fit",
+                    "counterexample": "A valid answer that satisfies more explicit constraints.",
+                    "failure_mode": "The pro answer can be plausible but under-specified.",
+                    "question": (
+                        "Which explicit task constraint does the pro answer satisfy better "
+                        "than the strongest alternative?"
+                    ),
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": "offline opp benchmark claim",
+                    "flaw": "The claim must name the assumption that makes it preferable.",
+                    "attack_axis": "hidden_assumption",
+                    "counterexample": "A boundary condition where the assumption is false.",
+                    "failure_mode": "The opp answer can win only by smuggling an unstated premise.",
+                    "question": (
+                        "Which assumption would have to be true for the opp answer to beat "
+                        "the pro answer on the benchmark prompt?"
+                    ),
+                },
+            ]
+        }
+
+    if "debate opening" in role:
+        return {
+            "claim": answer,
+            "evidence": (
+                "Offline benchmark evidence: this answer is selected because it directly "
+                "matches the explicit benchmark prompt constraints."
+            ),
+            "confidence": 0.84,
+        }
+
+    if "debate rebuttal" in role:
+        return {
+            "answer": answer,
+            "defense": (
+                "Offline benchmark rebuttal: answer the targeted critique by checking it "
+                "against the prompt constraints, then revise only if it breaks a named constraint."
+            ),
+            "confidence": 0.84,
+        }
+
+    if "debate synthesis" in role:
+        return {
+            "final_answer": answer,
+            "confidence": 0.84,
+            "summary": "Offline benchmark synthesis selected the constraint-matching answer.",
+        }
 
     return {
         "answer": answer,
@@ -1399,8 +1482,12 @@ async def _execute_benchmark_run(
 
         orchestrator = AgoraOrchestrator(
             agent_count=request.agent_count,
+            allow_offline_fallback=not request.live_agents,
             reasoning_presets=reasoning_presets,
         )
+        selector_state = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
+        if selector_state is not None:
+            orchestrator.selector.bandit.load_state_payload(selector_state)
         agents = None if request.live_agents else [_offline_agent] * request.agent_count
         seed = None if request.live_agents else request.seed
         runner = BenchmarkRunner(orchestrator, agents=agents)
@@ -1419,7 +1506,10 @@ async def _execute_benchmark_run(
             telemetry = event_data.get("telemetry")
             if isinstance(telemetry, dict):
                 current["latest_mechanism"] = event_data.get("latest_mechanism")
-                current["agent_count"] = telemetry.get("agent_count")
+                current["agent_count"] = _first_positive_int(
+                    telemetry.get("agent_count"),
+                    request.agent_count,
+                )
                 current["total_tokens"] = telemetry.get("total_tokens")
                 current["thinking_tokens"] = telemetry.get("thinking_tokens")
                 current["total_latency_ms"] = telemetry.get("total_latency_ms")
@@ -1452,6 +1542,10 @@ async def _execute_benchmark_run(
             seed=seed,
             progress_callback=emit_progress,
         )
+        await store.save_runtime_state(
+            _SELECTOR_BANDIT_STATE_KEY,
+            orchestrator.selector.bandit.to_state(),
+        )
         payload = _with_complete_summary(payload)
         await store.save_benchmark_summary(payload)
         payload["benchmark_config"] = {
@@ -1475,6 +1569,8 @@ async def _execute_benchmark_run(
         }
         payload["benchmark_config"] = benchmark_config
 
+        benchmark_agent_count = _first_positive_int(telemetry.get("agent_count"), request.agent_count)
+
         created_at = datetime.now(UTC).isoformat()
         artifact_document = {
             "artifact_id": run_id,
@@ -1485,7 +1581,7 @@ async def _execute_benchmark_run(
             "created_at": created_at,
             "benchmark_payload": payload,
             "latest_mechanism": telemetry["latest_mechanism"],
-            "agent_count": telemetry["agent_count"],
+            "agent_count": benchmark_agent_count,
             "total_tokens": telemetry["total_tokens"],
             "thinking_tokens": telemetry["thinking_tokens"],
             "total_latency_ms": telemetry["total_latency_ms"],
@@ -1521,7 +1617,7 @@ async def _execute_benchmark_run(
                 "model_counts": telemetry["model_counts"],
                 "frequency_score": telemetry["frequency_score"],
                 "latest_mechanism": telemetry["latest_mechanism"],
-                "agent_count": telemetry["agent_count"],
+                "agent_count": benchmark_agent_count,
                 "total_tokens": telemetry["total_tokens"],
                 "thinking_tokens": telemetry["thinking_tokens"],
                 "total_latency_ms": telemetry["total_latency_ms"],

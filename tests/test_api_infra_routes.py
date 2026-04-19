@@ -1059,7 +1059,13 @@ async def test_run_task_rate_limit_returns_429(
             return selection
 
     class _FakeRunOrchestrator:
-        def __init__(self, agent_count: int, reasoning_presets=None):
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+        ):
+            del allow_offline_fallback
             self.agent_count = agent_count
             self.reasoning_presets = reasoning_presets
             self.selector = _FakeSelector()
@@ -1104,7 +1110,8 @@ async def test_run_task_rate_limit_returns_429(
 
     assert exc_info.value.status_code == 429
     assert exc_info.value.detail == "Task run rate limit exceeded"
-    assert exc_info.value.headers == {"Retry-After": "60"}
+    retry_after = int(exc_info.value.headers["Retry-After"])
+    assert 1 <= retry_after <= 60
 
 
 @pytest.mark.asyncio
@@ -1142,7 +1149,13 @@ async def test_workspace_concurrent_run_limit_returns_429(
             return selection
 
     class _BlockingRunOrchestrator:
-        def __init__(self, agent_count: int, reasoning_presets=None):
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+        ):
+            del allow_offline_fallback
             self.agent_count = agent_count
             self.reasoning_presets = reasoning_presets
             self.selector = _FakeSelector()
@@ -1335,6 +1348,206 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         assert any(event.event == "error" for event in failed_status.events)
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_switched_task_records_switch_before_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "switch-order-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    operation_order: list[str] = []
+    completed_result = DeliberationResult(
+        task="switch order",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="Vote closes this out.",
+        confidence=0.83,
+        quorum_reached=True,
+        round_count=3,
+        agent_count=4,
+        mechanism_switches=1,
+        merkle_root="switch-order-root",
+        transcript_hashes=["debate-h1", "switch-h1", "vote-h1"],
+        agent_models_used=["custom-agent"],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=21,
+        total_latency_ms=6.0,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _SwitchingOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None):
+            self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, mechanism_override
+            if event_sink is not None:
+                await event_sink(
+                    "mechanism_switch",
+                    {
+                        "from_mechanism": "debate",
+                        "to_mechanism": "vote",
+                        "reason": "entropy rising",
+                        "round_number": 2,
+                    },
+                )
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        operation_order.append("initialize")
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        operation_order.append("selection")
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def switch_ok(**_kwargs: object) -> dict[str, str]:
+        operation_order.append("switch")
+        return {"tx_hash": "switch_tx", "explorer_url": "https://explorer/switch_tx"}
+
+    async def receipt_ok(**_kwargs: object) -> dict[str, str]:
+        operation_order.append("receipt")
+        return {"tx_hash": "receipt_tx", "explorer_url": "https://explorer/receipt_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", True)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_mechanism_switch", switch_ok)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _SwitchingOrchestrator)
+
+        created = await task_routes.create_task(
+            TaskCreateRequest(task="switch order", agent_count=4, stakes=0.0),
+            _override_user(),
+        )
+        run_result = await task_routes.run_task(created.task_id, _override_user())
+        status = await task_routes.get_task_status(created.task_id, _override_user(), detailed=True)
+    finally:
+        task_routes._store = None
+
+    assert run_result.final_answer == "Vote closes this out."
+    assert operation_order == ["initialize", "selection", "switch", "receipt"]
+    assert status.chain_operations["record_switch:0"].status == "succeeded"
+    assert status.chain_operations["submit_receipt"].status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_switched_task_retry_does_not_duplicate_switch_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "switch-retry-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    switch_calls = 0
+    receipt_attempts = 0
+    completed_result = DeliberationResult(
+        task="switch retry",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="Receipt retries, switch does not.",
+        confidence=0.84,
+        quorum_reached=True,
+        round_count=3,
+        agent_count=4,
+        mechanism_switches=1,
+        merkle_root="switch-retry-root",
+        transcript_hashes=["debate-h1", "switch-h1", "vote-h1"],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=18,
+        total_latency_ms=5.0,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _SwitchingOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None):
+            self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def run(self, task: str, **_kwargs: object) -> DeliberationResult:
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def switch_ok(**_kwargs: object) -> dict[str, str]:
+        nonlocal switch_calls
+        switch_calls += 1
+        return {"tx_hash": "switch_tx", "explorer_url": "https://explorer/switch_tx"}
+
+    async def receipt_flaky(**_kwargs: object) -> dict[str, str]:
+        nonlocal receipt_attempts
+        receipt_attempts += 1
+        if receipt_attempts == 1:
+            raise RuntimeError("temporary receipt failure")
+        return {"tx_hash": "receipt_tx", "explorer_url": "https://explorer/receipt_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_mechanism_switch", switch_ok)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_flaky)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _SwitchingOrchestrator)
+
+        created = await task_routes.create_task(
+            TaskCreateRequest(task="switch retry", agent_count=4, stakes=0.0),
+            _override_user(),
+        )
+        await task_routes.get_task_store().append_event(
+            _override_user().workspace_id,
+            created.task_id,
+            {
+                "event": "mechanism_switch",
+                "data": {
+                    "from_mechanism": "debate",
+                    "to_mechanism": "vote",
+                    "reason": "entropy rising",
+                    "round_number": 2,
+                },
+                "timestamp": datetime.now(UTC).isoformat(),
+            }
+        )
+
+        await task_routes.run_task(created.task_id, _override_user())
+        await task_routes.run_task(created.task_id, _override_user())
+        status = await task_routes.get_task_status(created.task_id, _override_user(), detailed=True)
+    finally:
+        task_routes._store = None
+
+    assert switch_calls == 1
+    assert receipt_attempts == 2
+    assert status.chain_operations["record_switch:0"].status == "succeeded"
+    assert status.chain_operations["submit_receipt"].status == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -2599,8 +2812,16 @@ async def test_benchmark_prompt_templates_endpoint_returns_domain_catalog(
     assert set(domains.keys()) == {"math", "factual", "reasoning", "code", "creative", "demo"}
     assert all(len(entries) >= 4 for entries in domains.values())
     assert all("id" in domains["math"][idx] for idx in range(4))
-    assert all("question" in entry and "prompt" not in entry for entries in domains.values() for entry in entries)
-    assert all(str(entry["question"]).strip().endswith("?") for entries in domains.values() for entry in entries)
+    assert all(
+        "question" in entry and "prompt" not in entry
+        for entries in domains.values()
+        for entry in entries
+    )
+    assert all(
+        str(entry["question"]).strip().endswith("?")
+        for entries in domains.values()
+        for entry in entries
+    )
 
 
 @pytest.mark.asyncio
@@ -2682,7 +2903,10 @@ async def test_benchmark_detail_endpoint_supports_artifact_and_run_id_lookup(
                 "domain_prompts": {
                     "demo": {
                         "template_id": "demo-balanced",
-                        "question": "What is the clearest way to explain this benchmark result to a stakeholder?",
+                        "question": (
+                            "What is the clearest way to explain this benchmark result "
+                            "to a stakeholder?"
+                        ),
                         "source": "custom",
                     }
                 },
@@ -2708,7 +2932,78 @@ async def test_benchmark_detail_endpoint_supports_artifact_and_run_id_lookup(
     assert by_run_payload["artifact_id"] == "user-artifact"
     assert by_run_payload["request"]["agent_count"] == 8
     assert "demo" in by_run_payload["request"]["domain_prompts"]
-    assert by_run_payload["request"]["domain_prompts"]["demo"]["question"].startswith("What is the clearest")
+    assert by_run_payload["request"]["domain_prompts"]["demo"]["question"].startswith(
+        "What is the clearest"
+    )
+
+
+@pytest.mark.asyncio
+async def test_benchmark_detail_endpoint_coerces_legacy_zero_agent_count(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    original_artifact_telemetry = benchmark_routes._artifact_telemetry
+
+    def fake_artifact_telemetry(payload: dict[str, object]) -> dict[str, object]:
+        telemetry = dict(original_artifact_telemetry(payload))
+        telemetry["agent_count"] = 0
+        return telemetry
+
+    monkeypatch.setattr(benchmark_routes, "_artifact_telemetry", fake_artifact_telemetry)
+
+    artifact_id = "legacy-agent-count-zero"
+    await store.save_user_benchmark_artifact(
+        "user-1",
+        artifact_id,
+        {
+            "artifact_id": artifact_id,
+            "scope": "user",
+            "owner_user_id": "user-1",
+            "source": "user_triggered",
+            "status": "completed",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "benchmark_payload": {
+                "benchmark_config": {"agent_count": 0},
+                "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+            },
+        },
+    )
+    await store.save_user_test_result(
+        "user-1",
+        artifact_id,
+        {
+            "run_id": artifact_id,
+            "status": "completed",
+            "artifact_id": artifact_id,
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "updated_at": "2026-04-18T02:01:00+00:00",
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": False,
+                "seed": 11,
+                "domain_prompts": {
+                    "math": {
+                        "template_id": "math-fast",
+                        "question": "What is the exact value of 1/2 + 1/3?",
+                        "source": "custom",
+                    }
+                },
+            },
+        },
+    )
+
+    response = await client.get(f"/benchmarks/{artifact_id}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["artifact_id"] == artifact_id
+    assert payload["agent_count"] == 4
 
 
 @pytest.mark.asyncio
@@ -2896,9 +3191,15 @@ async def test_benchmark_queued_detail_uses_request_agent_count_and_custom_quest
     detail_payload = detail_response.json()
     assert detail_payload["status"] == "queued"
     assert detail_payload["agent_count"] == 4
-    assert detail_payload["request"]["domain_prompts"]["math"]["question"] == "What should the math benchmark debate?"
+    assert (
+        detail_payload["request"]["domain_prompts"]["math"]["question"]
+        == "What should the math benchmark debate?"
+    )
     assert detail_payload["request"]["domain_prompts"]["math"]["source"] == "custom"
-    assert detail_payload["request"]["resolved_domain_prompts"]["math"]["question"] == "What should the math benchmark debate?"
+    assert (
+        detail_payload["request"]["resolved_domain_prompts"]["math"]["question"]
+        == "What should the math benchmark debate?"
+    )
     assert detail_payload["request"]["resolved_domain_prompts"]["math"]["source"] == "custom"
 
 

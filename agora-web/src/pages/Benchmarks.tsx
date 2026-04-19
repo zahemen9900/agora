@@ -24,7 +24,6 @@ import { EnsemblePlan } from "../components/EnsemblePlan";
 import {
   ApiRequestError,
   getBenchmarkCatalog,
-  getBenchmarkPromptTemplates,
   getBenchmarkRunStatus,
   getBenchmarks,
   triggerBenchmarkRun,
@@ -57,8 +56,14 @@ type WizardStep = 0 | 1 | 2;
 
 interface DomainPromptSelection {
   templateId: string | null;
+  templateTitle: string | null;
+  question: string;
   useCustomPrompt: boolean;
   customQuestion: string;
+}
+
+function normalizeText(value: string | null | undefined): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [
@@ -213,11 +218,10 @@ export function Benchmarks() {
 
   const [benchmarks, setBenchmarks] = useState<BenchmarkPayload | null>(null);
   const [catalog, setCatalog] = useState<BenchmarkCatalogPayload | null>(null);
-  const [templates, setTemplates] = useState<BenchmarkPromptTemplatesPayload>(FALLBACK_PROMPT_TEMPLATES);
+  const templates = FALLBACK_PROMPT_TEMPLATES;
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [templateError, setTemplateError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
   const [chartsReady, setChartsReady] = useState(false);
@@ -245,76 +249,91 @@ export function Benchmarks() {
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
+  const finalizeDomainSelection = useCallback(
+    (
+      domain: BenchmarkDomainName,
+      selection: DomainPromptSelection,
+      templatePayload: BenchmarkPromptTemplatesPayload = templates,
+    ): DomainPromptSelection => {
+      const templatesForDomain = templatePayload.domains[domain] ?? [];
+      const matchedTemplate = selection.templateId
+        ? templatesForDomain.find((template) => template.id === selection.templateId) ?? null
+        : null;
+      const fallbackTemplate = templatesForDomain[0] ?? null;
+      const resolvedTemplate = matchedTemplate ?? fallbackTemplate;
+      const customQuestion = normalizeText(selection.customQuestion);
+      const templateQuestion = normalizeText(resolvedTemplate?.question);
+      const resolvedQuestion = selection.useCustomPrompt
+        ? (customQuestion || templateQuestion)
+        : (normalizeText(selection.question) || templateQuestion || customQuestion);
+
+      return {
+        templateId: resolvedTemplate?.id ?? selection.templateId ?? null,
+        templateTitle: resolvedTemplate?.title ?? selection.templateTitle ?? null,
+        question: resolvedQuestion,
+        useCustomPrompt: selection.useCustomPrompt,
+        customQuestion: selection.customQuestion,
+      };
+    },
+    [templates],
+  );
+
+  const createDefaultDomainSelection = useCallback(
+    (domain: BenchmarkDomainName, templatePayload: BenchmarkPromptTemplatesPayload): DomainPromptSelection => {
+      const templatesForDomain = templatePayload.domains[domain] ?? [];
+      const template = templatesForDomain[0] ?? null;
+      return {
+        templateId: template?.id ?? null,
+        templateTitle: template?.title ?? null,
+        question: normalizeText(template?.question),
+        useCustomPrompt: false,
+        customQuestion: "",
+      };
+    },
+    [],
+  );
+
   const syncDomainPromptSelection = useCallback(
     (templatePayload: BenchmarkPromptTemplatesPayload, forceReset = false) => {
       setDomainPromptSelection((current) => {
         const nextState: Partial<Record<BenchmarkDomainName, DomainPromptSelection>> = {};
         for (const domain of BENCHMARK_DOMAINS) {
-          const templatesForDomain = templatePayload.domains[domain] ?? [];
-          const defaultTemplateId = templatesForDomain[0]?.id ?? null;
           const existing = forceReset ? undefined : current[domain];
-          const keepTemplate = Boolean(
-            existing?.templateId
-            && templatesForDomain.some((template) => template.id === existing.templateId),
-          );
-          nextState[domain] = {
-            templateId: keepTemplate ? existing?.templateId ?? null : defaultTemplateId,
-            useCustomPrompt: existing?.useCustomPrompt ?? false,
-            customQuestion: existing?.customQuestion ?? "",
-          };
+          const baseSelection = existing ?? createDefaultDomainSelection(domain, templatePayload);
+          nextState[domain] = finalizeDomainSelection(domain, baseSelection, templatePayload);
         }
         return nextState;
       });
     },
-    [],
+    [createDefaultDomainSelection, finalizeDomainSelection],
   );
-
-  const refreshPromptTemplates = useCallback(async (): Promise<void> => {
-    try {
-      const token = await getAccessToken();
-      if (!token) {
-        throw new Error("Authentication token is unavailable.");
-      }
-      const templatePayload = await getBenchmarkPromptTemplates(token);
-      setTemplates(templatePayload);
-      setTemplateError(null);
-      syncDomainPromptSelection(templatePayload);
-    } catch (error) {
-      setTemplates(FALLBACK_PROMPT_TEMPLATES);
-      if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-        setTemplateError(`${error.message} Using built-in question templates.`);
-      } else {
-        setTemplateError("Using built-in question templates while the prompt catalog is unavailable.");
-      }
-      syncDomainPromptSelection(FALLBACK_PROMPT_TEMPLATES);
-    }
-  }, [getAccessToken, syncDomainPromptSelection]);
 
   const loadBenchmarkData = useCallback(async (): Promise<void> => {
     setLoadError(null);
     setCatalogError(null);
-    setTemplateError(null);
-
-    const token = await getAccessToken();
-    const benchmarkPayload = await getBenchmarks(token);
-    setBenchmarks(benchmarkPayload);
 
     try {
+      const token = await getAccessToken();
+      if (!token) {
+        setLoadError("Authentication token is unavailable.");
+        return;
+      }
+
+      const benchmarkPayload = await getBenchmarks(token);
+      setBenchmarks(benchmarkPayload);
+
       const catalogPayload = await getBenchmarkCatalog(token, 100);
       setCatalog(catalogPayload);
       setCatalogError(null);
     } catch (error) {
       if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-        setCatalog(null);
-        setCatalogError(error.message);
+        setLoadError(error.message);
       } else {
-        setCatalog(null);
-        setCatalogError("Benchmark catalog is temporarily unavailable.");
+        console.error(error);
+        setLoadError("Benchmark data is currently unavailable.");
       }
     }
-
-    await refreshPromptTemplates();
-  }, [getAccessToken, refreshPromptTemplates]);
+  }, [getAccessToken]);
 
   useEffect(() => {
     let cancelled = false;
@@ -444,18 +463,6 @@ export function Benchmarks() {
     return (globalSortMode === "recent" ? catalog.global_recent : catalog.global_frequency).slice(0, 3);
   }, [catalog, globalSortMode]);
 
-  const getResolvedQuestion = useCallback(
-    (domain: BenchmarkDomainName, selection: DomainPromptSelection): string => {
-      if (selection.useCustomPrompt && selection.customQuestion.trim().length > 0) {
-        return selection.customQuestion.trim();
-      }
-      const templatesForDomain = templates?.domains?.[domain] ?? [];
-      const selected = templatesForDomain.find((template) => template.id === selection.templateId);
-      return selected?.question ?? "";
-    },
-    [templates],
-  );
-
   const runPayloadPreview = useMemo(() => {
     const domainPrompts: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>> = {};
     for (const domain of BENCHMARK_DOMAINS) {
@@ -463,7 +470,7 @@ export function Benchmarks() {
       if (!selection) {
         continue;
       }
-      const question = getResolvedQuestion(domain, selection);
+      const question = normalizeText(selection.question);
       if (!question) {
         continue;
       }
@@ -487,7 +494,6 @@ export function Benchmarks() {
   }, [
     benchmarkAgentCount,
     domainPromptSelection,
-    getResolvedQuestion,
     holdoutPerCategory,
     reasoningPresets,
     trainingPerCategory,
@@ -511,9 +517,7 @@ export function Benchmarks() {
   );
 
   const openWizard = () => {
-    if (Object.keys(domainPromptSelection).length === 0) {
-      syncDomainPromptSelection(templates, true);
-    }
+    syncDomainPromptSelection(templates);
     setWizardStep(0);
     setWizardDomain("math");
     setRunError(null);
@@ -557,15 +561,12 @@ export function Benchmarks() {
     domain: BenchmarkDomainName,
     updater: (current: DomainPromptSelection) => DomainPromptSelection,
   ) => {
-    setDomainPromptSelection((current) => {
-      const existing = current[domain] ?? {
-        templateId: templates?.domains?.[domain]?.[0]?.id ?? null,
-        useCustomPrompt: false,
-        customQuestion: "",
-      };
+      setDomainPromptSelection((current) => {
+        const existing = current[domain] ?? createDefaultDomainSelection(domain, templates);
+      const nextSelection = updater(existing);
       return {
         ...current,
-        [domain]: updater(existing),
+        [domain]: finalizeDomainSelection(domain, nextSelection),
       };
     });
   };
@@ -585,22 +586,16 @@ export function Benchmarks() {
       if (!selection) {
         continue;
       }
-      const customQuestion = selection.customQuestion.trim();
-      if (selection.useCustomPrompt) {
-        state[domain] = {
-          complete: customQuestion.length > 0,
-          label: customQuestion.length > 0 ? "Custom question" : "Needs question",
-        };
-        continue;
-      }
-      const template = (templates.domains[domain] ?? []).find((item) => item.id === selection.templateId);
+      const question = normalizeText(selection.question);
       state[domain] = {
-        complete: Boolean(template),
-        label: template?.title ?? "Select question",
+        complete: question.length > 0,
+        label: selection.useCustomPrompt
+          ? (question.length > 0 ? "Custom question" : "Needs question")
+          : (selection.templateTitle ?? "Select question"),
       };
     }
     return state;
-  }, [domainPromptSelection, templates.domains]);
+  }, [domainPromptSelection]);
 
   const allDomainsConfigured = BENCHMARK_DOMAINS.every((domain) => domainStatus[domain].complete);
   const wizardCurrentSelection = domainPromptSelection[wizardDomain];
@@ -802,7 +797,6 @@ export function Benchmarks() {
           )}
 
           {runError ? <p className="text-sm text-red-300 mt-2">{runError}</p> : null}
-          {templateError ? <p className="text-sm text-text-secondary mt-2">{templateError}</p> : null}
         </div>
 
         <div className="card p-4 sm:p-6 mb-6">
@@ -978,26 +972,32 @@ export function Benchmarks() {
                       </p>
                     </div>
                     <div className="inline-flex border border-border-subtle rounded-md overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => updateDomainSelection(wizardDomain, (existing) => ({ ...existing, useCustomPrompt: false }))}
-                        className={`mono px-3 py-1.5 text-xs ${!domainPromptSelection[wizardDomain]?.useCustomPrompt ? "bg-accent-muted text-accent" : "text-text-secondary"}`}
-                      >
-                        Template
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => updateDomainSelection(wizardDomain, (existing) => ({
+                        ...existing,
+                        useCustomPrompt: false,
+                        question: wizardSelectedTemplate?.question ?? existing.question,
+                        templateTitle: wizardSelectedTemplate?.title ?? existing.templateTitle,
+                      }))}
+                      className={`mono px-3 py-1.5 text-xs ${!domainPromptSelection[wizardDomain]?.useCustomPrompt ? "bg-accent-muted text-accent" : "text-text-secondary"}`}
+                    >
+                      Template
+                    </button>
                       <button
                         type="button"
                         onClick={() => updateDomainSelection(wizardDomain, (existing) => {
                           if (existing.useCustomPrompt) {
                             return existing;
                           }
-                          const seededQuestion = existing.customQuestion.trim().length > 0
-                            ? existing.customQuestion
-                            : (wizardSelectedTemplate?.question ?? "");
+                          const seededQuestion = normalizeText(existing.customQuestion).length > 0
+                            ? normalizeText(existing.customQuestion)
+                            : (normalizeText(wizardSelectedTemplate?.question) || normalizeText(existing.question));
                           return {
                             ...existing,
                             useCustomPrompt: true,
                             customQuestion: seededQuestion,
+                            question: seededQuestion || existing.question,
                           };
                         })}
                         className={`mono px-3 py-1.5 text-xs ${domainPromptSelection[wizardDomain]?.useCustomPrompt ? "bg-accent-muted text-accent" : "text-text-secondary"}`}
@@ -1018,7 +1018,10 @@ export function Benchmarks() {
                           onClick={() => updateDomainSelection(wizardDomain, (existing) => ({
                             ...existing,
                             templateId: template.id,
+                            templateTitle: template.title,
+                            question: template.question,
                             useCustomPrompt: false,
+                            customQuestion: existing.customQuestion,
                           }))}
                           className={`text-left border rounded-md p-3 transition-colors ${
                             active ? "border-accent bg-accent-muted" : "border-border-subtle hover:border-accent"
@@ -1059,6 +1062,7 @@ export function Benchmarks() {
                             updateDomainSelection(wizardDomain, (existing) => ({
                               ...existing,
                               customQuestion: event.target.value,
+                              question: event.target.value,
                               useCustomPrompt: true,
                             }))
                           }
@@ -1071,7 +1075,7 @@ export function Benchmarks() {
                       <div className="rounded-md border border-border-subtle bg-elevated/40 p-3">
                         <div className="mono text-xs text-text-muted mb-1">SELECTED QUESTION</div>
                         <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
-                          {wizardSelectedTemplate?.question ?? "Choose a question above or switch to custom mode."}
+                          {normalizeText(wizardCurrentSelection?.question) || "Choose a question above or switch to custom mode."}
                         </p>
                       </div>
                     )}
@@ -1102,17 +1106,16 @@ export function Benchmarks() {
                     if (!selection) {
                       return null;
                     }
-                    const resolvedQuestion = getResolvedQuestion(domain, selection);
                     return (
                       <div key={domain} className="border border-border-subtle rounded-md p-3 bg-void">
                         <div className="flex items-center justify-between gap-2 mb-1">
                           <span className="text-sm text-text-primary">{titleCase(domain)}</span>
                           <span className="mono text-xs text-text-muted">
-                            {selection.useCustomPrompt ? "custom" : selection.templateId ?? "template"}
+                            {selection.useCustomPrompt ? "custom" : selection.templateTitle ?? selection.templateId ?? "template"}
                           </span>
                         </div>
                         <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word line-clamp-4">
-                          {resolvedQuestion || "No question selected."}
+                          {normalizeText(selection.question) || "No question selected."}
                         </p>
                       </div>
                     );

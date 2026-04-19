@@ -326,6 +326,7 @@ async def test_call_structured_falls_back_when_claude_and_kimi_fail() -> None:
         agent_count=3,
         claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
         kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        allow_offline_fallback=True,
     )
     fallback = _VoteResponse(
         answer="deterministic fallback",
@@ -345,6 +346,58 @@ async def test_call_structured_falls_back_when_claude_and_kimi_fail() -> None:
     assert response.answer == "deterministic fallback"
     assert usage["tokens"] == 0
     assert usage["latency_ms"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_call_structured_strict_mode_blocks_deterministic_fallback() -> None:
+    """Production default should fail before materializing offline vote artifacts."""
+
+    engine = VoteEngine(
+        agent_count=3,
+        claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
+        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+    )
+    fallback = _VoteResponse(
+        answer="deterministic fallback",
+        confidence=0.2,
+        predicted_group_answer="deterministic fallback",
+        reasoning="offline fallback",
+    )
+
+    with pytest.raises(AgentCallError, match="Provider fallback disabled"):
+        await engine._call_structured(
+            tier="claude",
+            system_prompt="Return JSON.",
+            user_prompt="Vote on the best option",
+            response_model=_VoteResponse,
+            fallback=fallback,
+        )
+
+
+@pytest.mark.asyncio
+async def test_offline_vote_fallback_is_task_grounded_not_option_placeholder() -> None:
+    """Explicit offline fallback should not emit option A/B placeholders."""
+
+    engine = VoteEngine(
+        agent_count=3,
+        flash_agent=_FailingCaller(model="gemini-3.1-flash-lite-preview"),
+        pro_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
+        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        allow_offline_fallback=True,
+    )
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+
+    outcome = await engine.run(
+        "Pick the safest migration plan for a high-traffic SQL system.",
+        selection,
+    )
+    transcript = "\n".join(output.content for output in outcome.state.agent_outputs).lower()
+
+    assert outcome.result.fallback_count == 3
+    assert "option a" not in transcript
+    assert "option b" not in transcript
+    assert "lowest-risk answer satisfying" in transcript
 
 
 @pytest.mark.asyncio
