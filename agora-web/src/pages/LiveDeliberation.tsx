@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Coins,
   FileText,
+  Loader2,
   Zap,
 } from "lucide-react";
 
@@ -14,12 +15,12 @@ import { ConvergenceMeter } from "../components/ConvergenceMeter";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import {
   getTask,
-  runTask,
+  startTaskRun,
   streamDeliberation,
   type TaskEvent,
   type TaskStatusResponse,
 } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 import {
   providerFromModel,
   providerTone,
@@ -571,6 +572,7 @@ export function LiveDeliberation() {
     if (event.event === "quorum_reached") {
       const mechanism = safeString(data.mechanism, taskMechanismRef.current);
       taskMechanismRef.current = mechanism;
+      setTask((current) => (current ? { ...current, status: "completed" } : current));
       setFinalAnswer({
         text: safeString(data.final_answer, ""),
         confidence: safeNumber(data.confidence, 0),
@@ -580,11 +582,13 @@ export function LiveDeliberation() {
     }
 
     if (event.event === "error") {
+      setTask((current) => (current ? { ...current, status: "failed" } : current));
       setErrorMessage(safeString(data.message, "An error occurred"));
       return;
     }
 
     if (event.event === "complete" && taskId) {
+      setTask((current) => (current ? { ...current, status: "completed" } : current));
       const resolvedTaskId = taskId;
       void (async () => {
         const token = await getAccessToken();
@@ -636,8 +640,17 @@ export function LiveDeliberation() {
       if (status.status === "pending") {
         void (async () => {
           const runToken = await getAccessToken();
-          await runTask(resolvedTaskId, runToken);
+          const nextStatus = await startTaskRun(resolvedTaskId, runToken);
+          if (cancelled) {
+            return;
+          }
+          setTask(
+            nextStatus.status === "pending"
+              ? { ...nextStatus, status: "in_progress" }
+              : nextStatus,
+          );
         })().catch((error: unknown) => {
+          setTask((current) => (current ? { ...current, status: "failed" } : current));
           setErrorMessage(error instanceof Error ? error.message : "Run failed");
         });
       }
@@ -692,6 +705,13 @@ export function LiveDeliberation() {
     });
   }, [task]);
 
+  const taskStatus = task?.status ?? "pending";
+  const isTaskActive = !task?.result && (taskStatus === "pending" || taskStatus === "in_progress");
+  const taskActivityLabel = taskStatus === "pending" ? "QUEUEING RUN" : "RUNNING LIVE";
+  const taskActivityCopy = taskStatus === "pending"
+    ? "We have the task and the stream is attached. The backend is spinning up the run now."
+    : "The deliberation is still in flight. Fresh events should keep landing in the timeline below.";
+
   return (
     <div className="relative">
       <header className="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-border-subtle mb-8 gap-4 md:gap-0">
@@ -731,6 +751,23 @@ export function LiveDeliberation() {
           </div>
         </div>
       )}
+
+      {isTaskActive ? (
+        <div className="p-4 mb-6 border border-accent rounded-lg bg-[rgba(30,240,203,0.08)]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <Loader2 size={18} className="animate-spin text-accent" />
+              <div>
+                <div className="mono text-[11px] tracking-wide text-accent">{taskActivityLabel}</div>
+                <div className="text-sm text-text-secondary">{taskActivityCopy}</div>
+              </div>
+            </div>
+            <div className="rounded-full border border-accent/40 bg-accent/10 px-3 py-1 mono text-[11px] text-accent">
+              {timeline.length > 0 ? `${timeline.length} events captured` : "waiting for first event"}
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <AnimatePresence>
         {finalAnswer && (

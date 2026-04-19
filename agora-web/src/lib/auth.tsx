@@ -4,8 +4,6 @@ import {
   type User as WorkOSUser,
 } from "@workos-inc/authkit-react";
 import {
-  createContext,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -15,35 +13,19 @@ import {
 
 import {
   ApiRequestError,
+  type FeatureFlagsResponse,
   getAuthConfig,
   getAuthMe,
   type AuthConfigPayload,
-  type FeatureFlagsResponse,
   type PrincipalResponse,
   type WorkspaceResponse,
 } from "./api";
+import { AuthContext, type AuthContextType, type AuthStatus } from "./authContext";
 
 // Re-export user type for consumers
 export type User = WorkOSUser;
-type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 const RETURN_TO_STORAGE_KEY = "agora:returnTo";
 const DEFAULT_RETURN_TO = "/";
-
-// Wrapper interface matching the app's existing auth contract
-interface AuthContextType {
-  user: User | null;
-  isLoading: boolean;
-  authStatus: AuthStatus;
-  principal: PrincipalResponse | null;
-  workspace: WorkspaceResponse | null;
-  featureFlags: FeatureFlagsResponse | null;
-  signIn: () => void;
-  signUp: () => void;
-  signOut: () => void;
-  getAccessToken: () => Promise<string | null>;
-}
-
-const AuthContext = createContext<AuthContextType | null>(null);
 
 function isAuthPath(pathname: string): boolean {
   return pathname.startsWith("/auth")
@@ -159,6 +141,14 @@ function buildFallbackAuthConfig(clientId: string): AuthConfigPayload {
 
 function AuthStateProvider({ children }: { children: ReactNode }) {
   const workosAuth = useWorkOSAuth();
+  const {
+    getAccessToken,
+    isLoading,
+    signIn,
+    signOut,
+    signUp,
+    user,
+  } = workosAuth;
   const [authStatus, setAuthStatus] = useState<AuthStatus>("loading");
   const [principal, setPrincipal] = useState<PrincipalResponse | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
@@ -170,11 +160,11 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     async function bootstrap() {
-      if (workosAuth.isLoading) {
+      if (isLoading) {
         setAuthStatus("loading");
         return;
       }
-      if (!workosAuth.user) {
+      if (!user) {
         setPrincipal(null);
         setWorkspace(null);
         setFeatureFlags(null);
@@ -184,7 +174,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const bootstrapSubject = workosAuth.user.id ?? workosAuth.user.email ?? "authenticated";
+      const bootstrapSubject = user.id ?? user.email ?? "authenticated";
       if (bootstrappedSubjectRef.current === bootstrapSubject) {
         setAuthStatus("authenticated");
         return;
@@ -194,9 +184,9 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
 
       setAuthStatus("loading");
       try {
-        const token = await workosAuth.getAccessToken({ forceRefresh: true });
+        const token = await getAccessToken({ forceRefresh: true });
         if (!token) {
-          await workosAuth.signOut();
+          await signOut();
           if (!cancelled) {
             setAuthStatus("unauthenticated");
           }
@@ -258,7 +248,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch {
-        await workosAuth.signOut();
+        await signOut();
         if (!cancelled) {
           setPrincipal(null);
           setWorkspace(null);
@@ -272,22 +262,22 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [workosAuth.getAccessToken, workosAuth.isLoading, workosAuth.signOut, workosAuth.user]);
+  }, [getAccessToken, isLoading, signOut, user]);
 
   const contextValue = useMemo<AuthContextType>(() => ({
-    user: workosAuth.user ?? null,
-    isLoading: authStatus === "loading" || workosAuth.isLoading,
+    user: user ?? null,
+    isLoading: authStatus === "loading" || isLoading,
     authStatus,
     principal,
     workspace,
     featureFlags,
     signIn: () => {
       const returnTo = rememberReturnTo();
-      workosAuth.signIn({ state: { returnTo } });
+      signIn({ state: { returnTo } });
     },
     signUp: () => {
       const returnTo = rememberReturnTo();
-      workosAuth.signUp({ state: { returnTo } });
+      signUp({ state: { returnTo } });
     },
     signOut: () => {
       window.sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
@@ -295,31 +285,22 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
       setWorkspace(null);
       setFeatureFlags(null);
       setAuthStatus("unauthenticated");
-      workosAuth.signOut({ returnTo: `${window.location.origin}/auth` });
+      signOut({ returnTo: `${window.location.origin}/auth` });
     },
     getAccessToken: async () => {
-      if (!workosAuth.user) {
+      if (!user) {
         return null;
       }
       try {
-        const token = await workosAuth.getAccessToken({ forceRefresh: true });
+        const token = await getAccessToken({ forceRefresh: true });
         return token ?? null;
       } catch {
         return null;
       }
     },
-  }), [authStatus, featureFlags, principal, workspace, workosAuth]);
+  }), [authStatus, featureFlags, getAccessToken, isLoading, principal, signIn, signOut, signUp, user, workspace]);
 
   return <AuthContext.Provider value={contextValue}>{children}</AuthContext.Provider>;
-}
-
-// Custom hook that wraps WorkOS useAuth to match existing interface
-export function useAuth(): AuthContextType {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used within AuthProvider");
-  }
-  return context;
 }
 
 // AuthProvider wraps WorkOS AuthKitProvider with correct configuration

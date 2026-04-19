@@ -4,6 +4,8 @@ On-chain multi-agent arbitration for LangGraph, CrewAI, and Python agent systems
 
 Agora decides whether a task should be resolved by structured debate or confidence-weighted voting, executes the selected mechanism, and returns a verifiable deliberation receipt.
 
+Hosted and local results both expose the same Phase 2 telemetry contract: per-model tokens, input/output/thinking token splits when available, latency, and estimated USD cost.
+
 ## Quickstart
 
 ```bash
@@ -89,9 +91,10 @@ async with AgoraNode(api_url="https://your-agora-api.example.com") as agora_node
 ## Features
 
 - Thompson Sampling mechanism selection with explainable reasoning
-- Factional debate with Devil's Advocate cross-examination
+- Factional debate with LangGraph execution and Devil's Advocate cross-examination
 - Confidence-calibrated vote aggregation with ISP weighting
 - Merkle-verifiable transcript receipts
+- Per-model telemetry and estimated USD cost in hosted and local modes
 - Optional hosted API mode and local callable mode
 
 ## Authentication

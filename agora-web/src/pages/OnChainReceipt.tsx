@@ -10,7 +10,7 @@ import {
   verifyMerkleRoot,
   type TaskStatusResponse,
 } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 export function OnChainReceipt() {
   const { taskId } = useParams();

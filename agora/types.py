@@ -40,6 +40,7 @@ ReasoningPresetName = Literal["low", "medium", "high"]
 ExecutionMode = Literal["live", "fallback", "mixed", "offline_benchmark"]
 SelectorSource = Literal["llm_reasoning", "bandit_fallback", "forced_override", "env_pin"]
 MechanismOverrideSource = Literal["request", "env_pin", "sdk", "benchmark"]
+CostEstimationMode = Literal["exact", "approx_total_tokens", "unavailable", "mixed"]
 
 
 class ReasoningPresetOverrides(BaseModel):
@@ -130,6 +131,9 @@ class ConvergenceMetrics(BaseModel):
     entropy_delta: float = 0.0
     js_divergence: float = Field(default=0.0, ge=0.0)
     answer_churn: float = Field(default=0.0, ge=0.0, le=1.0)
+    locked_claim_count: int = Field(default=0, ge=0)
+    locked_claim_growth: float = Field(default=0.0, ge=0.0)
+    novelty_score: float = Field(default=0.0, ge=0.0)
     information_gain_delta: float = Field(ge=0.0)
     unique_answers: int = Field(ge=1)
     dominant_answer_share: float = Field(ge=0.0, le=1.0)
@@ -159,6 +163,33 @@ class MechanismTraceSegment(BaseModel):
     convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
     switch_reason: str | None = None
     switch_reason_hash: str | None = None
+
+
+class ModelTelemetry(BaseModel):
+    """Canonical per-model token, latency, and pricing telemetry."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_tokens: int = Field(default=0, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    thinking_tokens: int | None = Field(default=None, ge=0)
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    estimation_mode: CostEstimationMode | None = None
+
+
+class CostEstimate(BaseModel):
+    """Canonical aggregate cost payload derived from model telemetry."""
+
+    model_config = ConfigDict(frozen=True)
+
+    estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    model_estimated_costs_usd: dict[str, float] = Field(default_factory=dict)
+    pricing_version: str | None = None
+    estimated_at: datetime | None = None
+    estimation_mode: CostEstimationMode | None = None
+    pricing_sources: dict[str, str] = Field(default_factory=dict)
 
 
 class DebateState(BaseModel):
@@ -222,6 +253,7 @@ class DeliberationResult(BaseModel):
     model_input_token_usage: dict[str, int] = Field(default_factory=dict)
     model_output_token_usage: dict[str, int] = Field(default_factory=dict)
     model_thinking_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_telemetry: dict[str, ModelTelemetry] = Field(default_factory=dict)
     convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
     locked_claims: list[VerifiedClaim] = Field(default_factory=list)
     mechanism_trace: list[MechanismTraceSegment] = Field(default_factory=list)
@@ -236,6 +268,7 @@ class DeliberationResult(BaseModel):
     output_tokens_used: int | None = None
     thinking_tokens_used: int | None = None
     total_latency_ms: float = Field(ge=0.0)
+    cost: CostEstimate | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

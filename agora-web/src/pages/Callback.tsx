@@ -1,4 +1,4 @@
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 import { useNavigate } from "react-router-dom";
 
 export function Callback() {

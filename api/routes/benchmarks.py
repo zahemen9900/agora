@@ -465,7 +465,7 @@ def _model_telemetry_from_record(value: Any) -> dict[str, ModelTelemetryResponse
         fallback_total_tokens=_safe_int(value.get("tokens_used") or value.get("total_tokens_used")),
     )
     return {
-        model: ModelTelemetryResponse.model_validate(payload)
+        model: ModelTelemetryResponse.model_validate(payload.model_dump(mode="json"))
         for model, payload in raw.items()
     }
 
@@ -635,17 +635,17 @@ def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
         estimated_cost_usd=(
             round(stored_total_cost, 8)
             if stored_total_cost > 0
-            else cost_payload["estimated_cost_usd"]
+            else cost_payload.estimated_cost_usd
         ),
         model_estimated_costs_usd=(
             {model: round(value, 8) for model, value in stored_model_costs.items() if value > 0}
             if stored_model_costs
-            else cost_payload["model_estimated_costs_usd"]
+            else cost_payload.model_estimated_costs_usd
         ),
-        pricing_version=stored_pricing_version or cost_payload["pricing_version"],
-        estimated_at=stored_estimated_at or cost_payload["estimated_at"],
-        estimation_mode=stored_estimation_mode or cost_payload["estimation_mode"],
-        pricing_sources=stored_pricing_sources or cost_payload["pricing_sources"],
+        pricing_version=stored_pricing_version or cost_payload.pricing_version,
+        estimated_at=stored_estimated_at or cost_payload.estimated_at,
+        estimation_mode=stored_estimation_mode or cost_payload.estimation_mode,
+        pricing_sources=stored_pricing_sources or cost_payload.pricing_sources,
     )
 
     benchmark_config = _as_dict(payload.get("benchmark_config"))

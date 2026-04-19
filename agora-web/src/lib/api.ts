@@ -320,6 +320,13 @@ export async function runTask(taskId: string, token: string | null): Promise<Del
   });
 }
 
+export async function startTaskRun(taskId: string, token: string | null): Promise<TaskStatusResponse> {
+  return requestJson<TaskStatusResponse>(`/tasks/${taskId}/run-async`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
 export async function releaseTaskPayment(
   taskId: string,
   token: string | null,

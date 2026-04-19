@@ -37,7 +37,7 @@ import {
   type BenchmarkRunStatusPayload,
   type BenchmarkSummary,
 } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { ReasoningPresetControls } from "../components/ReasoningPresetControls";
 import {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { useAuth } from '../lib/auth';
+import { useAuth } from '../lib/useAuth';
 import { LogOut, Menu, User as UserIcon, X } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 

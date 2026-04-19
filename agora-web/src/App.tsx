@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "./lib/auth";
+import { AuthProvider } from "./lib/auth";
+import { useAuth } from "./lib/useAuth";
 import { ThemeProvider } from "./hooks/ThemeProvider";
 
 // Page components

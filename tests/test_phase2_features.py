@@ -43,7 +43,6 @@ def test_benchmark_runner_builds_default_phase2_split() -> None:
         "creative",
     }
 
-
 def _assert_normalized_selector_summary(
     payload: dict[str, Any],
     *,
@@ -553,6 +552,19 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
 
     assert payload["pre_learning"]["runs"]
     assert all(run["merkle_deterministic"] is True for run in payload["pre_learning"]["runs"])
+    sample_run = payload["pre_learning"]["runs"][0]
+    assert "execution_mode" in sample_run
+    assert "selector_source" in sample_run
+    assert "mechanism_override_source" in sample_run
+    assert "convergence_history" in sample_run
+    assert "mechanism_trace" in sample_run
+    assert "transcript_hash_count" in sample_run
+    assert "model_token_usage" in sample_run
+    assert "model_telemetry" in sample_run
+    assert "input_tokens_used" in sample_run
+    assert "output_tokens_used" in sample_run
+    assert "thinking_tokens_used" in sample_run
+    assert "cost" in sample_run
 
 
 @pytest.mark.asyncio
@@ -1200,6 +1212,35 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
             "final_answer": final_answer,
             "confidence": 0.93,
             "quorum_reached": True,
+            "agent_models_used": ["gemini-3-flash-preview", "claude-sonnet-4-6"],
+            "model_token_usage": {
+                "gemini-3-flash-preview": 12,
+                "claude-sonnet-4-6": 12,
+            },
+            "model_latency_ms": {
+                "gemini-3-flash-preview": 4.0,
+                "claude-sonnet-4-6": 8.0,
+            },
+            "model_telemetry": {
+                "gemini-3-flash-preview": {
+                    "total_tokens": 12,
+                    "input_tokens": 4,
+                    "output_tokens": 5,
+                    "thinking_tokens": 3,
+                    "latency_ms": 4.0,
+                    "estimated_cost_usd": 0.000017,
+                    "estimation_mode": "exact",
+                },
+                "claude-sonnet-4-6": {
+                    "total_tokens": 12,
+                    "input_tokens": 5,
+                    "output_tokens": 4,
+                    "thinking_tokens": 3,
+                    "latency_ms": 8.0,
+                    "estimated_cost_usd": 0.000072,
+                    "estimation_mode": "exact",
+                },
+            },
             "round_count": 1,
             "mechanism_switches": 0,
             "merkle_root": merkle_root,
@@ -1208,7 +1249,24 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
             "convergence_history": [],
             "locked_claims": [],
             "total_tokens_used": 24,
+            "input_tokens_used": 9,
+            "output_tokens_used": 9,
+            "thinking_tokens_used": 6,
             "latency_ms": 12.0,
+            "cost": {
+                "estimated_cost_usd": 0.000089,
+                "model_estimated_costs_usd": {
+                    "gemini-3-flash-preview": 0.000017,
+                    "claude-sonnet-4-6": 0.000072,
+                },
+                "pricing_version": "2026-04-18",
+                "estimated_at": "2026-04-18T00:00:00+00:00",
+                "estimation_mode": "exact",
+                "pricing_sources": {
+                    "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+                    "claude-sonnet-4-6": "https://claude.com/pricing",
+                },
+            },
         },
     }
 
@@ -1237,6 +1295,27 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
     verification = await arbitrator.verify_receipt(result)
     await arbitrator.aclose()
 
+    assert result.model_token_usage == {
+        "gemini-3-flash-preview": 12,
+        "claude-sonnet-4-6": 12,
+    }
+    assert result.model_input_token_usage == {
+        "gemini-3-flash-preview": 4,
+        "claude-sonnet-4-6": 5,
+    }
+    assert result.model_output_token_usage == {
+        "gemini-3-flash-preview": 5,
+        "claude-sonnet-4-6": 4,
+    }
+    assert result.model_thinking_token_usage == {
+        "gemini-3-flash-preview": 3,
+        "claude-sonnet-4-6": 3,
+    }
+    assert result.input_tokens_used == 9
+    assert result.output_tokens_used == 9
+    assert result.thinking_tokens_used == 6
+    assert result.cost is not None
+    assert result.cost.estimated_cost_usd == pytest.approx(0.000089)
     assert verification["valid"] is True
     assert verification["merkle_match"] is True
     assert verification["hosted_metadata_match"] is True

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 /**
  * Login route - initiates the OAuth sign-in flow.

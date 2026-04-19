@@ -24,6 +24,7 @@ from agora.agent import (
     pro_caller,
 )
 from agora.config import get_config
+from agora.runtime.costing import build_result_costing
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.model_policy import (
@@ -125,8 +126,14 @@ class DebateEngineOutcome(BaseModel):
     agent_models_used: list[str] = Field(default_factory=list)
     model_token_usage: dict[str, int] = Field(default_factory=dict)
     model_latency_ms: dict[str, float] = Field(default_factory=dict)
+    model_input_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_output_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_thinking_token_usage: dict[str, int] = Field(default_factory=dict)
     fallback_events: list[FallbackEvent] = Field(default_factory=list)
     total_tokens_used: int = 0
+    input_tokens_used: int | None = None
+    output_tokens_used: int | None = None
+    thinking_tokens_used: int | None = None
     total_latency_ms: float = 0.0
 
 
@@ -263,8 +270,26 @@ class DebateEngine:
             ),
             model_token_usage=dict(final_state["model_token_usage"]),
             model_latency_ms=dict(final_state["model_latency_ms"]),
+            model_input_token_usage=dict(final_state["model_input_token_usage"]),
+            model_output_token_usage=dict(final_state["model_output_token_usage"]),
+            model_thinking_token_usage=dict(final_state["model_thinking_token_usage"]),
             fallback_events=list(final_state["fallback_events"]),
             total_tokens_used=int(final_state["token_counter"]),
+            input_tokens_used=(
+                int(final_state["input_token_counter"])
+                if int(final_state["input_token_counter"]) > 0
+                else None
+            ),
+            output_tokens_used=(
+                int(final_state["output_token_counter"])
+                if int(final_state["output_token_counter"]) > 0
+                else None
+            ),
+            thinking_tokens_used=(
+                int(final_state["thinking_token_counter"])
+                if int(final_state["thinking_token_counter"]) > 0
+                else None
+            ),
             total_latency_ms=float(final_state["latency_ms"]),
         )
 
@@ -443,7 +468,10 @@ class DebateEngine:
 
         execution = graph_state["execution"]
         round_number = int(graph_state["round_cursor"])
-        metrics = self.monitor.compute_metrics(graph_state["round_outputs"])
+        metrics = self.monitor.compute_metrics(
+            graph_state["round_outputs"],
+            locked_claim_count=len(execution.locked_claims),
+        )
         execution.convergence_history.append(metrics)
         execution.round = round_number
         await self._emit_convergence_update(
@@ -1075,6 +1103,21 @@ class DebateEngine:
                 model_name: float(synthesis_usage.get("latency_ms", 0.0))
             }
         self._accumulate_model_usage(model_token_usage, model_latency_ms, synthesis_usage)
+        model_input_token_usage = dict(prior_model_input_token_usage)
+        model_output_token_usage = dict(prior_model_output_token_usage)
+        model_thinking_token_usage = dict(prior_model_thinking_token_usage)
+        for source_key, store in (
+            ("model_input_tokens", model_input_token_usage),
+            ("model_output_tokens", model_output_token_usage),
+            ("model_thinking_tokens", model_thinking_token_usage),
+        ):
+            stage_usage = synthesis_usage.get(source_key)
+            if not isinstance(stage_usage, dict):
+                continue
+            for stage_model, amount in stage_usage.items():
+                if not isinstance(stage_model, str) or amount is None:
+                    continue
+                store[stage_model] = store.get(stage_model, 0) + max(0, int(amount))
         fallback_events = list(prior_fallback_events or [])
         self._accumulate_fallback_events(fallback_events, synthesis_usage)
         agent_models_used = list(
@@ -1090,6 +1133,15 @@ class DebateEngine:
             )
         )
 
+        model_telemetry, cost = build_result_costing(
+            models=agent_models_used,
+            model_token_usage=model_token_usage,
+            model_latency_ms=model_latency_ms,
+            model_input_tokens=model_input_token_usage,
+            model_output_tokens=model_output_token_usage,
+            model_thinking_tokens=model_thinking_token_usage,
+            fallback_total_tokens=total_tokens,
+        )
         result = DeliberationResult(
             task=state.task,
             mechanism_used=MechanismType.DEBATE,
@@ -1104,9 +1156,10 @@ class DebateEngine:
             transcript_hashes=state.transcript_hashes,
             agent_models_used=agent_models_used,
             model_token_usage=model_token_usage,
-            model_input_token_usage=dict(prior_model_input_token_usage),
-            model_output_token_usage=dict(prior_model_output_token_usage),
-            model_thinking_token_usage=dict(prior_model_thinking_token_usage),
+            model_input_token_usage=model_input_token_usage,
+            model_output_token_usage=model_output_token_usage,
+            model_thinking_token_usage=model_thinking_token_usage,
+            model_telemetry=model_telemetry,
             model_latency_ms=model_latency_ms,
             convergence_history=state.convergence_history,
             locked_claims=state.locked_claims,
@@ -1126,10 +1179,23 @@ class DebateEngine:
             fallback_count=len(fallback_events),
             fallback_events=fallback_events,
             total_tokens_used=total_tokens,
-            input_tokens_used=int(sum(prior_model_input_token_usage.values())),
-            output_tokens_used=int(sum(prior_model_output_token_usage.values())),
-            thinking_tokens_used=int(sum(prior_model_thinking_token_usage.values())),
+            input_tokens_used=(
+                int(sum(model_input_token_usage.values()))
+                if model_input_token_usage
+                else None
+            ),
+            output_tokens_used=(
+                int(sum(model_output_token_usage.values()))
+                if model_output_token_usage
+                else None
+            ),
+            thinking_tokens_used=(
+                int(sum(model_thinking_token_usage.values()))
+                if model_thinking_token_usage
+                else None
+            ),
             total_latency_ms=total_latency_ms,
+            cost=cost,
             reasoning_presets=self.reasoning_presets,
         )
         await self._emit_usage_delta(
@@ -1761,6 +1827,9 @@ class DebateEngine:
                 "round_number": metrics.round_number,
                 "disagreement_entropy": metrics.disagreement_entropy,
                 "information_gain_delta": metrics.information_gain_delta,
+                "novelty_score": metrics.novelty_score,
+                "locked_claim_count": metrics.locked_claim_count,
+                "locked_claim_growth": metrics.locked_claim_growth,
                 "unique_answers": metrics.unique_answers,
                 "dominant_answer_share": metrics.dominant_answer_share,
                 "locked_claims": [

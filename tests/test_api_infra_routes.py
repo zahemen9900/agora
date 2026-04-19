@@ -67,11 +67,17 @@ async def isolated_coordination_state() -> AsyncIterator[None]:
     with suppress(RuntimeError):
         await task_routes._reset_coordination_state_for_tests()
     await reset_stream_manager_for_tests()
+    for background_task in list(task_routes._background_task_runs.values()):
+        background_task.cancel()
+    task_routes._background_task_runs.clear()
     yield
     reset_coordination_backend_cache_for_tests()
     with suppress(RuntimeError):
         await task_routes._reset_coordination_state_for_tests()
     await reset_stream_manager_for_tests()
+    for background_task in list(task_routes._background_task_runs.values()):
+        background_task.cancel()
+    task_routes._background_task_runs.clear()
 
 
 class _FakeSelectionOnlyOrchestrator:
@@ -994,6 +1000,85 @@ async def test_run_rejects_task_already_in_progress(
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "Task is already in progress"
+
+
+@pytest.mark.asyncio
+async def test_run_async_schedules_background_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-async-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="background start", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+
+        started = asyncio.Event()
+        captured: dict[str, str] = {}
+
+        async def fake_execute_task_run(*, task_id: str, workspace_id: str):
+            captured["task_id"] = task_id
+            captured["workspace_id"] = workspace_id
+            started.set()
+            await asyncio.sleep(0)
+            return None
+
+        monkeypatch.setattr(task_routes, "_execute_task_run", fake_execute_task_run)
+
+        response = await task_routes.start_task_run(create.task_id, _override_user())
+
+        assert response.task_id == create.task_id
+        assert response.status == "pending"
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+        assert captured == {"task_id": create.task_id, "workspace_id": "user-1"}
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_run_async_returns_in_progress_without_duplicate_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-async-in-progress"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="already backgrounded", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "in_progress"
+        await store.save_task("user-1", create.task_id, task)
+
+        launches = 0
+
+        def fake_launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
+            del task_id, workspace_id
+            nonlocal launches
+            launches += 1
+
+        monkeypatch.setattr(
+            task_routes,
+            "_launch_background_task_run",
+            fake_launch_background_task_run,
+        )
+
+        response = await task_routes.start_task_run(create.task_id, _override_user())
+
+        assert response.status == "in_progress"
+        assert launches == 0
+    finally:
+        task_routes._store = None
 
 
 @pytest.mark.asyncio

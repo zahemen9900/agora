@@ -8,7 +8,7 @@ import {
   type BenchmarkCatalogEntry,
   type BenchmarkCatalogPayload,
 } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
 

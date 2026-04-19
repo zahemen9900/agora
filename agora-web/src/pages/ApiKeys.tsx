@@ -8,7 +8,7 @@ import {
   type ApiKeyCreateResponse,
   type ApiKeyMetadataResponse,
 } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 export function ApiKeys() {
   const { getAccessToken, workspace } = useAuth();

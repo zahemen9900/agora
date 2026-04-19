@@ -60,23 +60,72 @@ class _FakeGeminiThinkingConfig:
         self.kwargs = kwargs
 
 
+class _FakeGeminiPart:
+    def __init__(self, text: str, *, thought: bool = False) -> None:
+        self.text = text
+        self.thought = thought
+
+
 class _FakeGeminiResponse:
-    def __init__(self, text: str, input_tokens: int = 0, output_tokens: int = 0) -> None:
+    def __init__(
+        self,
+        text: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        thinking_tokens: int = 0,
+    ) -> None:
         self.text = text
         self.usage_metadata = SimpleNamespace(
             prompt_token_count=input_tokens,
+            response_token_count=output_tokens,
             candidates_token_count=output_tokens,
+            thoughts_token_count=thinking_tokens,
+            total_token_count=input_tokens + output_tokens + thinking_tokens,
         )
         self.candidates: list[Any] = []
 
 
 class _FakeGeminiChunk:
-    def __init__(self, text: str, input_tokens: int = 0, output_tokens: int = 0) -> None:
+    def __init__(
+        self,
+        text: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        *,
+        thought_text: str | None = None,
+        thinking_tokens: int = 0,
+    ) -> None:
         self.text = text
         self.usage_metadata = SimpleNamespace(
             prompt_token_count=input_tokens,
+            response_token_count=output_tokens,
             candidates_token_count=output_tokens,
+            thoughts_token_count=thinking_tokens,
+            total_token_count=input_tokens + output_tokens + thinking_tokens,
         )
+        parts: list[Any] = []
+        if thought_text:
+            parts.append(_FakeGeminiPart(thought_text, thought=True))
+        if text:
+            parts.append(_FakeGeminiPart(text))
+        self.candidates = (
+            [SimpleNamespace(content=SimpleNamespace(parts=parts))]
+            if parts
+            else []
+        )
+
+
+class _FakeGeminiAsyncStream:
+    def __init__(self, chunks: list[_FakeGeminiChunk]) -> None:
+        self._chunks = chunks
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> _FakeGeminiChunk:
+        if not self._chunks:
+            raise StopAsyncIteration
+        return self._chunks.pop(0)
 
 
 class _FakeGeminiModels:
@@ -92,8 +141,7 @@ class _FakeGeminiModels:
 
     async def generate_content_stream(self, **kwargs: Any):
         self.last_stream_kwargs = kwargs
-        for chunk in self._chunks:
-            yield chunk
+        return _FakeGeminiAsyncStream(list(self._chunks))
 
 
 class _FakeGeminiClient:
@@ -387,8 +435,8 @@ async def test_gemini_streaming_returns_full_text_and_usage(
 
     monkeypatch.setenv("AGORA_GEMINI_API_KEY", "gemini-test-key")
     chunks = [
-        _FakeGeminiChunk("Hel", input_tokens=3, output_tokens=0),
-        _FakeGeminiChunk("lo", input_tokens=3, output_tokens=4),
+        _FakeGeminiChunk("Hel", input_tokens=3, output_tokens=0, thought_text="Plan:", thinking_tokens=2),
+        _FakeGeminiChunk("lo", input_tokens=3, output_tokens=4, thought_text=" refine", thinking_tokens=2),
     ]
     response = _FakeGeminiResponse("ignored")
 
@@ -419,10 +467,17 @@ async def test_gemini_streaming_returns_full_text_and_usage(
     )
 
     assert text == "Hello"
-    assert streamed_chunks == ["Hel", "lo"]
+    assert streamed_chunks == [
+        "\u001eAGORA_STREAM_EVENT\u001ethinking_delta\u001fPlan:",
+        "Hel",
+        "\u001eAGORA_STREAM_EVENT\u001ethinking_delta\u001f refine",
+        "lo",
+    ]
     assert usage["provider"] == "gemini"
     assert usage["input_tokens"] == 3
     assert usage["output_tokens"] == 4
+    assert usage["thinking_tokens"] == 2
+    assert usage["total_tokens"] == 9
 
 
 def test_openrouter_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -647,7 +702,7 @@ async def test_flash_caller_uses_minimal_gemini_thinking_level(
     assert kwargs is not None
     config = kwargs["config"]
     thinking_config = config.kwargs["thinking_config"]
-    assert thinking_config.kwargs == {"thinking_level": "minimal"}
+    assert thinking_config.kwargs == {"include_thoughts": True, "thinking_level": "minimal"}
 
 
 @pytest.mark.asyncio
@@ -683,7 +738,7 @@ async def test_pro_caller_uses_configured_gemini_thinking_level(
     assert kwargs is not None
     config = kwargs["config"]
     thinking_config = config.kwargs["thinking_config"]
-    assert thinking_config.kwargs == {"thinking_level": "low"}
+    assert thinking_config.kwargs == {"include_thoughts": True, "thinking_level": "low"}
 
 
 @pytest.mark.asyncio
@@ -725,7 +780,7 @@ async def test_gemini_thinking_config_falls_back_to_compatible_shape(
     assert kwargs is not None
     config = kwargs["config"]
     thinking_config = config.kwargs["thinking_config"]
-    assert thinking_config.kwargs == {"thinkingLevel": "high"}
+    assert thinking_config.kwargs == {"include_thoughts": True, "thinkingLevel": "high"}
 
 
 class _FakeMessage:
@@ -760,6 +815,16 @@ class _FakeStreamResponse:
     def __init__(self, chunks: list[str], final_message: _FakeMessage) -> None:
         self._chunks = chunks
         self._final_message = final_message
+
+    def __aiter__(self):
+        async def _iter_events():
+            for chunk in self._chunks:
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(type="text_delta", text=chunk),
+                )
+
+        return _iter_events()
 
     @property
     def text_stream(self):

@@ -15,16 +15,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
 
+from agora.runtime.costing import build_result_costing
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
 from agora.types import (
     ConvergenceMetrics,
+    CostEstimate,
     DeliberationResult,
     FallbackEvent,
     MechanismSelection,
     MechanismTraceSegment,
     MechanismType,
+    ModelTelemetry,
     ReasoningPresetOverrides,
     ReasoningPresets,
     VerifiedClaim,
@@ -107,8 +110,15 @@ class HostedDeliberationResult(BaseModel):
     decision_hash: str | None = None
     agent_count: int = 1
     agent_models_used: list[str] = Field(default_factory=list)
+    model_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_latency_ms: dict[str, float] = Field(default_factory=dict)
+    model_telemetry: dict[str, HostedModelTelemetry] = Field(default_factory=dict)
     total_tokens_used: int = 0
+    input_tokens_used: int | None = None
+    output_tokens_used: int | None = None
+    thinking_tokens_used: int | None = None
     latency_ms: float = 0.0
+    cost: HostedCostEstimate | None = None
     round_count: int = 1
     mechanism_switches: int = 0
     transcript_hashes: list[str] = Field(default_factory=list)
@@ -193,9 +203,9 @@ class HostedModelTelemetry(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     total_tokens: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    thinking_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    thinking_tokens: int | None = None
     latency_ms: float = 0.0
     estimated_cost_usd: float | None = None
     estimation_mode: str | None = None
@@ -987,6 +997,73 @@ class AgoraArbitrator:
             bandit_confidence=float(status.selector_confidence or 1.0),
             task_features=features,
         )
+        model_token_usage = {
+            str(model): int(tokens)
+            for model, tokens in status.result.model_token_usage.items()
+        }
+        model_latency_ms = {
+            str(model): float(latency)
+            for model, latency in status.result.model_latency_ms.items()
+        }
+        if status.result.model_telemetry:
+            model_telemetry = {
+                model: ModelTelemetry(
+                    total_tokens=int(telemetry.total_tokens),
+                    input_tokens=(
+                        int(telemetry.input_tokens)
+                        if telemetry.input_tokens is not None
+                        else None
+                    ),
+                    output_tokens=(
+                        int(telemetry.output_tokens)
+                        if telemetry.output_tokens is not None
+                        else None
+                    ),
+                    thinking_tokens=(
+                        int(telemetry.thinking_tokens)
+                        if telemetry.thinking_tokens is not None
+                        else None
+                    ),
+                    latency_ms=float(telemetry.latency_ms),
+                    estimated_cost_usd=telemetry.estimated_cost_usd,
+                    estimation_mode=telemetry.estimation_mode,  # type: ignore[arg-type]
+                )
+                for model, telemetry in status.result.model_telemetry.items()
+            }
+            cost = (
+                CostEstimate(
+                    estimated_cost_usd=status.result.cost.estimated_cost_usd,
+                    model_estimated_costs_usd=dict(status.result.cost.model_estimated_costs_usd),
+                    pricing_version=status.result.cost.pricing_version,
+                    estimated_at=status.result.cost.estimated_at,
+                    estimation_mode=status.result.cost.estimation_mode,  # type: ignore[arg-type]
+                    pricing_sources=dict(status.result.cost.pricing_sources),
+                )
+                if status.result.cost is not None
+                else None
+            )
+        else:
+            model_telemetry, cost = build_result_costing(
+                models=list(status.result.agent_models_used),
+                model_token_usage=model_token_usage,
+                model_latency_ms=model_latency_ms,
+                fallback_total_tokens=int(status.result.total_tokens_used),
+            )
+        model_input_token_usage = {
+            model: int(telemetry.input_tokens)
+            for model, telemetry in model_telemetry.items()
+            if telemetry.input_tokens is not None
+        }
+        model_output_token_usage = {
+            model: int(telemetry.output_tokens)
+            for model, telemetry in model_telemetry.items()
+            if telemetry.output_tokens is not None
+        }
+        model_thinking_token_usage = {
+            model: int(telemetry.thinking_tokens)
+            for model, telemetry in model_telemetry.items()
+            if telemetry.thinking_tokens is not None
+        }
         return DeliberationResult(
             task=str(status.task_text),
             mechanism_used=MechanismType(str(status.result.mechanism).lower()),
@@ -1000,6 +1077,12 @@ class AgoraArbitrator:
             merkle_root=str(status.result.merkle_root),
             transcript_hashes=list(status.result.transcript_hashes),
             agent_models_used=list(status.result.agent_models_used),
+            model_token_usage=model_token_usage,
+            model_latency_ms=model_latency_ms,
+            model_input_token_usage=model_input_token_usage,
+            model_output_token_usage=model_output_token_usage,
+            model_thinking_token_usage=model_thinking_token_usage,
+            model_telemetry=model_telemetry,
             convergence_history=list(status.result.convergence_history),
             locked_claims=list(status.result.locked_claims),
             mechanism_trace=list(status.result.mechanism_trace),
@@ -1009,7 +1092,23 @@ class AgoraArbitrator:
             fallback_events=list(status.result.fallback_events),
             mechanism_override_source=status.result.mechanism_override_source,  # type: ignore[arg-type]
             total_tokens_used=int(status.result.total_tokens_used),
+            input_tokens_used=(
+                int(status.result.input_tokens_used)
+                if status.result.input_tokens_used is not None
+                else None
+            ),
+            output_tokens_used=(
+                int(status.result.output_tokens_used)
+                if status.result.output_tokens_used is not None
+                else None
+            ),
+            thinking_tokens_used=(
+                int(status.result.thinking_tokens_used)
+                if status.result.thinking_tokens_used is not None
+                else None
+            ),
             total_latency_ms=float(status.result.latency_ms),
+            cost=cost,
         )
 
     def _headers(self) -> dict[str, str]:

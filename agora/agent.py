@@ -1787,7 +1787,15 @@ class AgentCaller:
                 )
                 output_tokens = _coalesce_int(
                     output_tokens,
-                    _pick_int(usage, "output_tokens", "completion_tokens"),
+                    _pick_int(
+                        usage,
+                        "output_tokens",
+                        "response_token_count",
+                        "responseTokenCount",
+                        "completion_tokens",
+                        "candidates_token_count",
+                        "candidatesTokenCount",
+                    ),
                 )
                 thinking_tokens = _coalesce_int(
                     thinking_tokens,

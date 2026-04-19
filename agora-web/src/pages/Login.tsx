@@ -1,5 +1,5 @@
 import { ArrowRight } from 'lucide-react';
-import { useAuth } from '../lib/auth';
+import { useAuth } from '../lib/useAuth';
 import { Button } from '../components/ui/Button';
 import { motion } from 'framer-motion';
 import { HeroDiagram } from '../components/landing/HeroDiagram';

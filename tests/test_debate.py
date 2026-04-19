@@ -249,6 +249,9 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         "gemini-3.1-flash-lite-preview": 4.0,
         "gemini-3-flash-preview": 11.0,
     }
+    assert result.input_tokens_used is None
+    assert result.output_tokens_used is None
+    assert result.thinking_tokens_used is None
     assert usage["tokens"] == 12
     assert result.agent_models_used == [
         "gemini-3.1-flash-lite-preview",

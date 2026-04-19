@@ -5,7 +5,7 @@ import { ChevronRight, Loader2, Play } from "lucide-react";
 import { EnsemblePlan } from "../components/EnsemblePlan";
 import { ReasoningPresetControls } from "../components/ReasoningPresetControls";
 import { listTasks, submitTask, type TaskStatusResponse } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 import {
   buildDebateRoster,
   buildProviderCountBadges,

@@ -36,7 +36,7 @@ Implemented:
 
 Current execution note:
 
-- The engines retain LangGraph-compatible graph scaffolding for future integration, but the active Week 1 runtime path is still imperative Python orchestration rather than full StateGraph execution.
+- Debate and vote now execute through compiled LangGraph `StateGraph` runtimes. The orchestrator handles selection, switching, and receipt assembly around those graph-native engine executions.
 
 ### Phase 2 Additions
 
@@ -68,12 +68,16 @@ Implemented on top of the Week 1 foundation:
 - Hosted mechanism forcing supports either:
   - request payload `mechanism_override=vote|debate`
   - env fallback `AGORA_API_FORCE_MECHANISM=vote|debate`
+- Phase 2 telemetry is now first-class across runtime, API, SDK, and benchmarks:
+  - per-model token counts
+  - per-model input / output / thinking token splits when available
+  - per-model latency
+  - estimated USD cost at both model and run level
 
 ### Still Deferred / Not Implemented Yet
 
 - SDK-side `agora/solana/client.py` remains a stub; the API-side Solana bridge and contract flow are active.
 - Internal Delphi and MoA scaffolding for a later implementation phase; current public support is Debate and Vote.
-- Full LangGraph StateGraph execution as the primary runtime path.
 - Final production packaging/publication work for the SDK release channel.
 
 ## End-to-End Runtime Flow
@@ -90,7 +94,7 @@ Implemented on top of the Week 1 foundation:
    - Confidence and quorum status
    - Round/mechanism metadata
    - Transcript hashes + Merkle root
-   - Token and latency accounting
+   - Token, split token-stream, latency, and cost accounting
 7. Orchestrator builds a receipt payload from transcript hashes for chain submission.
 8. Optional run_and_learn path updates bandit posteriors from supervised (ground truth) or proxy reward.
 

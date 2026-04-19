@@ -83,8 +83,8 @@ def _record_cost_telemetry(
 
     thinking_tokens = int(run.get("thinking_tokens_used") or 0)
     return (
-        float(cost_payload["estimated_cost_usd"] or 0.0),
-        cost_payload["model_estimated_costs_usd"],
+        float(cost_payload.estimated_cost_usd or 0.0),
+        cost_payload.model_estimated_costs_usd,
         model_usage,
         max(thinking_tokens, 0),
     )
@@ -442,16 +442,34 @@ class BenchmarkRunner:
                     "agent_models_used": result.get("agent_models_used") or [],
                     "model_token_usage": model_usage,
                     "model_latency_ms": result.get("model_latency_ms") or {},
-                    "model_telemetry": model_telemetry,
-                    "thinking_tokens_used": thinking_tokens,
-                    "estimated_cost_usd": total_cost or cost_payload["estimated_cost_usd"],
-                    "model_estimated_costs_usd": (
-                        model_costs or cost_payload["model_estimated_costs_usd"]
+                    "model_telemetry": {
+                        model: telemetry.model_dump(mode="json")
+                        for model, telemetry in model_telemetry.items()
+                    },
+                    "input_tokens_used": (
+                        int(result.get("input_tokens_used"))
+                        if result.get("input_tokens_used") is not None
+                        else None
                     ),
-                    "pricing_version": cost_payload["pricing_version"],
-                    "cost_estimated_at": cost_payload["estimated_at"].isoformat(),
-                    "estimation_mode": cost_payload["estimation_mode"],
-                    "pricing_sources": cost_payload["pricing_sources"],
+                    "output_tokens_used": (
+                        int(result.get("output_tokens_used"))
+                        if result.get("output_tokens_used") is not None
+                        else None
+                    ),
+                    "thinking_tokens_used": thinking_tokens,
+                    "estimated_cost_usd": total_cost or cost_payload.estimated_cost_usd,
+                    "model_estimated_costs_usd": (
+                        model_costs or cost_payload.model_estimated_costs_usd
+                    ),
+                    "pricing_version": cost_payload.pricing_version,
+                    "cost_estimated_at": (
+                        cost_payload.estimated_at.isoformat()
+                        if cost_payload.estimated_at is not None
+                        else None
+                    ),
+                    "estimation_mode": cost_payload.estimation_mode,
+                    "pricing_sources": cost_payload.pricing_sources,
+                    "cost": cost_payload.model_dump(mode="json"),
                 }
             )
 
@@ -502,16 +520,20 @@ class BenchmarkRunner:
             fallback_models=result.agent_models_used,
             fallback_total_tokens=result.total_tokens_used,
         )
-        model_telemetry = build_model_telemetry(
-            models=result.agent_models_used,
-            model_token_usage=model_token_usage,
-            model_latency_ms=result.model_latency_ms,
-            model_input_tokens=getattr(result, "model_input_token_usage", {}),
-            model_output_tokens=getattr(result, "model_output_token_usage", {}),
-            model_thinking_tokens=getattr(result, "model_thinking_token_usage", {}),
-            fallback_total_tokens=result.total_tokens_used,
+        model_telemetry = (
+            {model: telemetry for model, telemetry in result.model_telemetry.items()}
+            if result.model_telemetry
+            else build_model_telemetry(
+                models=result.agent_models_used,
+                model_token_usage=model_token_usage,
+                model_latency_ms=result.model_latency_ms,
+                model_input_tokens=getattr(result, "model_input_token_usage", {}),
+                model_output_tokens=getattr(result, "model_output_token_usage", {}),
+                model_thinking_tokens=getattr(result, "model_thinking_token_usage", {}),
+                fallback_total_tokens=result.total_tokens_used,
+            )
         )
-        cost_payload = estimate_cost_for_models(model_telemetry)
+        cost_payload = result.cost or estimate_cost_for_models(model_telemetry)
         model_thinking_usage_raw = getattr(result, "model_thinking_token_usage", {})
         model_thinking_usage = {
             model: int(tokens)
@@ -548,6 +570,14 @@ class BenchmarkRunner:
             "agent_count": result.agent_count,
             "agent_models_used": result.agent_models_used,
             "model_token_usage": model_token_usage,
+            "model_input_token_usage": {
+                model: int(tokens)
+                for model, tokens in result.model_input_token_usage.items()
+            },
+            "model_output_token_usage": {
+                model: int(tokens)
+                for model, tokens in result.model_output_token_usage.items()
+            },
             "model_latency_ms": {
                 model: float(latency)
                 for model, latency in result.model_latency_ms.items()
@@ -571,15 +601,25 @@ class BenchmarkRunner:
                 event.model_dump(mode="json") for event in result.fallback_events
             ],
             "mechanism_override_source": result.mechanism_override_source,
-            "model_telemetry": model_telemetry,
+            "model_telemetry": {
+                model: telemetry.model_dump(mode="json")
+                for model, telemetry in model_telemetry.items()
+            },
+            "input_tokens_used": result.input_tokens_used,
+            "output_tokens_used": result.output_tokens_used,
             "model_thinking_token_usage": model_thinking_usage,
             "thinking_tokens_used": thinking_tokens_used,
-            "estimated_cost_usd": cost_payload["estimated_cost_usd"],
-            "model_estimated_costs_usd": cost_payload["model_estimated_costs_usd"],
-            "pricing_version": cost_payload["pricing_version"],
-            "cost_estimated_at": cost_payload["estimated_at"].isoformat(),
-            "estimation_mode": cost_payload["estimation_mode"],
-            "pricing_sources": cost_payload["pricing_sources"],
+            "estimated_cost_usd": cost_payload.estimated_cost_usd,
+            "model_estimated_costs_usd": cost_payload.model_estimated_costs_usd,
+            "pricing_version": cost_payload.pricing_version,
+            "cost_estimated_at": (
+                cost_payload.estimated_at.isoformat()
+                if cost_payload.estimated_at is not None
+                else None
+            ),
+            "estimation_mode": cost_payload.estimation_mode,
+            "pricing_sources": cost_payload.pricing_sources,
+            "cost": cost_payload.model_dump(mode="json"),
         }
 
     @staticmethod

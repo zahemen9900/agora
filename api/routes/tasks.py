@@ -20,9 +20,11 @@ from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
 from agora.types import (
     SUPPORTED_MECHANISMS,
+    CostEstimate,
     DeliberationResult,
     MechanismSelection,
     MechanismType,
+    ModelTelemetry,
     mechanism_is_supported,
 )
 from api.auth import AuthenticatedUser, get_current_user, require_scope
@@ -66,6 +68,7 @@ _RECORD_SELECTION_OPERATION = "record_selection"
 _SUBMIT_RECEIPT_OPERATION = "submit_receipt"
 _RELEASE_PAYMENT_OPERATION = "release_payment"
 _SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state"
+_background_task_runs: dict[str, asyncio.Task[None]] = {}
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -161,6 +164,48 @@ async def _consume_stream_ticket(ticket: str, *, task_id: str) -> StreamTicketRe
     if entry is None:
         raise HTTPException(status_code=401, detail="Invalid stream ticket")
     return entry
+
+
+def _track_background_task(run_key: str, task: asyncio.Task[None]) -> None:
+    """Register a background run and drop it when the task finishes."""
+
+    _background_task_runs[run_key] = task
+
+    def _cleanup(finished: asyncio.Task[None]) -> None:
+        current = _background_task_runs.get(run_key)
+        if current is finished:
+            _background_task_runs.pop(run_key, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def _launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
+    """Start a task run in the background when one is not already active locally."""
+
+    run_key = _task_run_key(workspace_id, task_id)
+    existing = _background_task_runs.get(run_key)
+    if existing is not None and not existing.done():
+        return
+
+    async def _runner() -> None:
+        try:
+            await _execute_task_run(task_id=task_id, workspace_id=workspace_id)
+        except HTTPException as exc:
+            logger.warning(
+                "background_task_run_rejected",
+                task_id=task_id,
+                workspace_id=workspace_id,
+                status_code=exc.status_code,
+                detail=str(exc.detail),
+            )
+        except Exception:
+            logger.exception(
+                "background_task_run_failed",
+                task_id=task_id,
+                workspace_id=workspace_id,
+            )
+
+    _track_background_task(run_key, asyncio.create_task(_runner()))
 
 
 async def _acquire_task_run_lock(run_key: str) -> RunLockLease | None:
@@ -316,18 +361,33 @@ def _derive_informational_payouts(
 
 
 def _cost_payload_from_model_telemetry(
-    model_telemetry: dict[str, dict[str, Any]],
+    model_telemetry: dict[str, ModelTelemetry],
 ) -> BenchmarkCostEstimateResponse | None:
     payload = estimate_cost_for_models(model_telemetry)
-    if payload["estimation_mode"] == "unavailable":
+    if payload.estimation_mode == "unavailable":
         return None
     return BenchmarkCostEstimateResponse(
-        estimated_cost_usd=payload["estimated_cost_usd"],
-        model_estimated_costs_usd=payload["model_estimated_costs_usd"],
-        pricing_version=payload["pricing_version"],
-        estimated_at=payload["estimated_at"],
-        estimation_mode=payload["estimation_mode"],
-        pricing_sources=payload["pricing_sources"],
+        estimated_cost_usd=payload.estimated_cost_usd,
+        model_estimated_costs_usd=payload.model_estimated_costs_usd,
+        pricing_version=payload.pricing_version,
+        estimated_at=payload.estimated_at,
+        estimation_mode=payload.estimation_mode,
+        pricing_sources=payload.pricing_sources,
+    )
+
+
+def _cost_payload_from_runtime(cost: CostEstimate | None) -> BenchmarkCostEstimateResponse | None:
+    """Normalize a runtime cost payload into API response shape."""
+
+    if cost is None or cost.estimation_mode == "unavailable":
+        return None
+    return BenchmarkCostEstimateResponse(
+        estimated_cost_usd=cost.estimated_cost_usd,
+        model_estimated_costs_usd=cost.model_estimated_costs_usd,
+        pricing_version=cost.pricing_version,
+        estimated_at=cost.estimated_at,
+        estimation_mode=cost.estimation_mode,
+        pricing_sources=cost.pricing_sources,
     )
 
 
@@ -350,16 +410,22 @@ def _result_to_response(
 
     model_token_usage = {model: int(tokens) for model, tokens in result.model_token_usage.items()}
     model_latency_ms = {model: float(latency) for model, latency in result.model_latency_ms.items()}
-    model_telemetry_raw = build_model_telemetry(
-        models=result.agent_models_used,
-        model_token_usage=model_token_usage,
-        model_latency_ms=model_latency_ms,
-        model_input_tokens=getattr(result, "model_input_token_usage", {}),
-        model_output_tokens=getattr(result, "model_output_token_usage", {}),
-        model_thinking_tokens=getattr(result, "model_thinking_token_usage", {}),
-        fallback_total_tokens=result.total_tokens_used,
+    model_telemetry_raw = (
+        {model: telemetry for model, telemetry in result.model_telemetry.items()}
+        if result.model_telemetry
+        else build_model_telemetry(
+            models=result.agent_models_used,
+            model_token_usage=model_token_usage,
+            model_latency_ms=model_latency_ms,
+            model_input_tokens=getattr(result, "model_input_token_usage", {}),
+            model_output_tokens=getattr(result, "model_output_token_usage", {}),
+            model_thinking_tokens=getattr(result, "model_thinking_token_usage", {}),
+            fallback_total_tokens=result.total_tokens_used,
+        )
     )
-    cost_payload = _cost_payload_from_model_telemetry(model_telemetry_raw)
+    cost_payload = _cost_payload_from_runtime(result.cost) or _cost_payload_from_model_telemetry(
+        model_telemetry_raw
+    )
     informational_model_payouts = _derive_informational_payouts(
         payment_amount=payment_amount,
         model_token_usage=model_token_usage,
@@ -379,7 +445,7 @@ def _result_to_response(
         model_token_usage=model_token_usage,
         model_latency_ms=model_latency_ms,
         model_telemetry={
-            model: ModelTelemetryResponse.model_validate(telemetry)
+            model: ModelTelemetryResponse.model_validate(telemetry.model_dump(mode="json"))
             for model, telemetry in model_telemetry_raw.items()
         },
         total_tokens_used=result.total_tokens_used,
@@ -1182,25 +1248,24 @@ async def create_task(
     )
 
 
-@router.post("/{task_id}/run", response_model=DeliberationResultResponse)
-async def run_task(
+async def _execute_task_run(
+    *,
     task_id: str,
-    user: CurrentUser,
+    workspace_id: str,
 ) -> DeliberationResultResponse:
     """Execute the stored mechanism and persist the resulting receipt."""
 
-    require_scope(user, "tasks:write")
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
+    raw_task = await _load_task_for_user(store, workspace_id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
-    run_key = _task_run_key(user.workspace_id, task_id)
+    run_key = _task_run_key(workspace_id, task_id)
     if task.status in {"completed", "paid"} and task.result is not None:
         if bridge.is_configured() and (
             _chain_setup_needs_retry(task) or _chain_finalization_needs_retry(task)
         ):
-            await _enforce_task_run_rate_limit(user.workspace_id)
+            await _enforce_task_run_rate_limit(workspace_id)
             retry_lease = await _acquire_task_run_lock(run_key)
             if retry_lease is None:
                 raise HTTPException(status_code=409, detail="Task is already in progress")
@@ -1208,18 +1273,18 @@ async def run_task(
                 if _chain_setup_needs_retry(task):
                     await _finalize_chain_setup_operations(
                         store=store,
-                        workspace_id=user.workspace_id,
+                        workspace_id=workspace_id,
                         task_id=task_id,
                         task=task,
                     )
                 switch_events = [
                     TaskEvent.model_validate(event)
-                    for event in await store.get_events(user.workspace_id, task_id)
+                    for event in await store.get_events(workspace_id, task_id)
                     if event.get("event") == "mechanism_switch"
                 ]
                 await _finalize_result_chain_operations(
                     store=store,
-                    workspace_id=user.workspace_id,
+                    workspace_id=workspace_id,
                     task_id=task_id,
                     task=task,
                     result_response=task.result,
@@ -1250,13 +1315,13 @@ async def run_task(
             source="stored task mechanism",
         )
 
-    await _enforce_task_run_rate_limit(user.workspace_id)
+    await _enforce_task_run_rate_limit(workspace_id)
     lease = await _acquire_task_run_lock(run_key)
     if lease is None:
         raise HTTPException(status_code=409, detail="Task is already in progress")
 
     workspace_slot = await _acquire_workspace_run_slot(
-        user.workspace_id,
+        workspace_id,
         run_key=run_key,
         lease_id=lease.lease_id,
     )
@@ -1306,7 +1371,7 @@ async def run_task(
                     return
                 if settings.workspace_concurrent_task_runs > 0:
                     slot = await _refresh_workspace_run_slot(
-                        user.workspace_id,
+                        workspace_id,
                         run_key=run_key,
                         lease_id=current_lease.lease_id,
                     )
@@ -1316,7 +1381,7 @@ async def run_task(
                             "task_run_workspace_slot_lost",
                             task_id=task_id,
                             run_key=run_key,
-                            workspace_id=user.workspace_id,
+                            workspace_id=workspace_id,
                         )
                         heartbeat_stop.set()
                         return
@@ -1333,7 +1398,7 @@ async def run_task(
             await heartbeat_task
         if settings.workspace_concurrent_task_runs > 0 and not workspace_slot_released:
             await _release_workspace_run_slot(
-                user.workspace_id,
+                workspace_id,
                 run_key=run_key,
                 lease_id=current_lease.lease_id,
             )
@@ -1347,7 +1412,7 @@ async def run_task(
         await persist_and_emit(
             store=store,
             stream=stream,
-            workspace_id=user.workspace_id,
+            workspace_id=workspace_id,
             task_id=task_id,
             event_type=event_type,
             event_data=data,
@@ -1365,12 +1430,12 @@ async def run_task(
         )
     try:
         task.status = "in_progress"
-        await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
+        await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
 
         if bridge.is_configured() and _chain_setup_needs_retry(task):
             await _finalize_chain_setup_operations(
                 store=store,
-                workspace_id=user.workspace_id,
+                workspace_id=workspace_id,
                 task_id=task_id,
                 task=task,
             )
@@ -1418,7 +1483,7 @@ async def run_task(
             await _mark_task_failed(
                 store=store,
                 stream=stream,
-                workspace_id=user.workspace_id,
+                workspace_id=workspace_id,
                 task_id=task_id,
                 task=task,
                 message=str(exc.detail),
@@ -1431,7 +1496,7 @@ async def run_task(
             await _mark_task_failed(
                 store=store,
                 stream=stream,
-                workspace_id=user.workspace_id,
+                workspace_id=workspace_id,
                 task_id=task_id,
                 task=task,
                 message=str(exc),
@@ -1458,7 +1523,7 @@ async def run_task(
     task.result = result_response
     task.events = [
         TaskEvent.model_validate(event)
-        for event in await store.get_events(user.workspace_id, task_id)
+        for event in await store.get_events(workspace_id, task_id)
     ]
     switch_events = [event for event in task.events if event.event == "mechanism_switch"]
     if bridge.is_configured():
@@ -1466,13 +1531,13 @@ async def run_task(
             _ensure_chain_operation(task, _switch_operation_key(switch_index))
         _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
 
-    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
+    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
 
     if bridge.is_configured():
         try:
             await _finalize_result_chain_operations(
                 store=store,
-                workspace_id=user.workspace_id,
+                workspace_id=workspace_id,
                 task_id=task_id,
                 task=task,
                 result_response=result_response,
@@ -1484,7 +1549,7 @@ async def run_task(
                 await _mark_task_failed(
                     store=store,
                     stream=stream,
-                    workspace_id=user.workspace_id,
+                    workspace_id=workspace_id,
                     task_id=task_id,
                     task=task,
                     message=str(exc.detail),
@@ -1495,12 +1560,12 @@ async def run_task(
 
     task.status = "completed"
     task.completed_at = datetime.now(UTC)
-    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
+    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
 
     await persist_and_emit(
         store=store,
         stream=stream,
-        workspace_id=user.workspace_id,
+        workspace_id=workspace_id,
         task_id=task_id,
         event_type="quorum_reached",
         event_data={
@@ -1520,7 +1585,7 @@ async def run_task(
         await persist_and_emit(
             store=store,
             stream=stream,
-            workspace_id=user.workspace_id,
+            workspace_id=workspace_id,
             task_id=task_id,
             event_type="receipt_committed",
             event_data={
@@ -1534,14 +1599,46 @@ async def run_task(
     await persist_and_emit(
         store=store,
         stream=stream,
-        workspace_id=user.workspace_id,
+        workspace_id=workspace_id,
         task_id=task_id,
         event_type="complete",
         event_data={"task_id": task_id, "status": task.status},
     )
-    await stream.close(_stream_key(user.workspace_id, task_id))
+    await stream.close(_stream_key(workspace_id, task_id))
     await _release_run_lock_once()
     return result_response
+
+
+@router.post("/{task_id}/run", response_model=DeliberationResultResponse)
+async def run_task(
+    task_id: str,
+    user: CurrentUser,
+) -> DeliberationResultResponse:
+    """Execute the stored mechanism synchronously and return the final receipt."""
+
+    require_scope(user, "tasks:write")
+    return await _execute_task_run(task_id=task_id, workspace_id=user.workspace_id)
+
+
+@router.post("/{task_id}/run-async", response_model=TaskStatusResponse)
+async def start_task_run(
+    task_id: str,
+    user: CurrentUser,
+) -> TaskStatusResponse:
+    """Start task execution in the background and return the current persisted status."""
+
+    require_scope(user, "tasks:write")
+    store = get_task_store()
+    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
+    task = _to_status_response(raw_task, detailed=True)
+
+    if task.status not in {"pending", "in_progress", "completed", "paid"}:
+        raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
+    if task.status == "pending":
+        _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
+
+    refreshed = await _load_task_for_user(store, user.workspace_id, task_id)
+    return _to_status_response(refreshed, detailed=True)
 
 
 @router.get("", response_model=list[TaskStatusResponse])

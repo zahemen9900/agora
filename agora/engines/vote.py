@@ -23,6 +23,7 @@ from agora.agent import (
     pro_caller,
 )
 from agora.config import get_config
+from agora.runtime.costing import build_result_costing
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.model_policy import (
@@ -70,8 +71,14 @@ class VoteEngineOutcome(BaseModel):
     agent_models_used: list[str] = Field(default_factory=list)
     model_token_usage: dict[str, int] = Field(default_factory=dict)
     model_latency_ms: dict[str, float] = Field(default_factory=dict)
+    model_input_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_output_token_usage: dict[str, int] = Field(default_factory=dict)
+    model_thinking_token_usage: dict[str, int] = Field(default_factory=dict)
     fallback_events: list[FallbackEvent] = Field(default_factory=list)
     total_tokens_used: int = 0
+    input_tokens_used: int | None = None
+    output_tokens_used: int | None = None
+    thinking_tokens_used: int | None = None
     total_latency_ms: float = 0.0
 
 
@@ -188,8 +195,14 @@ class VoteEngine:
             agent_models_used=result.agent_models_used,
             model_token_usage=result.model_token_usage,
             model_latency_ms=result.model_latency_ms,
+            model_input_token_usage=result.model_input_token_usage,
+            model_output_token_usage=result.model_output_token_usage,
+            model_thinking_token_usage=result.model_thinking_token_usage,
             fallback_events=result.fallback_events,
             total_tokens_used=result.total_tokens_used,
+            input_tokens_used=result.input_tokens_used,
+            output_tokens_used=result.output_tokens_used,
+            thinking_tokens_used=result.thinking_tokens_used,
             total_latency_ms=result.total_latency_ms,
         )
 
@@ -216,6 +229,19 @@ class VoteEngine:
         state.quorum_reached = best_weight >= state.quorum_threshold
         state.merkle_root = self.hasher.build_merkle_tree(state.transcript_hashes)
 
+        model_token_usage = {
+            str(model): int(tokens)
+            for model, tokens in cast(dict[str, int], usage.get("model_tokens", {})).items()
+        }
+        model_telemetry, cost = build_result_costing(
+            models=list(dict.fromkeys(output.agent_model for output in state.agent_outputs)),
+            model_token_usage=model_token_usage,
+            model_latency_ms=model_latency_ms,
+            model_input_tokens=model_input_token_usage,
+            model_output_tokens=model_output_token_usage,
+            model_thinking_tokens=model_thinking_token_usage,
+            fallback_total_tokens=token_counter,
+        )
         return DeliberationResult(
             task=state.task,
             mechanism_used=MechanismType.VOTE,
@@ -231,14 +257,12 @@ class VoteEngine:
             agent_models_used=list(
                 dict.fromkeys(output.agent_model for output in state.agent_outputs)
             ),
-            model_token_usage={
-                str(model): int(tokens)
-                for model, tokens in cast(dict[str, int], usage.get("model_tokens", {})).items()
-            },
+            model_token_usage=model_token_usage,
             model_latency_ms=dict(model_latency_ms),
             model_input_token_usage=dict(model_input_token_usage),
             model_output_token_usage=dict(model_output_token_usage),
             model_thinking_token_usage=dict(model_thinking_token_usage),
+            model_telemetry=model_telemetry,
             convergence_history=[],
             locked_claims=[],
             mechanism_trace=[
@@ -261,6 +285,7 @@ class VoteEngine:
             output_tokens_used=output_token_counter if output_token_counter > 0 else None,
             thinking_tokens_used=thinking_token_counter if thinking_token_counter > 0 else None,
             total_latency_ms=latency_ms,
+            cost=cost,
             reasoning_presets=self.reasoning_presets,
         )
 

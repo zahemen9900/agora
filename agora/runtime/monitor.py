@@ -21,18 +21,25 @@ class StateMonitor:
 
         self._last_entropy: float | None = None
         self._last_distribution: dict[str, float] | None = None
+        self._last_locked_claim_count: int | None = None
 
     def reset(self) -> None:
         """Reset monitor state for a new task execution."""
 
         self._last_entropy = None
         self._last_distribution = None
+        self._last_locked_claim_count = None
 
-    def compute_metrics(self, agent_outputs: list[AgentOutput]) -> ConvergenceMetrics:
+    def compute_metrics(
+        self,
+        agent_outputs: list[AgentOutput],
+        locked_claim_count: int | None = None,
+    ) -> ConvergenceMetrics:
         """Compute convergence metrics from current round outputs.
 
         Args:
             agent_outputs: Agent outputs for one round/phase.
+            locked_claim_count: Total verified claims available after the round.
 
         Returns:
             ConvergenceMetrics: Entropy, information gain delta, and distribution stats.
@@ -70,8 +77,20 @@ class StateMonitor:
                 distribution,
             )
             answer_churn = self._answer_churn(previous_distribution, distribution)
+
+        normalized_locked_claim_count = (
+            max(0, int(locked_claim_count)) if locked_claim_count is not None else 0
+        )
+        if self._last_locked_claim_count is None:
+            locked_claim_growth = 0.0
+        else:
+            growth_delta = max(0, normalized_locked_claim_count - self._last_locked_claim_count)
+            locked_claim_growth = growth_delta / max(1, normalized_locked_claim_count)
+
+        novelty_score = min(1.0, (0.5 * js_divergence) + (0.5 * locked_claim_growth))
         self._last_entropy = entropy
         self._last_distribution = distribution
+        self._last_locked_claim_count = normalized_locked_claim_count
 
         round_number = max(output.round_number for output in agent_outputs)
         return ConvergenceMetrics(
@@ -80,7 +99,10 @@ class StateMonitor:
             entropy_delta=entropy_delta,
             js_divergence=js_divergence,
             answer_churn=answer_churn,
-            information_gain_delta=js_divergence,
+            locked_claim_count=normalized_locked_claim_count,
+            locked_claim_growth=locked_claim_growth,
+            novelty_score=novelty_score,
+            information_gain_delta=novelty_score,
             unique_answers=len(distribution),
             dominant_answer_share=dominant_share,
             answer_distribution=distribution,
@@ -214,10 +236,10 @@ class StateMonitor:
         trailing = convergence_history[-plateau_rounds:]
         if all(
             abs(metric.entropy_delta) < plateau_threshold
-            and metric.js_divergence < plateau_threshold
+            and metric.information_gain_delta < plateau_threshold
             for metric in trailing
         ):
-            return True, "Information gain plateau detected"
+            return True, "Novelty plateau detected"
 
         return False, "Continue deliberation"
 

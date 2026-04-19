@@ -73,7 +73,13 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             agent_models_used=["debate-model"],
             model_token_usage={"debate-model": 7},
             model_latency_ms={"debate-model": 3.0},
+            model_input_token_usage={"debate-model": 2},
+            model_output_token_usage={"debate-model": 3},
+            model_thinking_token_usage={"debate-model": 2},
             total_tokens_used=7,
+            input_tokens_used=2,
+            output_tokens_used=3,
+            thinking_tokens_used=2,
             total_latency_ms=3.0,
         )
 
@@ -94,9 +100,15 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             transcript_hashes=["h1", "h2"],
             model_token_usage={"vote-model": 5},
             model_latency_ms={"vote-model": 2.0},
+            model_input_token_usage={"vote-model": 1},
+            model_output_token_usage={"vote-model": 2},
+            model_thinking_token_usage={"vote-model": 2},
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=5,
+            input_tokens_used=1,
+            output_tokens_used=2,
+            thinking_tokens_used=2,
             total_latency_ms=2.0,
             timestamp=datetime.now(UTC),
         )
@@ -108,7 +120,13 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             agent_models_used=["vote-model"],
             model_token_usage={"vote-model": 5},
             model_latency_ms={"vote-model": 2.0},
+            model_input_token_usage={"vote-model": 1},
+            model_output_token_usage={"vote-model": 2},
+            model_thinking_token_usage={"vote-model": 2},
             total_tokens_used=5,
+            input_tokens_used=1,
+            output_tokens_used=2,
+            thinking_tokens_used=2,
             total_latency_ms=2.0,
         )
 
@@ -128,7 +146,15 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
     assert result.mechanism_trace[0].switch_reason == "forced switch"
     assert result.mechanism_trace[0].switch_reason_hash is not None
     assert result.model_token_usage == {"debate-model": 7, "vote-model": 5}
+    assert result.model_input_token_usage == {"debate-model": 2, "vote-model": 1}
+    assert result.model_output_token_usage == {"debate-model": 3, "vote-model": 2}
+    assert result.model_thinking_token_usage == {"debate-model": 2, "vote-model": 2}
     assert result.total_tokens_used == 12
+    assert result.input_tokens_used == 3
+    assert result.output_tokens_used == 5
+    assert result.thinking_tokens_used == 4
+    assert result.cost is not None
+    assert set(result.model_telemetry) == {"debate-model", "vote-model"}
 
 
 @pytest.mark.asyncio
@@ -163,9 +189,15 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             transcript_hashes=["v1"],
             model_token_usage={"vote-model": 4},
             model_latency_ms={"vote-model": 2.0},
+            model_input_token_usage={"vote-model": 2},
+            model_output_token_usage={"vote-model": 1},
+            model_thinking_token_usage={"vote-model": 1},
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=4,
+            input_tokens_used=2,
+            output_tokens_used=1,
+            thinking_tokens_used=1,
             total_latency_ms=2.0,
             timestamp=datetime.now(UTC),
         )
@@ -177,7 +209,13 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             agent_models_used=["vote-model"],
             model_token_usage={"vote-model": 4},
             model_latency_ms={"vote-model": 2.0},
+            model_input_token_usage={"vote-model": 2},
+            model_output_token_usage={"vote-model": 1},
+            model_thinking_token_usage={"vote-model": 1},
             total_tokens_used=4,
+            input_tokens_used=2,
+            output_tokens_used=1,
+            thinking_tokens_used=1,
             total_latency_ms=2.0,
         )
 
@@ -201,9 +239,17 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             mechanism_switches=0,
             merkle_root="debate-root",
             transcript_hashes=["d1", "d2"],
+            model_token_usage={"debate-model": 8},
+            model_latency_ms={"debate-model": 6.0},
+            model_input_token_usage={"debate-model": 3},
+            model_output_token_usage={"debate-model": 3},
+            model_thinking_token_usage={"debate-model": 2},
             convergence_history=[],
             locked_claims=[],
-            total_tokens_used=12,
+            total_tokens_used=8,
+            input_tokens_used=3,
+            output_tokens_used=3,
+            thinking_tokens_used=2,
             total_latency_ms=8.0,
             timestamp=datetime.now(UTC),
         )
@@ -229,7 +275,14 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
     assert result.merkle_root == orchestrator.hasher.build_merkle_tree(result.transcript_hashes)
     assert result.mechanism_trace[0].mechanism == MechanismType.VOTE
     assert result.mechanism_trace[0].switch_reason == "quorum_not_reached"
-    assert result.model_token_usage == {"vote-model": 4}
+    assert result.model_token_usage == {"vote-model": 4, "debate-model": 8}
+    assert result.model_input_token_usage == {"vote-model": 2, "debate-model": 3}
+    assert result.model_output_token_usage == {"vote-model": 1, "debate-model": 3}
+    assert result.model_thinking_token_usage == {"vote-model": 1, "debate-model": 2}
+    assert result.input_tokens_used == 5
+    assert result.output_tokens_used == 4
+    assert result.thinking_tokens_used == 3
+    assert result.cost is not None
 
 
 @pytest.mark.asyncio

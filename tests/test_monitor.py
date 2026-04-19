@@ -52,7 +52,7 @@ def test_current_answer_movement_beats_static_assignment() -> None:
 
     assert moved.js_divergence > 0.0
     assert moved.answer_churn > 0.0
-    assert moved.information_gain_delta == moved.js_divergence
+    assert moved.information_gain_delta == moved.novelty_score
 
 
 def test_stable_answer_distribution_plateaus() -> None:
@@ -109,3 +109,21 @@ def test_compute_metrics_uses_normalized_answer_signal() -> None:
     assert metrics.unique_answers == 1
     assert metrics.dominant_answer_share == 1.0
     assert metrics.disagreement_entropy == 0.0
+
+
+def test_locked_claim_growth_contributes_to_novelty() -> None:
+    """Novelty should move when debate evidence accumulates even with static answers."""
+
+    monitor = StateMonitor()
+    outputs = [
+        make_agent_output("agent-1", '{"current_answer":"Option A"}', role="pro_rebuttal"),
+        make_agent_output("agent-2", '{"current_answer":"Option B"}', role="opp_rebuttal"),
+    ]
+
+    first = monitor.compute_metrics(outputs, locked_claim_count=0)
+    second = monitor.compute_metrics(outputs, locked_claim_count=2)
+
+    assert first.information_gain_delta == 0.0
+    assert second.js_divergence == 0.0
+    assert second.locked_claim_growth > 0.0
+    assert second.novelty_score > 0.0

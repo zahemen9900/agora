@@ -12,6 +12,7 @@ import structlog
 from agora.agent import pro_caller
 from agora.engines.debate import DebateEngine
 from agora.engines.vote import VoteEngine
+from agora.runtime.costing import build_result_costing
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.monitor import StateMonitor
@@ -339,8 +340,14 @@ class AgoraOrchestrator:
                     first_agent_models_used=debate_outcome.agent_models_used,
                     first_model_token_usage=debate_outcome.model_token_usage,
                     first_model_latency_ms=debate_outcome.model_latency_ms,
+                    first_model_input_token_usage=debate_outcome.model_input_token_usage,
+                    first_model_output_token_usage=debate_outcome.model_output_token_usage,
+                    first_model_thinking_token_usage=debate_outcome.model_thinking_token_usage,
                     first_fallback_events=debate_outcome.fallback_events,
                     first_total_tokens_used=debate_outcome.total_tokens_used,
+                    first_input_tokens_used=debate_outcome.input_tokens_used,
+                    first_output_tokens_used=debate_outcome.output_tokens_used,
+                    first_thinking_tokens_used=debate_outcome.thinking_tokens_used,
                     first_total_latency_ms=debate_outcome.total_latency_ms,
                     second_result=vote_outcome.result,
                     switch_reason=debate_outcome.reason,
@@ -384,8 +391,14 @@ class AgoraOrchestrator:
                         first_agent_models_used=vote_outcome.agent_models_used,
                         first_model_token_usage=vote_outcome.model_token_usage,
                         first_model_latency_ms=vote_outcome.model_latency_ms,
+                        first_model_input_token_usage=vote_outcome.model_input_token_usage,
+                        first_model_output_token_usage=vote_outcome.model_output_token_usage,
+                        first_model_thinking_token_usage=vote_outcome.model_thinking_token_usage,
                         first_fallback_events=vote_outcome.fallback_events,
                         first_total_tokens_used=vote_outcome.total_tokens_used,
+                        first_input_tokens_used=vote_outcome.input_tokens_used,
+                        first_output_tokens_used=vote_outcome.output_tokens_used,
+                        first_thinking_tokens_used=vote_outcome.thinking_tokens_used,
                         first_total_latency_ms=vote_outcome.total_latency_ms,
                         second_result=debate_outcome.result,
                         switch_reason=vote_outcome.reason,
@@ -409,8 +422,14 @@ class AgoraOrchestrator:
         first_agent_models_used: list[str],
         first_model_token_usage: dict[str, int],
         first_model_latency_ms: dict[str, float],
+        first_model_input_token_usage: dict[str, int],
+        first_model_output_token_usage: dict[str, int],
+        first_model_thinking_token_usage: dict[str, int],
         first_fallback_events: list[Any],
         first_total_tokens_used: int,
+        first_input_tokens_used: int | None,
+        first_output_tokens_used: int | None,
+        first_thinking_tokens_used: int | None,
         first_total_latency_ms: float,
         second_result: DeliberationResult,
         switch_reason: str,
@@ -461,11 +480,44 @@ class AgoraOrchestrator:
             first_model_latency_ms,
             second_result.model_latency_ms,
         )
+        combined_model_input_tokens = self._merge_numeric_maps(
+            first_model_input_token_usage,
+            second_result.model_input_token_usage,
+        )
+        combined_model_output_tokens = self._merge_numeric_maps(
+            first_model_output_token_usage,
+            second_result.model_output_token_usage,
+        )
+        combined_model_thinking_tokens = self._merge_numeric_maps(
+            first_model_thinking_token_usage,
+            second_result.model_thinking_token_usage,
+        )
         combined_agent_models = list(
             dict.fromkeys([*first_agent_models_used, *second_result.agent_models_used])
         )
         total_tokens = first_total_tokens_used + second_result.total_tokens_used
         total_latency_ms = first_total_latency_ms + second_result.total_latency_ms
+        input_tokens_used = self._merge_optional_totals(
+            first_input_tokens_used,
+            second_result.input_tokens_used,
+        )
+        output_tokens_used = self._merge_optional_totals(
+            first_output_tokens_used,
+            second_result.output_tokens_used,
+        )
+        thinking_tokens_used = self._merge_optional_totals(
+            first_thinking_tokens_used,
+            second_result.thinking_tokens_used,
+        )
+        model_telemetry, cost = build_result_costing(
+            models=combined_agent_models,
+            model_token_usage=combined_model_tokens,
+            model_latency_ms=combined_model_latency,
+            model_input_tokens=combined_model_input_tokens,
+            model_output_tokens=combined_model_output_tokens,
+            model_thinking_tokens=combined_model_thinking_tokens,
+            fallback_total_tokens=total_tokens,
+        )
 
         return second_result.model_copy(
             update={
@@ -484,8 +536,16 @@ class AgoraOrchestrator:
                 "agent_models_used": combined_agent_models,
                 "model_token_usage": combined_model_tokens,
                 "model_latency_ms": combined_model_latency,
+                "model_input_token_usage": combined_model_input_tokens,
+                "model_output_token_usage": combined_model_output_tokens,
+                "model_thinking_token_usage": combined_model_thinking_tokens,
+                "model_telemetry": model_telemetry,
                 "total_tokens_used": total_tokens,
+                "input_tokens_used": input_tokens_used,
+                "output_tokens_used": output_tokens_used,
+                "thinking_tokens_used": thinking_tokens_used,
                 "total_latency_ms": total_latency_ms,
+                "cost": cost,
                 "timestamp": datetime.now(UTC),
             }
         )
@@ -507,6 +567,14 @@ class AgoraOrchestrator:
         for key, value in right.items():
             merged[key] = merged.get(key, 0.0) + value
         return merged
+
+    @staticmethod
+    def _merge_optional_totals(left: int | None, right: int | None) -> int | None:
+        """Merge nullable aggregate token counters."""
+
+        if left is None and right is None:
+            return None
+        return max(0, int(left or 0) + int(right or 0))
 
     @staticmethod
     async def _emit_event(
