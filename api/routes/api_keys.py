@@ -37,7 +37,8 @@ def _metadata_response(record: dict[str, object]) -> ApiKeyMetadataResponse:
     return ApiKeyMetadataResponse.model_validate(record)
 
 
-@router.get("/", response_model=list[ApiKeyMetadataResponse])
+@router.get("", response_model=list[ApiKeyMetadataResponse])
+@router.get("/", response_model=list[ApiKeyMetadataResponse], include_in_schema=False)
 async def list_api_keys(user: CurrentUser) -> list[ApiKeyMetadataResponse]:
     """Return safe metadata for the current workspace's API keys."""
 
@@ -48,7 +49,8 @@ async def list_api_keys(user: CurrentUser) -> list[ApiKeyMetadataResponse]:
     return [_metadata_response(record) for record in keys]
 
 
-@router.post("/", response_model=ApiKeyCreateResponse)
+@router.post("", response_model=ApiKeyCreateResponse)
+@router.post("/", response_model=ApiKeyCreateResponse, include_in_schema=False)
 async def create_api_key(
     request: ApiKeyCreateRequest,
     user: CurrentUser,

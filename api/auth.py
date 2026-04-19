@@ -68,7 +68,10 @@ def _normalize_url(value: str) -> str:
 def _auth_issuer() -> str:
     """Resolve issuer from explicit setting or AuthKit domain."""
 
-    for candidate in (_normalize_url(settings.auth_issuer), _normalize_url(settings.workos_authkit_domain)):
+    for candidate in (
+        _normalize_url(settings.auth_issuer),
+        _normalize_url(settings.workos_authkit_domain),
+    ):
         if candidate:
             return candidate
     return ""

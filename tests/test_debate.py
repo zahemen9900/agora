@@ -98,7 +98,7 @@ class _SchemaAwareDebateCaller:
 
 
 def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
-    """Faction assignment should produce pro/opp sides and a DA id."""
+    """Faction assignment should keep counted debaters and a separate DA id."""
 
     engine = DebateEngine(agent_count=3)
     outputs = [
@@ -110,13 +110,13 @@ def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
     _pro_answer, _opp_answer, assignments, da_id = engine._assign_factions(outputs)
 
     assert set(assignments.values()) == {"pro", "opp"}
-    assert da_id in {"agent-1", "agent-2", "agent-3"}
+    assert da_id == "debate-devils-advocate"
     assert da_id not in assignments
-    assert len(assignments) == 2
+    assert len(assignments) == 3
 
 
 def test_assign_factions_keeps_two_sides_when_da_is_separate() -> None:
-    """Removing the DA should still leave one debater on each faction."""
+    """Separate specialist roles should not remove counted debaters from factions."""
 
     engine = DebateEngine(agent_count=3)
     outputs = [
@@ -128,7 +128,7 @@ def test_assign_factions_keeps_two_sides_when_da_is_separate() -> None:
     _pro_answer, _opp_answer, assignments, da_id = engine._assign_factions(outputs)
 
     assert da_id not in assignments
-    assert sorted(assignments.values()) == ["opp", "pro"]
+    assert sorted(assignments.values()) == ["opp", "pro", "pro"]
 
 
 def test_verify_claims_extracts_arithmetic_equalities_from_json() -> None:
@@ -156,7 +156,7 @@ async def test_cross_examination_uses_kimi_devil_advocate() -> None:
     )
     kimi = _FakeDebateCaller("moonshotai/kimi-k2-thinking", kimi_response)
     pro = _FakeDebateCaller(
-        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
         _SynthesisResponse(final_answer="unused", confidence=0.5, summary="unused"),
     )
     engine = DebateEngine(agent_count=3, kimi_agent=kimi, pro_agent=pro)
@@ -186,7 +186,7 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         confidence=0.82,
         summary="The pro faction had stronger operational evidence.",
     )
-    pro = _FakeDebateCaller("gemini-3.1-pro-preview", pro_response)
+    pro = _FakeDebateCaller("gemini-3-flash-preview", pro_response)
     kimi = _FakeDebateCaller(
         "moonshotai/kimi-k2-thinking",
         _CrossExamResponse(analyses=[]),
@@ -198,13 +198,13 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         "Use architecture A because it isolates failures.",
         confidence=0.8,
         role="pro_opening",
-    ).model_copy(update={"agent_model": "gemini-3-flash-preview"})
+    ).model_copy(update={"agent_model": "gemini-3.1-flash-lite-preview"})
     opp_output = make_agent_output(
         "agent-2",
         "Use architecture B because it is simpler.",
         confidence=0.6,
         role="opp_opening",
-    ).model_copy(update={"agent_model": "gemini-3-flash-preview"})
+    ).model_copy(update={"agent_model": "gemini-3.1-flash-lite-preview"})
     state = DebateState(
         task="Choose an architecture.",
         task_features=selection.task_features,
@@ -230,29 +230,57 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         opp_answer="Architecture B",
         prior_tokens=3,
         prior_latency_ms=4.0,
-        prior_model_token_usage={"gemini-3-flash-preview": 3},
-        prior_model_latency_ms={"gemini-3-flash-preview": 4.0},
+        prior_model_token_usage={"gemini-3.1-flash-lite-preview": 3},
+        prior_model_latency_ms={"gemini-3.1-flash-lite-preview": 4.0},
     )
 
     assert result.final_answer == "Use the reliability-first architecture."
     assert result.mechanism_used is MechanismType.DEBATE
     assert result.total_tokens_used == 15
     assert result.model_token_usage == {
-        "gemini-3-flash-preview": 3,
-        "gemini-3.1-pro-preview": 12,
+        "gemini-3.1-flash-lite-preview": 3,
+        "gemini-3-flash-preview": 12,
     }
     assert result.model_latency_ms == {
-        "gemini-3-flash-preview": 4.0,
-        "gemini-3.1-pro-preview": 11.0,
+        "gemini-3.1-flash-lite-preview": 4.0,
+        "gemini-3-flash-preview": 11.0,
     }
     assert usage["tokens"] == 12
     assert result.agent_models_used == [
-        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
         "moonshotai/kimi-k2-thinking",
-        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
     ]
     assert pro.calls[0]["response_format"] is _SynthesisResponse
     assert kimi.calls == []
+
+
+@pytest.mark.asyncio
+async def test_debate_initial_answers_follow_balanced_provider_cycle() -> None:
+    """Counted debate participants should use the balanced provider cycle, including Claude."""
+
+    engine = DebateEngine(
+        agent_count=4,
+        flash_agent=_SchemaAwareDebateCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
+        claude_agent=_SchemaAwareDebateCaller("claude-sonnet-4-6"),
+        kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
+    )
+
+    outputs, usage = await engine._assign_initial_answers("Choose an architecture.")
+
+    assert [output.agent_model for output in outputs] == [
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "moonshotai/kimi-k2-thinking",
+        "claude-sonnet-4-6",
+    ]
+    assert usage["model_tokens"] == {
+        "gemini-3-flash-preview": 10,
+        "gemini-3.1-flash-lite-preview": 10,
+        "moonshotai/kimi-k2-thinking": 10,
+        "claude-sonnet-4-6": 10,
+    }
 
 
 @pytest.mark.asyncio
@@ -262,8 +290,8 @@ async def test_full_debate_run_on_simple_math_task() -> None:
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
-        flash_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
-        pro_agent=_SchemaAwareDebateCaller("gemini-3.1-pro-preview"),
+        flash_agent=_SchemaAwareDebateCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
         kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
@@ -283,8 +311,8 @@ async def test_adaptive_termination_fires_on_plateau() -> None:
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
-        flash_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
-        pro_agent=_SchemaAwareDebateCaller("gemini-3.1-pro-preview"),
+        flash_agent=_SchemaAwareDebateCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
         kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
@@ -303,8 +331,8 @@ async def test_mechanism_switch_triggers_when_monitor_requests(monkeypatch) -> N
     engine = DebateEngine(
         agent_count=3,
         max_rounds=4,
-        flash_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
-        pro_agent=_SchemaAwareDebateCaller("gemini-3.1-pro-preview"),
+        flash_agent=_SchemaAwareDebateCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SchemaAwareDebateCaller("gemini-3-flash-preview"),
         kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
@@ -334,8 +362,8 @@ async def test_debate_paid_integration_hits_kimi_cross_exam() -> None:
 
     engine = DebateEngine(
         agent_count=3,
-        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
-        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
+        flash_agent=_FailingCaller(model="gemini-3.1-flash-lite-preview"),
+        pro_agent=_FailingCaller(model="gemini-3-flash-preview"),
     )
     selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="math")
 
@@ -344,7 +372,6 @@ async def test_debate_paid_integration_hits_kimi_cross_exam() -> None:
     assert outcome.result is not None
     assert outcome.result.total_tokens_used > 0
     assert any(
-        output.role == "devil_advocate"
-        and output.agent_model == "moonshotai/kimi-k2-thinking"
+        output.role == "devil_advocate" and output.agent_model == "moonshotai/kimi-k2-thinking"
         for output in outcome.state.cross_examinations
     )

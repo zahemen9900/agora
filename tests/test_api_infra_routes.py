@@ -75,8 +75,9 @@ async def isolated_coordination_state() -> AsyncIterator[None]:
 
 
 class _FakeSelectionOnlyOrchestrator:
-    def __init__(self, agent_count: int):
+    def __init__(self, agent_count: int, reasoning_presets=None):
         self.agent_count = agent_count
+        self.reasoning_presets = reasoning_presets
         self.selector = self
 
     async def select(self, task_text: str, agent_count: int, stakes: float):
@@ -176,6 +177,23 @@ def test_auth_jwks_candidates_include_explicit_and_derived(
         "https://api.workos.com/sso/jwks/client-123",
         "https://tenant.authkit.app/oauth2/jwks",
     ]
+
+
+def test_stream_messages_encode_json_payloads() -> None:
+    payload = task_routes._to_sse_message(
+        {
+            "event": "mechanism_selected",
+            "timestamp": "2026-04-18T00:00:00Z",
+            "data": {"mechanism": "vote", "confidence": 0.9},
+        }
+    )
+
+    assert payload["event"] == "mechanism_selected"
+    assert isinstance(payload["data"], str)
+    assert json.loads(payload["data"]) == {
+        "payload": {"mechanism": "vote", "confidence": 0.9},
+        "timestamp": "2026-04-18T00:00:00Z",
+    }
 
 
 def test_decode_verified_token_accepts_trailing_slash_issuer(
@@ -421,6 +439,17 @@ async def test_auth_requires_token_when_auth_required(
 
 
 @pytest.mark.asyncio
+async def test_collection_routes_accept_slashless_paths(client: httpx.AsyncClient) -> None:
+    """Browser-facing rewrites should not depend on trailing-slash redirects."""
+
+    tasks_response = await client.get("/tasks", follow_redirects=False)
+    api_keys_response = await client.get("/api-keys", follow_redirects=False)
+
+    assert tasks_response.status_code == 200
+    assert api_keys_response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_api_keys_requires_bearer_when_demo_auth_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -610,6 +639,60 @@ async def test_create_list_get_task_with_local_store(
 
 
 @pytest.mark.asyncio
+async def test_create_task_resolves_and_persists_reasoning_presets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "reasoning-preset-data"))
+    captured: dict[str, object] = {}
+
+    class _PresetAwareOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None):
+            captured["agent_count"] = agent_count
+            captured["reasoning_presets"] = reasoning_presets
+            self.agent_count = agent_count
+            self.selector = self
+
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _PresetAwareOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(
+                task="Tune the ensemble.",
+                agent_count=8,
+                stakes=0.0,
+                reasoning_presets={
+                    "gemini_pro": "low",
+                    "claude": "high",
+                },
+            ),
+            _override_user(),
+        )
+        fetched = await task_routes.get_task_status(create.task_id, _override_user(), detailed=True)
+    finally:
+        task_routes._store = None
+
+    assert captured["agent_count"] == 8
+    assert captured["reasoning_presets"].model_dump(mode="json") == {
+        "gemini_pro": "low",
+        "gemini_flash": "medium",
+        "kimi": "low",
+        "claude": "high",
+    }
+    assert fetched.reasoning_presets.model_dump(mode="json") == {
+        "gemini_pro": "low",
+        "gemini_flash": "medium",
+        "kimi": "low",
+        "claude": "high",
+    }
+
+
+@pytest.mark.asyncio
 async def test_create_task_rejects_unsupported_mechanism_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -790,9 +873,9 @@ def test_result_to_response_includes_model_telemetry_and_informational_payouts()
         mechanism_switches=0,
         merkle_root="root",
         transcript_hashes=["h1", "h2"],
-        agent_models_used=["gemini-3.1-pro-preview", "claude-sonnet-4-6"],
-        model_token_usage={"gemini-3.1-pro-preview": 300, "claude-sonnet-4-6": 100},
-        model_latency_ms={"gemini-3.1-pro-preview": 1200.0, "claude-sonnet-4-6": 600.0},
+        agent_models_used=["gemini-3-flash-preview", "claude-sonnet-4-6"],
+        model_token_usage={"gemini-3-flash-preview": 300, "claude-sonnet-4-6": 100},
+        model_latency_ms={"gemini-3-flash-preview": 1200.0, "claude-sonnet-4-6": 600.0},
         convergence_history=[],
         locked_claims=[],
         total_tokens_used=400,
@@ -806,17 +889,17 @@ def test_result_to_response_includes_model_telemetry_and_informational_payouts()
         payment_status="locked",
     )
     assert response.model_token_usage == {
-        "gemini-3.1-pro-preview": 300,
+        "gemini-3-flash-preview": 300,
         "claude-sonnet-4-6": 100,
     }
     assert response.model_latency_ms == {
-        "gemini-3.1-pro-preview": 1200.0,
+        "gemini-3-flash-preview": 1200.0,
         "claude-sonnet-4-6": 600.0,
     }
     assert response.payment_amount == 0.01
     assert response.payment_status == "locked"
     assert response.informational_model_payouts == {
-        "gemini-3.1-pro-preview": pytest.approx(0.0075),
+        "gemini-3-flash-preview": pytest.approx(0.0075),
         "claude-sonnet-4-6": pytest.approx(0.0025),
     }
 
@@ -835,7 +918,7 @@ def test_result_to_response_even_splits_payout_when_token_breakdown_missing() ->
         mechanism_switches=0,
         merkle_root="root",
         transcript_hashes=["h1", "h2"],
-        agent_models_used=["gemini-3.1-pro-preview", "claude-sonnet-4-6"],
+        agent_models_used=["gemini-3-flash-preview", "claude-sonnet-4-6"],
         convergence_history=[],
         locked_claims=[],
         total_tokens_used=0,
@@ -849,7 +932,7 @@ def test_result_to_response_even_splits_payout_when_token_breakdown_missing() ->
         payment_status="locked",
     )
     assert response.informational_model_payouts == {
-        "gemini-3.1-pro-preview": pytest.approx(0.01),
+        "gemini-3-flash-preview": pytest.approx(0.01),
         "claude-sonnet-4-6": pytest.approx(0.01),
     }
 
@@ -947,8 +1030,9 @@ async def test_run_task_rate_limit_returns_429(
             return selection
 
     class _FakeRunOrchestrator:
-        def __init__(self, agent_count: int):
+        def __init__(self, agent_count: int, reasoning_presets=None):
             self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
             self.selector = _FakeSelector()
 
         async def run(
@@ -1029,8 +1113,9 @@ async def test_workspace_concurrent_run_limit_returns_429(
             return selection
 
     class _BlockingRunOrchestrator:
-        def __init__(self, agent_count: int):
+        def __init__(self, agent_count: int, reasoning_presets=None):
             self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
             self.selector = _FakeSelector()
 
         async def run(
@@ -1103,9 +1188,9 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         merkle_root="receipt-root",
         transcript_hashes=["leaf-1", "leaf-2"],
         agent_models_used=[
-            "gemini-3.1-pro-preview",
-            "moonshotai/kimi-k2-thinking",
             "gemini-3-flash-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3.1-flash-lite-preview",
             "claude-sonnet-4-6",
         ],
         convergence_history=[],
@@ -1121,8 +1206,9 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
             return selection
 
     class _FakeOrchestrator:
-        def __init__(self, agent_count: int):
+        def __init__(self, agent_count: int, reasoning_presets=None):
             self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
             self.selector = _FakeSelector()
 
         async def run(
@@ -1183,9 +1269,9 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         assert run_resp.final_answer == "Ship it."
         assert run_resp.agent_count == 5
         assert run_resp.agent_models_used == [
-            "gemini-3.1-pro-preview",
-            "moonshotai/kimi-k2-thinking",
             "gemini-3-flash-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3.1-flash-lite-preview",
             "claude-sonnet-4-6",
         ]
 
@@ -1216,9 +1302,203 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
             detailed=True,
         )
         assert failed_status.status == "failed"
+        assert failed_status.chain_operations["submit_receipt"].status == "failed"
         assert any(event.event == "error" for event in failed_status.events)
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_run_task_retries_pending_receipt_for_completed_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "receipt-retry-data"))
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="retry receipt",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="Retry succeeds.",
+        confidence=0.9,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=4,
+        mechanism_switches=0,
+        merkle_root=hashlib.sha256(b"retry-root").hexdigest(),
+        transcript_hashes=[hashlib.sha256(b"leaf-1").hexdigest()],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=12,
+        total_latency_ms=4.0,
+        timestamp=datetime.now(UTC),
+    )
+    receipt_attempts = 0
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _FakeOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None):
+            self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def run(self, task: str, **_kwargs: object) -> DeliberationResult:
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def receipt_flaky(**_kwargs: object) -> dict[str, str]:
+        nonlocal receipt_attempts
+        receipt_attempts += 1
+        if receipt_attempts == 1:
+            raise RuntimeError("temporary receipt failure")
+        return {"tx_hash": "receipt_retry_tx", "explorer_url": "https://explorer/retry"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_flaky)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="retry receipt", agent_count=4, stakes=0.0),
+            _override_user(),
+        )
+        first = await task_routes.run_task(create.task_id, _override_user())
+        failed_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+        second = await task_routes.run_task(create.task_id, _override_user())
+        retried_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+    finally:
+        task_routes._store = None
+
+    assert first.final_answer == "Retry succeeds."
+    assert second.final_answer == "Retry succeeds."
+    assert receipt_attempts == 2
+    assert failed_status.status == "completed"
+    assert failed_status.chain_operations["submit_receipt"].status == "failed"
+    assert retried_status.chain_operations["submit_receipt"].status == "succeeded"
+    assert retried_status.solana_tx_hash == "receipt_retry_tx"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_payment_release_uses_task_scoped_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "payment-lock-data"))
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+    bridge_calls = 0
+
+    async def pay_slow(**_kwargs: object) -> dict[str, str]:
+        nonlocal bridge_calls
+        bridge_calls += 1
+        release_started.set()
+        await finish_release.wait()
+        return {"tx_hash": "pay_tx", "explorer_url": "https://explorer/pay_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="pay lock", agent_count=4, stakes=0.2),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "completed"
+        task["quorum_reached"] = True
+        task["payment_status"] = "locked"
+        await store.save_task("user-1", create.task_id, task)
+
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "release_payment", pay_slow)
+
+        first_task = asyncio.create_task(
+            task_routes.release_payment(create.task_id, _override_user())
+        )
+        await release_started.wait()
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.release_payment(create.task_id, _override_user())
+        finish_release.set()
+        first = await first_task
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Payment release already in progress"
+    assert first["released"] is True
+    assert bridge_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_payment_release_after_success_does_not_call_bridge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "payment-repeat-data"))
+
+    async def pay_unexpected(**_kwargs: object) -> dict[str, str]:
+        raise AssertionError("bridge.release_payment should not be called")
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="pay repeat", agent_count=4, stakes=0.2),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "paid"
+        task["quorum_reached"] = True
+        task["payment_status"] = "released"
+        task["chain_operations"] = {
+            "release_payment": {
+                "status": "succeeded",
+                "tx_hash": "pay_tx",
+                "explorer_url": "https://explorer/pay_tx",
+                "attempts": 1,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        }
+        await store.save_task("user-1", create.task_id, task)
+
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "release_payment", pay_unexpected)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.release_payment(create.task_id, _override_user())
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Payment already released"
 
 
 @pytest.mark.asyncio
@@ -1624,6 +1904,48 @@ async def test_solana_webhook_rejects_replay_payload(
 
 
 @pytest.mark.asyncio
+async def test_create_task_saves_before_chain_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "save-before-chain-data"))
+    task_routes._store = store
+    seen_persisted_task = False
+
+    async def init_ok(*, task_id: str, **_kwargs: object) -> dict[str, str]:
+        nonlocal seen_persisted_task
+        persisted = await store.get_task("user-1", task_id)
+        assert persisted is not None
+        assert persisted["payment_status"] == "none"
+        assert persisted["chain_operations"]["initialize_task"]["status"] == "pending"
+        seen_persisted_task = True
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", True)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="save before init", agent_count=4, stakes=0.25),
+            _override_user(),
+        )
+        fetched = await task_routes.get_task_status(create.task_id, _override_user(), detailed=True)
+    finally:
+        task_routes._store = None
+
+    assert seen_persisted_task is True
+    assert fetched.payment_status == "locked"
+    assert fetched.chain_operations["initialize_task"].status == "succeeded"
+    assert fetched.chain_operations["record_selection"].status == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_create_task_continues_when_chain_init_fails_in_non_strict_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1644,15 +1966,92 @@ async def test_create_task_continues_when_chain_init_fails_in_non_strict_mode(
         monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
 
         create = await task_routes.create_task(
-            TaskCreateRequest(task="allow soft chain failure", agent_count=3, stakes=0.0),
+            TaskCreateRequest(task="allow soft chain failure", agent_count=3, stakes=0.25),
             _override_user(),
         )
 
-        fetched = await task_routes.get_task_status(create.task_id, _override_user())
+        fetched = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
         assert fetched.status == "pending"
+        assert fetched.payment_status == "none"
         assert fetched.solana_tx_hash is None
+        assert fetched.chain_operations["initialize_task"].status == "failed"
+        assert fetched.chain_operations["record_selection"].status == "pending"
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_create_task_records_selection_failure_after_initialized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "selection-failure-data"))
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_fail(**_kwargs: object) -> dict[str, str]:
+        raise RuntimeError("selection write failed")
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_fail)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="selection failure", agent_count=4, stakes=0.2),
+            _override_user(),
+        )
+        fetched = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+    finally:
+        task_routes._store = None
+
+    assert fetched.payment_status == "locked"
+    assert fetched.chain_operations["initialize_task"].status == "succeeded"
+    assert fetched.chain_operations["record_selection"].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_create_task_strict_chain_failure_persists_failed_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "strict-create-chain-failure-data"))
+    task_routes._store = store
+
+    async def init_fail(**_kwargs: object) -> dict[str, str]:
+        raise RuntimeError("strict init failure")
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", True)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_fail)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.create_task(
+                TaskCreateRequest(task="strict chain failure", agent_count=4, stakes=0.1),
+                _override_user(),
+            )
+        tasks = await store.list_user_tasks("user-1")
+    finally:
+        task_routes._store = None
+
+    assert exc_info.value.status_code == 502
+    assert len(tasks) == 1
+    assert tasks[0]["status"] == "failed"
+    assert tasks[0]["payment_status"] == "none"
+    assert tasks[0]["chain_operations"]["initialize_task"]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -1670,8 +2069,9 @@ async def test_run_task_honors_env_forced_mechanism_and_serializes_models(
             return selection
 
     class _ForcedMechanismOrchestrator:
-        def __init__(self, agent_count: int):
+        def __init__(self, agent_count: int, reasoning_presets=None):
             captured["agent_count"] = agent_count
+            captured["reasoning_presets"] = reasoning_presets
             self.agent_count = agent_count
             self.selector = _FakeSelector()
 
@@ -1698,9 +2098,9 @@ async def test_run_task_honors_env_forced_mechanism_and_serializes_models(
                 merkle_root="real-root",
                 transcript_hashes=["h1", "h2", "h3", "h4"],
                 agent_models_used=[
-                    "gemini-3.1-pro-preview",
-                    "moonshotai/kimi-k2-thinking",
                     "gemini-3-flash-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3.1-flash-lite-preview",
                     "claude-sonnet-4-6",
                 ],
                 convergence_history=[],
@@ -1728,9 +2128,9 @@ async def test_run_task_honors_env_forced_mechanism_and_serializes_models(
         assert run_resp.mechanism == "vote"
         assert run_resp.agent_count == 4
         assert run_resp.agent_models_used == [
-            "gemini-3.1-pro-preview",
-            "moonshotai/kimi-k2-thinking",
             "gemini-3-flash-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3.1-flash-lite-preview",
             "claude-sonnet-4-6",
         ]
         assert run_resp.total_tokens_used == 44
@@ -1752,8 +2152,9 @@ async def test_run_task_honors_request_mechanism_override_without_env_force(
             return make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
 
     class _RequestOverrideOrchestrator:
-        def __init__(self, agent_count: int):
+        def __init__(self, agent_count: int, reasoning_presets=None):
             captured["agent_count"] = agent_count
+            captured["reasoning_presets"] = reasoning_presets
             self.agent_count = agent_count
             self.selector = _FakeSelector()
 
@@ -1781,9 +2182,9 @@ async def test_run_task_honors_request_mechanism_override_without_env_force(
                 merkle_root="request-override-root",
                 transcript_hashes=["h1", "h2", "h3", "h4"],
                 agent_models_used=[
-                    "gemini-3.1-pro-preview",
-                    "moonshotai/kimi-k2-thinking",
                     "gemini-3-flash-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3.1-flash-lite-preview",
                     "claude-sonnet-4-6",
                 ],
                 convergence_history=[],
@@ -1821,9 +2222,9 @@ async def test_run_task_honors_request_mechanism_override_without_env_force(
         assert run_resp.mechanism == "vote"
         assert run_resp.agent_count == 4
         assert run_resp.agent_models_used == [
-            "gemini-3.1-pro-preview",
-            "moonshotai/kimi-k2-thinking",
             "gemini-3-flash-preview",
+            "moonshotai/kimi-k2-thinking",
+            "gemini-3.1-flash-lite-preview",
             "claude-sonnet-4-6",
         ]
     finally:
@@ -2143,6 +2544,126 @@ async def test_benchmark_catalog_returns_recent_and_frequency_views(
 
 
 @pytest.mark.asyncio
+async def test_benchmark_prompt_templates_endpoint_returns_domain_catalog(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.get("/benchmarks/prompt-templates")
+    assert response.status_code == 200
+
+    payload = response.json()
+    domains = payload["domains"]
+    assert set(domains.keys()) == {"math", "factual", "reasoning", "code", "creative", "demo"}
+    assert all(len(entries) >= 4 for entries in domains.values())
+    assert all("id" in domains["math"][idx] for idx in range(4))
+
+
+@pytest.mark.asyncio
+async def test_benchmark_detail_endpoint_supports_artifact_and_run_id_lookup(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    await store.save_user_benchmark_artifact(
+        "user-1",
+        "user-artifact",
+        {
+            "artifact_id": "user-artifact",
+            "scope": "user",
+            "owner_user_id": "user-1",
+            "source": "user_triggered",
+            "status": "completed",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "benchmark_payload": {
+                "generated_at": "2026-04-18T02:00:00+00:00",
+                "benchmark_config": {"agent_count": 8},
+                "runs": [
+                    {
+                        "mechanism_used": "selector",
+                        "category": "demo",
+                        "tokens_used": 320,
+                        "thinking_tokens_used": 24,
+                        "model_token_usage": {
+                            "gemini-3-flash-preview": 200,
+                            "claude-sonnet-4-6": 120,
+                        },
+                        "estimated_cost_usd": 0.0024,
+                        "model_estimated_costs_usd": {
+                            "gemini-3-flash-preview": 0.0014,
+                            "claude-sonnet-4-6": 0.001,
+                        },
+                        "pricing_version": "2026-04-18",
+                    }
+                ],
+                "summary": {
+                    "per_mode": {
+                        "selector": {
+                            "accuracy": 1,
+                            "avg_tokens": 320,
+                            "avg_latency_ms": 100,
+                            "avg_estimated_cost_usd": 0.0024,
+                        }
+                    },
+                    "per_category": {
+                        "demo": {
+                            "selector": {
+                                "accuracy": 1,
+                                "avg_tokens": 320,
+                                "avg_latency_ms": 100,
+                                "avg_estimated_cost_usd": 0.0024,
+                            }
+                        }
+                    },
+                },
+            },
+        },
+    )
+
+    await store.save_user_test_result(
+        "user-1",
+        "run-user-art",
+        {
+            "run_id": "run-user-art",
+            "status": "completed",
+            "artifact_id": "user-artifact",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "updated_at": "2026-04-18T02:10:00+00:00",
+            "request": {
+                "agent_count": 8,
+                "domain_prompts": {
+                    "demo": {
+                        "template_id": "demo-balanced",
+                        "prompt": "Demo-focused deliberation prompt.",
+                    }
+                },
+            },
+        },
+    )
+
+    by_artifact = await client.get("/benchmarks/user-artifact")
+    assert by_artifact.status_code == 200
+    by_artifact_payload = by_artifact.json()
+    assert by_artifact_payload["benchmark_id"] == "user-artifact"
+    assert by_artifact_payload["artifact_id"] == "user-artifact"
+    assert by_artifact_payload["scope"] == "user"
+    assert by_artifact_payload["agent_count"] == 8
+    assert by_artifact_payload["total_tokens"] == 320
+    assert by_artifact_payload["thinking_tokens"] == 24
+    assert by_artifact_payload["cost"]["estimated_cost_usd"] == pytest.approx(0.0024)
+
+    by_run = await client.get("/benchmarks/run-user-art")
+    assert by_run.status_code == 200
+    by_run_payload = by_run.json()
+    assert by_run_payload["benchmark_id"] == "run-user-art"
+    assert by_run_payload["artifact_id"] == "user-artifact"
+    assert by_run_payload["request"]["agent_count"] == 8
+    assert "demo" in by_run_payload["request"]["domain_prompts"]
+
+
+@pytest.mark.asyncio
 async def test_benchmark_run_endpoint_persists_status_and_artifacts(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -2238,6 +2759,143 @@ async def test_benchmark_run_endpoint_persists_status_and_artifacts(
 
 
 @pytest.mark.asyncio
+async def test_benchmark_run_status_exposes_effective_reasoning_presets(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_execute_benchmark_run(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_execute_benchmark_run", fake_execute_benchmark_run)
+
+    run_response = await client.post(
+        "/benchmarks/run",
+        json={
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+            "agent_count": 4,
+            "live_agents": False,
+            "reasoning_presets": {
+                "gemini_pro": "low",
+                "claude": "high",
+            },
+        },
+    )
+    assert run_response.status_code == 200
+
+    run_id = run_response.json()["run_id"]
+    status_response = await client.get(f"/benchmarks/runs/{run_id}")
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+
+    assert status_payload["reasoning_presets"] == {
+        "gemini_pro": "low",
+        "gemini_flash": "medium",
+        "kimi": "low",
+        "claude": "high",
+    }
+    assert status_payload["request"]["reasoning_presets"] == {
+        "gemini_pro": "low",
+        "gemini_flash": "medium",
+        "kimi": "low",
+        "claude": "high",
+    }
+
+
+@pytest.mark.asyncio
+async def test_benchmark_stream_replays_events_and_terminal_state(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+
+    run_id = "benchmark-stream-run"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "completed",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "updated_at": "2026-04-18T02:01:00+00:00",
+            "events": [
+                {
+                    "event": "queued",
+                    "data": {"run_id": run_id, "status": "queued"},
+                    "timestamp": "2026-04-18T02:00:00+00:00",
+                },
+                {
+                    "event": "complete",
+                    "data": {"run_id": run_id, "status": "completed"},
+                    "timestamp": "2026-04-18T02:01:00+00:00",
+                },
+            ],
+        },
+    )
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content):
+            self.content = content
+
+    monkeypatch.setattr(benchmark_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+
+    ticket = await benchmark_routes.create_benchmark_stream_ticket(run_id, _override_user())
+    response = await benchmark_routes.stream_benchmark_run(run_id, ticket=ticket["ticket"])
+    replayed = [item async for item in response.content]
+
+    assert replayed == [
+        {
+            "event": "queued",
+            "data": {
+                "payload": {"run_id": run_id, "status": "queued"},
+                "timestamp": "2026-04-18T02:00:00+00:00",
+            },
+        },
+        {
+            "event": "complete",
+            "data": {
+                "payload": {"run_id": run_id, "status": "completed"},
+                "timestamp": "2026-04-18T02:01:00+00:00",
+            },
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_benchmark_stream_ticket_is_one_use(
+    client: httpx.AsyncClient,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+
+    run_id = "benchmark-stream-ticket"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "completed",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "updated_at": "2026-04-18T02:01:00+00:00",
+            "events": [],
+        },
+    )
+
+    ticket = await benchmark_routes.create_benchmark_stream_ticket(run_id, _override_user())
+    assert "ticket" in ticket
+    await benchmark_routes.stream_benchmark_run(run_id, ticket=ticket["ticket"])
+    with pytest.raises(HTTPException) as exc_info:
+        await benchmark_routes.stream_benchmark_run(run_id, ticket=ticket["ticket"])
+
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_demo_mode_auth_provisions_workspace_without_bearer(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2304,8 +2962,9 @@ async def test_demo_mode_bootstrap_creates_api_key_and_runs_task_flow(
     merkle_root = hasher.build_merkle_tree(transcript_hashes)
 
     class _DemoSelectionOnlyOrchestrator:
-        def __init__(self, agent_count: int):
+        def __init__(self, agent_count: int, reasoning_presets=None):
             self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
             self.selector = self
 
         async def select(self, task_text: str, agent_count: int, stakes: float):
@@ -2346,9 +3005,9 @@ async def test_demo_mode_bootstrap_creates_api_key_and_runs_task_flow(
                 merkle_root=merkle_root,
                 transcript_hashes=transcript_hashes,
                 agent_models_used=[
-                    "gemini-3.1-pro-preview",
-                    "moonshotai/kimi-k2-thinking",
                     "gemini-3-flash-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3.1-flash-lite-preview",
                     "claude-sonnet-4-6",
                 ],
                 convergence_history=[],
@@ -2437,9 +3096,9 @@ async def test_demo_mode_bootstrap_creates_api_key_and_runs_task_flow(
             run_task = await client.post(f"/tasks/{task_id}/run", headers=key_headers)
             assert run_task.status_code == 200
             assert run_task.json()["agent_models_used"] == [
-                "gemini-3.1-pro-preview",
-                "moonshotai/kimi-k2-thinking",
                 "gemini-3-flash-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3.1-flash-lite-preview",
                 "claude-sonnet-4-6",
             ]
 

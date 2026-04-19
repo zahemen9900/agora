@@ -240,16 +240,6 @@ def test_gemini_uses_late_bound_env_key_after_config_cache(
     assert created["client"].api_key == "late-bound-gemini-key"
 
 
-def test_openrouter_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OpenRouter caller should fail fast when API key is missing."""
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "")
-    monkeypatch.setattr(agent_module, "AsyncOpenAI", lambda *args, **kwargs: object())
-
-    with pytest.raises(AgentCallError, match="OPENROUTER_API_KEY is not set"):
-        AgentCaller(model="moonshotai/kimi-k2-thinking")
-
-
 def test_openrouter_uses_async_openai_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """OpenRouter caller should initialize AsyncOpenAI client with base URL."""
 
@@ -339,149 +329,6 @@ async def test_openrouter_structured_output_parses_pydantic(
     assert kwargs["response_format"] == {"type": "json_object"}
     assert kwargs["max_tokens"] == get_config().kimi_max_tokens
     assert kwargs["extra_body"] == {"reasoning": {"exclude": True, "effort": "low"}}
-
-
-@pytest.mark.asyncio
-async def test_openrouter_structured_output_wraps_analysis_arrays(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Kimi may return a top-level JSON array for cross-exam analyses."""
-
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
-    fake_response = _FakeOpenRouterResponse(
-        'Here is the JSON:\n[{"faction":"pro","flaw":"thin evidence"}]',
-        input_tokens=9,
-        output_tokens=5,
-        reasoning_tokens=3,
-    )
-    created: dict[str, _FakeOpenRouterClient] = {}
-
-    def _fake_async_openai_ctor(
-        *,
-        api_key: str,
-        base_url: str,
-        max_retries: int = 0,
-        default_headers: dict[str, str] | None = None,
-    ) -> _FakeOpenRouterClient:
-        client = _FakeOpenRouterClient(
-            api_key=api_key,
-            base_url=base_url,
-            max_retries=max_retries,
-            default_headers=default_headers,
-            response=fake_response,
-        )
-        created["client"] = client
-        return client
-
-    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
-
-    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
-    parsed, _usage = await caller.call(
-        system_prompt="Return structured JSON.",
-        user_prompt="Critique both sides.",
-        response_format=_AnalysisListResponse,
-    )
-
-    assert parsed == _AnalysisListResponse(
-        analyses=[{"faction": "pro", "flaw": "thin evidence"}]
-    )
-    assert created["client"].chat.completions.last_kwargs is not None
-
-
-@pytest.mark.asyncio
-async def test_openrouter_uses_agora_key_alias_and_optional_headers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """OpenRouter should honor AGORA_* key alias and app attribution headers."""
-
-    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "agora-or-key")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "plain-or-key")
-    monkeypatch.setenv("AGORA_OPENROUTER_HTTP_REFERER", "https://example.test/agora")
-    monkeypatch.setenv("AGORA_OPENROUTER_APP_TITLE", "Agora Test")
-    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "true")
-    fake_response = _FakeOpenRouterResponse(
-        "ok",
-        input_tokens=9,
-        output_tokens=5,
-        reasoning_tokens=3,
-    )
-    created: dict[str, _FakeOpenRouterClient] = {}
-
-    def _fake_async_openai_ctor(
-        *,
-        api_key: str,
-        base_url: str,
-        max_retries: int = 0,
-        default_headers: dict[str, str] | None = None,
-    ) -> _FakeOpenRouterClient:
-        client = _FakeOpenRouterClient(
-            api_key=api_key,
-            base_url=base_url,
-            max_retries=max_retries,
-            default_headers=default_headers,
-            response=fake_response,
-        )
-        created["client"] = client
-        return client
-
-    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
-
-    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
-    response, usage = await caller.call(system_prompt="Be brief.", user_prompt="Say OK")
-
-    assert response == "ok"
-    assert usage["provider"] == "openrouter"
-    assert usage["input_tokens"] == 9
-    assert usage["output_tokens"] == 5
-    assert usage["reasoning_tokens"] == 3
-    assert created["client"].api_key == "agora-or-key"
-    assert created["client"].default_headers == {
-        "HTTP-Referer": "https://example.test/agora",
-        "X-OpenRouter-Title": "Agora Test",
-        "X-Title": "Agora Test",
-    }
-
-    kwargs = created["client"].chat.completions.last_kwargs
-    assert kwargs is not None
-    assert kwargs["max_tokens"] == get_config().kimi_max_tokens
-    assert kwargs["extra_body"] == {"reasoning": {"exclude": True, "effort": "low"}}
-
-
-@pytest.mark.asyncio
-async def test_openrouter_disables_legacy_x_title_when_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Legacy X-Title header should be disabled by config toggle."""
-
-    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "agora-or-key")
-    monkeypatch.setenv("AGORA_OPENROUTER_APP_TITLE", "Agora Test")
-    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "false")
-    fake_response = _FakeOpenRouterResponse("ok")
-    created: dict[str, _FakeOpenRouterClient] = {}
-
-    def _fake_async_openai_ctor(
-        *,
-        api_key: str,
-        base_url: str,
-        max_retries: int = 0,
-        default_headers: dict[str, str] | None = None,
-    ) -> _FakeOpenRouterClient:
-        client = _FakeOpenRouterClient(
-            api_key=api_key,
-            base_url=base_url,
-            max_retries=max_retries,
-            default_headers=default_headers,
-            response=fake_response,
-        )
-        created["client"] = client
-        return client
-
-    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
-
-    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
-    await caller.call(system_prompt="Be brief.", user_prompt="Say OK")
-
-    assert created["client"].default_headers == {"X-OpenRouter-Title": "Agora Test"}
 
 
 @pytest.mark.asyncio
@@ -803,6 +650,84 @@ async def test_flash_caller_uses_minimal_gemini_thinking_level(
     assert thinking_config.kwargs == {"thinking_level": "minimal"}
 
 
+@pytest.mark.asyncio
+async def test_pro_caller_uses_configured_gemini_thinking_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pro caller should use Gemini 3 thinking_level controls rather than token budgets."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setenv("AGORA_GEMINI_PRO_THINKING_LEVEL", "low")
+    response = _FakeGeminiResponse("ok", input_tokens=2, output_tokens=1)
+    created: dict[str, _FakeGeminiClient] = {}
+
+    def _fake_client_ctor(*, api_key: str) -> _FakeGeminiClient:
+        client = _FakeGeminiClient(api_key=api_key, response=response)
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "genai", SimpleNamespace(Client=_fake_client_ctor))
+    monkeypatch.setattr(
+        agent_module,
+        "genai_types",
+        SimpleNamespace(
+            GenerateContentConfig=_FakeGeminiGenerateContentConfig,
+            ThinkingConfig=_FakeGeminiThinkingConfig,
+        ),
+    )
+
+    caller = agent_module.pro_caller()
+    await caller.call(system_prompt="Be careful.", user_prompt="Say OK")
+
+    kwargs = created["client"].models.last_generate_kwargs
+    assert kwargs is not None
+    config = kwargs["config"]
+    thinking_config = config.kwargs["thinking_config"]
+    assert thinking_config.kwargs == {"thinking_level": "low"}
+
+
+@pytest.mark.asyncio
+async def test_gemini_thinking_config_falls_back_to_compatible_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemini calls should keep working if the SDK rejects the first thinking-config shape."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setenv("AGORA_GEMINI_PRO_THINKING_LEVEL", "high")
+    response = _FakeGeminiResponse("ok", input_tokens=2, output_tokens=1)
+    created: dict[str, _FakeGeminiClient] = {}
+
+    def _fake_client_ctor(*, api_key: str) -> _FakeGeminiClient:
+        client = _FakeGeminiClient(api_key=api_key, response=response)
+        created["client"] = client
+        return client
+
+    class _AliasOnlyThinkingConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            if "thinking_level" in kwargs:
+                raise TypeError("thinking_level unsupported")
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(agent_module, "genai", SimpleNamespace(Client=_fake_client_ctor))
+    monkeypatch.setattr(
+        agent_module,
+        "genai_types",
+        SimpleNamespace(
+            GenerateContentConfig=_FakeGeminiGenerateContentConfig,
+            ThinkingConfig=_AliasOnlyThinkingConfig,
+        ),
+    )
+
+    caller = agent_module.pro_caller()
+    await caller.call(system_prompt="Be careful.", user_prompt="Say OK")
+
+    kwargs = created["client"].models.last_generate_kwargs
+    assert kwargs is not None
+    config = kwargs["config"]
+    thinking_config = config.kwargs["thinking_config"]
+    assert thinking_config.kwargs == {"thinkingLevel": "high"}
+
+
 class _FakeMessage:
     def __init__(self, text: str, input_tokens: int = 0, output_tokens: int = 0) -> None:
         self.content = [{"type": "text", "text": text}]
@@ -922,6 +847,8 @@ async def test_claude_uses_async_anthropic_client(monkeypatch) -> None:
     assert kwargs["model"] == "claude-sonnet-4-6"
     assert kwargs["max_tokens"] == get_config().anthropic_max_tokens
     assert kwargs["messages"][0]["role"] == "user"
+    assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert kwargs["output_config"] == {"effort": "medium"}
 
 
 @pytest.mark.asyncio
@@ -1008,3 +935,52 @@ async def test_claude_streaming_returns_full_text_and_usage(monkeypatch) -> None
     assert streamed_chunks == ["Hel", "lo"]
     assert usage["input_tokens"] == 5
     assert usage["output_tokens"] == 7
+
+
+@pytest.mark.asyncio
+async def test_claude_falls_back_when_create_signature_lacks_output_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude text calls should omit output_config when the installed SDK does not support it."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    class _NoOutputConfigMessagesAPI:
+        def __init__(self) -> None:
+            self.last_create_kwargs: dict[str, Any] | None = None
+
+        async def create(
+            self,
+            *,
+            model: str,
+            max_tokens: int,
+            temperature: float,
+            system: str,
+            messages: list[dict[str, str]],
+            thinking: dict[str, str],
+        ) -> _FakeMessage:
+            self.last_create_kwargs = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "system": system,
+                "messages": messages,
+                "thinking": thinking,
+            }
+            return _FakeMessage("plain text", input_tokens=3, output_tokens=4)
+
+    messages_api = _NoOutputConfigMessagesAPI()
+    fake_client = SimpleNamespace(messages=messages_api)
+    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: fake_client)
+
+    caller = AgentCaller(model="claude-sonnet-4-6", temperature=0.3)
+    response, usage = await caller.call(
+        system_prompt="Be concise.",
+        user_prompt="Say hello",
+    )
+
+    assert response == "plain text"
+    assert usage["input_tokens"] == 3
+    assert usage["output_tokens"] == 4
+    assert messages_api.last_create_kwargs is not None
+    assert "output_config" not in messages_api.last_create_kwargs

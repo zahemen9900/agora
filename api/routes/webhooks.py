@@ -9,8 +9,8 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from api.coordination import get_coordination_backend
 from api.config import settings
+from api.coordination import get_coordination_backend
 from api.security import validate_storage_id
 from api.streaming import get_stream_manager
 
@@ -136,7 +136,7 @@ def _verify_webhook_signature(
     if abs(now_ts - timestamp_int) > settings.webhook_timestamp_skew_seconds:
         raise HTTPException(status_code=401, detail="Stale webhook timestamp")
 
-    signed_payload = f"{timestamp_int}.".encode("utf-8") + body
+    signed_payload = f"{timestamp_int}.".encode() + body
     expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
 
     provided = signature.removeprefix("sha256=").strip()

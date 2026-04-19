@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import base64
 import hashlib
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 
 import httpx
@@ -21,11 +22,14 @@ from agora.types import (
     DeliberationResult,
     MechanismSelection,
     MechanismType,
+    ReasoningPresetOverrides,
+    ReasoningPresets,
     VerifiedClaim,
 )
 
 MechanismName = Literal["debate", "vote"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
+ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
 DEFAULT_PROGRAM_ID = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
 
@@ -59,7 +63,8 @@ class ArbitratorConfig(BaseModel):
     api_url: str = "http://localhost:8000"
     solana_wallet: str | None = None
     mechanism: MechanismName | None = None
-    agent_count: int = 3
+    agent_count: int = 4
+    reasoning_presets: ReasoningPresetOverrides | None = None
     auth_token: str | None = None
     strict_verification: bool = True
     rpc_url: str = ""
@@ -103,6 +108,19 @@ class HostedDeliberationResult(BaseModel):
     locked_claims: list[VerifiedClaim] = Field(default_factory=list)
 
 
+class HostedChainOperationRecord(BaseModel):
+    """Write-ahead status for one hosted chain side effect."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: ChainOperationStatusName
+    tx_hash: str | None = None
+    explorer_url: str | None = None
+    error: str | None = None
+    attempts: int = Field(default=0, ge=0)
+    updated_at: datetime | None = None
+
+
 class HostedTaskStatus(BaseModel):
     """Detailed task status payload returned by the hosted API."""
 
@@ -122,6 +140,7 @@ class HostedTaskStatus(BaseModel):
     decision_hash: str | None = None
     quorum_reached: bool | None = None
     agent_count: int = 1
+    reasoning_presets: ReasoningPresets | None = None
     round_count: int = 0
     mechanism_switches: int = 0
     transcript_hashes: list[str] = Field(default_factory=list)
@@ -129,10 +148,99 @@ class HostedTaskStatus(BaseModel):
     explorer_url: str | None = None
     payment_amount: float = 0.0
     payment_status: Literal["locked", "released", "none"] = "none"
+    chain_operations: dict[str, HostedChainOperationRecord] = Field(default_factory=dict)
     created_at: str | None = None
     completed_at: str | None = None
     result: HostedDeliberationResult | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class HostedCostEstimate(BaseModel):
+    """Normalized estimated USD cost metadata."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    estimated_cost_usd: float | None = None
+    model_estimated_costs_usd: dict[str, float] = Field(default_factory=dict)
+    pricing_version: str | None = None
+    estimated_at: datetime | None = None
+    estimation_mode: str | None = None
+    pricing_sources: dict[str, str] = Field(default_factory=dict)
+
+
+class HostedModelTelemetry(BaseModel):
+    """Per-model telemetry for hosted task and benchmark flows."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    thinking_tokens: int = 0
+    latency_ms: float = 0.0
+    estimated_cost_usd: float | None = None
+    estimation_mode: str | None = None
+
+
+class HostedBenchmarkRunResponse(BaseModel):
+    """Benchmark run trigger acknowledgement."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    run_id: str
+    status: str
+    created_at: datetime | None = None
+
+
+class HostedBenchmarkRunStatus(BaseModel):
+    """Queued/running/completed benchmark run status."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    run_id: str
+    status: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    error: str | None = None
+    artifact_id: str | None = None
+    request: dict[str, Any] | None = None
+    latest_mechanism: str | None = None
+    agent_count: int | None = None
+    total_tokens: int | None = None
+    thinking_tokens: int | None = None
+    total_latency_ms: float | None = None
+    model_telemetry: dict[str, HostedModelTelemetry] = Field(default_factory=dict)
+    cost: HostedCostEstimate | None = None
+
+
+class HostedBenchmarkDetail(BaseModel):
+    """Detailed benchmark payload for artifact or live run routes."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    benchmark_id: str
+    artifact_id: str | None = None
+    run_id: str | None = None
+    scope: str
+    source: str
+    status: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    run_count: int = 0
+    mechanism_counts: dict[str, int] = Field(default_factory=dict)
+    model_counts: dict[str, int] = Field(default_factory=dict)
+    latest_mechanism: str | None = None
+    agent_count: int | None = None
+    total_tokens: int = 0
+    thinking_tokens: int = 0
+    total_latency_ms: float = 0.0
+    models: list[str] = Field(default_factory=list)
+    request: dict[str, Any] | None = None
+    model_telemetry: dict[str, HostedModelTelemetry] = Field(default_factory=dict)
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    benchmark_payload: dict[str, Any] = Field(default_factory=dict)
+    cost: HostedCostEstimate | None = None
 
 
 class HostedPaymentReleaseResponse(BaseModel):
@@ -156,7 +264,8 @@ class AgoraArbitrator:
         api_url: str = "http://localhost:8000",
         solana_wallet: str | None = None,
         mechanism: MechanismName | None = None,
-        agent_count: int = 3,
+        agent_count: int = 4,
+        reasoning_presets: ReasoningPresetOverrides | None = None,
         auth_token: str | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
@@ -168,6 +277,7 @@ class AgoraArbitrator:
             solana_wallet=solana_wallet,
             mechanism=mechanism,
             agent_count=agent_count,
+            reasoning_presets=reasoning_presets,
             auth_token=auth_token,
             strict_verification=strict_verification,
             rpc_url=rpc_url,
@@ -182,6 +292,16 @@ class AgoraArbitrator:
         self._result_task_ids: dict[str, str] = {}
         self._latest_task_id: str | None = None
 
+    async def __aenter__(self) -> AgoraArbitrator:
+        """Return this arbitrator and close its HTTP client on context exit."""
+
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Close the shared HTTP client when leaving an async context."""
+
+        await self.aclose()
+
     @property
     def latest_task_id(self) -> str | None:
         """Most recent hosted task id created or fetched by this client."""
@@ -195,6 +315,7 @@ class AgoraArbitrator:
         stakes: float = 0.0,
         mechanism: MechanismName | None = None,
         agent_count: int | None = None,
+        reasoning_presets: ReasoningPresetOverrides | dict[str, Any] | None = None,
     ) -> HostedTaskCreateResponse:
         """Create a hosted task without executing it."""
 
@@ -206,6 +327,13 @@ class AgoraArbitrator:
         effective_mechanism = mechanism or self.config.mechanism
         if effective_mechanism is not None:
             payload["mechanism_override"] = effective_mechanism
+        effective_reasoning_presets = reasoning_presets or self.config.reasoning_presets
+        if effective_reasoning_presets is not None:
+            payload["reasoning_presets"] = (
+                effective_reasoning_presets.model_dump(mode="json")
+                if isinstance(effective_reasoning_presets, BaseModel)
+                else effective_reasoning_presets
+            )
 
         response = await self._client.post(
             "/tasks/",
@@ -253,6 +381,86 @@ class AgoraArbitrator:
         self._result_task_ids[result.merkle_root] = task_id
         return result
 
+    async def run_benchmark(self, **payload: Any) -> HostedBenchmarkRunResponse:
+        """Trigger a hosted benchmark run."""
+
+        response = await self._client.post(
+            "/benchmarks/run",
+            json=payload,
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return HostedBenchmarkRunResponse.model_validate(response.json())
+
+    async def get_benchmark_run_status(self, run_id: str) -> HostedBenchmarkRunStatus:
+        """Fetch a hosted benchmark run status."""
+
+        response = await self._client.get(
+            f"/benchmarks/runs/{run_id}",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return HostedBenchmarkRunStatus.model_validate(response.json())
+
+    async def get_benchmark_detail(self, benchmark_id: str) -> HostedBenchmarkDetail:
+        """Fetch a hosted benchmark detail payload by run_id or artifact_id."""
+
+        response = await self._client.get(
+            f"/benchmarks/{benchmark_id}",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return HostedBenchmarkDetail.model_validate(response.json())
+
+    async def stream_benchmark_run_events(
+        self,
+        run_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream benchmark run SSE events with replay from the hosted API."""
+
+        ticket_response = await self._client.post(
+            f"/benchmarks/runs/{run_id}/stream-ticket",
+            headers=self._headers(),
+        )
+        ticket_response.raise_for_status()
+        ticket_payload = ticket_response.json()
+        ticket = str(ticket_payload["ticket"])
+
+        async with self._client.stream(
+            "GET",
+            f"/benchmarks/runs/{run_id}/stream",
+            params={"ticket": ticket},
+            headers=self._headers(),
+        ) as response:
+            response.raise_for_status()
+            event_type = "message"
+            data_lines: list[str] = []
+
+            async for line in response.aiter_lines():
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+                    continue
+                if line:
+                    continue
+                if not data_lines:
+                    event_type = "message"
+                    continue
+                raw_data = "\n".join(data_lines)
+                data_lines = []
+                try:
+                    payload = json.loads(raw_data)
+                except json.JSONDecodeError:
+                    payload = {"payload": {"message": raw_data}, "timestamp": None}
+                yield {
+                    "event": event_type,
+                    "data": payload.get("payload", payload),
+                    "timestamp": payload.get("timestamp"),
+                }
+                event_type = "message"
+
     async def release_payment(self, task_id: str) -> HostedPaymentReleaseResponse:
         """Release payment for a completed hosted task."""
 
@@ -279,7 +487,10 @@ class AgoraArbitrator:
 
         if agents is not None:
             local_agent_count = len(agents) if agents else self.config.agent_count
-            orchestrator = AgoraOrchestrator(agent_count=local_agent_count)
+            orchestrator = AgoraOrchestrator(
+                agent_count=local_agent_count,
+                reasoning_presets=self.config.reasoning_presets,
+            )
             return await orchestrator.run(
                 task=task,
                 stakes=stakes,
@@ -318,9 +529,7 @@ class AgoraArbitrator:
                 status = await self.get_task_status(resolved_task_id, detailed=True)
             except Exception as exc:
                 if strict_mode:
-                    raise ReceiptVerificationError(
-                        f"Hosted receipt fetch failed: {exc}"
-                    ) from exc
+                    raise ReceiptVerificationError(f"Hosted receipt fetch failed: {exc}") from exc
             else:
                 hosted_metadata_match = self._hosted_receipt_matches(status, result)
                 if strict_mode and not hosted_metadata_match:
@@ -561,9 +770,7 @@ class AgoraArbitrator:
             quorum_reached=quorum_reached,
             mechanism=self._parse_mechanism(mechanism_value),
             switched_to=(
-                self._parse_mechanism(switched_to_value)
-                if switched_to_value is not None
-                else None
+                self._parse_mechanism(switched_to_value) if switched_to_value is not None else None
             ),
             mechanism_switches=mechanism_switches,
             status=self._parse_task_status(status_value),
@@ -694,7 +901,7 @@ class AgoraNode:
         api_url: str = "http://localhost:8000",
         solana_wallet: str | None = None,
         mechanism: MechanismName | None = None,
-        agent_count: int = 3,
+        agent_count: int = 4,
         auth_token: str | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
@@ -712,6 +919,21 @@ class AgoraNode:
             program_id=program_id,
             http_timeout_seconds=http_timeout_seconds,
         )
+
+    async def __aenter__(self) -> AgoraNode:
+        """Return this node and close its wrapped arbitrator on context exit."""
+
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
+        """Close the wrapped arbitrator when leaving an async context."""
+
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Close the wrapped arbitrator's shared HTTP client."""
+
+        await self.arbitrator.aclose()
 
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
         """Read a task from state, arbitrate it, and attach `agora_result`."""

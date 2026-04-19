@@ -1,21 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   ArrowRightLeft,
-  Bot,
-  Brain,
   CheckCircle2,
   Coins,
-  Cpu,
   FileText,
-  Sparkles,
   Zap,
 } from "lucide-react";
 
 import { ConvergenceMeter } from "../components/ConvergenceMeter";
-import { TypewriterText } from "../components/TypewriterText";
+import { ProviderGlyph } from "../components/ProviderGlyph";
 import {
   getTask,
   runTask,
@@ -24,8 +20,11 @@ import {
   type TaskStatusResponse,
 } from "../lib/api";
 import { useAuth } from "../lib/auth";
-
-type ProviderName = "gemini" | "claude" | "kimi" | "other";
+import {
+  providerFromModel,
+  providerTone,
+  type ProviderName,
+} from "../lib/modelProviders";
 
 interface TimelineEvent {
   key: string;
@@ -43,8 +42,13 @@ interface ModelUsageSummary {
   model: string;
   provider: ProviderName;
   tokens: number;
-  payout: number;
-  estimated: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens: number;
+  usdCost: number | null;
+  solPayout: number;
+  latencyMs: number | null;
+  estimationMode: string | null;
 }
 
 function safeString(value: unknown, fallback = ""): string {
@@ -60,46 +64,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
-}
-
-function providerFromModel(model: string): ProviderName {
-  const normalized = model.toLowerCase();
-  if (normalized.includes("gemini")) {
-    return "gemini";
-  }
-  if (normalized.includes("claude")) {
-    return "claude";
-  }
-  if (normalized.includes("kimi") || normalized.includes("moonshot")) {
-    return "kimi";
-  }
-  return "other";
-}
-
-function providerTone(provider: ProviderName): string {
-  if (provider === "gemini") {
-    return "text-cyan-300 border-cyan-500/40 bg-cyan-500/10";
-  }
-  if (provider === "claude") {
-    return "text-fuchsia-300 border-fuchsia-500/40 bg-fuchsia-500/10";
-  }
-  if (provider === "kimi") {
-    return "text-amber-300 border-amber-500/40 bg-amber-500/10";
-  }
-  return "text-text-secondary border-border-muted bg-surface";
-}
-
-function ProviderGlyph({ provider }: { provider: ProviderName }) {
-  if (provider === "gemini") {
-    return <Sparkles size={14} />;
-  }
-  if (provider === "claude") {
-    return <Bot size={14} />;
-  }
-  if (provider === "kimi") {
-    return <Brain size={14} />;
-  }
-  return <Cpu size={14} />;
 }
 
 function eventCardTone(eventType: string): string {
@@ -353,6 +317,86 @@ export function LiveDeliberation() {
   } | null>(null);
 
   const seenEventKeysRef = useRef<Set<string>>(new Set());
+  const taskMechanismRef = useRef("debate");
+
+  const setConvergenceFromEvents = useCallback((eventList: TaskEvent[]) => {
+    const latest = [...eventList].reverse().find((event) => event.event === "convergence_update");
+    if (!latest) {
+      return;
+    }
+
+    const data = latest.data as Record<string, unknown>;
+    setConvergence({
+      prevEntropy: Number(data.disagreement_entropy ?? 1),
+      entropy: Number(data.disagreement_entropy ?? 1),
+      infoGain: Number(data.information_gain_delta ?? 0),
+      lockedClaims: Array.isArray(data.locked_claims)
+        ? (data.locked_claims as Array<Record<string, unknown>>)
+        : [],
+    });
+  }, []);
+
+  const handleStreamEvent = useCallback((event: TaskEvent) => {
+    const eventWithTimestamp: TaskEvent = {
+      ...event,
+      timestamp: event.timestamp ?? new Date().toISOString(),
+    };
+    const eventKey = buildEventKey(eventWithTimestamp);
+    if (seenEventKeysRef.current.has(eventKey)) {
+      return;
+    }
+    seenEventKeysRef.current.add(eventKey);
+    setTimeline((current) => [...current, mapTaskEvent(eventWithTimestamp)]);
+
+    const data = asRecord(event.data) ?? {};
+
+    if (event.event === "convergence_update") {
+      setConvergence((current) => ({
+        prevEntropy: current.entropy,
+        entropy: Number(data.disagreement_entropy ?? current.entropy),
+        infoGain: Number(data.information_gain_delta ?? 0),
+        lockedClaims: Array.isArray(data.locked_claims)
+          ? (data.locked_claims as Array<Record<string, unknown>>)
+          : [],
+      }));
+      return;
+    }
+
+    if (event.event === "mechanism_switch") {
+      setSwitchBanner(
+        `SWITCHING: ${String(data.from_mechanism).toUpperCase()} -> ${String(
+          data.to_mechanism,
+        ).toUpperCase()}`,
+      );
+      return;
+    }
+
+    if (event.event === "quorum_reached") {
+      const mechanism = safeString(data.mechanism, taskMechanismRef.current);
+      taskMechanismRef.current = mechanism;
+      setFinalAnswer({
+        text: safeString(data.final_answer, ""),
+        confidence: safeNumber(data.confidence, 0),
+        mechanism,
+      });
+      return;
+    }
+
+    if (event.event === "error") {
+      setErrorMessage(safeString(data.message, "An error occurred"));
+      return;
+    }
+
+    if (event.event === "complete" && taskId) {
+      const resolvedTaskId = taskId;
+      void (async () => {
+        const token = await getAccessToken();
+        const status = await getTask(resolvedTaskId, token, true);
+        taskMechanismRef.current = status.mechanism;
+        setTask(status);
+      })().catch(() => undefined);
+    }
+  }, [getAccessToken, taskId]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -365,6 +409,7 @@ export function LiveDeliberation() {
       const token = await getAccessToken();
       const status = await getTask(resolvedTaskId, token, true);
       if (cancelled) return;
+      taskMechanismRef.current = status.mechanism;
       setTask(status);
       seenEventKeysRef.current = new Set();
       const hydratedTimeline: TimelineEvent[] = [];
@@ -409,83 +454,7 @@ export function LiveDeliberation() {
       cancelled = true;
       streamHandle?.close();
     };
-  }, [taskId, getAccessToken]);
-
-  function handleStreamEvent(event: TaskEvent) {
-    const eventWithTimestamp: TaskEvent = {
-      ...event,
-      timestamp: event.timestamp ?? new Date().toISOString(),
-    };
-    const eventKey = buildEventKey(eventWithTimestamp);
-    if (seenEventKeysRef.current.has(eventKey)) {
-      return;
-    }
-    seenEventKeysRef.current.add(eventKey);
-    setTimeline((current) => [...current, mapTaskEvent(eventWithTimestamp)]);
-
-    const data = asRecord(event.data) ?? {};
-
-    if (event.event === "convergence_update") {
-      setConvergence((current) => ({
-        prevEntropy: current.entropy,
-        entropy: Number(data.disagreement_entropy ?? current.entropy),
-        infoGain: Number(data.information_gain_delta ?? 0),
-        lockedClaims: Array.isArray(data.locked_claims)
-          ? (data.locked_claims as Array<Record<string, unknown>>)
-          : [],
-      }));
-      return;
-    }
-
-    if (event.event === "mechanism_switch") {
-      setSwitchBanner(
-        `SWITCHING: ${String(data.from_mechanism).toUpperCase()} -> ${String(
-          data.to_mechanism,
-        ).toUpperCase()}`,
-      );
-      return;
-    }
-
-    if (event.event === "quorum_reached") {
-      setFinalAnswer({
-        text: safeString(data.final_answer, ""),
-        confidence: safeNumber(data.confidence, 0),
-        mechanism: safeString(data.mechanism, task?.mechanism ?? "debate"),
-      });
-      return;
-    }
-
-    if (event.event === "error") {
-      setErrorMessage(safeString(data.message, "An error occurred"));
-      return;
-    }
-
-    if (event.event === "complete" && taskId) {
-      const resolvedTaskId = taskId;
-      void (async () => {
-        const token = await getAccessToken();
-        const status = await getTask(resolvedTaskId, token, true);
-        setTask(status);
-      })().catch(() => undefined);
-    }
-  }
-
-  function setConvergenceFromEvents(eventList: TaskEvent[]) {
-    const latest = [...eventList].reverse().find((event) => event.event === "convergence_update");
-    if (!latest) {
-      return;
-    }
-
-    const data = latest.data as Record<string, unknown>;
-    setConvergence({
-      prevEntropy: Number(data.disagreement_entropy ?? 1),
-      entropy: Number(data.disagreement_entropy ?? 1),
-      infoGain: Number(data.information_gain_delta ?? 0),
-      lockedClaims: Array.isArray(data.locked_claims)
-        ? (data.locked_claims as Array<Record<string, unknown>>)
-        : [],
-    });
-  }
+  }, [getAccessToken, handleStreamEvent, setConvergenceFromEvents, taskId]);
 
   const modelUsage = useMemo<ModelUsageSummary[]>(() => {
     const result = task?.result;
@@ -493,35 +462,35 @@ export function LiveDeliberation() {
       return [];
     }
 
-    const backendTokenUsage = result.model_token_usage ?? {};
+    const backendTelemetry = result.model_telemetry ?? {};
     const backendPayouts = result.informational_model_payouts ?? {};
     const modelCandidates = result.agent_models_used.length > 0
       ? result.agent_models_used
-      : Object.keys(backendTokenUsage);
+      : Object.keys(backendTelemetry);
 
     if (modelCandidates.length === 0) {
       return [];
     }
 
-    const totalTokens = Math.max(0, result.total_tokens_used);
-    const perModelFloor = Math.floor(totalTokens / modelCandidates.length);
-    const remainder = totalTokens % modelCandidates.length;
-
     const totalPayout = Math.max(0, result.payment_amount ?? task?.payment_amount ?? 0);
     const payoutPerModel = modelCandidates.length > 0 ? totalPayout / modelCandidates.length : 0;
 
-    return modelCandidates.map((model, index) => {
-      const backendTokens = backendTokenUsage[model];
-      const hasBackendTokens = typeof backendTokens === "number" && Number.isFinite(backendTokens);
+    return modelCandidates.map((model) => {
+      const telemetry = backendTelemetry[model];
       const backendPayout = backendPayouts[model];
       const hasBackendPayout = typeof backendPayout === "number" && Number.isFinite(backendPayout);
 
       return {
         model,
         provider: providerFromModel(model),
-        tokens: hasBackendTokens ? Math.max(0, backendTokens) : perModelFloor + (index < remainder ? 1 : 0),
-        payout: hasBackendPayout ? Math.max(0, backendPayout) : payoutPerModel,
-        estimated: !(hasBackendTokens && hasBackendPayout),
+        tokens: typeof telemetry?.total_tokens === "number" ? Math.max(0, telemetry.total_tokens) : 0,
+        inputTokens: typeof telemetry?.input_tokens === "number" ? Math.max(0, telemetry.input_tokens) : 0,
+        outputTokens: typeof telemetry?.output_tokens === "number" ? Math.max(0, telemetry.output_tokens) : 0,
+        thinkingTokens: typeof telemetry?.thinking_tokens === "number" ? Math.max(0, telemetry.thinking_tokens) : 0,
+        usdCost: typeof telemetry?.estimated_cost_usd === "number" ? Math.max(0, telemetry.estimated_cost_usd) : null,
+        solPayout: hasBackendPayout ? Math.max(0, backendPayout) : payoutPerModel,
+        latencyMs: typeof telemetry?.latency_ms === "number" ? Math.max(0, telemetry.latency_ms) : null,
+        estimationMode: typeof telemetry?.estimation_mode === "string" ? telemetry.estimation_mode : null,
       };
     });
   }, [task]);
@@ -596,10 +565,14 @@ export function LiveDeliberation() {
       {task?.result && (
         <div className="card p-5 mb-8 border border-border-subtle">
           <div className="mono text-xs text-text-muted mb-3">RUN SUMMARY</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">TOTAL TOKENS</div>
               <div className="mono text-sm text-text-primary">{task.result.total_tokens_used}</div>
+            </div>
+            <div className="rounded-md border border-border-subtle p-3 bg-void">
+              <div className="mono text-[10px] text-text-muted mb-1">THINKING TOKENS</div>
+              <div className="mono text-sm text-text-primary">{task.result.thinking_tokens_used}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">LATENCY</div>
@@ -610,7 +583,15 @@ export function LiveDeliberation() {
               <div className="mono text-sm text-text-primary">{task.result.mechanism_switches}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">STAKES (SOL)</div>
+              <div className="mono text-[10px] text-text-muted mb-1">USD COST</div>
+              <div className="mono text-sm text-text-primary">
+                {typeof task.result.cost?.estimated_cost_usd === "number"
+                  ? `$${task.result.cost.estimated_cost_usd.toFixed(6)}`
+                  : "n/a"}
+              </div>
+            </div>
+            <div className="rounded-md border border-border-subtle p-3 bg-void">
+              <div className="mono text-[10px] text-text-muted mb-1">PAYOUT (SOL)</div>
               <div className="mono text-sm text-text-primary">{task.payment_amount.toFixed(3)}</div>
             </div>
           </div>
@@ -627,16 +608,20 @@ export function LiveDeliberation() {
                     className={`rounded-md border p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ${providerTone(entry.provider)}`}
                   >
                     <div className="flex items-center gap-2 min-w-0">
-                      <ProviderGlyph provider={entry.provider} />
+                      <ProviderGlyph provider={entry.provider} size={14} />
                       <span className="mono text-xs truncate">{entry.model}</span>
                     </div>
-                    <div className="mono text-[11px] text-text-muted flex items-center gap-3">
+                    <div className="mono text-[11px] text-text-muted flex flex-wrap items-center gap-3">
                       <span>{entry.tokens} tokens</span>
+                      <span>{entry.inputTokens}/{entry.outputTokens} in/out</span>
+                      <span>{entry.thinkingTokens} thinking</span>
+                      <span>{entry.latencyMs !== null ? `${Math.round(entry.latencyMs)} ms` : "n/a"}</span>
+                      <span>${entry.usdCost !== null ? entry.usdCost.toFixed(6) : "n/a"}</span>
                       <span className="flex items-center gap-1">
                         <Coins size={12} />
-                        {entry.payout.toFixed(4)} SOL
+                        {entry.solPayout.toFixed(4)} SOL
                       </span>
-                      {entry.estimated ? <span>estimated</span> : <span>measured</span>}
+                      <span>{entry.estimationMode ?? "unavailable"}</span>
                     </div>
                   </div>
                 ))}
@@ -684,7 +669,7 @@ export function LiveDeliberation() {
                       <span
                         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${providerTone(provider)}`}
                       >
-                        <ProviderGlyph provider={provider} />
+                        <ProviderGlyph provider={provider} size={14} />
                         <span className="mono text-[10px]">{entry.agentModel}</span>
                       </span>
                     ) : null}
@@ -692,8 +677,8 @@ export function LiveDeliberation() {
                   <span className="mono text-[10px] text-text-muted">{formatTimestamp(entry.timestamp)}</span>
                 </div>
 
-                <div className="text-text-primary mb-2">
-                  <TypewriterText text={entry.summary} speed={8} />
+                <div className="text-text-primary mb-2 whitespace-pre-wrap break-words">
+                  {entry.summary}
                 </div>
 
                 {typeof entry.confidence === "number" ? (
@@ -707,7 +692,7 @@ export function LiveDeliberation() {
                     <summary className="mono text-[11px] text-text-muted cursor-pointer">
                       {detailLabelForEvent(entry)}
                     </summary>
-                    <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap wrap-break-word mt-2">
+                    <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap break-words mt-2">
                       {JSON.stringify(entry.details, null, 2)}
                     </pre>
                   </details>

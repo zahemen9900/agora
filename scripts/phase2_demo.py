@@ -37,7 +37,7 @@ DEFAULT_MECHANISM = "vote"
 DEFAULT_SOLANA_NETWORK = "devnet"
 DEFAULT_TEMP_ROOT = "/tmp"
 DEFAULT_TARGET = "hosted"
-DEFAULT_HOSTED_API_URL = "https://agora-api-rztfxer7ra-uc.a.run.app"
+DEFAULT_HOSTED_API_URL = "https://agora-api-dcro4pg6ca-uc.a.run.app"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 DEFAULT_HTTP_RETRIES = 3
 DEFAULT_HOSTED_AUTH_TOKEN_SECRET = "agora-test-api-key"
@@ -88,100 +88,40 @@ def _run_gcloud_with_input(
     )
 
 
-def _discover_service_account_credentials() -> Path | None:
-    candidates: list[Path] = []
-
-    explicit_path = os.getenv("AGORA_GCLOUD_CREDENTIALS_FILE", "").strip()
-    if explicit_path:
-        candidates.append(Path(explicit_path).expanduser())
-
-    configured_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if configured_path:
-        candidates.append(Path(configured_path).expanduser())
-
-    credentials_dir = REPO_ROOT / ".credentials"
-    preferred_file = credentials_dir / "even-ally-480821-f3-be2827895913.json"
-    if preferred_file.exists():
-        candidates.append(preferred_file)
-    if credentials_dir.exists():
-        candidates.extend(sorted(credentials_dir.glob("*.json")))
-
-    seen: set[Path] = set()
-    for candidate in candidates:
-        if not candidate.is_file():
-            continue
-        resolved = candidate.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        return resolved
-
-    return None
-
-
 def _configure_cloud_auth_context() -> dict[str, Any]:
-    force_service_account = os.getenv("AGORA_FORCE_GCLOUD_SERVICE_ACCOUNT", "").strip().lower()
-    should_force_service_account = force_service_account in {"1", "true", "yes", "on"}
     summary: dict[str, Any] = {
         "gcloud_available": shutil.which("gcloud") is not None,
         "gcloud_auth_status": "unknown",
         "credentials_source": "none",
-        "auth_strategy": "existing-account",
+        "auth_strategy": "user-adc",
     }
 
-    credentials_file = _discover_service_account_credentials()
-    if credentials_file is not None:
-        credentials_path = str(credentials_file)
-        summary["credentials_source"] = credentials_path
-
-        try:
-            payload = json.loads(credentials_file.read_text(encoding="utf-8"))
-        except Exception:
-            payload = {}
-
-        key_project = str(payload.get("project_id") or "").strip()
-        if key_project:
-            os.environ.setdefault("GOOGLE_CLOUD_PROJECT", key_project)
+    configured_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if configured_path:
+        summary["credentials_source"] = configured_path
 
     if summary["gcloud_available"]:
-        active_account_before = ""
-        active_before = _run_gcloud(
+        active_result = _run_gcloud(
             "auth",
             "list",
             "--filter=status:ACTIVE",
             "--format=value(account)",
         )
-        if active_before is not None and active_before.returncode == 0:
-            active_account_before = active_before.stdout.strip()
-
-        if (
-            credentials_file is not None
-            and (should_force_service_account or not active_account_before)
-        ):
-            credentials_path = str(credentials_file)
-            os.environ.setdefault("GOOGLE_APPLICATION_CREDENTIALS", credentials_path)
-            os.environ["CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE"] = credentials_path
-            _run_gcloud("auth", "activate-service-account", "--key-file", str(credentials_file))
-            summary["auth_strategy"] = "service-account"
-        else:
-            os.environ.pop("CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE", None)
-
-        token_check = _run_gcloud("auth", "print-access-token")
-        if token_check is not None and token_check.returncode == 0:
-            summary["gcloud_auth_status"] = "ok"
-        else:
-            summary["gcloud_auth_status"] = "missing-or-expired"
-
-        active_after = _run_gcloud(
-            "auth",
-            "list",
-            "--filter=status:ACTIVE",
-            "--format=value(account)",
-        )
-        if active_after is not None and active_after.returncode == 0:
-            account = active_after.stdout.strip()
+        if active_result is not None and active_result.returncode == 0:
+            account = active_result.stdout.strip()
             if account:
                 summary["gcloud_active_account"] = account
+
+        token_check = _run_gcloud("auth", "print-access-token")
+        adc_check = _run_gcloud("auth", "application-default", "print-access-token")
+        if adc_check is not None and adc_check.returncode == 0:
+            summary["gcloud_auth_status"] = "ok"
+            summary["credentials_source"] = summary["credentials_source"] or "application-default"
+        elif token_check is not None and token_check.returncode == 0:
+            summary["gcloud_auth_status"] = "ok"
+            summary["credentials_source"] = summary["credentials_source"] or "gcloud-user"
+        else:
+            summary["gcloud_auth_status"] = "missing-or-expired"
 
         if not os.getenv("GOOGLE_CLOUD_PROJECT", "").strip():
             project_result = _run_gcloud("config", "get-value", "project")

@@ -7,6 +7,28 @@ export type PaymentStatusName = "locked" | "released" | "none";
 export type AuthMethodName = "jwt" | "api_key";
 export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "api_keys:read" | "api_keys:write";
 
+export interface ReasoningPresetOverrides {
+  gemini_pro: "low" | "high" | null;
+  gemini_flash: "low" | "medium" | "high" | null;
+  kimi: "low" | "medium" | "high" | null;
+  claude: "low" | "medium" | "high" | null;
+}
+
+export interface ReasoningPresets {
+  gemini_pro: "low" | "high";
+  gemini_flash: "low" | "medium" | "high";
+  kimi: "low" | "medium" | "high";
+  claude: "low" | "medium" | "high";
+}
+
+export interface TaskCreateRequest {
+  task: string;
+  agent_count: number;
+  stakes: number;
+  mechanism_override: "debate" | "vote" | null;
+  reasoning_presets: ReasoningPresetOverrides | null;
+}
+
 export interface TaskEvent {
   event: string;
   data: Record<string, unknown>;
@@ -25,8 +47,13 @@ export interface DeliberationResultResponse {
   agent_models_used: Array<string>;
   model_token_usage: Record<string, number>;
   model_latency_ms: Record<string, number>;
+  model_telemetry: Record<string, ModelTelemetryResponse>;
   total_tokens_used: number;
+  input_tokens_used: number;
+  output_tokens_used: number;
+  thinking_tokens_used: number;
   latency_ms: number;
+  cost: BenchmarkCostEstimateResponse | null;
   payment_amount: number;
   payment_status: "locked" | "released" | "none";
   informational_model_payouts: Record<string, number>;
@@ -35,6 +62,25 @@ export interface DeliberationResultResponse {
   transcript_hashes: Array<string>;
   convergence_history: Array<Record<string, unknown>>;
   locked_claims: Array<Record<string, unknown>>;
+}
+
+export interface BenchmarkCostEstimateResponse {
+  estimated_cost_usd: number | null;
+  model_estimated_costs_usd: Record<string, number>;
+  pricing_version: string | null;
+  estimated_at: string | null;
+  estimation_mode: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
+  pricing_sources: Record<string, string>;
+}
+
+export interface ModelTelemetryResponse {
+  total_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  thinking_tokens: number;
+  latency_ms: number;
+  estimated_cost_usd: number | null;
+  estimation_mode: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
 }
 
 export interface TaskStatusResponse {
@@ -52,6 +98,7 @@ export interface TaskStatusResponse {
   decision_hash: string | null;
   quorum_reached: boolean | null;
   agent_count: number;
+  reasoning_presets: ReasoningPresets;
   round_count: number;
   mechanism_switches: number;
   transcript_hashes: Array<string>;
@@ -59,10 +106,20 @@ export interface TaskStatusResponse {
   explorer_url: string | null;
   payment_amount: number;
   payment_status: "locked" | "released" | "none";
+  chain_operations: Record<string, ChainOperationRecord>;
   created_at: string;
   completed_at: string | null;
   result: DeliberationResultResponse | null;
   events: Array<TaskEvent>;
+}
+
+export interface ChainOperationRecord {
+  status: "pending" | "succeeded" | "failed";
+  tx_hash: string | null;
+  explorer_url: string | null;
+  error: string | null;
+  attempts: number;
+  updated_at: string;
 }
 
 export interface PrincipalResponse {
@@ -119,4 +176,112 @@ export interface TaskCreateResponse {
   reasoning: string;
   selector_reasoning_hash: string;
   status: "pending" | "in_progress" | "completed" | "failed" | "paid";
+}
+
+export interface BenchmarkRunRequest {
+  training_per_category: number;
+  holdout_per_category: number;
+  agent_count: number;
+  live_agents: boolean;
+  seed: number;
+  domain_prompts: Record<string, BenchmarkDomainPrompt>;
+  reasoning_presets: ReasoningPresetOverrides | null;
+}
+
+export interface BenchmarkDomainPrompt {
+  template_id: string | null;
+  prompt: string | null;
+}
+
+export interface BenchmarkRunResponse {
+  run_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  created_at: string;
+}
+
+export interface BenchmarkRunStatusResponse {
+  run_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+  error: string | null;
+  artifact_id: string | null;
+  request: Record<string, unknown> | null;
+  reasoning_presets: ReasoningPresets | null;
+  latest_mechanism: string | null;
+  agent_count: number | null;
+  total_tokens: number | null;
+  thinking_tokens: number | null;
+  total_latency_ms: number | null;
+  model_telemetry: Record<string, ModelTelemetryResponse>;
+  cost: BenchmarkCostEstimateResponse | null;
+}
+
+export interface BenchmarkCatalogResponse {
+  global_recent: Array<BenchmarkCatalogEntry>;
+  global_frequency: Array<BenchmarkCatalogEntry>;
+  user_recent: Array<BenchmarkCatalogEntry>;
+  user_frequency: Array<BenchmarkCatalogEntry>;
+  user_tests_recent: Array<BenchmarkRunStatusResponse>;
+  user_tests_frequency: Array<BenchmarkRunStatusResponse>;
+}
+
+export interface BenchmarkCatalogEntry {
+  artifact_id: string;
+  scope: "global" | "user";
+  owner_user_id: string | null;
+  source: string;
+  created_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  status: string | null;
+  latest_mechanism: string | null;
+  agent_count: number | null;
+  total_tokens: number;
+  thinking_tokens: number;
+  total_latency_ms: number;
+  models: Array<string>;
+  model_telemetry: Record<string, ModelTelemetryResponse>;
+  cost: BenchmarkCostEstimateResponse | null;
+}
+
+export interface BenchmarkDetailResponse {
+  benchmark_id: string;
+  artifact_id: string | null;
+  scope: "global" | "user";
+  source: string;
+  status: string | null;
+  owner_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  latest_mechanism: string | null;
+  agent_count: number | null;
+  total_tokens: number;
+  thinking_tokens: number;
+  total_latency_ms: number;
+  models: Array<string>;
+  run_id: string | null;
+  request: Record<string, unknown> | null;
+  reasoning_presets: ReasoningPresets | null;
+  model_telemetry: Record<string, ModelTelemetryResponse>;
+  events: Array<TaskEvent>;
+  summary: Record<string, unknown>;
+  benchmark_payload: Record<string, unknown>;
+  cost: BenchmarkCostEstimateResponse | null;
+}
+
+export interface BenchmarkPromptTemplatesResponse {
+  domains: Record<string, Array<BenchmarkPromptTemplate>>;
+}
+
+export interface BenchmarkPromptTemplate {
+  id: string;
+  title: string;
+  prompt: string;
 }

@@ -11,6 +11,8 @@ import { LiveDeliberation } from "./pages/LiveDeliberation";
 import { OnChainReceipt } from "./pages/OnChainReceipt";
 import { ApiKeys } from "./pages/ApiKeys";
 import { Benchmarks } from "./pages/Benchmarks";
+import { BenchmarksAll } from "./pages/BenchmarksAll";
+import { BenchmarkDetail } from "./pages/BenchmarkDetail";
 
 function AppRoutes() {
   const { isLoading, authStatus, featureFlags } = useAuth();
@@ -60,6 +62,22 @@ function AppRoutes() {
             element={
               canViewBenchmarks
                 ? <DashboardLayout><Benchmarks /></DashboardLayout>
+                : <Navigate to="/tasks" replace />
+            }
+          />
+          <Route
+            path="/benchmarks/all"
+            element={
+              canViewBenchmarks
+                ? <DashboardLayout><BenchmarksAll /></DashboardLayout>
+                : <Navigate to="/tasks" replace />
+            }
+          />
+          <Route
+            path="/benchmarks/:benchmarkId"
+            element={
+              canViewBenchmarks
+                ? <DashboardLayout><BenchmarkDetail /></DashboardLayout>
                 : <Navigate to="/tasks" replace />
             }
           />

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Literal
 
 import structlog
 from pydantic import BaseModel, Field
 
 from agora.agent import AgentCaller, AgentCallError, pro_caller
+from agora.runtime.prompt_policy import selector_prompt
 from agora.types import MechanismSelection, MechanismType, TaskFeatures
 
 logger = structlog.get_logger(__name__)
@@ -56,38 +56,21 @@ class ReasoningSelector:
 
         bandit_mechanism, bandit_confidence = bandit_recommendation
 
-        system_prompt = (
-            "You are the Agora Mechanism Selector, a meta-reasoning agent that decides "
-            "HOW a group of AI agents should resolve a task. Available mechanisms: "
-            "DEBATE (adversarial deliberation), VOTE (independent confidence-weighted "
-            "aggregation). "
-            "Choose the best mechanism for this specific task and explain your decision."
-        )
-
         historical_payload = historical_performance or {
             "message": "Not yet available — system is still learning."
         }
-
-        user_prompt = (
-            "Task text:\n"
-            f"{task_text}\n\n"
-            "Extracted features:\n"
-            f"{json.dumps(features.model_dump(mode='json'), indent=2)}\n\n"
-            "Bandit recommendation:\n"
-            f"- mechanism: {bandit_mechanism.value}\n"
-            f"- confidence: {bandit_confidence:.4f}\n\n"
-            "Historical performance:\n"
-            f"{json.dumps(historical_payload, indent=2)}"
-            "\n\n"
-            "Respond with a JSON object in this exact schema:\n"
-            '{"mechanism": "debate"|"vote", '
-            '"confidence": 0.0-1.0, "reasoning": "..."}'
+        prompt = selector_prompt(
+            task_text=task_text,
+            features=features,
+            bandit_mechanism=bandit_mechanism,
+            bandit_confidence=bandit_confidence,
+            historical_payload=historical_payload,
         )
 
         try:
             response, _usage = await self._get_caller().call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
                 response_format=_ReasoningResponse,
                 temperature=0.3,
             )

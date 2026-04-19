@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-04-14T04:58:23.948657+00:00",
+  "token_subject": "demo-user",
+  "hosted_api_probe": {
+    "primary": {
+      "base_url": "https://agora-api-rztfxer7ra-uc.a.run.app",
+      "list_tasks_status": 200,
+      "list_tasks_count": 0,
+      "benchmarks_status": 200,
+      "benchmarks_has_summary": true,
+      "create_task_status": 502,
+      "create_task_error": {
+        "detail": "Failed to initialize task on Solana"
+      },
+      "create_task_zero_stakes_status": 502,
+      "create_task_zero_stakes_error": {
+        "detail": "Failed to initialize task on Solana"
+      }
+    },
+    "alternate": {
+      "base_url": "https://agora-api-202872251304.us-central1.run.app",
+      "list_tasks_status": 200,
+      "list_tasks_count": 0,
+      "benchmarks_status": 200,
+      "benchmarks_has_summary": true,
+      "create_task_status": 0,
+      "create_task_error": null
+    }
+  },
+  "acceptance_blockers": [
+    {
+      "id": "devnet-task-init-failure",
+      "detail": "Primary hosted API returns HTTP 502 with 'Failed to initialize task on Solana' for POST /tasks/, which blocks run/stream/pay acceptance flows."
+    },
+    {
+      "id": "alternate-create-timeout",
+      "detail": "Alternate hosted API times out on POST /tasks/ with full payload in this environment, blocking fallback acceptance path."
+    }
+  ]
+}

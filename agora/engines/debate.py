@@ -14,17 +14,38 @@ from typing import Any
 import structlog
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agora.agent import AgentCaller, AgentCallError, flash_caller, kimi_caller, pro_caller
+from agora.agent import (
+    AgentCaller,
+    AgentCallError,
+    claude_caller,
+    flash_caller,
+    kimi_caller,
+    pro_caller,
+)
 from agora.config import get_config
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.model_policy import (
+    balanced_participant_tiers,
+    resolve_reasoning_presets,
+)
 from agora.runtime.monitor import StateMonitor
+from agora.runtime.prompt_policy import (
+    debate_devil_prompt,
+    debate_initial_prompt,
+    debate_opening_prompt,
+    debate_rebuttal_prompt,
+    debate_synthesis_prompt,
+)
 from agora.types import (
     AgentOutput,
     DebateState,
     DeliberationResult,
     MechanismSelection,
     MechanismType,
+    ProviderTierName,
+    ReasoningPresetOverrides,
+    ReasoningPresets,
     VerifiedClaim,
 )
 
@@ -109,11 +130,16 @@ class DebateEngine:
         max_rounds: int = 4,
         flash_agent: AgentCaller | None = None,
         pro_agent: AgentCaller | None = None,
+        claude_agent: AgentCaller | None = None,
         kimi_agent: AgentCaller | None = None,
         monitor: StateMonitor | None = None,
         hasher: TranscriptHasher | None = None,
         enable_devils_advocate: bool = True,
         enable_adaptive_termination: bool = True,
+        reasoning_presets: ReasoningPresets
+        | ReasoningPresetOverrides
+        | dict[str, Any]
+        | None = None,
     ) -> None:
         """Initialize debate engine dependencies.
 
@@ -131,11 +157,17 @@ class DebateEngine:
         self.max_rounds = max(1, max_rounds)
         self._flash_agent = flash_agent
         self._pro_agent = pro_agent
+        self._claude_agent = claude_agent
         self._kimi_agent = kimi_agent
         self.monitor = monitor or StateMonitor()
         self.hasher = hasher or TranscriptHasher()
         self.enable_devils_advocate = enable_devils_advocate
         self.enable_adaptive_termination = enable_adaptive_termination
+        self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
+        self._participant_tiers = balanced_participant_tiers(self.agent_count)
+        self._claude_run_semaphore = asyncio.Semaphore(
+            get_config().anthropic_concurrent_requests_per_run
+        )
 
         self.graph = self._build_graph() if StateGraph is not None else None
 
@@ -190,14 +222,10 @@ class DebateEngine:
             initial_outputs
         )
         state.factions["pro"] = [
-            output
-            for output in initial_outputs
-            if assignments.get(output.agent_id) == "pro"
+            output for output in initial_outputs if assignments.get(output.agent_id) == "pro"
         ]
         state.factions["opp"] = [
-            output
-            for output in initial_outputs
-            if assignments.get(output.agent_id) == "opp"
+            output for output in initial_outputs if assignments.get(output.agent_id) == "opp"
         ]
 
         opening_outputs, usage = await self._opening_statements(
@@ -390,10 +418,8 @@ class DebateEngine:
 
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
             agent_id = f"agent-{agent_idx + 1}"
-            system_prompt = (
-                "Answer the task independently. Return your best concise answer and confidence."
-            )
-            user_prompt = task
+            tier = self._participant_tiers[agent_idx]
+            prompt = debate_initial_prompt(task=task)
             fallback = _InitialAnswerResponse(
                 answer=self._fallback_initial_answer(task=task, agent_idx=agent_idx),
                 confidence=0.55,
@@ -401,9 +427,9 @@ class DebateEngine:
 
             custom_agent = custom_agents[agent_idx] if custom_agents is not None else None
             response, usage = await self._call_structured(
-                tier="flash",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                tier=tier,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
                 response_model=_InitialAnswerResponse,
                 fallback=fallback,
                 custom_agent=custom_agent,
@@ -415,7 +441,7 @@ class DebateEngine:
                 AgentOutput(
                     agent_id=agent_id,
                     agent_model=(
-                        "custom-agent" if custom_agent is not None else self._model_name("flash")
+                        "custom-agent" if custom_agent is not None else self._model_name(tier)
                     ),
                     role="initial",
                     round_number=0,
@@ -440,7 +466,7 @@ class DebateEngine:
         self,
         outputs: list[AgentOutput],
     ) -> tuple[str, str, dict[str, str], str]:
-        """Assign agents to pro/opp factions and pick a devil's advocate."""
+        """Assign counted participants to factions and keep a separate devil's advocate."""
 
         normalized_answers = [output.content.strip().lower() for output in outputs]
         counts = Counter(normalized_answers)
@@ -469,16 +495,7 @@ class DebateEngine:
 
         self._ensure_both_factions_present(assignments)
 
-        outlier_candidates = [
-            output.agent_id
-            for output in outputs
-            if output.content.strip().lower() not in {pro_answer, opp_answer}
-        ]
-        devil_advocate_id = self._choose_devil_advocate(assignments, outlier_candidates)
-        assignments.pop(devil_advocate_id, None)
-        self._ensure_both_factions_present(assignments)
-
-        return pro_answer, opp_answer, assignments, devil_advocate_id
+        return pro_answer, opp_answer, assignments, "debate-devils-advocate"
 
     @staticmethod
     def _ensure_both_factions_present(assignments: dict[str, str]) -> None:
@@ -495,30 +512,6 @@ class DebateEngine:
         if not opp_members and pro_members:
             assignments[pro_members[-1]] = "opp"
 
-    @staticmethod
-    def _choose_devil_advocate(
-        assignments: dict[str, str],
-        outlier_candidates: list[str],
-    ) -> str:
-        """Choose an independent devil's advocate without collapsing a faction."""
-
-        side_members = {
-            "pro": [agent_id for agent_id, side in assignments.items() if side == "pro"],
-            "opp": [agent_id for agent_id, side in assignments.items() if side == "opp"],
-        }
-
-        for candidate in outlier_candidates:
-            side = assignments.get(candidate)
-            if side is not None and len(side_members[side]) > 1:
-                return candidate
-
-        for side in ("pro", "opp"):
-            members = side_members[side]
-            if len(members) > 1:
-                return members[-1]
-
-        return next(iter(assignments))
-
     async def _opening_statements(
         self,
         task: str,
@@ -531,14 +524,8 @@ class DebateEngine:
 
         async def one_call(agent_id: str, side: str) -> tuple[AgentOutput, dict[str, Any]]:
             faction_answer = pro_answer if side == "pro" else opp_answer
-            system_prompt = (
-                "You are arguing for your assigned faction answer. Present strongest evidence. "
-                "Return JSON with claim, evidence, confidence."
-            )
-            user_prompt = (
-                f"Task: {task}\nAssigned faction answer: {faction_answer}\n"
-                "Respond as {claim, evidence, confidence}."
-            )
+            tier = self._tier_for_agent_id(agent_id)
+            prompt = debate_opening_prompt(task=task, faction_answer=faction_answer)
             fallback = _OpeningResponse(
                 claim=faction_answer,
                 evidence="Heuristic fallback evidence generated locally.",
@@ -548,9 +535,9 @@ class DebateEngine:
                 custom_agents[self._agent_index(agent_id)] if custom_agents is not None else None
             )
             response, usage = await self._call_structured(
-                tier="flash",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                tier=tier,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
                 response_model=_OpeningResponse,
                 fallback=fallback,
                 custom_agent=custom_agent,
@@ -569,7 +556,7 @@ class DebateEngine:
             output = AgentOutput(
                 agent_id=agent_id,
                 agent_model=(
-                    "custom-agent" if custom_agent is not None else self._model_name("flash")
+                    "custom-agent" if custom_agent is not None else self._model_name(tier)
                 ),
                 role=role,
                 round_number=1,
@@ -602,17 +589,11 @@ class DebateEngine:
     ) -> tuple[AgentOutput, dict[str, Any]]:
         """Run devil's advocate cross-examination against both factions."""
 
-        system_prompt = (
-            "You are the Devil's Advocate. Your only job is to find flaws in both factions. "
-            "For each faction provide weakest_claim, flaw, and targeted question."
-        )
-        user_prompt = (
-            f"Task: {task}\n"
-            f"Round: {round_number}\n"
-            f"Pro statements: {[output.content for output in pro_outputs]}\n"
-            f"Opp statements: {[output.content for output in opp_outputs]}\n"
-            "Respond as {'analyses': [{'faction': 'pro'|'opp', 'weakest_claim': str, 'flaw': str, "
-            "'question': str}]}"
+        prompt = debate_devil_prompt(
+            task=task,
+            round_number=round_number,
+            pro_outputs=[output.content for output in pro_outputs],
+            opp_outputs=[output.content for output in opp_outputs],
         )
 
         fallback = _CrossExamResponse(
@@ -632,16 +613,12 @@ class DebateEngine:
             ]
         )
 
-        custom_agent = (
-            custom_agents[self._agent_index(devil_advocate_id)]
-            if custom_agents is not None
-            else None
-        )
+        custom_agent = None
         if custom_agent is not None:
             response, usage = await self._call_structured(
                 tier="pro",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
                 response_model=_CrossExamResponse,
                 fallback=fallback,
                 temperature=0.2,
@@ -650,18 +627,16 @@ class DebateEngine:
             assert isinstance(response, _CrossExamResponse)
         else:
             response, usage = await self._call_cross_exam(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            fallback=fallback,
-            temperature=0.2,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
+                fallback=fallback,
+                temperature=0.2,
             )
         content = json.dumps(response.model_dump(mode="json"), sort_keys=True)
 
         output = AgentOutput(
             agent_id=devil_advocate_id,
-            agent_model=(
-                "custom-agent" if custom_agent is not None else self._model_name("kimi")
-            ),
+            agent_model=("custom-agent" if custom_agent is not None else self._model_name("kimi")),
             role="devil_advocate",
             round_number=round_number,
             content=content,
@@ -671,9 +646,7 @@ class DebateEngine:
             timestamp=datetime.now(UTC),
         )
         usage["model_tokens"] = {output.agent_model: int(usage.get("tokens", 0))}
-        usage["model_latency_ms"] = {
-            output.agent_model: float(usage.get("latency_ms", 0.0))
-        }
+        usage["model_latency_ms"] = {output.agent_model: float(usage.get("latency_ms", 0.0))}
         return output, usage
 
     async def _rebuttal_round(
@@ -692,15 +665,12 @@ class DebateEngine:
         async def one_call(agent_id: str, side: str) -> tuple[AgentOutput, dict[str, Any]]:
             faction_answer = pro_answer if side == "pro" else opp_answer
             targeted_prompt = self._extract_targeted_question(cross_exam_output.content, side)
-            system_prompt = (
-                "Defend your faction answer against targeted critique. "
-                "Do not attack verified locked claims. Return answer, defense, confidence."
-            )
-            user_prompt = (
-                f"Task: {task}\n"
-                f"Faction answer: {faction_answer}\n"
-                f"Targeted challenge: {targeted_prompt}\n"
-                f"Locked claims: {[claim.claim_text for claim in locked_claims]}"
+            tier = self._tier_for_agent_id(agent_id)
+            prompt = debate_rebuttal_prompt(
+                task=task,
+                faction_answer=faction_answer,
+                targeted_prompt=targeted_prompt,
+                locked_claims=[claim.claim_text for claim in locked_claims],
             )
             fallback = _RebuttalResponse(
                 answer=faction_answer,
@@ -711,9 +681,9 @@ class DebateEngine:
                 custom_agents[self._agent_index(agent_id)] if custom_agents is not None else None
             )
             response, usage = await self._call_structured(
-                tier="flash",
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                tier=tier,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
                 response_model=_RebuttalResponse,
                 fallback=fallback,
                 temperature=0.4,
@@ -732,7 +702,7 @@ class DebateEngine:
             output = AgentOutput(
                 agent_id=agent_id,
                 agent_model=(
-                    "custom-agent" if custom_agent is not None else self._model_name("flash")
+                    "custom-agent" if custom_agent is not None else self._model_name(tier)
                 ),
                 role=role,
                 round_number=round_number,
@@ -787,15 +757,11 @@ class DebateEngine:
         winning_answer = pro_answer if winning_side == "pro" else opp_answer
         winning_transcript = pro_outputs if winning_side == "pro" else opp_outputs
 
-        system_prompt = (
-            "Synthesize the strongest cumulative argument from the winning faction into "
-            "a final answer."
-        )
-        user_prompt = (
-            f"Task: {state.task}\n"
-            f"Winning faction: {winning_side}\n"
-            f"Winning answer candidate: {winning_answer}\n"
-            f"Faction transcript: {[output.content for output in winning_transcript]}"
+        prompt = debate_synthesis_prompt(
+            task=state.task,
+            winning_side=winning_side,
+            winning_answer=winning_answer,
+            transcript=[output.content for output in winning_transcript],
         )
         fallback = _SynthesisResponse(
             final_answer=winning_answer,
@@ -803,11 +769,11 @@ class DebateEngine:
             summary="Fallback synthesis from trajectory scoring.",
         )
 
-        custom_agent = custom_agents[0] if custom_agents else None
+        custom_agent = None
         response, usage = await self._call_structured(
             tier="pro",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            system_prompt=prompt.system,
+            user_prompt=prompt.user,
             response_model=_SynthesisResponse,
             fallback=fallback,
             temperature=0.2,
@@ -870,7 +836,7 @@ class DebateEngine:
 
     async def _call_structured(
         self,
-        tier: str,
+        tier: ProviderTierName,
         system_prompt: str,
         user_prompt: str,
         response_model: type[BaseModel],
@@ -895,8 +861,8 @@ class DebateEngine:
             }
 
         try:
-            caller = self._get_caller(tier)
-            response, usage = await caller.call(
+            response, usage = await self._call_provider(
+                tier=tier,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_format=response_model,
@@ -917,12 +883,65 @@ class DebateEngine:
                 response_model=response_model.__name__,
                 error=str(exc),
             )
+            if tier == "claude":
+                try:
+                    kimi_response, kimi_usage = await self._call_provider(
+                        tier="kimi",
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        response_format=response_model,
+                        temperature=temperature,
+                    )
+                    if isinstance(kimi_response, response_model):
+                        logger.info(
+                            "debate_agent_fallback_to_kimi_success",
+                            response_model=response_model.__name__,
+                        )
+                        return kimi_response, {
+                            "tokens": int(kimi_usage.get("input_tokens", 0))
+                            + int(kimi_usage.get("output_tokens", 0)),
+                            "latency_ms": float(kimi_usage.get("latency_ms", 0.0)),
+                            "model": self._model_name("kimi"),
+                        }
+                except AgentCallError as kimi_exc:
+                    logger.warning(
+                        "debate_kimi_fallback_failed",
+                        response_model=response_model.__name__,
+                        error=str(kimi_exc),
+                    )
 
         return fallback, {
             "tokens": 0,
             "latency_ms": 0.0,
             "model": "custom-agent" if custom_agent is not None else self._model_name(tier),
         }
+
+    async def _call_provider(
+        self,
+        *,
+        tier: ProviderTierName,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None,
+        temperature: float | None,
+    ) -> tuple[str | BaseModel, dict[str, Any]]:
+        """Call one provider while respecting per-run Claude concurrency."""
+
+        caller = self._get_caller(tier)
+        if tier == "claude":
+            async with self._claude_run_semaphore:
+                return await caller.call(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_format=response_format,
+                    temperature=temperature,
+                )
+        return await caller.call(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_format=response_format,
+            temperature=temperature,
+        )
 
     async def _call_cross_exam(
         self,
@@ -1001,7 +1020,10 @@ class DebateEngine:
     def _agent_index(agent_id: str) -> int:
         """Convert canonical agent id into zero-based index."""
 
-        return max(0, int(agent_id.split("-")[-1]) - 1)
+        try:
+            return max(0, int(agent_id.split("-")[-1]) - 1)
+        except ValueError:
+            return 0
 
     @staticmethod
     def _event_faction(output: AgentOutput) -> str:
@@ -1108,14 +1130,18 @@ class DebateEngine:
 
         if tier == "flash":
             if self._flash_agent is None:
-                self._flash_agent = flash_caller()
+                self._flash_agent = flash_caller(thinking_level=self.reasoning_presets.gemini_flash)
             return self._flash_agent
+        if tier == "claude":
+            if self._claude_agent is None:
+                self._claude_agent = claude_caller(effort=self.reasoning_presets.claude)
+            return self._claude_agent
         if tier == "kimi":
             if self._kimi_agent is None:
-                self._kimi_agent = kimi_caller()
+                self._kimi_agent = kimi_caller(effort=self.reasoning_presets.kimi)
             return self._kimi_agent
         if self._pro_agent is None:
-            self._pro_agent = pro_caller()
+            self._pro_agent = pro_caller(thinking_level=self.reasoning_presets.gemini_pro)
         return self._pro_agent
 
     def _model_name(self, tier: str) -> str:
@@ -1128,9 +1154,16 @@ class DebateEngine:
             config = get_config()
             if tier == "flash":
                 return config.flash_model
+            if tier == "claude":
+                return config.claude_model
             if tier == "kimi":
                 return config.kimi_model
             return config.pro_model
+
+    def _tier_for_agent_id(self, agent_id: str) -> ProviderTierName:
+        """Return the canonical provider tier for one counted debate participant."""
+
+        return self._participant_tiers[self._agent_index(agent_id)]
 
     @staticmethod
     def _extract_targeted_question(cross_exam_content: str, side: str) -> str:

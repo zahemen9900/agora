@@ -77,17 +77,26 @@ Production deploy workflow is defined in `.github/workflows/deploy.yml` and uses
 PROJECT_ID="<gcp-project-id>"
 REGION="us-central1"
 SERVICE="agora-api"
+RUNTIME_SA="<runtime-service-account-email>"
+GCS_BUCKET="<durable-gcs-bucket>"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/agora/${SERVICE}:$(git rev-parse --short HEAD)"
 
 gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
-gcloud builds submit --config api/cloudbuild.yaml --substitutions "_IMAGE=${IMAGE}" .
+gcloud builds submit --config api/cloudbuild.yaml \
+  --substitutions "_REGION=${REGION},_REPOSITORY=agora,_SERVICE=${SERVICE},_TAG=$(git rev-parse --short HEAD)" .
 gcloud run deploy "${SERVICE}" \
   --image "${IMAGE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
   --platform managed \
-  --update-env-vars "AUTH_REQUIRED=true,AGORA_API_KEY_PEPPER=<secret>,AUTH_ISSUER=<issuer>,AUTH_AUDIENCE=<audience>,AUTH_JWKS_URL=<jwks-url>" \
-  --allow-unauthenticated
+  --service-account "${RUNTIME_SA}" \
+  --network default \
+  --subnet default \
+  --vpc-egress private-ranges-only \
+  --update-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${GCS_BUCKET},AUTH_REQUIRED=true,AGORA_COORDINATION_BACKEND=redis,AGORA_COORDINATION_NAMESPACE=agora-prod,AGORA_FLASH_MODEL=gemini-3.1-flash-lite-preview,AGORA_PRO_MODEL=gemini-3-flash-preview,AGORA_WORKOS_CLIENT_ID=<workos-client-id>,AGORA_WORKOS_AUTHKIT_DOMAIN=<authkit-domain>,AGORA_AUTH_ISSUER=<issuer>,AGORA_AUTH_AUDIENCE=<audience>,AGORA_AUTH_JWKS_URL=<jwks-url>,SOLANA_NETWORK=devnet,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_KEYPAIR_SECRET_NAME=agora-solana-devnet-keypair,SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest" \
+  --update-secrets "AGORA_GEMINI_API_KEY=agora-gemini-api-key:latest,ANTHROPIC_API_KEY=agora-anthropic-api-key:latest,AGORA_OPENROUTER_API_KEY=agora-openrouter-api-key:latest,HELIUS_RPC_URL=agora-helius-rpc-url:latest,AGORA_API_KEY_PEPPER=agora-api-key-pepper:latest,AGORA_REDIS_URL=agora-redis-url:latest,BENCHMARK_ADMIN_TOKEN=agora-benchmark-admin-token:latest" \
+  --allow-unauthenticated \
+  --no-invoker-iam-check
 ```
 
 ### Post-Deploy Check

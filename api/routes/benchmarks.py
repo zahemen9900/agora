@@ -13,32 +13,230 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sse_starlette.sse import EventSourceResponse
 
+from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
+from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.orchestrator import AgoraOrchestrator
 from api.auth import AuthenticatedUser, get_current_user, require_human_user
 from api.config import settings
+from api.coordination import StreamTicketRecord, get_coordination_backend
 from api.models import (
     BenchmarkCatalogEntry,
     BenchmarkCatalogResponse,
+    BenchmarkCostEstimateResponse,
+    BenchmarkDetailResponse,
+    BenchmarkDomainName,
+    BenchmarkPromptTemplate,
+    BenchmarkPromptTemplatesResponse,
     BenchmarkRunRequest,
     BenchmarkRunResponse,
     BenchmarkRunStatusResponse,
+    ModelTelemetryResponse,
+    TaskEvent,
 )
 from api.routes.tasks import get_task_store
 from api.security import validate_storage_id
+from api.streaming import DeliberationStream, get_stream_manager
 from benchmarks.runner import BenchmarkRunner
 
 router = APIRouter()
 _optional_bearer = HTTPBearer(auto_error=False)
+OptionalBearerCredentials = Annotated[
+    HTTPAuthorizationCredentials | None,
+    Depends(_optional_bearer),
+]
 
 _RESULTS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "results"
 _RESULTS_PATH = _RESULTS_DIR / "phase2_validation.json"
 _LEGACY_ARTIFACT_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 _RUN_STATUS_VALUES = {"queued", "running", "completed", "failed"}
+_BENCHMARK_DOMAIN_ORDER: tuple[BenchmarkDomainName, ...] = (
+    "math",
+    "factual",
+    "reasoning",
+    "code",
+    "creative",
+    "demo",
+)
+_BENCHMARK_MECHANISMS = ("debate", "vote", "selector")
+
+_BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
+    "math": [
+        {
+            "id": "math-stepwise",
+            "title": "Stepwise Math",
+            "prompt": (
+                "Solve the math task step-by-step and provide only the final numeric answer "
+                "on the last line."
+            ),
+        },
+        {
+            "id": "math-proof-check",
+            "title": "Proof + Check",
+            "prompt": (
+                "Produce a concise derivation, then verify the result with a quick check "
+                "before finalizing."
+            ),
+        },
+        {
+            "id": "math-fast",
+            "title": "Fast Arithmetic",
+            "prompt": "Optimize for speed and correctness. Keep reasoning short and explicit.",
+        },
+        {
+            "id": "math-robust",
+            "title": "Robust Edge Cases",
+            "prompt": "Handle edge cases carefully and call out assumptions before solving.",
+        },
+    ],
+    "factual": [
+        {
+            "id": "factual-cited",
+            "title": "Cited Facts",
+            "prompt": (
+                "Answer factually with confidence levels and a short source rationale "
+                "for each claim."
+            ),
+        },
+        {
+            "id": "factual-multihop",
+            "title": "Multi-hop",
+            "prompt": (
+                "Resolve the query through explicit multi-hop reasoning and avoid speculation."
+            ),
+        },
+        {
+            "id": "factual-precision",
+            "title": "Precision First",
+            "prompt": (
+                "Prioritize precision over verbosity. Return concise, directly verifiable claims."
+            ),
+        },
+        {
+            "id": "factual-contrast",
+            "title": "Contrastive",
+            "prompt": "Compare candidate answers and choose the one best supported by known facts.",
+        },
+    ],
+    "reasoning": [
+        {
+            "id": "reasoning-tradeoff",
+            "title": "Tradeoff Analysis",
+            "prompt": (
+                "Evaluate alternatives using explicit tradeoffs, then decide with a ranked "
+                "recommendation."
+            ),
+        },
+        {
+            "id": "reasoning-structured",
+            "title": "Structured Logic",
+            "prompt": (
+                "Use structured premises and conclusions; flag uncertainty where evidence is weak."
+            ),
+        },
+        {
+            "id": "reasoning-risk",
+            "title": "Risk-aware",
+            "prompt": "Include risk analysis and failure modes before producing the final answer.",
+        },
+        {
+            "id": "reasoning-ethical",
+            "title": "Ethical Lens",
+            "prompt": (
+                "Include ethical implications and stakeholder impact in the final recommendation."
+            ),
+        },
+    ],
+    "code": [
+        {
+            "id": "code-bugfix",
+            "title": "Bugfix Focus",
+            "prompt": (
+                "Identify the root cause, propose a minimal fix, and include reasoning "
+                "for correctness."
+            ),
+        },
+        {
+            "id": "code-design",
+            "title": "Design Review",
+            "prompt": (
+                "Evaluate design alternatives and choose the most maintainable implementation."
+            ),
+        },
+        {
+            "id": "code-performance",
+            "title": "Performance",
+            "prompt": (
+                "Prioritize algorithmic efficiency and mention time/space complexity tradeoffs."
+            ),
+        },
+        {
+            "id": "code-tests",
+            "title": "Test-first",
+            "prompt": "Propose implementation plus focused tests that validate critical behavior.",
+        },
+    ],
+    "creative": [
+        {
+            "id": "creative-divergent",
+            "title": "Divergent Ideas",
+            "prompt": (
+                "Generate varied, high-contrast ideas and select a final concept with rationale."
+            ),
+        },
+        {
+            "id": "creative-story",
+            "title": "Narrative",
+            "prompt": (
+                "Respond with a concise, vivid narrative while maintaining thematic coherence."
+            ),
+        },
+        {
+            "id": "creative-product",
+            "title": "Product Brainstorm",
+            "prompt": (
+                "Produce product ideas with user segment, value proposition, and differentiation."
+            ),
+        },
+        {
+            "id": "creative-brand",
+            "title": "Brand Voice",
+            "prompt": "Use a distinctive voice and clear tone consistency across the response.",
+        },
+    ],
+    "demo": [
+        {
+            "id": "demo-balanced",
+            "title": "Balanced Demo",
+            "prompt": (
+                "Produce an answer that is clear, auditable, and suitable for stakeholder demos."
+            ),
+        },
+        {
+            "id": "demo-chain-ready",
+            "title": "Chain-ready",
+            "prompt": (
+                "Prioritize deterministic outputs that are easy to verify in receipts and replay."
+            ),
+        },
+        {
+            "id": "demo-latency",
+            "title": "Low Latency",
+            "prompt": "Prefer concise reasoning to reduce latency while preserving correctness.",
+        },
+        {
+            "id": "demo-confidence",
+            "title": "High Confidence",
+            "prompt": "Favor robust consensus and confidence calibration over short responses.",
+        },
+    ],
+}
 
 _background_benchmark_runs: dict[str, asyncio.Task[None]] = {}
 _legacy_backfill_complete = False
 _legacy_backfill_lock: asyncio.Lock | None = None
+_STREAM_POLL_INTERVAL_SECONDS = 0.5
 
 
 def _get_legacy_backfill_lock() -> asyncio.Lock:
@@ -46,6 +244,44 @@ def _get_legacy_backfill_lock() -> asyncio.Lock:
     if _legacy_backfill_lock is None:
         _legacy_backfill_lock = asyncio.Lock()
     return _legacy_backfill_lock
+
+
+def _benchmark_stream_key(workspace_id: str, run_id: str) -> str:
+    return f"benchmark:{workspace_id}:{run_id}"
+
+
+async def _issue_benchmark_stream_ticket(workspace_id: str, run_id: str) -> dict[str, str]:
+    ticket, expires_at = await get_coordination_backend().issue_stream_ticket(
+        workspace_id,
+        run_id,
+        settings.stream_ticket_ttl_seconds,
+    )
+    return {"ticket": ticket, "expires_at": expires_at.isoformat()}
+
+
+async def _consume_benchmark_stream_ticket(ticket: str, *, run_id: str) -> StreamTicketRecord:
+    entry = await get_coordination_backend().consume_stream_ticket(ticket, task_id=run_id)
+    if entry is None:
+        raise HTTPException(status_code=401, detail="Invalid stream ticket")
+    return entry
+
+
+def _benchmark_event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any]:
+    return TaskEvent(
+        event=event_type,
+        data=event_data,
+        timestamp=datetime.now(UTC),
+    ).model_dump(mode="json")
+
+
+def _benchmark_sse_message(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event": str(event.get("event", "update")),
+        "data": {
+            "payload": event.get("data", {}),
+            "timestamp": event.get("timestamp"),
+        },
+    }
 
 
 def _load_json_payload(path: Path) -> dict[str, Any] | None:
@@ -74,6 +310,26 @@ def _as_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _is_summary_block(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return isinstance(value.get("per_mode"), dict) or isinstance(value.get("per_category"), dict)
+
+
+def _resolve_summary_block(payload: dict[str, Any]) -> dict[str, Any]:
+    direct_summary = _as_dict(payload.get("summary"))
+    if _is_summary_block(direct_summary):
+        return direct_summary
+
+    for stage_key in ("post_learning", "pre_learning", "learning_updates"):
+        stage_payload = _as_dict(payload.get(stage_key))
+        stage_summary = _as_dict(stage_payload.get("summary"))
+        if _is_summary_block(stage_summary):
+            return stage_summary
+
+    return direct_summary
 
 
 def _has_non_empty_runs(value: Any) -> bool:
@@ -118,6 +374,555 @@ def _build_demo_report(demo_payload: dict[str, Any], artifact_name: str) -> dict
     }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _cost_from_object(value: Any) -> BenchmarkCostEstimateResponse | None:
+    if not isinstance(value, dict):
+        return None
+
+    estimated_cost = value.get("estimated_cost_usd")
+    if estimated_cost is None:
+        estimated_cost = value.get("total_estimated_cost_usd")
+
+    model_costs_raw: dict[Any, Any] = {}
+    candidate_model_costs = value.get("model_estimated_costs_usd")
+    if isinstance(candidate_model_costs, dict):
+        model_costs_raw = candidate_model_costs
+    else:
+        legacy_model_costs = value.get("model_costs_usd")
+        if isinstance(legacy_model_costs, dict):
+            model_costs_raw = legacy_model_costs
+
+    model_costs = {
+        str(model): round(_safe_float(cost), 8)
+        for model, cost in model_costs_raw.items()
+        if str(model).strip() and _safe_float(cost) > 0
+    }
+
+    parsed_estimated = (
+        _safe_float(estimated_cost, default=0.0) if estimated_cost is not None else None
+    )
+    if parsed_estimated is not None and parsed_estimated <= 0 and model_costs:
+        parsed_estimated = round(sum(model_costs.values()), 8)
+
+    if parsed_estimated is not None and parsed_estimated <= 0:
+        parsed_estimated = None
+
+    estimated_at_raw = value.get("estimated_at") or value.get("cost_estimated_at")
+
+    return BenchmarkCostEstimateResponse(
+        estimated_cost_usd=parsed_estimated,
+        model_estimated_costs_usd=model_costs,
+        pricing_version=(
+            str(value.get("pricing_version")).strip() if value.get("pricing_version") else None
+        ),
+        estimated_at=_parse_timestamp(estimated_at_raw) if estimated_at_raw else None,
+        estimation_mode=(
+            str(value.get("estimation_mode")).strip() if value.get("estimation_mode") else None
+        ),
+        pricing_sources=(
+            {
+                str(model): str(source)
+                for model, source in value.get("pricing_sources", {}).items()
+                if str(model).strip() and str(source).strip()
+            }
+            if isinstance(value.get("pricing_sources"), dict)
+            else {}
+        ),
+    )
+
+
+def _model_telemetry_from_record(value: Any) -> dict[str, ModelTelemetryResponse]:
+    if not isinstance(value, dict):
+        return {}
+
+    direct = value.get("model_telemetry")
+    if isinstance(direct, dict):
+        return {
+            str(model): ModelTelemetryResponse.model_validate(payload)
+            for model, payload in direct.items()
+            if str(model).strip() and isinstance(payload, dict)
+        }
+
+    models = _extract_model_names(value)
+    model_token_usage = value.get("model_token_usage") if isinstance(value.get("model_token_usage"), dict) else {}
+    model_latency_ms = value.get("model_latency_ms") if isinstance(value.get("model_latency_ms"), dict) else {}
+    model_input_tokens = (
+        value.get("model_input_token_usage")
+        if isinstance(value.get("model_input_token_usage"), dict)
+        else {}
+    )
+    model_output_tokens = (
+        value.get("model_output_token_usage")
+        if isinstance(value.get("model_output_token_usage"), dict)
+        else {}
+    )
+    model_thinking_tokens = (
+        value.get("model_thinking_token_usage")
+        if isinstance(value.get("model_thinking_token_usage"), dict)
+        else {}
+    )
+    raw = build_model_telemetry(
+        models=models,
+        model_token_usage=model_token_usage,
+        model_latency_ms=model_latency_ms,
+        model_input_tokens=model_input_tokens,
+        model_output_tokens=model_output_tokens,
+        model_thinking_tokens=model_thinking_tokens,
+        fallback_total_tokens=_safe_int(value.get("tokens_used") or value.get("total_tokens_used")),
+    )
+    return {
+        model: ModelTelemetryResponse.model_validate(payload)
+        for model, payload in raw.items()
+    }
+
+
+def _domain_prompt_templates_response() -> BenchmarkPromptTemplatesResponse:
+    return BenchmarkPromptTemplatesResponse(
+        domains={
+            domain: [
+                BenchmarkPromptTemplate(id=item["id"], title=item["title"], prompt=item["prompt"])
+                for item in templates
+            ]
+            for domain, templates in _BENCHMARK_PROMPT_TEMPLATES.items()
+        }
+    )
+
+
+def _resolve_domain_prompt(
+    domain: BenchmarkDomainName,
+    template_id: str | None,
+    custom_prompt: str | None,
+) -> str | None:
+    if custom_prompt is not None and custom_prompt.strip():
+        return custom_prompt.strip()
+
+    if not template_id:
+        return None
+
+    templates = _BENCHMARK_PROMPT_TEMPLATES.get(domain, [])
+    for template in templates:
+        if template["id"] == template_id:
+            return template["prompt"]
+    return None
+
+
+def _resolved_domain_prompts(request: BenchmarkRunRequest) -> dict[str, dict[str, str]]:
+    resolved: dict[str, dict[str, str]] = {}
+    for domain in _BENCHMARK_DOMAIN_ORDER:
+        config = request.domain_prompts.get(domain)
+        if config is None:
+            continue
+        prompt = _resolve_domain_prompt(domain, config.template_id, config.prompt)
+        if not prompt:
+            continue
+        template_title = None
+        if config.template_id:
+            for template in _BENCHMARK_PROMPT_TEMPLATES.get(domain, []):
+                if template["id"] == config.template_id:
+                    template_title = template["title"]
+                    break
+        resolved[domain] = {
+            "template_id": config.template_id or "custom",
+            "template_title": template_title or "Custom Prompt",
+            "source": "custom" if config.prompt and config.prompt.strip() else "template",
+            "prompt": prompt,
+        }
+    return resolved
+
+
+def _apply_domain_prompts(
+    tasks: list[dict[str, Any]],
+    resolved_prompts: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    if not resolved_prompts:
+        return tasks
+
+    transformed: list[dict[str, Any]] = []
+    for task in tasks:
+        category = str(task.get("category") or "").strip().lower()
+        prompt_config = resolved_prompts.get(category)
+        if not prompt_config:
+            transformed.append(task)
+            continue
+
+        original_task = str(task.get("task") or "").strip()
+        task_prefix = prompt_config["prompt"].strip()
+        prefixed = dict(task)
+        prefixed["task"] = (
+            f"{task_prefix}\n\nTask:\n{original_task}" if original_task else task_prefix
+        )
+        prefixed["prompt_template_id"] = prompt_config.get("template_id")
+        transformed.append(prefixed)
+    return transformed
+
+
+def _extract_model_usage_from_runs(runs: list[dict[str, Any]]) -> dict[str, int]:
+    aggregated: Counter[str] = Counter()
+    for run in runs:
+        model_token_usage = run.get("model_token_usage")
+        if isinstance(model_token_usage, dict):
+            for model, tokens in model_token_usage.items():
+                token_count = _safe_int(tokens)
+                if token_count > 0:
+                    aggregated[str(model)] += token_count
+            continue
+
+        models = _extract_model_names(run)
+        total_tokens = _safe_int(run.get("tokens_used") or run.get("total_tokens_used"))
+        if models and total_tokens > 0:
+            base = total_tokens // len(models)
+            remainder = total_tokens % len(models)
+            for index, model in enumerate(models):
+                aggregated[model] += base + (1 if index < remainder else 0)
+    return dict(aggregated)
+
+
+def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
+    runs = _extract_runs(payload)
+    mechanism_counts, model_counts, frequency_score = _frequency_from_runs(runs)
+    total_tokens = sum(
+        _safe_int(run.get("tokens_used") or run.get("total_tokens_used")) for run in runs
+    )
+    thinking_tokens = sum(_safe_int(run.get("thinking_tokens_used")) for run in runs)
+    total_latency_ms = sum(_safe_float(run.get("latency_ms")) for run in runs)
+
+    latest_mechanism = None
+    if runs:
+        latest = runs[-1]
+        latest_mechanism = (
+            str(latest.get("mechanism_used") or latest.get("mechanism") or latest.get("mode") or "")
+            .strip()
+            .lower()
+            or None
+        )
+
+    model_usage = _extract_model_usage_from_runs(runs)
+    aggregate_model_telemetry: dict[str, dict[str, Any]] = {}
+    stored_model_costs: dict[str, float] = {}
+    stored_total_cost = 0.0
+    stored_pricing_version = None
+    stored_estimated_at = None
+    stored_estimation_mode = None
+    stored_pricing_sources: dict[str, str] = {}
+    for run in runs:
+        for model, telemetry in _model_telemetry_from_record(run).items():
+            bucket = aggregate_model_telemetry.setdefault(
+                model,
+                {
+                    "total_tokens": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "thinking_tokens": 0,
+                    "latency_ms": 0.0,
+                },
+            )
+            bucket["total_tokens"] += telemetry.total_tokens
+            bucket["input_tokens"] += telemetry.input_tokens
+            bucket["output_tokens"] += telemetry.output_tokens
+            bucket["thinking_tokens"] += telemetry.thinking_tokens
+            bucket["latency_ms"] += telemetry.latency_ms
+        cost_block = _cost_from_object(run)
+        if cost_block is None:
+            continue
+        if cost_block.estimated_cost_usd is not None:
+            stored_total_cost += cost_block.estimated_cost_usd
+        for model, value in cost_block.model_estimated_costs_usd.items():
+            stored_model_costs[model] = stored_model_costs.get(model, 0.0) + value
+        stored_pricing_version = stored_pricing_version or cost_block.pricing_version
+        stored_estimated_at = stored_estimated_at or cost_block.estimated_at
+        stored_estimation_mode = stored_estimation_mode or cost_block.estimation_mode
+        stored_pricing_sources.update(cost_block.pricing_sources)
+
+    cost_payload = estimate_cost_for_models(aggregate_model_telemetry)
+    cost = BenchmarkCostEstimateResponse(
+        estimated_cost_usd=(
+            round(stored_total_cost, 8)
+            if stored_total_cost > 0
+            else cost_payload["estimated_cost_usd"]
+        ),
+        model_estimated_costs_usd=(
+            {model: round(value, 8) for model, value in stored_model_costs.items() if value > 0}
+            if stored_model_costs
+            else cost_payload["model_estimated_costs_usd"]
+        ),
+        pricing_version=stored_pricing_version or cost_payload["pricing_version"],
+        estimated_at=stored_estimated_at or cost_payload["estimated_at"],
+        estimation_mode=stored_estimation_mode or cost_payload["estimation_mode"],
+        pricing_sources=stored_pricing_sources or cost_payload["pricing_sources"],
+    )
+
+    benchmark_config = _as_dict(payload.get("benchmark_config"))
+    agent_count = _safe_int(benchmark_config.get("agent_count"), default=0)
+    if agent_count <= 0:
+        for run in runs:
+            candidate = _safe_int(run.get("agent_count"), default=0)
+            if candidate > 0:
+                agent_count = candidate
+                break
+
+    return {
+        "runs": runs,
+        "run_count": len(runs),
+        "mechanism_counts": mechanism_counts,
+        "model_counts": model_counts,
+        "frequency_score": frequency_score,
+        "total_tokens": max(total_tokens, 0),
+        "thinking_tokens": max(thinking_tokens, 0),
+        "total_latency_ms": max(total_latency_ms, 0.0),
+        "latest_mechanism": latest_mechanism,
+        "models": sorted(model_counts.keys()),
+        "agent_count": agent_count if agent_count > 0 else None,
+        "model_token_usage": model_usage,
+        "model_telemetry": {
+            model: ModelTelemetryResponse.model_validate(telemetry)
+            for model, telemetry in aggregate_model_telemetry.items()
+        },
+        "cost": cost,
+    }
+
+
+def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    cloned = dict(payload)
+    summary = _resolve_summary_block(cloned)
+    derived_summary = BenchmarkRunner._summarize_runs(_runs_for_summary(cloned))
+    per_mode_raw = _as_dict(summary.get("per_mode")) or _as_dict(derived_summary.get("per_mode"))
+    per_category_raw = _as_dict(summary.get("per_category")) or _as_dict(
+        derived_summary.get("per_category")
+    )
+
+    all_categories: list[str] = list(_BENCHMARK_DOMAIN_ORDER)
+    all_categories.extend(
+        category
+        for category in per_category_raw.keys()
+        if isinstance(category, str) and category not in all_categories
+    )
+
+    per_mode_complete: dict[str, dict[str, float]] = {}
+    for mechanism in _BENCHMARK_MECHANISMS:
+        raw_metrics = _as_dict(per_mode_raw.get(mechanism))
+        per_mode_complete[mechanism] = {
+            "accuracy": _safe_float(raw_metrics.get("accuracy")),
+            "avg_tokens": _safe_float(raw_metrics.get("avg_tokens")),
+            "avg_latency_ms": _safe_float(raw_metrics.get("avg_latency_ms")),
+            "avg_rounds": _safe_float(raw_metrics.get("avg_rounds")),
+            "switch_rate": _safe_float(raw_metrics.get("switch_rate")),
+            "avg_thinking_tokens": _safe_float(raw_metrics.get("avg_thinking_tokens")),
+            "avg_estimated_cost_usd": _safe_float(raw_metrics.get("avg_estimated_cost_usd")),
+        }
+
+    per_category_complete: dict[str, dict[str, dict[str, float]]] = {}
+    for category in all_categories:
+        category_key = str(category)
+        category_metrics = _as_dict(per_category_raw.get(category_key))
+        per_category_complete[category_key] = {}
+        for mechanism in _BENCHMARK_MECHANISMS:
+            mode_metrics = _as_dict(category_metrics.get(mechanism))
+            per_category_complete[category_key][mechanism] = {
+                "accuracy": _safe_float(mode_metrics.get("accuracy")),
+                "avg_tokens": _safe_float(mode_metrics.get("avg_tokens")),
+                "avg_latency_ms": _safe_float(mode_metrics.get("avg_latency_ms")),
+                "avg_thinking_tokens": _safe_float(mode_metrics.get("avg_thinking_tokens")),
+                "avg_estimated_cost_usd": _safe_float(mode_metrics.get("avg_estimated_cost_usd")),
+            }
+
+    cloned["summary"] = {
+        "per_mode": per_mode_complete,
+        "per_category": per_category_complete,
+    }
+    return cloned
+
+
+async def _resolve_benchmark_summary_payload() -> dict[str, Any] | None:
+    store = get_task_store()
+    summary = await store.get_benchmark_summary()
+    if isinstance(summary, dict):
+        return _with_complete_summary(summary)
+
+    global_artifacts = await store.list_global_benchmark_artifacts(limit=500)
+    for artifact in global_artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        payload = _artifact_payload(artifact)
+        if not _is_summary_block(_resolve_summary_block(payload)):
+            continue
+        normalized = _with_complete_summary(payload)
+        await store.save_benchmark_summary(normalized)
+        return normalized
+
+    payload = _load_json_payload(_RESULTS_PATH)
+    if payload is None:
+        return None
+
+    normalized = _with_complete_summary(payload)
+    await store.save_benchmark_summary(normalized)
+    return normalized
+
+
+def _build_benchmark_detail_response(
+    *,
+    benchmark_id: str,
+    scope: Literal["global", "user"],
+    artifact: dict[str, Any] | None,
+    run_record: dict[str, Any] | None,
+) -> BenchmarkDetailResponse:
+    artifact_payload_raw = _artifact_payload(artifact) if isinstance(artifact, dict) else {}
+    payload = _with_complete_summary(artifact_payload_raw) if artifact_payload_raw else {}
+    if payload:
+        telemetry = _artifact_telemetry(payload)
+    else:
+        raw_run_model_counts = (
+            run_record.get("model_counts") if isinstance(run_record, dict) else {}
+        )
+        run_model_counts = raw_run_model_counts if isinstance(raw_run_model_counts, dict) else {}
+        raw_run_model_usage = (
+            run_record.get("model_token_usage") if isinstance(run_record, dict) else {}
+        )
+        run_model_usage = raw_run_model_usage if isinstance(raw_run_model_usage, dict) else {}
+        telemetry = {
+            "run_count": 0,
+            "mechanism_counts": {},
+            "model_counts": {},
+            "frequency_score": (
+                _safe_int(run_record.get("frequency_score")) if isinstance(run_record, dict) else 0
+            ),
+            "latest_mechanism": (
+                str(run_record.get("latest_mechanism")).strip()
+                if isinstance(run_record, dict) and run_record.get("latest_mechanism")
+                else None
+            ),
+            "agent_count": (
+                _safe_int(run_record.get("agent_count"), default=0)
+                if isinstance(run_record, dict)
+                else None
+            ),
+            "total_tokens": (
+                _safe_int(run_record.get("total_tokens")) if isinstance(run_record, dict) else 0
+            ),
+            "thinking_tokens": (
+                _safe_int(run_record.get("thinking_tokens")) if isinstance(run_record, dict) else 0
+            ),
+            "total_latency_ms": (
+                _safe_float(run_record.get("total_latency_ms"))
+                if isinstance(run_record, dict)
+                else 0.0
+            ),
+            "models": sorted(run_model_counts.keys()),
+            "model_token_usage": run_model_usage,
+            "model_telemetry": (
+                _model_telemetry_from_record(run_record) if isinstance(run_record, dict) else {}
+            ),
+            "cost": _cost_from_object(run_record) if isinstance(run_record, dict) else None,
+        }
+
+    record_request = (
+        run_record.get("request")
+        if isinstance(run_record, dict) and isinstance(run_record.get("request"), dict)
+        else None
+    )
+    artifact_created_at = artifact.get("created_at") if isinstance(artifact, dict) else None
+    payload_generated_at = payload.get("generated_at") if isinstance(payload, dict) else None
+    created_at = _parse_timestamp(
+        artifact_created_at
+        or payload_generated_at
+        or (run_record.get("created_at") if isinstance(run_record, dict) else None)
+        or datetime.now(UTC).isoformat()
+    )
+    updated_at = _parse_timestamp(
+        (run_record.get("updated_at") if isinstance(run_record, dict) else None)
+        or artifact_created_at
+        or payload_generated_at
+        or datetime.now(UTC).isoformat()
+    )
+
+    artifact_id = None
+    if isinstance(artifact, dict):
+        for key in ("artifact_id", "run_id"):
+            value = artifact.get(key)
+            if isinstance(value, str) and value.strip():
+                artifact_id = value.strip()
+                break
+    if (
+        artifact_id is None
+        and isinstance(run_record, dict)
+        and isinstance(run_record.get("artifact_id"), str)
+    ):
+        artifact_id = run_record.get("artifact_id")
+
+    status = None
+    if isinstance(run_record, dict):
+        status = str(run_record.get("status") or "").strip() or None
+    if status is None and isinstance(artifact, dict):
+        status = str(artifact.get("status") or "").strip() or None
+
+    source = "unknown"
+    if isinstance(artifact, dict):
+        source = str(artifact.get("source") or "unknown")
+
+    owner_user_id = None
+    if isinstance(artifact, dict) and isinstance(artifact.get("owner_user_id"), str):
+        owner_user_id = artifact.get("owner_user_id")
+
+    summary = _as_dict(payload.get("summary")) if payload else {}
+
+    return BenchmarkDetailResponse(
+        benchmark_id=benchmark_id,
+        artifact_id=artifact_id,
+        run_id=(
+            str(run_record.get("run_id")).strip()
+            if isinstance(run_record, dict) and run_record.get("run_id")
+            else None
+        ),
+        scope=scope,
+        source=source,
+        status=status,
+        owner_user_id=owner_user_id,
+        created_at=created_at,
+        updated_at=updated_at,
+        run_count=telemetry["run_count"],
+        mechanism_counts=telemetry["mechanism_counts"],
+        model_counts=telemetry["model_counts"],
+        frequency_score=telemetry["frequency_score"],
+        latest_mechanism=telemetry["latest_mechanism"],
+        agent_count=telemetry["agent_count"],
+        total_tokens=telemetry["total_tokens"],
+        thinking_tokens=telemetry["thinking_tokens"],
+        total_latency_ms=telemetry.get("total_latency_ms", 0.0),
+        models=telemetry["models"],
+        request=record_request,
+        reasoning_presets=resolve_reasoning_presets(
+            record_request.get("reasoning_presets") if isinstance(record_request, dict) else None
+        ),
+        model_telemetry=telemetry.get("model_telemetry", {}),
+        events=[
+            TaskEvent.model_validate(event)
+            for event in (
+                run_record.get("events", []) if isinstance(run_record, dict) else []
+            )
+            if isinstance(event, dict)
+        ],
+        summary=summary,
+        benchmark_payload=payload,
+        cost=telemetry["cost"],
+    )
+
+
 def _synthesize_demo_runs(demo_payload: dict[str, Any]) -> list[dict[str, Any]]:
     sdk_flow = _as_dict(demo_payload.get("sdk_flow"))
     status_after_run = _as_dict(sdk_flow.get("status_after_run"))
@@ -126,8 +931,14 @@ def _synthesize_demo_runs(demo_payload: dict[str, Any]) -> list[dict[str, Any]]:
     tx_summary = _as_dict(demo_payload.get("tx_summary"))
 
     task_id = status_after_run.get("task_id") or status_after_pay.get("task_id")
-    task_text = status_after_run.get("task_text") or demo_payload.get("query") or "Benchmark demo run"
-    mode = run_result.get("mechanism") or status_after_run.get("mechanism") or demo_payload.get("mechanism")
+    task_text = (
+        status_after_run.get("task_text") or demo_payload.get("query") or "Benchmark demo run"
+    )
+    mode = (
+        run_result.get("mechanism")
+        or status_after_run.get("mechanism")
+        or demo_payload.get("mechanism")
+    )
     merkle_root = run_result.get("merkle_root") or status_after_run.get("merkle_root")
     explorer_url = status_after_run.get("explorer_url") or tx_summary.get("receipt_explorer_url")
     latency_ms = run_result.get("latency_ms")
@@ -199,6 +1010,31 @@ def _extract_runs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return runs
 
 
+def _runs_for_summary(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for run in _extract_runs(payload):
+        mode = (
+            str(run.get("mode") or run.get("mechanism_used") or run.get("mechanism") or "selector")
+            .strip()
+            .lower()
+        )
+        category = str(run.get("category") or "demo").strip().lower() or "demo"
+        normalized.append(
+            {
+                "mode": mode,
+                "category": category,
+                "correct": bool(run.get("correct")),
+                "tokens_used": _safe_int(run.get("tokens_used") or run.get("total_tokens_used")),
+                "latency_ms": _safe_float(run.get("latency_ms")),
+                "rounds": _safe_int(run.get("rounds")),
+                "switches": _safe_int(run.get("switches")),
+                "thinking_tokens_used": _safe_int(run.get("thinking_tokens_used")),
+                "estimated_cost_usd": _safe_float(run.get("estimated_cost_usd")),
+            }
+        )
+    return normalized
+
+
 def _extract_model_names(run: dict[str, Any]) -> list[str]:
     discovered: list[str] = []
 
@@ -227,12 +1063,7 @@ def _frequency_from_runs(runs: list[dict[str, Any]]) -> tuple[dict[str, int], di
 
     for run in runs:
         mechanism = (
-            str(
-                run.get("mechanism_used")
-                or run.get("mechanism")
-                or run.get("mode")
-                or ""
-            )
+            str(run.get("mechanism_used") or run.get("mechanism") or run.get("mode") or "")
             .strip()
             .lower()
         )
@@ -261,6 +1092,34 @@ def _artifact_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     return artifact
 
 
+def _artifact_identifier_candidates(artifact: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    for key in ("artifact_id", "run_id"):
+        value = artifact.get(key)
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    return candidates
+
+
+def _find_artifact_by_identifier(
+    artifacts: list[dict[str, Any]],
+    identifier: str,
+) -> dict[str, Any] | None:
+    wanted = str(identifier).strip()
+    if not wanted:
+        return None
+
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if wanted in _artifact_identifier_candidates(artifact):
+            return artifact
+    return None
+
+
 def _to_catalog_entry(
     artifact: dict[str, Any],
     *,
@@ -275,14 +1134,17 @@ def _to_catalog_entry(
         return None
 
     payload = _artifact_payload(artifact)
-    runs = _extract_runs(payload)
-    mechanism_counts, model_counts, frequency_score = _frequency_from_runs(runs)
+    telemetry = _artifact_telemetry(payload)
 
     scope_value = str(artifact.get("scope") or default_scope).strip().lower()
     scope: Literal["global", "user"] = "user" if scope_value == "user" else "global"
 
     owner_user_id = artifact.get("owner_user_id")
-    owner = str(owner_user_id).strip() if isinstance(owner_user_id, str) and owner_user_id.strip() else None
+    owner = (
+        str(owner_user_id).strip()
+        if isinstance(owner_user_id, str) and owner_user_id.strip()
+        else None
+    )
 
     return BenchmarkCatalogEntry(
         artifact_id=artifact_id,
@@ -294,23 +1156,71 @@ def _to_catalog_entry(
             or payload.get("generated_at")
             or datetime.now(UTC).isoformat()
         ),
-        run_count=len(runs),
-        mechanism_counts=mechanism_counts,
-        model_counts=model_counts,
-        frequency_score=frequency_score,
+        run_count=telemetry["run_count"],
+        mechanism_counts=telemetry["mechanism_counts"],
+        model_counts=telemetry["model_counts"],
+        frequency_score=telemetry["frequency_score"],
         status=str(artifact.get("status")) if artifact.get("status") is not None else None,
+        latest_mechanism=telemetry["latest_mechanism"],
+        agent_count=telemetry["agent_count"],
+        total_tokens=telemetry["total_tokens"],
+        thinking_tokens=telemetry["thinking_tokens"],
+        total_latency_ms=telemetry.get("total_latency_ms", 0.0),
+        models=telemetry["models"],
+        model_telemetry=telemetry.get("model_telemetry", {}),
+        cost=telemetry["cost"],
     )
 
 
-def _to_run_status(record: dict[str, Any], *, run_id_fallback: str | None = None) -> BenchmarkRunStatusResponse | None:
+def _to_run_status(
+    record: dict[str, Any],
+    *,
+    run_id_fallback: str | None = None,
+) -> BenchmarkRunStatusResponse | None:
     run_id = str(record.get("run_id") or run_id_fallback or "").strip()
     if not run_id:
         return None
 
     artifact_id = record.get("artifact_id")
-    artifact = str(artifact_id).strip() if isinstance(artifact_id, str) and artifact_id.strip() else None
+    artifact = (
+        str(artifact_id).strip() if isinstance(artifact_id, str) and artifact_id.strip() else None
+    )
     error = record.get("error")
     error_text = str(error).strip() if error is not None else None
+    request_payload = record.get("request") if isinstance(record.get("request"), dict) else None
+
+    model_costs = record.get("model_estimated_costs_usd")
+    if not isinstance(model_costs, dict):
+        model_costs = {}
+
+    cost = BenchmarkCostEstimateResponse(
+        estimated_cost_usd=_safe_float(record.get("estimated_cost_usd"), default=0.0) or None,
+        model_estimated_costs_usd={
+            str(model): round(_safe_float(value), 8)
+            for model, value in model_costs.items()
+            if str(model).strip() and _safe_float(value) > 0
+        },
+        pricing_version=(
+            str(record.get("pricing_version")).strip() if record.get("pricing_version") else None
+        ),
+        estimated_at=(
+            _parse_timestamp(record.get("cost_estimated_at"))
+            if record.get("cost_estimated_at")
+            else None
+        ),
+        estimation_mode=(
+            str(record.get("estimation_mode")).strip() if record.get("estimation_mode") else None
+        ),
+        pricing_sources=(
+            {
+                str(model): str(source)
+                for model, source in record.get("pricing_sources", {}).items()
+                if str(model).strip() and str(source).strip()
+            }
+            if isinstance(record.get("pricing_sources"), dict)
+            else {}
+        ),
+    )
 
     return BenchmarkRunStatusResponse(
         run_id=run_id,
@@ -319,6 +1229,19 @@ def _to_run_status(record: dict[str, Any], *, run_id_fallback: str | None = None
         updated_at=_parse_timestamp(record.get("updated_at") or record.get("created_at")),
         error=error_text,
         artifact_id=artifact,
+        request=request_payload,
+        reasoning_presets=resolve_reasoning_presets(
+            request_payload.get("reasoning_presets") if isinstance(request_payload, dict) else None
+        ),
+        latest_mechanism=(
+            str(record.get("latest_mechanism")).strip() if record.get("latest_mechanism") else None
+        ),
+        agent_count=(_safe_int(record.get("agent_count"), default=0) or None),
+        total_tokens=(_safe_int(record.get("total_tokens"), default=0) or None),
+        thinking_tokens=(_safe_int(record.get("thinking_tokens"), default=0) or None),
+        total_latency_ms=(_safe_float(record.get("total_latency_ms")) or None),
+        model_telemetry=_model_telemetry_from_record(record),
+        cost=cost,
     )
 
 
@@ -346,15 +1269,19 @@ def _legacy_artifact_id(path: Path) -> str:
     candidate = _LEGACY_ARTIFACT_RE.sub("-", path.stem.lower()).strip("-.")
     if not candidate:
         candidate = hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:16]
-    artifact_id = f"legacy-{candidate}"[:120]
+    artifact_id = f"local-{candidate}"[:120]
     try:
         validate_storage_id(artifact_id, field_name="artifact_id")
     except ValueError:
-        artifact_id = f"legacy-{hashlib.sha256(path.name.encode('utf-8')).hexdigest()[:24]}"
+        artifact_id = f"local-{hashlib.sha256(path.name.encode('utf-8')).hexdigest()[:24]}"
     return artifact_id
 
 
-def _legacy_artifact_document(path: Path, payload: dict[str, Any], artifact_id: str) -> dict[str, Any]:
+def _legacy_artifact_document(
+    path: Path,
+    payload: dict[str, Any],
+    artifact_id: str,
+) -> dict[str, Any]:
     created_at = payload.get("generated_at")
     if not isinstance(created_at, str) or not created_at.strip():
         created_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
@@ -362,7 +1289,7 @@ def _legacy_artifact_document(path: Path, payload: dict[str, Any], artifact_id: 
     return {
         "artifact_id": artifact_id,
         "scope": "global",
-        "source": "legacy_backfill",
+        "source": "local_backfill",
         "status": "completed",
         "created_at": created_at,
         "benchmark_payload": payload,
@@ -387,7 +1314,10 @@ async def _maybe_backfill_legacy_benchmarks() -> None:
             if isinstance(item, dict) and item.get("artifact_id")
         }
 
-        for path in sorted(_RESULTS_DIR.glob("phase2*.json"), key=lambda candidate: candidate.stat().st_mtime):
+        for path in sorted(
+            _RESULTS_DIR.glob("*.json"),
+            key=lambda candidate: candidate.stat().st_mtime,
+        ):
             payload = _load_json_payload(path)
             if payload is None:
                 continue
@@ -408,6 +1338,20 @@ async def _maybe_backfill_legacy_benchmarks() -> None:
 def _build_run_id(workspace_id: str) -> str:
     payload = f"{workspace_id}:{datetime.now(UTC).isoformat()}"
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+async def _persist_and_emit_benchmark_event(
+    *,
+    store: Any,
+    stream: DeliberationStream,
+    workspace_id: str,
+    run_id: str,
+    event_type: str,
+    event_data: dict[str, Any],
+) -> None:
+    payload = _benchmark_event_payload(event_type, event_data)
+    await store.append_user_test_event(workspace_id, run_id, payload)
+    await stream.emit(_benchmark_stream_key(workspace_id, run_id), payload)
 
 
 async def _offline_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
@@ -441,6 +1385,7 @@ async def _execute_benchmark_run(
     request: BenchmarkRunRequest,
 ) -> None:
     store = get_task_store()
+    stream = get_stream_manager()
     updated_at = datetime.now(UTC).isoformat()
 
     running_record = await store.get_user_test_result(workspace_id, run_id) or {}
@@ -454,17 +1399,72 @@ async def _execute_benchmark_run(
         }
     )
     await store.save_user_test_result(workspace_id, run_id, running_record)
+    await _persist_and_emit_benchmark_event(
+        store=store,
+        stream=stream,
+        workspace_id=workspace_id,
+        run_id=run_id,
+        event_type="started",
+        event_data={"run_id": run_id, "status": "running"},
+    )
 
     try:
+        reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
         training_tasks, holdout_tasks = BenchmarkRunner.build_phase2_task_split(
             training_per_category=request.training_per_category,
             holdout_per_category=request.holdout_per_category,
         )
 
-        orchestrator = AgoraOrchestrator(agent_count=request.agent_count)
+        resolved_domain_prompts = _resolved_domain_prompts(request)
+        training_tasks = _apply_domain_prompts(training_tasks, resolved_domain_prompts)
+        holdout_tasks = _apply_domain_prompts(holdout_tasks, resolved_domain_prompts)
+
+        orchestrator = AgoraOrchestrator(
+            agent_count=request.agent_count,
+            reasoning_presets=reasoning_presets,
+        )
         agents = None if request.live_agents else [_offline_agent] * request.agent_count
         seed = None if request.live_agents else request.seed
         runner = BenchmarkRunner(orchestrator, agents=agents)
+
+        async def emit_progress(event_type: str, event_data: dict[str, Any]) -> None:
+            current = await store.get_user_test_result(workspace_id, run_id) or {}
+            current.update(
+                {
+                    "run_id": run_id,
+                    "workspace_id": workspace_id,
+                    "kind": "benchmark",
+                    "status": "running",
+                    "updated_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            telemetry = event_data.get("telemetry")
+            if isinstance(telemetry, dict):
+                current["latest_mechanism"] = event_data.get("latest_mechanism")
+                current["agent_count"] = telemetry.get("agent_count")
+                current["total_tokens"] = telemetry.get("total_tokens")
+                current["thinking_tokens"] = telemetry.get("thinking_tokens")
+                current["total_latency_ms"] = telemetry.get("total_latency_ms")
+                current["model_token_usage"] = telemetry.get("model_token_usage", {})
+                current["model_telemetry"] = telemetry.get("model_telemetry", {})
+                current["estimated_cost_usd"] = telemetry.get("cost", {}).get("estimated_cost_usd")
+                current["model_estimated_costs_usd"] = telemetry.get("cost", {}).get(
+                    "model_estimated_costs_usd",
+                    {},
+                )
+                current["pricing_version"] = telemetry.get("cost", {}).get("pricing_version")
+                current["cost_estimated_at"] = telemetry.get("cost", {}).get("estimated_at")
+                current["estimation_mode"] = telemetry.get("cost", {}).get("estimation_mode")
+                current["pricing_sources"] = telemetry.get("cost", {}).get("pricing_sources", {})
+            await store.save_user_test_result(workspace_id, run_id, current)
+            await _persist_and_emit_benchmark_event(
+                store=store,
+                stream=stream,
+                workspace_id=workspace_id,
+                run_id=run_id,
+                event_type=event_type,
+                event_data=event_data,
+            )
 
         output_path = _RESULTS_DIR / f"user_benchmark_{run_id}.json"
         payload = await runner.run_phase2_validation(
@@ -472,7 +1472,30 @@ async def _execute_benchmark_run(
             holdout_tasks=holdout_tasks,
             output_path=str(output_path),
             seed=seed,
+            progress_callback=emit_progress,
         )
+        payload = _with_complete_summary(payload)
+        await store.save_benchmark_summary(payload)
+        payload["benchmark_config"] = {
+            "training_per_category": request.training_per_category,
+            "holdout_per_category": request.holdout_per_category,
+            "agent_count": request.agent_count,
+            "live_agents": request.live_agents,
+            "seed": request.seed,
+            "reasoning_presets": reasoning_presets.model_dump(mode="json"),
+            "domain_prompts": resolved_domain_prompts,
+        }
+        telemetry = _artifact_telemetry(payload)
+        benchmark_config = {
+            "training_per_category": request.training_per_category,
+            "holdout_per_category": request.holdout_per_category,
+            "agent_count": request.agent_count,
+            "live_agents": request.live_agents,
+            "seed": request.seed,
+            "reasoning_presets": reasoning_presets.model_dump(mode="json"),
+            "domain_prompts": resolved_domain_prompts,
+        }
+        payload["benchmark_config"] = benchmark_config
 
         created_at = datetime.now(UTC).isoformat()
         artifact_document = {
@@ -483,6 +1506,17 @@ async def _execute_benchmark_run(
             "owner_user_id": workspace_id,
             "created_at": created_at,
             "benchmark_payload": payload,
+            "latest_mechanism": telemetry["latest_mechanism"],
+            "agent_count": telemetry["agent_count"],
+            "total_tokens": telemetry["total_tokens"],
+            "thinking_tokens": telemetry["thinking_tokens"],
+            "total_latency_ms": telemetry["total_latency_ms"],
+            "models": telemetry["models"],
+            "model_telemetry": {
+                model: data.model_dump(mode="json")
+                for model, data in telemetry["model_telemetry"].items()
+            },
+            "cost": telemetry["cost"].model_dump(mode="json") if telemetry["cost"] else None,
         }
 
         user_artifact_document = dict(artifact_document)
@@ -490,9 +1524,6 @@ async def _execute_benchmark_run(
 
         await store.save_global_benchmark_artifact(run_id, artifact_document)
         await store.save_user_benchmark_artifact(workspace_id, run_id, user_artifact_document)
-
-        runs = _extract_runs(payload)
-        mechanism_counts, model_counts, frequency_score = _frequency_from_runs(runs)
 
         completed_at = datetime.now(UTC).isoformat()
         completed_record = await store.get_user_test_result(workspace_id, run_id) or {}
@@ -503,13 +1534,61 @@ async def _execute_benchmark_run(
                 "kind": "benchmark",
                 "status": "completed",
                 "artifact_id": run_id,
-                "mechanism_counts": mechanism_counts,
-                "model_counts": model_counts,
-                "frequency_score": frequency_score,
+                "request": {
+                    **request.model_dump(mode="json"),
+                    "reasoning_presets": reasoning_presets.model_dump(mode="json"),
+                    "resolved_domain_prompts": resolved_domain_prompts,
+                },
+                "mechanism_counts": telemetry["mechanism_counts"],
+                "model_counts": telemetry["model_counts"],
+                "frequency_score": telemetry["frequency_score"],
+                "latest_mechanism": telemetry["latest_mechanism"],
+                "agent_count": telemetry["agent_count"],
+                "total_tokens": telemetry["total_tokens"],
+                "thinking_tokens": telemetry["thinking_tokens"],
+                "total_latency_ms": telemetry["total_latency_ms"],
+                "model_token_usage": telemetry["model_token_usage"],
+                "model_telemetry": {
+                    model: data.model_dump(mode="json")
+                    for model, data in telemetry["model_telemetry"].items()
+                },
+                "estimated_cost_usd": (
+                    telemetry["cost"].estimated_cost_usd if telemetry["cost"] else None
+                ),
+                "model_estimated_costs_usd": (
+                    telemetry["cost"].model_estimated_costs_usd if telemetry["cost"] else {}
+                ),
+                "pricing_version": telemetry["cost"].pricing_version if telemetry["cost"] else None,
+                "cost_estimated_at": (
+                    telemetry["cost"].estimated_at.isoformat()
+                    if telemetry["cost"] and telemetry["cost"].estimated_at
+                    else None
+                ),
+                "estimation_mode": telemetry["cost"].estimation_mode if telemetry["cost"] else None,
+                "pricing_sources": (
+                    telemetry["cost"].pricing_sources if telemetry["cost"] else {}
+                ),
                 "updated_at": completed_at,
             }
         )
         await store.save_user_test_result(workspace_id, run_id, completed_record)
+        await _persist_and_emit_benchmark_event(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            event_type="artifact_created",
+            event_data={"run_id": run_id, "artifact_id": run_id, "telemetry": completed_record},
+        )
+        await _persist_and_emit_benchmark_event(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            event_type="complete",
+            event_data={"run_id": run_id, "artifact_id": run_id, "status": "completed"},
+        )
+        await stream.close(_benchmark_stream_key(workspace_id, run_id))
     except Exception as exc:
         failed_at = datetime.now(UTC).isoformat()
         failed_record = await store.get_user_test_result(workspace_id, run_id) or {}
@@ -524,10 +1603,19 @@ async def _execute_benchmark_run(
             }
         )
         await store.save_user_test_result(workspace_id, run_id, failed_record)
+        await _persist_and_emit_benchmark_event(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            event_type="failed",
+            event_data={"run_id": run_id, "message": str(exc)[:1000]},
+        )
+        await stream.close(_benchmark_stream_key(workspace_id, run_id))
 
 
 async def _optional_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+    credentials: OptionalBearerCredentials,
 ) -> AuthenticatedUser | None:
     if credentials is None:
         return None
@@ -535,11 +1623,15 @@ async def _optional_current_user(
 
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+OptionalCurrentUser = Annotated[
+    AuthenticatedUser | None,
+    Depends(_optional_current_user),
+]
 
 
 @router.get("/benchmarks")
 async def get_benchmarks(
-    user: AuthenticatedUser | None = Depends(_optional_current_user),
+    user: OptionalCurrentUser,
     x_agora_admin_token: str | None = Header(default=None),
     include_demo: bool = Query(default=False),
 ) -> dict[str, Any]:
@@ -553,9 +1645,7 @@ async def get_benchmarks(
             raise HTTPException(status_code=403, detail="Benchmark access denied")
         require_human_user(user)
 
-    store = get_task_store()
-    summary = await store.get_benchmark_summary()
-    payload = summary if isinstance(summary, dict) else _load_json_payload(_RESULTS_PATH)
+    payload = await _resolve_benchmark_summary_payload()
     if payload is None:
         raise HTTPException(status_code=404, detail="Benchmark summary is not available yet")
 
@@ -588,7 +1678,7 @@ async def get_benchmarks(
                 "per_category": per_category,
             }
 
-    return enriched_payload
+    return _with_complete_summary(enriched_payload)
 
 
 @router.get("/benchmarks/catalog", response_model=BenchmarkCatalogResponse)
@@ -649,7 +1739,7 @@ async def get_benchmark_catalog(
                 key=lambda pair: (pair[1], pair[0].updated_at),
                 reverse=True,
             )
-            if score >= 0
+            if score > 0
         ]
 
     global_recent = sorted(global_entries, key=lambda entry: entry.created_at, reverse=True)
@@ -675,6 +1765,106 @@ async def get_benchmark_catalog(
     )
 
 
+@router.get("/benchmarks/prompt-templates", response_model=BenchmarkPromptTemplatesResponse)
+async def get_benchmark_prompt_templates(
+    user: CurrentUser,
+) -> BenchmarkPromptTemplatesResponse:
+    """Return benchmark prompt templates grouped by domain for the run wizard."""
+
+    # Human sessions unlock user-scoped benchmark actions, but prompt template browsing
+    # can still be available to authenticated API key clients.
+    if user.auth_method == "jwt":
+        require_human_user(user)
+
+    return _domain_prompt_templates_response()
+
+
+@router.get("/benchmarks/{benchmark_id}", response_model=BenchmarkDetailResponse)
+async def get_benchmark_detail(
+    benchmark_id: str,
+    user: CurrentUser,
+) -> BenchmarkDetailResponse:
+    """Return a dedicated benchmark detail payload by artifact_id or run_id fallback."""
+
+    try:
+        validate_storage_id(benchmark_id, field_name="benchmark_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await _maybe_backfill_legacy_benchmarks()
+    store = get_task_store()
+
+    if user.auth_method == "jwt":
+        require_human_user(user)
+
+    run_record = await store.get_user_test_result(user.workspace_id, benchmark_id)
+    run_record_artifact_id = (
+        str(run_record.get("artifact_id")).strip()
+        if isinstance(run_record, dict) and isinstance(run_record.get("artifact_id"), str)
+        else ""
+    )
+
+    candidate_ids: list[str] = [benchmark_id]
+    if run_record_artifact_id and run_record_artifact_id not in candidate_ids:
+        candidate_ids.append(run_record_artifact_id)
+
+    for candidate_id in candidate_ids:
+        user_artifact = await store.get_user_benchmark_artifact(user.workspace_id, candidate_id)
+        if user_artifact is not None:
+            return _build_benchmark_detail_response(
+                benchmark_id=benchmark_id,
+                scope="user",
+                artifact=user_artifact,
+                run_record=run_record,
+            )
+
+    user_artifacts = await store.list_user_benchmark_artifacts(user.workspace_id, limit=500)
+    matched_user_artifact = _find_artifact_by_identifier(user_artifacts, benchmark_id)
+    if matched_user_artifact is None and run_record_artifact_id:
+        matched_user_artifact = _find_artifact_by_identifier(user_artifacts, run_record_artifact_id)
+    if matched_user_artifact is not None:
+        return _build_benchmark_detail_response(
+            benchmark_id=benchmark_id,
+            scope="user",
+            artifact=matched_user_artifact,
+            run_record=run_record,
+        )
+
+    for candidate_id in candidate_ids:
+        global_artifact = await store.get_global_benchmark_artifact(candidate_id)
+        if global_artifact is not None:
+            return _build_benchmark_detail_response(
+                benchmark_id=benchmark_id,
+                scope="global",
+                artifact=global_artifact,
+                run_record=run_record,
+            )
+
+    global_artifacts = await store.list_global_benchmark_artifacts(limit=500)
+    matched_global_artifact = _find_artifact_by_identifier(global_artifacts, benchmark_id)
+    if matched_global_artifact is None and run_record_artifact_id:
+        matched_global_artifact = _find_artifact_by_identifier(
+            global_artifacts, run_record_artifact_id
+        )
+    if matched_global_artifact is not None:
+        return _build_benchmark_detail_response(
+            benchmark_id=benchmark_id,
+            scope="global",
+            artifact=matched_global_artifact,
+            run_record=run_record,
+        )
+
+    if run_record is not None:
+        return _build_benchmark_detail_response(
+            benchmark_id=benchmark_id,
+            scope="user",
+            artifact=None,
+            run_record=run_record,
+        )
+
+    raise HTTPException(status_code=404, detail="Benchmark not found")
+
+
 @router.post("/benchmarks/run", response_model=BenchmarkRunResponse)
 async def trigger_benchmark_run(
     request: BenchmarkRunRequest,
@@ -684,8 +1874,10 @@ async def trigger_benchmark_run(
 
     require_human_user(user)
     store = get_task_store()
+    stream = get_stream_manager()
     run_id = _build_run_id(user.workspace_id)
     created_at = datetime.now(UTC)
+    reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
 
     await store.save_user_test_result(
         user.workspace_id,
@@ -697,9 +1889,20 @@ async def trigger_benchmark_run(
             "status": "queued",
             "created_at": created_at.isoformat(),
             "updated_at": created_at.isoformat(),
-            "request": request.model_dump(mode="json"),
+            "request": {
+                **request.model_dump(mode="json"),
+                "reasoning_presets": reasoning_presets.model_dump(mode="json"),
+            },
             "label": "User-triggered benchmark",
         },
+    )
+    await _persist_and_emit_benchmark_event(
+        store=store,
+        stream=stream,
+        workspace_id=user.workspace_id,
+        run_id=run_id,
+        event_type="queued",
+        event_data={"run_id": run_id, "status": "queued"},
     )
 
     task = asyncio.create_task(
@@ -736,3 +1939,77 @@ async def get_benchmark_run_status(
     if status is None:
         raise HTTPException(status_code=404, detail="Benchmark run not found")
     return status
+
+
+@router.post("/benchmarks/runs/{run_id}/stream-ticket")
+async def create_benchmark_stream_ticket(
+    run_id: str,
+    user: CurrentUser,
+) -> dict[str, str]:
+    """Issue a short-lived ticket for benchmark EventSource authentication."""
+
+    require_human_user(user)
+    store = get_task_store()
+    record = await store.get_user_test_result(user.workspace_id, run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Benchmark run not found")
+    return await _issue_benchmark_stream_ticket(user.workspace_id, run_id)
+
+
+@router.get("/benchmarks/runs/{run_id}/stream")
+async def stream_benchmark_run(
+    run_id: str,
+    ticket: str = Query(...),
+) -> EventSourceResponse:
+    """Replay persisted benchmark events, then continue with live SSE updates."""
+
+    stream_ticket = await _consume_benchmark_stream_ticket(ticket, run_id=run_id)
+    workspace_id = stream_ticket.workspace_id
+    store = get_task_store()
+    stream = get_stream_manager()
+    record = await store.get_user_test_result(workspace_id, run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Benchmark run not found")
+
+    async def event_generator() -> Any:
+        events = await store.get_user_test_events(workspace_id, run_id)
+        for event in events:
+            yield _benchmark_sse_message(event)
+
+        if any(event.get("event") in {"complete", "failed"} for event in events):
+            return
+
+        stream_id = _benchmark_stream_key(workspace_id, run_id)
+        queue = stream.subscribe(stream_id)
+        next_event_index = len(events)
+
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(
+                        queue.get(),
+                        timeout=_STREAM_POLL_INTERVAL_SECONDS,
+                    )
+                except TimeoutError:
+                    latest = await store.get_user_test_events(workspace_id, run_id)
+                    if next_event_index >= len(latest):
+                        continue
+                    for event in latest[next_event_index:]:
+                        payload = _benchmark_sse_message(event)
+                        next_event_index += 1
+                        yield payload
+                        if payload["event"] in {"complete", "failed"}:
+                            return
+                    continue
+
+                if item is None:
+                    break
+                payload = _benchmark_sse_message(item)
+                yield payload
+                next_event_index += 1
+                if payload["event"] in {"complete", "failed"}:
+                    break
+        finally:
+            stream.unsubscribe(stream_id, queue)
+
+    return EventSourceResponse(event_generator())

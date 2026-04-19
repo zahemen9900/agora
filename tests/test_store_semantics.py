@@ -16,7 +16,7 @@ from api.store_local import LocalTaskStore
 
 
 class _FakeBlob:
-    def __init__(self, bucket: "_FakeBucket", name: str) -> None:
+    def __init__(self, bucket: _FakeBucket, name: str) -> None:
         self._bucket = bucket
         self.name = name
         self.generation: int | None = None
@@ -121,6 +121,7 @@ async def test_task_store_get_task_distinguishes_missing_payload_and_backend_fai
     assert await store.get_task("user-1", "task-1") is None
 
     blob_name = TaskStore._task_blob_name("user-1", "task-1")
+    assert blob_name == "agora/users/user-1/tasks/task-1.json"
     bucket.seed_raw(blob_name, "{malformed-json")
     with pytest.raises(TaskStorePayloadError):
         await store.get_task("user-1", "task-1")
@@ -129,6 +130,19 @@ async def test_task_store_get_task_distinguishes_missing_payload_and_backend_fai
     bucket.fail_once(blob_name, "download", RuntimeError("rpc unavailable"))
     with pytest.raises(TaskStoreUnavailable):
         await store.get_task("user-1", "task-1")
+
+
+@pytest.mark.asyncio
+async def test_task_store_get_task_reads_legacy_task_prefix() -> None:
+    bucket = _FakeBucket()
+    store = _make_store(bucket)
+    legacy_blob_name = TaskStore._legacy_task_blob_name("user-1", "task-1")
+    bucket.seed_json(legacy_blob_name, {"task_id": "task-1", "events": []})
+
+    task = await store.get_task("user-1", "task-1")
+
+    assert task is not None
+    assert task["task_id"] == "task-1"
 
 
 @pytest.mark.asyncio
@@ -177,11 +191,25 @@ async def test_local_store_append_event_raises_not_found_for_missing_task(tmp_pa
 async def test_local_store_get_task_raises_payload_error_for_malformed_json(tmp_path: Path) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "local-store-malformed-task"))
     task_path = store._task_path("user-1", "task-1")
+    assert "agora/users/user-1/tasks/task-1.json" in task_path.as_posix()
     task_path.parent.mkdir(parents=True, exist_ok=True)
     task_path.write_text("{malformed-json", encoding="utf-8")
 
     with pytest.raises(TaskStorePayloadError):
         await store.get_task("user-1", "task-1")
+
+
+@pytest.mark.asyncio
+async def test_local_store_get_task_reads_legacy_task_prefix(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "local-store-legacy-task"))
+    legacy_path = store._legacy_task_path("user-1", "task-1")
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(json.dumps({"task_id": "task-1", "events": []}), encoding="utf-8")
+
+    task = await store.get_task("user-1", "task-1")
+
+    assert task is not None
+    assert task["task_id"] == "task-1"
 
 
 @pytest.mark.asyncio

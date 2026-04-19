@@ -8,9 +8,11 @@ from typing import Any
 
 import structlog
 
+from agora.agent import pro_caller
 from agora.engines.debate import DebateEngine
 from agora.engines.vote import VoteEngine
 from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.monitor import StateMonitor
 from agora.selector.features import extract_features
 from agora.selector.selector import AgoraSelector
@@ -19,6 +21,8 @@ from agora.types import (
     DeliberationResult,
     MechanismSelection,
     MechanismType,
+    ReasoningPresetOverrides,
+    ReasoningPresets,
     mechanism_is_supported,
 )
 
@@ -38,6 +42,10 @@ class AgoraOrchestrator:
         agent_count: int = 3,
         bandit_state_path: str | None = None,
         default_stakes: float = 0.5,
+        reasoning_presets: ReasoningPresets
+        | ReasoningPresetOverrides
+        | dict[str, Any]
+        | None = None,
     ) -> None:
         """Initialize orchestrator dependencies.
 
@@ -49,19 +57,36 @@ class AgoraOrchestrator:
 
         self.agent_count = max(1, agent_count)
         self.default_stakes = max(0.0, min(1.0, default_stakes))
+        self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
 
-        self.selector = AgoraSelector(bandit_state_path=bandit_state_path)
+        self.selector = AgoraSelector(
+            bandit_state_path=bandit_state_path,
+            reasoning_caller=pro_caller(thinking_level=self.reasoning_presets.gemini_pro),
+        )
         self.hasher = TranscriptHasher()
         self.monitor = StateMonitor()
-        self.debate_engine = DebateEngine(
+        self.debate_engine = self.build_debate_engine()
+        self.vote_engine = self.build_vote_engine(quorum_threshold=0.6)
+
+    def build_debate_engine(self, **overrides: Any) -> DebateEngine:
+        """Build a debate engine that inherits the orchestrator's runtime policy."""
+
+        return DebateEngine(
             agent_count=self.agent_count,
             monitor=self.monitor,
             hasher=self.hasher,
+            reasoning_presets=self.reasoning_presets,
+            **overrides,
         )
-        self.vote_engine = VoteEngine(
+
+    def build_vote_engine(self, **overrides: Any) -> VoteEngine:
+        """Build a vote engine that inherits the orchestrator's runtime policy."""
+
+        return VoteEngine(
             agent_count=self.agent_count,
-            quorum_threshold=0.6,
             hasher=self.hasher,
+            reasoning_presets=self.reasoning_presets,
+            **overrides,
         )
 
     async def run(

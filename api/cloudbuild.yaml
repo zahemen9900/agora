@@ -1,5 +1,8 @@
 substitutions:
-  _IMAGE: us-central1-docker.pkg.dev/even-ally-480821-f3/agora/agora-api:latest
+  _REGION: us-central1
+  _REPOSITORY: agora
+  _SERVICE: agora-api
+  _TAG: latest
 
 steps:
   - name: gcr.io/cloud-builders/docker
@@ -8,8 +11,8 @@ steps:
       - -f
       - api/Dockerfile
       - -t
-      - ${_IMAGE}
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:${_TAG}
       - .
 
 images:
-  - ${_IMAGE}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:${_TAG}

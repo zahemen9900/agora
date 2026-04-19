@@ -13,6 +13,9 @@ if str(REPO_ROOT) not in sys.path:
 
 OUTPUT_PATH = REPO_ROOT / "agora-web" / "src" / "lib" / "api.generated.ts"
 SCHEMA_NAMES = [
+    "ReasoningPresetOverrides",
+    "ReasoningPresets",
+    "TaskCreateRequest",
     "TaskEvent",
     "DeliberationResultResponse",
     "TaskStatusResponse",
@@ -23,7 +26,48 @@ SCHEMA_NAMES = [
     "ApiKeyMetadataResponse",
     "ApiKeyCreateResponse",
     "TaskCreateResponse",
+    "BenchmarkRunRequest",
+    "BenchmarkRunResponse",
+    "BenchmarkRunStatusResponse",
+    "BenchmarkCatalogResponse",
+    "BenchmarkDetailResponse",
+    "BenchmarkPromptTemplatesResponse",
 ]
+
+
+def _collect_schema_refs(value: Any, refs: set[str]) -> None:
+    if isinstance(value, dict):
+        ref = value.get("$ref")
+        if isinstance(ref, str):
+            refs.add(ref.rsplit("/", 1)[-1])
+        for nested in value.values():
+            _collect_schema_refs(nested, refs)
+        return
+
+    if isinstance(value, list):
+        for item in value:
+            _collect_schema_refs(item, refs)
+
+
+def _schema_names_with_dependencies(schemas: dict[str, dict[str, Any]]) -> list[str]:
+    ordered: list[str] = []
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visited or name not in schemas:
+            return
+        visited.add(name)
+        ordered.append(name)
+
+        refs: set[str] = set()
+        _collect_schema_refs(schemas[name], refs)
+        for ref_name in sorted(refs):
+            visit(ref_name)
+
+    for root_name in SCHEMA_NAMES:
+        visit(root_name)
+
+    return ordered
 
 
 def _schema_ref_name(schema: dict[str, Any]) -> str:
@@ -123,7 +167,9 @@ def generate_typescript() -> str:
     parts.extend(_extract_aliases(schemas))
     parts.append("")
 
-    for name in SCHEMA_NAMES:
+    schema_names = _schema_names_with_dependencies(schemas)
+
+    for name in schema_names:
         parts.append(_render_interface(name, schemas[name]))
         parts.append("")
 

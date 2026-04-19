@@ -279,8 +279,8 @@ Optional controls:
 - `DEMO_AGENT_COUNT`: orchestrator/hosted smoke agent count (defaults to 4 unless both Kimi and all-model smokes are disabled)
 - `DEMO_ORCHESTRATOR_TIMEOUT_SECONDS`, `DEMO_MODEL_TIMEOUT_SECONDS`, `DEMO_ALL_MODELS_TIMEOUT_SECONDS`: cap live provider waits so demo failures are clean
 - `DEMO_ALL_MODELS_MAX_ATTEMPTS`: retry the strict 4-provider vote smoke on transient provider failures
-- `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3-flash-preview`)
-- `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3.1-pro-preview`)
+- `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3.1-flash-lite-preview`)
+- `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3-flash-preview`)
 - `DEMO_CLAUDE_MODEL`: default Claude model used by script (defaults to `claude-sonnet-4-6`)
 - `DEMO_KIMI_MODEL`: default Kimi model used by script (defaults to `moonshotai/kimi-k2-thinking`)
 - `PYTHON_BIN`: custom Python executable path
@@ -337,9 +337,10 @@ RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODEL
 RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_KIMI_SMOKE=always RUN_ALL_MODELS_E2E=never ./scripts/week1_demo.sh
 
 # 4) Strict model, Anchor, and hosted Week 1 E2E demo
-export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
-export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3)"
-export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3)"
+export GOOGLE_CLOUD_PROJECT="agora-ai-493714"
+export AGORA_API_URL="${AGORA_API_URL:-https://agora-api-dcro4pg6ca-uc.a.run.app}"
+export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
+export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
 RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 
 # Optional hosted strict all-model check after deploying the API with AGORA_API_FORCE_MECHANISM=vote
@@ -357,32 +358,24 @@ Expected demo summary:
 - `Local Anchor checks`: `PASS`
 - `Hosted API E2E`: `PASS`
 
-### Fixing IAM For Non-Interactive gcloud Auth
+### Local Google Cloud Auth
 
-If you authenticate with a service-account key file (for example
-`/home/zahemen/projects/dl-lib/agora/.credentials/even-ally-480821-f3-be2827895913.json`),
-that identity must have Secret Manager access.
-
-Run this once with a privileged principal (Owner or Secret Admin):
+Use your user account plus Application Default Credentials for local Secret
+Manager access. Do not use or share service-account JSON keys for local
+development.
 
 ```bash
-PROJECT_ID="even-ally-480821-f3"
-SA_EMAIL="ghsl-storage-accessor@even-ally-480821-f3.iam.gserviceaccount.com"
-
-for SECRET in agora-gemini-api-key agora-anthropic-api-key agora-openrouter-api-key; do
-  gcloud secrets add-iam-policy-binding "$SECRET" \
-    --project "$PROJECT_ID" \
-    --member "serviceAccount:${SA_EMAIL}" \
-    --role "roles/secretmanager.secretAccessor"
-done
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project agora-ai-493714
 ```
 
 Verification:
 
 ```bash
-gcloud secrets versions access latest --secret agora-gemini-api-key --project even-ally-480821-f3 >/dev/null
-gcloud secrets versions access latest --secret agora-anthropic-api-key --project even-ally-480821-f3 >/dev/null
-gcloud secrets versions access latest --secret agora-openrouter-api-key --project even-ally-480821-f3 >/dev/null
+gcloud auth print-access-token >/dev/null
+gcloud auth application-default print-access-token >/dev/null
+gcloud secrets versions access latest --secret agora-gemini-api-key --project agora-ai-493714 >/dev/null
 ```
 
 ## Quick Usage
@@ -446,9 +439,9 @@ What it requires:
 Credential/bootstrap behavior:
 
 - the script now bootstraps cloud credentials the same way as `week1_demo.sh`:
-  - reuses `GOOGLE_APPLICATION_CREDENTIALS` when already set
-  - otherwise auto-detects a JSON key under `.credentials/`
-  - resolves `GOOGLE_CLOUD_PROJECT` from env, key file, or `gcloud config`
+  - uses the active `gcloud` account when available
+  - prefers Application Default Credentials for local Google client auth
+  - resolves `GOOGLE_CLOUD_PROJECT` from env or `gcloud config`
 - if model keys are not already exported, it attempts Secret Manager fetch via `gcloud` using defaults:
   - `agora-gemini-api-key`
   - `agora-anthropic-api-key`
@@ -458,7 +451,6 @@ Credential/bootstrap behavior:
 
 Optional secret bootstrap overrides:
 
-- `AGORA_GCLOUD_CREDENTIALS_FILE`
 - `AGORA_GEMINI_SECRET_NAME|PROJECT|VERSION`
 - `AGORA_ANTHROPIC_SECRET_NAME|PROJECT|VERSION`
 - `AGORA_OPENROUTER_SECRET_NAME|PROJECT|VERSION`
@@ -530,8 +522,8 @@ Hosted auth setup notes:
 Hosted auth bootstrap example (fully automated key create + store + run):
 
 ```bash
-export AGORA_API_URL="https://agora-api-rztfxer7ra-uc.a.run.app"
-export GOOGLE_CLOUD_PROJECT="even-ally-480821-f3"
+export AGORA_API_URL="https://agora-api-dcro4pg6ca-uc.a.run.app"
+export GOOGLE_CLOUD_PROJECT="agora-ai-493714"
 export AGORA_PHASE2_BOOTSTRAP_JWT="<human-workos-jwt>"
 
 # This run auto-creates a workspace API key, persists it to Secret Manager,
@@ -590,8 +582,8 @@ API auth verification settings (WorkOS/AuthKit):
 
 Optional model overrides:
 
-- AGORA_FLASH_MODEL (default: gemini-3-flash-preview)
-- AGORA_PRO_MODEL (default: gemini-3.1-pro-preview)
+- AGORA_FLASH_MODEL (default: gemini-3.1-flash-lite-preview)
+- AGORA_PRO_MODEL (default: gemini-3-flash-preview)
 - DEMO_PRO_MODEL (default: gemini-2.5-pro for `week1_demo.sh`)
 - AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
@@ -674,8 +666,8 @@ Week 1 bridge behavior:
 Cloud Run keypair setup example:
 
 ```bash
-PROJECT_ID="even-ally-480821-f3"
-SERVICE_ACCOUNT="202872251304-compute@developer.gserviceaccount.com"
+PROJECT_ID="agora-ai-493714"
+SERVICE_ACCOUNT="agora-api-runtime@agora-ai-493714.iam.gserviceaccount.com"
 SECRET_NAME="agora-solana-devnet-keypair"
 
 gcloud secrets create "$SECRET_NAME" --replication-policy=automatic --project "$PROJECT_ID"

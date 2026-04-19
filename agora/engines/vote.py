@@ -24,11 +24,19 @@ from agora.agent import (
 from agora.config import get_config
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.model_policy import (
+    balanced_participant_tiers,
+    resolve_reasoning_presets,
+)
+from agora.runtime.prompt_policy import vote_participant_prompt
 from agora.types import (
     AgentOutput,
     DeliberationResult,
     MechanismSelection,
     MechanismType,
+    ProviderTierName,
+    ReasoningPresetOverrides,
+    ReasoningPresets,
     VoteState,
 )
 
@@ -76,6 +84,10 @@ class VoteEngine:
         hasher: TranscriptHasher | None = None,
         temperature_scaling: float = 1.5,
         aggregation_mode: str = "isp",
+        reasoning_presets: ReasoningPresets
+        | ReasoningPresetOverrides
+        | dict[str, Any]
+        | None = None,
     ) -> None:
         """Initialize vote engine.
 
@@ -96,6 +108,11 @@ class VoteEngine:
         self._kimi_agent = kimi_agent
         self.hasher = hasher or TranscriptHasher()
         self.aggregation_mode = aggregation_mode
+        self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
+        self._participant_tiers = balanced_participant_tiers(self.agent_count)
+        self._claude_run_semaphore = asyncio.Semaphore(
+            get_config().anthropic_concurrent_requests_per_run
+        )
         self.graph = self._build_graph() if StateGraph is not None else None
 
     async def run(
@@ -151,9 +168,7 @@ class VoteEngine:
             mechanism_switches=0,
             merkle_root=state.merkle_root,
             transcript_hashes=state.transcript_hashes,
-            agent_models_used=list(
-                dict.fromkeys(output.agent_model for output in vote_outputs)
-            ),
+            agent_models_used=list(dict.fromkeys(output.agent_model for output in vote_outputs)),
             model_token_usage={
                 str(model): int(tokens)
                 for model, tokens in cast(dict[str, int], usage.get("model_tokens", {})).items()
@@ -210,22 +225,14 @@ class VoteEngine:
 
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
             agent_id = f"agent-{agent_idx + 1}"
-            tier = self._tier_for_agent(agent_idx)
-            system_prompt = (
-                "Answer the task. Provide your answer, confidence, "
-                "predicted_group_answer, and reasoning."
-            )
-            user_prompt = (
-                f"Task: {task}\n"
-                "Return JSON with fields: answer, confidence (0-1), "
-                "predicted_group_answer, reasoning."
-            )
+            tier = self._participant_tiers[agent_idx]
+            prompt = vote_participant_prompt(task=task)
             fallback = self._fallback_vote(task=task, agent_idx=agent_idx)
             custom_agent = custom_agents[agent_idx] if custom_agents is not None else None
             response, usage = await self._call_structured(
                 tier=tier,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
                 response_model=_VoteResponse,
                 fallback=fallback,
                 custom_agent=custom_agent,
@@ -365,7 +372,7 @@ class VoteEngine:
 
     async def _call_structured(
         self,
-        tier: str,
+        tier: ProviderTierName,
         system_prompt: str,
         user_prompt: str,
         response_model: type[BaseModel],
@@ -401,8 +408,8 @@ class VoteEngine:
                 return fallback, {"tokens": 0, "latency_ms": 0.0}
 
         try:
-            caller = self._get_caller(tier)
-            response, usage = await caller.call(
+            response, usage = await self._call_provider(
+                tier=tier,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 response_format=response_model,
@@ -505,21 +512,21 @@ class VoteEngine:
 
         if tier == "pro":
             if self._pro_agent is None:
-                self._pro_agent = pro_caller()
+                self._pro_agent = pro_caller(thinking_level=self.reasoning_presets.gemini_pro)
             return self._pro_agent
 
         if tier == "claude":
             if self._claude_agent is None:
-                self._claude_agent = claude_caller()
+                self._claude_agent = claude_caller(effort=self.reasoning_presets.claude)
             return self._claude_agent
 
         if tier == "kimi":
             if self._kimi_agent is None:
-                self._kimi_agent = kimi_caller()
+                self._kimi_agent = kimi_caller(effort=self.reasoning_presets.kimi)
             return self._kimi_agent
 
         if self._flash_agent is None:
-            self._flash_agent = flash_caller()
+            self._flash_agent = flash_caller(thinking_level=self.reasoning_presets.gemini_flash)
         return self._flash_agent
 
     def _model_name(self, tier: str) -> str:
@@ -537,32 +544,34 @@ class VoteEngine:
                 return config.pro_model
             return config.flash_model
 
-    def _tier_for_agent(self, agent_idx: int) -> str:
-        """Route voters across model tiers for diversity.
+    async def _call_provider(
+        self,
+        *,
+        tier: ProviderTierName,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None = None,
+    ) -> tuple[str | BaseModel, dict[str, Any]]:
+        """Call one provider, respecting per-run Claude concurrency."""
 
-        Strategy:
-            - 4+ agents: 1 pro, 1 Kimi, 1 Claude, remaining flash.
-            - 3 agents: 1 pro, 1 claude, 1 flash.
-            - <3 agents: flash only.
-        """
+        caller = self._get_caller(tier)
+        if tier == "claude":
+            async with self._claude_run_semaphore:
+                return await caller.call(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_format=response_format,
+                )
+        return await caller.call(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            response_format=response_format,
+        )
 
-        if self.agent_count >= 4:
-            if agent_idx == 0:
-                return "pro"
-            if agent_idx == 1:
-                return "kimi"
-            if agent_idx == self.agent_count - 1:
-                return "claude"
-            return "flash"
+    def _tier_for_agent(self, agent_idx: int) -> ProviderTierName:
+        """Return the canonical provider tier for one counted vote participant."""
 
-        if self.agent_count == 3:
-            if agent_idx == 0:
-                return "pro"
-            if agent_idx == self.agent_count - 1:
-                return "claude"
-            return "flash"
-
-        return "flash"
+        return self._participant_tiers[agent_idx]
 
     @staticmethod
     def _temperature_scale(probability: float, temperature: float) -> float:

@@ -4,12 +4,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class MechanismType(StrEnum):
-    """Enumeration of supported deliberation mechanisms."""
+    """Deliberation mechanisms in the protocol narrative.
+
+    Only ``debate`` and ``vote`` are executable in the current runtime. ``delphi``
+    and ``moa`` remain visible as roadmap values so historical docs and protocol
+    design notes have stable names without widening the public execution surface.
+    """
 
     DEBATE = "debate"
     VOTE = "vote"
@@ -26,6 +32,33 @@ def mechanism_is_supported(mechanism: MechanismType) -> bool:
     """Return whether a mechanism is currently executable in runtime paths."""
 
     return mechanism in SUPPORTED_MECHANISMS
+
+
+ProviderTierName = Literal["pro", "flash", "kimi", "claude"]
+GeminiProReasoningPreset = Literal["low", "high"]
+ReasoningPresetName = Literal["low", "medium", "high"]
+
+
+class ReasoningPresetOverrides(BaseModel):
+    """Optional user-supplied overrides for provider reasoning behavior."""
+
+    model_config = ConfigDict(frozen=True)
+
+    gemini_pro: GeminiProReasoningPreset | None = None
+    gemini_flash: ReasoningPresetName | None = None
+    kimi: ReasoningPresetName | None = None
+    claude: ReasoningPresetName | None = None
+
+
+class ReasoningPresets(BaseModel):
+    """Resolved provider reasoning presets persisted with runs and benchmarks."""
+
+    model_config = ConfigDict(frozen=True)
+
+    gemini_pro: GeminiProReasoningPreset
+    gemini_flash: ReasoningPresetName
+    kimi: ReasoningPresetName
+    claude: ReasoningPresetName
 
 
 class TaskFeatures(BaseModel):

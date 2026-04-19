@@ -130,7 +130,7 @@ class AgentCaller:
 
     def __init__(
         self,
-        model: str = "gemini-3-flash-preview",
+        model: str = "gemini-3.1-flash-lite-preview",
         temperature: float = 0.7,
         project: str | None = None,
         location: str | None = None,
@@ -138,6 +138,10 @@ class AgentCaller:
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
         thinking_level: str | None = None,
+        kimi_reasoning_effort: str | None = None,
+        kimi_reasoning_exclude: bool | None = None,
+        claude_effort: str | None = None,
+        claude_thinking_display: str | None = None,
     ) -> None:
         """Initialize caller and underlying model SDK client.
 
@@ -182,13 +186,23 @@ class AgentCaller:
         )
         self.openrouter_base_url = config.openrouter_base_url
         self._openrouter_default_headers = self._build_openrouter_headers(config)
-        self._kimi_reasoning_effort = config.kimi_reasoning_effort
-        self._kimi_reasoning_exclude = config.kimi_reasoning_exclude
+        self._kimi_reasoning_effort = (
+            config.kimi_reasoning_effort if kimi_reasoning_effort is None else kimi_reasoning_effort
+        )
+        self._kimi_reasoning_exclude = (
+            config.kimi_reasoning_exclude
+            if kimi_reasoning_exclude is None
+            else kimi_reasoning_exclude
+        )
         self._kimi_max_tokens = config.kimi_max_tokens
         self._anthropic_max_tokens = config.anthropic_max_tokens
         self._anthropic_throttle_enabled = config.anthropic_throttle_enabled
         self._anthropic_requests_per_minute = config.anthropic_requests_per_minute
         self._anthropic_throttle_window_seconds = config.anthropic_throttle_window_seconds
+        self._claude_effort = config.claude_effort if claude_effort is None else claude_effort
+        self._claude_thinking_display = (
+            "summarized" if claude_thinking_display is None else claude_thinking_display
+        )
         self._anthropic_throttle: _AsyncSlidingWindowRateLimiter | None = None
         self._gemini_client: Any | None = None
         self._anthropic_client: Any | None = None
@@ -216,9 +230,7 @@ class AgentCaller:
         elif model.startswith("claude"):
             self.provider = "claude"
             if AsyncAnthropic is None:
-                raise AgentCallError(
-                    "anthropic SDK is not installed; AsyncAnthropic unavailable"
-                )
+                raise AgentCallError("anthropic SDK is not installed; AsyncAnthropic unavailable")
             if not self.anthropic_api_key:
                 raise AgentCallError(
                     "ANTHROPIC_API_KEY is not set. Configure Anthropic API credentials "
@@ -351,15 +363,9 @@ class AgentCaller:
                     "temperature": effective_temperature,
                     "system_instruction": system_prompt,
                 }
-                thinking_kwargs: dict[str, Any] = {}
-                if self.thinking_level:
-                    thinking_kwargs["thinking_level"] = self.thinking_level
-                elif self.enable_thinking and self.thinking_budget is not None:
-                    thinking_kwargs["thinking_budget"] = self.thinking_budget
-                if thinking_kwargs:
-                    config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
-                        **thinking_kwargs
-                    )
+                thinking_config = self._build_gemini_thinking_config()
+                if thinking_config is not None:
+                    config_kwargs["thinking_config"] = thinking_config
 
                 raw_message: Any | None = None
                 if response_format is not None:
@@ -774,14 +780,19 @@ class AgentCaller:
                     if callable(parse_api):
                         try:
                             await self._acquire_anthropic_slot(request_kind="messages.parse")
-                            parse_result = parse_api(
-                                model=self.model,
-                                max_tokens=self._anthropic_max_tokens,
-                                temperature=effective_temperature,
-                                system=system_prompt,
-                                messages=[{"role": "user", "content": user_prompt}],
-                                output_format=response_format,
+                            parse_kwargs = self._anthropic_kwargs_with_optional_output_config(
+                                parse_api,
+                                {
+                                    "model": self.model,
+                                    "max_tokens": self._anthropic_max_tokens,
+                                    "temperature": effective_temperature,
+                                    "system": system_prompt,
+                                    "messages": [{"role": "user", "content": user_prompt}],
+                                    "output_format": response_format,
+                                    "thinking": self._build_claude_thinking_config(),
+                                },
                             )
+                            parse_result = parse_api(**parse_kwargs)
                             if inspect.isawaitable(parse_result):
                                 raw_message = await cast(Awaitable[Any], parse_result)
                             else:
@@ -1187,6 +1198,81 @@ class AgentCaller:
             reasoning["effort"] = self._kimi_reasoning_effort
         return reasoning
 
+    def _build_gemini_thinking_config(self) -> Any | None:
+        """Build Gemini thinking config without hard-failing on SDK schema drift."""
+
+        if genai_types is None:
+            return None
+
+        attempts: list[dict[str, Any]] = []
+        normalized_level = (self.thinking_level or "").strip()
+        if normalized_level:
+            attempts.extend(
+                [
+                    {"thinking_level": normalized_level},
+                    {"thinkingLevel": normalized_level},
+                    {"thinking_level": normalized_level.upper()},
+                    {"thinkingLevel": normalized_level.upper()},
+                ]
+            )
+        elif self.enable_thinking and self.thinking_budget is not None:
+            attempts.extend(
+                [
+                    {"thinking_budget": self.thinking_budget},
+                    {"thinkingBudget": self.thinking_budget},
+                ]
+            )
+
+        last_error: Exception | None = None
+        for payload in attempts:
+            try:
+                return genai_types.ThinkingConfig(**payload)
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            logger.warning(
+                "gemini_thinking_config_unavailable",
+                model=self.model,
+                thinking_level=self.thinking_level,
+                thinking_budget=self.thinking_budget,
+                error=str(last_error),
+            )
+        return None
+
+    def _build_claude_thinking_config(self) -> dict[str, str]:
+        """Return adaptive thinking settings for Claude 4.6 models."""
+
+        return {
+            "type": "adaptive",
+            "display": self._claude_thinking_display,
+        }
+
+    def _build_claude_output_config(self) -> dict[str, str]:
+        """Return Claude effort settings."""
+
+        return {"effort": self._claude_effort}
+
+    @staticmethod
+    def _supports_callable_argument(callable_obj: Any, argument: str) -> bool:
+        """Return whether one SDK callable appears to support a given argument."""
+
+        try:
+            return argument in inspect.signature(callable_obj).parameters
+        except (TypeError, ValueError):
+            return False
+
+    def _anthropic_kwargs_with_optional_output_config(
+        self,
+        callable_obj: Any,
+        kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add Claude output config only when supported by the installed SDK method."""
+
+        if self._supports_callable_argument(callable_obj, "output_config"):
+            kwargs["output_config"] = self._build_claude_output_config()
+        return kwargs
+
     async def _acquire_anthropic_slot(self, request_kind: str) -> None:
         """Throttle Anthropic requests to reduce server-side rate-limit failures."""
 
@@ -1217,13 +1303,19 @@ class AgentCaller:
 
         await self._acquire_anthropic_slot(request_kind="messages.create")
 
-        return await self._anthropic_client.messages.create(
-            model=self.model,
-            max_tokens=self._anthropic_max_tokens,
-            temperature=temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
+        create_api = self._anthropic_client.messages.create
+        create_kwargs = self._anthropic_kwargs_with_optional_output_config(
+            create_api,
+            {
+                "model": self.model,
+                "max_tokens": self._anthropic_max_tokens,
+                "temperature": temperature,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}],
+                "thinking": self._build_claude_thinking_config(),
+            },
         )
+        return await create_api(**create_kwargs)
 
     async def _stream_anthropic_text(
         self,
@@ -1240,13 +1332,19 @@ class AgentCaller:
         await self._acquire_anthropic_slot(request_kind="messages.stream")
 
         chunks: list[str] = []
-        async with self._anthropic_client.messages.stream(
-            model=self.model,
-            max_tokens=self._anthropic_max_tokens,
-            temperature=temperature,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        ) as stream_response:
+        stream_api = self._anthropic_client.messages.stream
+        stream_kwargs = self._anthropic_kwargs_with_optional_output_config(
+            stream_api,
+            {
+                "model": self.model,
+                "max_tokens": self._anthropic_max_tokens,
+                "temperature": temperature,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}],
+                "thinking": self._build_claude_thinking_config(),
+            },
+        )
+        async with stream_api(**stream_kwargs) as stream_response:
             async for text_chunk in stream_response.text_stream:
                 chunks.append(text_chunk)
                 if stream_callback is not None:
@@ -1616,7 +1714,7 @@ class AgentCaller:
         }
 
 
-def flash_caller() -> AgentCaller:
+def flash_caller(*, thinking_level: str | None = None) -> AgentCaller:
     """Return cost-efficient generation caller for openings, voting, and rebuttals."""
 
     config = get_config()
@@ -1624,13 +1722,13 @@ def flash_caller() -> AgentCaller:
         model=config.flash_model,
         temperature=0.7,
         enable_streaming=config.gemini_enable_streaming,
-        enable_thinking=False,
+        enable_thinking=True,
         thinking_budget=None,
-        thinking_level=config.gemini_flash_thinking_level,
+        thinking_level=thinking_level or config.gemini_flash_thinking_level,
     )
 
 
-def pro_caller() -> AgentCaller:
+def pro_caller(*, thinking_level: str | None = None) -> AgentCaller:
     """Return higher-quality reasoning caller for selection and synthesis."""
 
     config = get_config()
@@ -1639,19 +1737,33 @@ def pro_caller() -> AgentCaller:
         temperature=0.5,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=config.gemini_enable_thinking,
-        thinking_budget=config.gemini_thinking_budget,
+        thinking_budget=None,
+        thinking_level=thinking_level or config.gemini_pro_thinking_level,
     )
 
 
-def claude_caller() -> AgentCaller:
+def claude_caller(*, effort: str | None = None) -> AgentCaller:
     """Return direct Anthropic Claude caller for diversity or fallback routing."""
 
     config = get_config()
-    return AgentCaller(model=config.claude_model, temperature=0.5)
+    return AgentCaller(
+        model=config.claude_model,
+        temperature=0.5,
+        claude_effort=effort or config.claude_effort,
+    )
 
 
-def kimi_caller() -> AgentCaller:
+def kimi_caller(
+    *,
+    effort: str | None = None,
+    exclude: bool | None = None,
+) -> AgentCaller:
     """Return OpenRouter Kimi caller for challenger or fallback routing."""
 
     config = get_config()
-    return AgentCaller(model=config.kimi_model, temperature=0.5)
+    return AgentCaller(
+        model=config.kimi_model,
+        temperature=0.5,
+        kimi_reasoning_effort=effort or config.kimi_reasoning_effort,
+        kimi_reasoning_exclude=config.kimi_reasoning_exclude if exclude is None else exclude,
+    )

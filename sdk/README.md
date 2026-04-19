@@ -19,11 +19,11 @@ from agora.sdk import AgoraArbitrator
 
 
 async def main() -> None:
-    arbitrator = AgoraArbitrator(
+    async with AgoraArbitrator(
         api_url="https://your-agora-api.example.com",
         auth_token="agora_live_your_public_id.your_secret",
-    )
-    result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
+    ) as arbitrator:
+        result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
     print(result.mechanism_used.value)
     print(result.final_answer)
     print(result.merkle_root)
@@ -78,6 +78,14 @@ graph.add_node(
 )
 ```
 
+For long-lived LangGraph workers or repeated node construction, close the wrapped
+HTTP client explicitly:
+
+```python
+async with AgoraNode(api_url="https://your-agora-api.example.com") as agora_node:
+    state = await agora_node({"task": "Pick the safer deployment plan."})
+```
+
 ## Features
 
 - Thompson Sampling mechanism selection with explainable reasoning
@@ -95,8 +103,8 @@ graph.add_node(
 
 ## Verification Controls
 
-- `AgoraArbitrator` defaults to strict receipt verification.
-- `AgoraNode` now supports `strict_verification` and `solana_wallet` pass-through for parity with `AgoraArbitrator`.
+- `AgoraArbitrator` defaults to 4-agent hosted execution and strict receipt verification.
+- `AgoraNode` supports `strict_verification`, `solana_wallet`, and async cleanup pass-through for parity with `AgoraArbitrator`.
 - Set `strict_verification=False` only when intentionally opting into lenient verification behavior.
 
 ## Maintainer Release Notes

@@ -186,7 +186,7 @@ def test_secret_manager_gcloud_loader_sets_non_interactive_env(
         assert text is True
         return subprocess.CompletedProcess(command, 0, stdout=" secret-value\n", stderr="")
 
-    monkeypatch.setattr(config_module.shutil, "which", lambda binary: "/usr/bin/gcloud")
+    monkeypatch.setattr(config_module.shutil, "which", lambda _binary: "/usr/bin/gcloud")
     monkeypatch.setattr(config_module.subprocess, "run", _fake_run)
 
     value = config_module._load_secret_manager_value_via_gcloud(
@@ -208,7 +208,7 @@ def test_secret_manager_gcloud_loader_returns_none_without_gcloud(
 ) -> None:
     """gcloud fallback should fail closed when gcloud is unavailable."""
 
-    monkeypatch.setattr(config_module.shutil, "which", lambda binary: None)
+    monkeypatch.setattr(config_module.shutil, "which", lambda _binary: None)
 
     value = config_module._load_secret_manager_value_via_gcloud(
         project_id="demo-project",
@@ -320,12 +320,12 @@ def test_explicit_gemini_key_wins_over_secret_manager(monkeypatch: pytest.Monkey
 def test_gemini_flash_thinking_level_defaults_and_can_be_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Flash callers should default to minimal thinking, with an explicit opt-out."""
+    """Flash callers should default to medium thinking, with an explicit opt-out."""
 
     monkeypatch.delenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", raising=False)
     get_config.cache_clear()
     config = get_config()
-    assert config.gemini_flash_thinking_level == "minimal"
+    assert config.gemini_flash_thinking_level == "medium"
 
     get_config.cache_clear()
     monkeypatch.setenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", "")

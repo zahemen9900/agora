@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,24 @@ def test_benchmark_runner_builds_default_phase2_split() -> None:
     }
 
 
+def _assert_normalized_selector_summary(
+    payload: dict[str, Any],
+    *,
+    mode_accuracy: float,
+    reasoning_accuracy: float,
+) -> None:
+    summary = payload["summary"]
+
+    assert summary["per_mode"]["selector"]["accuracy"] == pytest.approx(mode_accuracy)
+    assert summary["per_mode"]["debate"]["accuracy"] == pytest.approx(0.0)
+    assert summary["per_mode"]["vote"]["accuracy"] == pytest.approx(0.0)
+    assert summary["per_category"]["reasoning"]["selector"]["accuracy"] == pytest.approx(
+        reasoning_accuracy
+    )
+    assert "math" in summary["per_category"]
+    assert "demo" in summary["per_category"]
+
+
 @pytest.mark.asyncio
 async def test_benchmarks_route_reads_store_summary(
     tmp_path: Path,
@@ -68,7 +87,11 @@ async def test_benchmarks_route_reads_store_summary(
             )
 
         assert response.status_code == 200
-        assert response.json() == summary
+        _assert_normalized_selector_summary(
+            response.json(),
+            mode_accuracy=0.8,
+            reasoning_accuracy=0.75,
+        )
     finally:
         task_routes._store = None
 
@@ -125,7 +148,11 @@ async def test_benchmarks_route_allows_human_bearer_without_admin_token(
             )
 
         assert response.status_code == 200
-        assert response.json() == summary
+        _assert_normalized_selector_summary(
+            response.json(),
+            mode_accuracy=0.91,
+            reasoning_accuracy=0.81,
+        )
     finally:
         task_routes._store = None
 
@@ -235,6 +262,100 @@ async def test_benchmarks_route_uses_file_fallback_not_completed_tasks(
     finally:
         task_routes._store = None
         benchmark_routes._RESULTS_PATH = original_results_path
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_promotes_stage_summary_from_file_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-stage-summary"))
+    original_results_path = benchmark_routes._RESULTS_PATH
+    task_routes._store = store
+    benchmark_routes._RESULTS_PATH = tmp_path / "phase2-validation-stage-summary.json"
+
+    file_payload = {
+        "summary": None,
+        "post_learning": {
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.2}},
+                "per_category": {"math": {"selector": {"accuracy": 0.5}}},
+            }
+        },
+        "metadata": {"source": "stage_summary_file"},
+    }
+    benchmark_routes._RESULTS_PATH.write_text(json.dumps(file_payload), encoding="utf-8")
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["metadata"]["source"] == "stage_summary_file"
+        assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.2)
+        assert payload["summary"]["per_category"]["math"]["selector"]["accuracy"] == pytest.approx(
+            0.5
+        )
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_PATH = original_results_path
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-artifact-heal"))
+    task_routes._store = store
+
+    artifact_payload = {
+        "summary": None,
+        "post_learning": {
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.73}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.61}}},
+            }
+        },
+    }
+    artifact = {
+        "artifact_id": "local-stage-summary",
+        "scope": "global",
+        "source": "local_backfill",
+        "status": "completed",
+        "benchmark_payload": artifact_payload,
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_global_benchmark_artifact("local-stage-summary", artifact)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
+        assert (
+            payload["summary"]["per_category"]["reasoning"]["selector"]["accuracy"]
+            == pytest.approx(0.61)
+        )
+
+        healed_summary = await store.get_benchmark_summary()
+        assert healed_summary is not None
+        assert healed_summary["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
+    finally:
+        task_routes._store = None
 
 
 @pytest.mark.asyncio
@@ -579,9 +700,9 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
             "decision_hash": "decision-123",
             "transcript_hashes": ["leaf-1", "leaf-2"],
             "agent_models_used": [
-                "gemini-3.1-pro-preview",
-                "moonshotai/kimi-k2-thinking",
                 "gemini-3-flash-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3.1-flash-lite-preview",
                 "claude-sonnet-4-6",
             ],
             "convergence_history": [],
@@ -722,6 +843,105 @@ class _FakeResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+@pytest.mark.asyncio
+async def test_sdk_arbitrator_default_create_payload_uses_four_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(mechanism="vote", strict_verification=False)
+
+    async def fake_post(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        assert url == "/tasks/"
+        payload = kwargs.get("json")
+        assert isinstance(payload, dict)
+        assert payload["agent_count"] == 4
+        return _FakeResponse({"task_id": "task-default-four", "mechanism": "vote"})
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+
+    try:
+        created = await arbitrator.create_task("default agent count")
+    finally:
+        await arbitrator.aclose()
+
+    assert created.task_id == "task-default-four"
+    assert arbitrator.config.agent_count == 4
+
+
+@pytest.mark.asyncio
+async def test_agora_node_default_uses_four_agents() -> None:
+    node = AgoraNode()
+    try:
+        assert node.arbitrator.config.agent_count == 4
+    finally:
+        await node.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agora_node_aclose_closes_wrapped_client() -> None:
+    node = AgoraNode()
+    await node.aclose()
+
+    assert node.arbitrator._client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_agora_node_async_context_closes_on_exit() -> None:
+    async with AgoraNode() as node:
+        client = node.arbitrator._client
+        assert client.is_closed is False
+
+    assert client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_sdk_get_task_status_parses_chain_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(strict_verification=False)
+
+    async def fake_get(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        assert url == "/tasks/task-chain-status"
+        params = kwargs.get("params")
+        assert params == {"detailed": "true"}
+        return _FakeResponse(
+            {
+                "task_id": "task-chain-status",
+                "task_text": "Check chain status typing",
+                "workspace_id": "ws-test",
+                "created_by": "sdk-test",
+                "mechanism": "debate",
+                "status": "completed",
+                "selector_reasoning": "debate wins",
+                "selector_reasoning_hash": "a" * 64,
+                "selector_confidence": 0.91,
+                "agent_count": 4,
+                "chain_operations": {
+                    "initialize_task": {
+                        "status": "succeeded",
+                        "tx_hash": "sig-123",
+                        "explorer_url": "https://explorer.solana.com/tx/sig-123?cluster=devnet",
+                        "attempts": 2,
+                        "updated_at": "2026-04-18T06:30:00Z",
+                    }
+                },
+                "events": [],
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    try:
+        status = await arbitrator.get_task_status("task-chain-status", detailed=True)
+    finally:
+        await arbitrator.aclose()
+
+    operation = status.chain_operations["initialize_task"]
+    assert operation.status == "succeeded"
+    assert operation.tx_hash == "sig-123"
+    assert operation.attempts == 2
+    assert isinstance(operation.updated_at, datetime)
 
 
 @pytest.mark.asyncio

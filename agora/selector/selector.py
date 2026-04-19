@@ -6,6 +6,7 @@ from pathlib import Path
 
 import structlog
 
+from agora.agent import AgentCaller
 from agora.selector.bandit import ThompsonSamplingSelector
 from agora.selector.features import extract_features
 from agora.selector.reasoning import ReasoningSelector
@@ -17,7 +18,11 @@ logger = structlog.get_logger(__name__)
 class AgoraSelector:
     """High-level interface for mechanism selection with online learning."""
 
-    def __init__(self, bandit_state_path: str | None = None) -> None:
+    def __init__(
+        self,
+        bandit_state_path: str | None = None,
+        reasoning_caller: AgentCaller | None = None,
+    ) -> None:
         """Initialize selector dependencies.
 
         Args:
@@ -28,7 +33,7 @@ class AgoraSelector:
         self.bandit = ThompsonSamplingSelector(
             mechanisms=[MechanismType.DEBATE, MechanismType.VOTE]
         )
-        self.reasoning = ReasoningSelector()
+        self.reasoning = ReasoningSelector(caller=reasoning_caller)
 
         if bandit_state_path is not None:
             state_path = Path(bandit_state_path)

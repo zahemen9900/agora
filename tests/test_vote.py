@@ -124,14 +124,43 @@ def test_confidence_calibration_softens_extremes() -> None:
 
 
 def test_four_agent_vote_routes_kimi_as_active_diversity_tier() -> None:
-    """Four-agent voting should include Kimi as an active tier, not only fallback."""
+    """Four-agent voting should follow the canonical balanced provider cycle."""
 
     engine = VoteEngine(agent_count=4)
 
     assert [engine._tier_for_agent(agent_idx) for agent_idx in range(4)] == [
         "pro",
-        "kimi",
         "flash",
+        "kimi",
+        "claude",
+    ]
+
+
+def test_vote_provider_cycle_repeats_evenly_for_eight_and_twelve_agents() -> None:
+    """Balanced vote ensembles should repeat the base four-model cycle deterministically."""
+
+    assert [VoteEngine(agent_count=8)._tier_for_agent(index) for index in range(8)] == [
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+    ]
+    assert [VoteEngine(agent_count=12)._tier_for_agent(index) for index in range(12)] == [
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+        "pro",
+        "flash",
+        "kimi",
         "claude",
     ]
 
@@ -171,8 +200,8 @@ async def test_quorum_check_threshold_works() -> None:
     engine = VoteEngine(
         agent_count=3,
         quorum_threshold=0.6,
-        flash_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
-        pro_agent=_SuccessfulVoteCaller("gemini-3.1-pro-preview"),
+        flash_agent=_SuccessfulVoteCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
         claude_agent=_SuccessfulVoteCaller("claude-sonnet-4-6"),
         kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
     )
@@ -200,13 +229,13 @@ async def test_quorum_check_threshold_works() -> None:
 
 @pytest.mark.asyncio
 async def test_four_agent_vote_records_all_provider_models() -> None:
-    """The 4-agent vote path should expose the ordered provider ensemble."""
+    """The 4-agent vote path should expose the balanced ordered provider ensemble."""
 
     engine = VoteEngine(
         agent_count=4,
         quorum_threshold=0.6,
-        flash_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
-        pro_agent=_SuccessfulVoteCaller("gemini-3.1-pro-preview"),
+        flash_agent=_SuccessfulVoteCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
         claude_agent=_SuccessfulVoteCaller("claude-sonnet-4-6"),
         kimi_agent=_SuccessfulVoteCaller("moonshotai/kimi-k2-thinking"),
     )
@@ -215,9 +244,9 @@ async def test_four_agent_vote_records_all_provider_models() -> None:
     outcome = await engine.run("Answer in one word: Paris or Lyon?", selection)
 
     assert outcome.result.agent_models_used == [
-        "gemini-3.1-pro-preview",
-        "moonshotai/kimi-k2-thinking",
         "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "moonshotai/kimi-k2-thinking",
         "claude-sonnet-4-6",
     ]
 
@@ -256,7 +285,7 @@ async def test_custom_agents_short_circuit_all_provider_tiers(
     assert outcome.result.final_answer == "Paris"
     assert outcome.result.agent_models_used == ["custom-agent"]
     assert len(captured_prompts) == 4
-    assert all("Answer the task" in system for system, _user in captured_prompts)
+    assert all("Your role is vote participant" in system for system, _user in captured_prompts)
 
 
 @pytest.mark.asyncio
@@ -329,8 +358,8 @@ async def test_vote_paid_integration_hits_kimi_path() -> None:
 
     engine = VoteEngine(
         agent_count=3,
-        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
-        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
+        flash_agent=_FailingCaller(model="gemini-3.1-flash-lite-preview"),
+        pro_agent=_FailingCaller(model="gemini-3-flash-preview"),
         claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
     )
     selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")

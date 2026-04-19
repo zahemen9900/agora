@@ -1,165 +1,26 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bot, Brain, ChevronRight, Cpu, Loader2, Play, Sparkles } from "lucide-react";
+import { ChevronRight, Loader2, Play } from "lucide-react";
 
+import { EnsemblePlan } from "../components/EnsemblePlan";
+import { ReasoningPresetControls } from "../components/ReasoningPresetControls";
 import { listTasks, submitTask, type TaskStatusResponse } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import {
+  buildDebateRoster,
+  buildProviderCountBadges,
+  buildVoteRoster,
+  DEFAULT_REASONING_PRESETS,
+  getBalancedEnsembleLabel,
+  getDebateSpecialistSummary,
+  type ReasoningPresetState,
+} from "../lib/deliberationConfig";
 
 const EXAMPLE_TASKS = [
   "Should a startup with 3 engineers use microservices or a monolith?",
   "What is the optimal interest rate policy given current inflation?",
   "Should we implement a graph database for our social routing?",
 ];
-
-type ProviderName = "gemini" | "claude" | "kimi" | "other";
-
-interface ModelRosterItem {
-  id: string;
-  provider: ProviderName;
-  model: string;
-  role: string;
-  thinkingBudget: string;
-}
-
-function buildVoteRoster(agentCount: number): ModelRosterItem[] {
-  const count = Math.max(1, agentCount);
-  const items: ModelRosterItem[] = [];
-
-  for (let index = 0; index < count; index += 1) {
-    if (count >= 4) {
-      if (index === 0) {
-        items.push({
-          id: `vote-agent-${index + 1}`,
-          provider: "gemini",
-          model: "gemini-3.1-pro-preview",
-          role: "Strategic voter",
-          thinkingBudget: "1024 tokens",
-        });
-        continue;
-      }
-      if (index === 1) {
-        items.push({
-          id: `vote-agent-${index + 1}`,
-          provider: "kimi",
-          model: "moonshotai/kimi-k2-thinking",
-          role: "Contrarian voter",
-          thinkingBudget: "Reasoning effort: low",
-        });
-        continue;
-      }
-      if (index === count - 1) {
-        items.push({
-          id: `vote-agent-${index + 1}`,
-          provider: "claude",
-          model: "claude-sonnet-4-6",
-          role: "Consensus challenger",
-          thinkingBudget: "Extended reasoning",
-        });
-        continue;
-      }
-      items.push({
-        id: `vote-agent-${index + 1}`,
-        provider: "gemini",
-        model: "gemini-3-flash-preview",
-        role: "Fast voter",
-        thinkingBudget: "Flash thinking level: medium",
-      });
-      continue;
-    }
-
-    if (count === 3) {
-      if (index === 0) {
-        items.push({
-          id: `vote-agent-${index + 1}`,
-          provider: "gemini",
-          model: "gemini-3.1-pro-preview",
-          role: "Strategic voter",
-          thinkingBudget: "1024 tokens",
-        });
-        continue;
-      }
-      if (index === count - 1) {
-        items.push({
-          id: `vote-agent-${index + 1}`,
-          provider: "claude",
-          model: "claude-sonnet-4-6",
-          role: "Consensus challenger",
-          thinkingBudget: "Extended reasoning",
-        });
-        continue;
-      }
-    }
-
-    items.push({
-      id: `vote-agent-${index + 1}`,
-      provider: "gemini",
-      model: "gemini-3-flash-preview",
-      role: "Fast voter",
-      thinkingBudget: "Flash thinking level: medium",
-    });
-  }
-
-  return items;
-}
-
-function buildDebateRoster(agentCount: number): ModelRosterItem[] {
-  const count = Math.max(3, agentCount);
-  const items: ModelRosterItem[] = [];
-
-  for (let index = 0; index < count; index += 1) {
-    items.push({
-      id: `debate-agent-${index + 1}`,
-      provider: "gemini",
-      model: "gemini-3-flash-preview",
-      role: index === count - 1 ? "Debater + fallback analyst" : "Debater",
-      thinkingBudget: "Flash thinking level: medium",
-    });
-  }
-
-  items.push({
-    id: "debate-devils-advocate",
-    provider: "kimi",
-    model: "moonshotai/kimi-k2-thinking",
-    role: "Devil's advocate",
-    thinkingBudget: "Reasoning effort: low",
-  });
-
-  items.push({
-    id: "debate-final-synthesis",
-    provider: "gemini",
-    model: "gemini-3.1-pro-preview",
-    role: "Final synthesis",
-    thinkingBudget: "1024 tokens",
-  });
-
-  return items;
-}
-
-function providerTone(provider: ProviderName): string {
-  if (provider === "gemini") {
-    return "border-cyan-500/50 text-cyan-300 bg-cyan-500/10";
-  }
-  if (provider === "claude") {
-    return "border-fuchsia-500/50 text-fuchsia-300 bg-fuchsia-500/10";
-  }
-  if (provider === "kimi") {
-    return "border-amber-500/50 text-amber-300 bg-amber-500/10";
-  }
-  return "border-border-muted text-text-secondary bg-surface";
-}
-
-function ProviderIcon({ provider }: { provider: ProviderName }) {
-  if (provider === "gemini") {
-    return <Sparkles size={14} />;
-  }
-  if (provider === "claude") {
-    return <Bot size={14} />;
-  }
-  if (provider === "kimi") {
-    return <Brain size={14} />;
-  }
-  return <Cpu size={14} />;
-}
 
 function makeExampleTask(task: string, index: number): TaskStatusResponse {
   const now = new Date().toISOString();
@@ -178,6 +39,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     decision_hash: null,
     quorum_reached: null,
     agent_count: 4,
+    reasoning_presets: DEFAULT_REASONING_PRESETS,
     round_count: 0,
     mechanism_switches: 0,
     transcript_hashes: [],
@@ -185,6 +47,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     explorer_url: null,
     payment_amount: 0,
     payment_status: "none",
+    chain_operations: {},
     created_at: now,
     completed_at: null,
     result: null,
@@ -198,6 +61,9 @@ export function TaskSubmit() {
   const [taskText, setTaskText] = useState("");
   const [agentCount, setAgentCount] = useState(4);
   const [stakes, setStakes] = useState("0.001");
+  const [reasoningPresets, setReasoningPresets] = useState<ReasoningPresetState>(
+    DEFAULT_REASONING_PRESETS,
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [recentTasks, setRecentTasks] = useState<TaskStatusResponse[]>([]);
   const [mechanismReveal, setMechanismReveal] = useState<{
@@ -206,22 +72,52 @@ export function TaskSubmit() {
     reasoning: string;
   } | null>(null);
 
-  const voteRoster = useMemo(() => buildVoteRoster(agentCount), [agentCount]);
-  const debateRoster = useMemo(() => buildDebateRoster(agentCount), [agentCount]);
+  const voteRoster = useMemo(
+    () => buildVoteRoster(agentCount, reasoningPresets),
+    [agentCount, reasoningPresets],
+  );
+  const debateRoster = useMemo(
+    () => buildDebateRoster(agentCount, reasoningPresets),
+    [agentCount, reasoningPresets],
+  );
+  const providerCountBadges = useMemo(
+    () => buildProviderCountBadges(agentCount),
+    [agentCount],
+  );
+  const ensembleLabel = useMemo(() => getBalancedEnsembleLabel(agentCount), [agentCount]);
 
-  useEffect(() => {
-    void loadRecentTasks();
-  }, []);
+  const fetchRecentTasks = useCallback(async (): Promise<TaskStatusResponse[]> => {
+    const token = await getAccessToken();
+    return listTasks(token);
+  }, [getAccessToken]);
 
-  async function loadRecentTasks() {
+  const loadRecentTasks = useCallback(async () => {
     try {
-      const token = await getAccessToken();
-      const tasks = await listTasks(token);
+      const tasks = await fetchRecentTasks();
       setRecentTasks(tasks);
     } catch (error) {
       console.error(error);
     }
-  }
+  }, [fetchRecentTasks]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const tasks = await fetchRecentTasks();
+        if (!cancelled) {
+          setRecentTasks(tasks);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchRecentTasks]);
 
   const handleSubmit = async () => {
     if (!taskText.trim()) return;
@@ -236,6 +132,7 @@ export function TaskSubmit() {
         taskText,
         agentCount,
         normalizedStake,
+        reasoningPresets,
         token,
       );
       setMechanismReveal({
@@ -332,6 +229,13 @@ export function TaskSubmit() {
           </button>
         </div>
 
+        <div className="mt-6">
+          <ReasoningPresetControls
+            value={reasoningPresets}
+            onChange={setReasoningPresets}
+          />
+        </div>
+
         {mechanismReveal && (
           <div className="mt-8 p-4 bg-accent-muted border-l-4 border-accent rounded-r-lg animate-[shimmer_2s_ease-out]">
             <div className="flex items-center gap-2 mb-2">
@@ -346,47 +250,20 @@ export function TaskSubmit() {
         )}
 
         <div className="mt-8 grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <div className="rounded-lg border border-border-subtle p-4 bg-void/60">
-            <div className="mono text-xs text-text-muted mb-3">VOTE MODEL PLAN</div>
-            <div className="space-y-2 max-h-60 overflow-auto pr-1">
-              {voteRoster.map((item) => (
-                <div
-                  key={item.id}
-                  className={`rounded-md border px-3 py-2 ${providerTone(item.provider)}`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <ProviderIcon provider={item.provider} />
-                      <span className="mono text-[11px] truncate">{item.model}</span>
-                    </div>
-                    <span className="mono text-[10px] text-text-muted">{item.role}</span>
-                  </div>
-                  <div className="mono text-[10px] text-text-muted mt-1">{item.thinkingBudget}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <EnsemblePlan
+            title="VOTE MODEL PLAN"
+            label={ensembleLabel}
+            items={voteRoster}
+            countBadges={providerCountBadges}
+          />
 
-          <div className="rounded-lg border border-border-subtle p-4 bg-void/60">
-            <div className="mono text-xs text-text-muted mb-3">DEBATE MODEL PLAN</div>
-            <div className="space-y-2 max-h-60 overflow-auto pr-1">
-              {debateRoster.map((item) => (
-                <div
-                  key={item.id}
-                  className={`rounded-md border px-3 py-2 ${providerTone(item.provider)}`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <ProviderIcon provider={item.provider} />
-                      <span className="mono text-[11px] truncate">{item.model}</span>
-                    </div>
-                    <span className="mono text-[10px] text-text-muted">{item.role}</span>
-                  </div>
-                  <div className="mono text-[10px] text-text-muted mt-1">{item.thinkingBudget}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <EnsemblePlan
+            title="DEBATE MODEL PLAN"
+            label={ensembleLabel}
+            items={debateRoster}
+            countBadges={providerCountBadges}
+            footer={getDebateSpecialistSummary()}
+          />
         </div>
       </div>
 

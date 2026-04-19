@@ -217,9 +217,9 @@ async def test_mechanism_override_pins_vote_without_switch(monkeypatch) -> None:
             merkle_root="vote-root",
             transcript_hashes=["v1", "v2", "v3", "v4"],
             agent_models_used=[
-                "gemini-3.1-pro-preview",
-                "moonshotai/kimi-k2-thinking",
                 "gemini-3-flash-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3.1-flash-lite-preview",
                 "claude-sonnet-4-6",
             ],
             convergence_history=[],
