@@ -58,7 +58,7 @@ type WizardStep = 0 | 1 | 2;
 interface DomainPromptSelection {
   templateId: string | null;
   useCustomPrompt: boolean;
-  customPrompt: string;
+  customQuestion: string;
 }
 
 const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [
@@ -70,139 +70,138 @@ const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [
   "demo",
 ];
 const BENCHMARK_MECHANISMS = ["debate", "vote", "selector"] as const;
-const DEFAULT_FALLBACK_USD_PER_TOKEN = 2.5 / 1_000_000;
 const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
   domains: {
     math: [
       {
         id: "math-stepwise",
-        title: "Stepwise Math",
-        prompt: "Solve the math task step-by-step and provide only the final numeric answer on the last line.",
+        title: "Exact Value",
+        question: "What is the exact value of 7/8 + 5/12?",
       },
       {
         id: "math-proof-check",
-        title: "Proof + Check",
-        prompt: "Produce a concise derivation, then verify the result with a quick check before finalizing.",
+        title: "Verification Check",
+        question: "Which is larger, 3/5 or 5/8, and by how much?",
       },
       {
         id: "math-fast",
-        title: "Fast Arithmetic",
-        prompt: "Optimize for speed and correctness. Keep reasoning short and explicit.",
+        title: "Sequence Term",
+        question: "What is the 20th term of the sequence 2, 5, 8, 11, ...?",
       },
       {
         id: "math-robust",
-        title: "Robust Edge Cases",
-        prompt: "Handle edge cases carefully and call out assumptions before solving.",
+        title: "Rate Problem",
+        question: "If a machine completes 9 tasks in 12 minutes, how long does it take to complete 27 tasks at the same rate?",
       },
     ],
     factual: [
       {
         id: "factual-cited",
-        title: "Cited Facts",
-        prompt: "Answer factually with confidence levels and a short source rationale for each claim.",
+        title: "Capital Fact",
+        question: "What is the capital of France?",
       },
       {
         id: "factual-multihop",
-        title: "Multi-hop",
-        prompt: "Resolve the query through explicit multi-hop reasoning and avoid speculation.",
+        title: "Historical Year",
+        question: "In what year did Apollo 11 land on the Moon?",
       },
       {
         id: "factual-precision",
-        title: "Precision First",
-        prompt: "Prioritize precision over verbosity. Return concise, directly verifiable claims.",
+        title: "Author Check",
+        question: "Who wrote Pride and Prejudice?",
       },
       {
         id: "factual-contrast",
-        title: "Contrastive",
-        prompt: "Compare candidate answers and choose the one best supported by known facts.",
+        title: "Planet Fact",
+        question: "Which planet is the largest in the Solar System?",
       },
     ],
     reasoning: [
       {
         id: "reasoning-tradeoff",
-        title: "Tradeoff Analysis",
-        prompt: "Evaluate alternatives using explicit tradeoffs, then decide with a ranked recommendation.",
+        title: "Tradeoff Call",
+        question: "Should a system optimize for speed or robustness when the cost of error is high?",
       },
       {
         id: "reasoning-structured",
-        title: "Structured Logic",
-        prompt: "Use structured premises and conclusions; flag uncertainty where evidence is weak.",
+        title: "Evidence Balance",
+        question: "When evidence is incomplete, should a model hedge or choose the most likely answer?",
       },
       {
         id: "reasoning-risk",
-        title: "Risk-aware",
-        prompt: "Include risk analysis and failure modes before producing the final answer.",
+        title: "Risk Preference",
+        question: "Is it better to minimize false positives or false negatives in a high-stakes decision?",
       },
       {
         id: "reasoning-ethical",
-        title: "Ethical Lens",
-        prompt: "Include ethical implications and stakeholder impact in the final recommendation.",
+        title: "Decision Lens",
+        question: "Is a simpler model preferable if it is marginally less accurate but easier to audit?",
       },
     ],
     code: [
       {
         id: "code-bugfix",
-        title: "Bugfix Focus",
-        prompt: "Identify the root cause, propose a minimal fix, and include reasoning for correctness.",
+        title: "Root Cause",
+        question: "What is the most likely root cause of this bug?",
       },
       {
         id: "code-design",
-        title: "Design Review",
-        prompt: "Evaluate design alternatives and choose the most maintainable implementation.",
+        title: "Design Choice",
+        question: "Which approach is more maintainable for this feature, a refactor or a targeted patch?",
       },
       {
         id: "code-performance",
-        title: "Performance",
-        prompt: "Prioritize algorithmic efficiency and mention time/space complexity tradeoffs.",
+        title: "Latency Tradeoff",
+        question: "How can we reduce latency without changing the public API?",
       },
       {
         id: "code-tests",
-        title: "Test-first",
-        prompt: "Propose implementation plus focused tests that validate critical behavior.",
+        title: "Regression Test",
+        question: "Which test would best catch this regression?",
       },
     ],
     creative: [
       {
         id: "creative-divergent",
-        title: "Divergent Ideas",
-        prompt: "Generate varied, high-contrast ideas and select a final concept with rationale.",
+        title: "Concept Direction",
+        question: "What concept best fits a premium, industrial benchmark dashboard?",
       },
       {
         id: "creative-story",
-        title: "Narrative",
-        prompt: "Respond with a concise, vivid narrative while maintaining thematic coherence.",
+        title: "Narrative Angle",
+        question: "Which narrative angle makes a product feel most trustworthy?",
       },
       {
         id: "creative-product",
-        title: "Product Brainstorm",
-        prompt: "Produce product ideas with user segment, value proposition, and differentiation.",
+        title: "Product Angle",
+        question: "What product idea best serves a technical operator who needs fast decisions?",
       },
       {
         id: "creative-brand",
         title: "Brand Voice",
-        prompt: "Use a distinctive voice and clear tone consistency across the response.",
+        question: "Which brand voice fits a multi-agent AI operator console best?",
       },
     ],
     demo: [
       {
         id: "demo-balanced",
-        title: "Balanced Demo",
-        prompt: "Produce an answer that is clear, auditable, and suitable for stakeholder demos.",
+        title: "Stakeholder Summary",
+        question: "What is the clearest way to explain this benchmark result to a stakeholder?",
       },
       {
         id: "demo-chain-ready",
-        title: "Chain-ready",
-        prompt: "Prioritize deterministic outputs that are easy to verify in receipts and replay.",
+        title: "Replayable Receipt",
+        question: "What should a replayable deliberation receipt emphasize first?",
       },
       {
         id: "demo-latency",
-        title: "Low Latency",
-        prompt: "Prefer concise reasoning to reduce latency while preserving correctness.",
+        title: "Concise Summary",
+        question: "How can we present cost and latency without overwhelming the audience?",
       },
       {
         id: "demo-confidence",
-        title: "High Confidence",
-        prompt: "Favor robust consensus and confidence calibration over short responses.",
+        title: "Confidence Framing",
+        question: "Which summary framing makes the result easiest to trust at a glance?",
       },
     ],
   },
@@ -261,7 +260,7 @@ export function Benchmarks() {
           nextState[domain] = {
             templateId: keepTemplate ? existing?.templateId ?? null : defaultTemplateId,
             useCustomPrompt: existing?.useCustomPrompt ?? false,
-            customPrompt: existing?.customPrompt ?? "",
+            customQuestion: existing?.customQuestion ?? "",
           };
         }
         return nextState;
@@ -283,9 +282,9 @@ export function Benchmarks() {
     } catch (error) {
       setTemplates(FALLBACK_PROMPT_TEMPLATES);
       if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-        setTemplateError(`${error.message} Using built-in templates.`);
+        setTemplateError(`${error.message} Using built-in question templates.`);
       } else {
-        setTemplateError("Using built-in templates while prompt templates are unavailable.");
+        setTemplateError("Using built-in question templates while the prompt catalog is unavailable.");
       }
       syncDomainPromptSelection(FALLBACK_PROMPT_TEMPLATES);
     }
@@ -424,11 +423,9 @@ export function Benchmarks() {
     return BENCHMARK_MECHANISMS.map((mechanism) => {
       const metrics = normalizedSummary.per_mode[mechanism] ?? {};
       const avgEstimatedCost = asNumber(metrics.avg_estimated_cost_usd);
-      const avgTokens = asNumber(metrics.avg_tokens);
-      const estimatedCost = avgEstimatedCost > 0 ? avgEstimatedCost : avgTokens * DEFAULT_FALLBACK_USD_PER_TOKEN;
       return {
         mechanism: titleCase(mechanism),
-        estimatedCostUsd: Number(estimatedCost.toFixed(6)),
+        estimatedCostUsd: avgEstimatedCost > 0 ? avgEstimatedCost : null,
       };
     });
   }, [normalizedSummary]);
@@ -447,14 +444,14 @@ export function Benchmarks() {
     return (globalSortMode === "recent" ? catalog.global_recent : catalog.global_frequency).slice(0, 3);
   }, [catalog, globalSortMode]);
 
-  const getResolvedPrompt = useCallback(
+  const getResolvedQuestion = useCallback(
     (domain: BenchmarkDomainName, selection: DomainPromptSelection): string => {
-      if (selection.useCustomPrompt && selection.customPrompt.trim().length > 0) {
-        return selection.customPrompt.trim();
+      if (selection.useCustomPrompt && selection.customQuestion.trim().length > 0) {
+        return selection.customQuestion.trim();
       }
       const templatesForDomain = templates?.domains?.[domain] ?? [];
       const selected = templatesForDomain.find((template) => template.id === selection.templateId);
-      return selected?.prompt ?? "";
+      return selected?.question ?? "";
     },
     [templates],
   );
@@ -466,13 +463,14 @@ export function Benchmarks() {
       if (!selection) {
         continue;
       }
-      const prompt = getResolvedPrompt(domain, selection);
-      if (!prompt) {
+      const question = getResolvedQuestion(domain, selection);
+      if (!question) {
         continue;
       }
       domainPrompts[domain] = {
-        template_id: selection.useCustomPrompt ? "custom" : selection.templateId,
-        prompt,
+        template_id: selection.templateId,
+        question,
+        source: selection.useCustomPrompt ? "custom" : "template",
       };
     }
 
@@ -489,7 +487,7 @@ export function Benchmarks() {
   }, [
     benchmarkAgentCount,
     domainPromptSelection,
-    getResolvedPrompt,
+    getResolvedQuestion,
     holdoutPerCategory,
     reasoningPresets,
     trainingPerCategory,
@@ -563,7 +561,7 @@ export function Benchmarks() {
       const existing = current[domain] ?? {
         templateId: templates?.domains?.[domain]?.[0]?.id ?? null,
         useCustomPrompt: false,
-        customPrompt: "",
+        customQuestion: "",
       };
       return {
         ...current,
@@ -587,24 +585,27 @@ export function Benchmarks() {
       if (!selection) {
         continue;
       }
-      const customPrompt = selection.customPrompt.trim();
+      const customQuestion = selection.customQuestion.trim();
       if (selection.useCustomPrompt) {
         state[domain] = {
-          complete: customPrompt.length > 0,
-          label: customPrompt.length > 0 ? "Custom" : "Needs prompt",
+          complete: customQuestion.length > 0,
+          label: customQuestion.length > 0 ? "Custom question" : "Needs question",
         };
         continue;
       }
       const template = (templates.domains[domain] ?? []).find((item) => item.id === selection.templateId);
       state[domain] = {
         complete: Boolean(template),
-        label: template?.title ?? "Select template",
+        label: template?.title ?? "Select question",
       };
     }
     return state;
   }, [domainPromptSelection, templates.domains]);
 
   const allDomainsConfigured = BENCHMARK_DOMAINS.every((domain) => domainStatus[domain].complete);
+  const wizardCurrentSelection = domainPromptSelection[wizardDomain];
+  const wizardTemplates = templates.domains[wizardDomain] ?? [];
+  const wizardSelectedTemplate = wizardTemplates.find((template) => template.id === wizardCurrentSelection?.templateId);
 
   if (loadError) {
     return (
@@ -748,7 +749,7 @@ export function Benchmarks() {
             <div>
               <h3 className="mb-2 text-lg font-semibold">Run Benchmarks End-to-End</h3>
               <p className="text-sm text-text-secondary max-w-150">
-                Configure benchmark prompts per domain, trigger a run, and persist rich artifacts in global and user-specific cloud paths.
+                Configure benchmark questions per domain, trigger a run, and persist rich artifacts in global and user-specific cloud paths.
               </p>
             </div>
             <button type="button" className="btn-primary" onClick={openWizard}>
@@ -861,7 +862,7 @@ export function Benchmarks() {
             <div className="flex items-center justify-between gap-4 mb-4">
               <div>
                 <h2 className="text-xl font-semibold mb-1">Benchmark Run Wizard</h2>
-                <p className="text-sm text-text-secondary">Configure per-domain prompts, then launch a comprehensive run.</p>
+                <p className="text-sm text-text-secondary">Configure per-domain questions, then launch a comprehensive run.</p>
               </div>
               <button type="button" className="btn-secondary" onClick={closeWizard} aria-label="Close benchmark wizard">
                 <X size={16} />
@@ -971,9 +972,9 @@ export function Benchmarks() {
                 <div className="border border-border-subtle rounded-md p-4 bg-void">
                   <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
                     <div>
-                      <h4 className="text-sm font-semibold mb-1">{titleCase(wizardDomain)} Prompt</h4>
+                      <h4 className="text-sm font-semibold mb-1">{titleCase(wizardDomain)} Question</h4>
                       <p className="text-xs text-text-secondary">
-                        Pick one template or switch this domain to a custom benchmark instruction.
+                        Pick a question template or write your own debate question for this domain.
                       </p>
                     </div>
                     <div className="inline-flex border border-border-subtle rounded-md overflow-hidden">
@@ -982,11 +983,23 @@ export function Benchmarks() {
                         onClick={() => updateDomainSelection(wizardDomain, (existing) => ({ ...existing, useCustomPrompt: false }))}
                         className={`mono px-3 py-1.5 text-xs ${!domainPromptSelection[wizardDomain]?.useCustomPrompt ? "bg-accent-muted text-accent" : "text-text-secondary"}`}
                       >
-                        Templates
+                        Template
                       </button>
                       <button
                         type="button"
-                        onClick={() => updateDomainSelection(wizardDomain, (existing) => ({ ...existing, useCustomPrompt: true }))}
+                        onClick={() => updateDomainSelection(wizardDomain, (existing) => {
+                          if (existing.useCustomPrompt) {
+                            return existing;
+                          }
+                          const seededQuestion = existing.customQuestion.trim().length > 0
+                            ? existing.customQuestion
+                            : (wizardSelectedTemplate?.question ?? "");
+                          return {
+                            ...existing,
+                            useCustomPrompt: true,
+                            customQuestion: seededQuestion,
+                          };
+                        })}
                         className={`mono px-3 py-1.5 text-xs ${domainPromptSelection[wizardDomain]?.useCustomPrompt ? "bg-accent-muted text-accent" : "text-text-secondary"}`}
                       >
                         Custom
@@ -994,47 +1007,75 @@ export function Benchmarks() {
                     </div>
                   </div>
 
-                  {!domainPromptSelection[wizardDomain]?.useCustomPrompt ? (
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                      {(templates?.domains?.[wizardDomain] ?? []).map((template) => {
-                        const current = domainPromptSelection[wizardDomain];
-                        const active = current?.templateId === template.id;
-                        return (
-                          <button
-                            key={template.id}
-                            type="button"
-                            onClick={() => updateDomainSelection(wizardDomain, (existing) => ({ ...existing, templateId: template.id, useCustomPrompt: false }))}
-                            className={`text-left border rounded-md p-3 transition-colors ${
-                              active ? "border-accent bg-accent-muted" : "border-border-subtle hover:border-accent"
-                            }`}
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                    {wizardTemplates.map((template) => {
+                      const active = wizardCurrentSelection?.templateId === template.id
+                        && !wizardCurrentSelection?.useCustomPrompt;
+                      return (
+                        <button
+                          key={template.id}
+                          type="button"
+                          onClick={() => updateDomainSelection(wizardDomain, (existing) => ({
+                            ...existing,
+                            templateId: template.id,
+                            useCustomPrompt: false,
+                          }))}
+                          className={`text-left border rounded-md p-3 transition-colors ${
+                            active ? "border-accent bg-accent-muted" : "border-border-subtle hover:border-accent"
+                          }`}
                           >
                             <div className="flex items-center justify-between gap-3 mb-2">
                               <div className="mono text-xs text-text-muted">{template.title}</div>
                               {active ? <span className="mono text-[10px] text-accent">SELECTED</span> : null}
                             </div>
-                            <div className="text-xs text-text-secondary whitespace-pre-wrap line-clamp-5">{template.prompt}</div>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="mono text-xs text-text-muted">CUSTOM INSTRUCTION</div>
-                      <textarea
-                        value={domainPromptSelection[wizardDomain]?.customPrompt ?? ""}
-                        onChange={(event) =>
-                          updateDomainSelection(wizardDomain, (existing) => ({
-                            ...existing,
-                            customPrompt: event.target.value,
-                            useCustomPrompt: true,
-                          }))
-                        }
-                        placeholder={`Write the exact benchmark instruction for ${titleCase(wizardDomain)}.`}
-                        rows={10}
-                        className="w-full rounded-md border border-border-subtle bg-void px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent"
-                      />
-                    </div>
-                  )}
+                          <div className="text-xs text-text-secondary whitespace-pre-wrap line-clamp-5">{template.question}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {wizardCurrentSelection?.useCustomPrompt ? (
+                      <>
+                        <div className="rounded-md border border-border-subtle bg-elevated/40 p-3">
+                          <div className="mono text-xs text-text-muted mb-1">CUSTOM QUESTION</div>
+                          <p className="text-xs text-text-secondary">
+                            Write the exact question the models should debate. The template picker stays available if you want to switch back.
+                          </p>
+                          {wizardSelectedTemplate ? (
+                            <div className="mt-3 rounded-md border border-border-subtle bg-void p-2">
+                              <div className="mono text-[10px] text-text-muted mb-1">
+                                STARTING FROM {wizardSelectedTemplate.title.toUpperCase()}
+                              </div>
+                              <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
+                                {wizardSelectedTemplate.question}
+                              </p>
+                            </div>
+                          ) : null}
+                        </div>
+                        <textarea
+                          value={wizardCurrentSelection?.customQuestion ?? ""}
+                          onChange={(event) =>
+                            updateDomainSelection(wizardDomain, (existing) => ({
+                              ...existing,
+                              customQuestion: event.target.value,
+                              useCustomPrompt: true,
+                            }))
+                          }
+                          placeholder={`Write the exact benchmark question for ${titleCase(wizardDomain)}.`}
+                          rows={10}
+                          className="w-full rounded-md border border-border-subtle bg-void px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent"
+                        />
+                      </>
+                    ) : (
+                      <div className="rounded-md border border-border-subtle bg-elevated/40 p-3">
+                        <div className="mono text-xs text-text-muted mb-1">SELECTED QUESTION</div>
+                        <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
+                          {wizardSelectedTemplate?.question ?? "Choose a question above or switch to custom mode."}
+                        </p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             ) : null}
@@ -1061,7 +1102,7 @@ export function Benchmarks() {
                     if (!selection) {
                       return null;
                     }
-                    const resolvedPrompt = getResolvedPrompt(domain, selection);
+                    const resolvedQuestion = getResolvedQuestion(domain, selection);
                     return (
                       <div key={domain} className="border border-border-subtle rounded-md p-3 bg-void">
                         <div className="flex items-center justify-between gap-2 mb-1">
@@ -1071,7 +1112,7 @@ export function Benchmarks() {
                           </span>
                         </div>
                         <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word line-clamp-4">
-                          {resolvedPrompt || "No prompt selected."}
+                          {resolvedQuestion || "No question selected."}
                         </p>
                       </div>
                     );

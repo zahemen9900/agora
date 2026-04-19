@@ -565,7 +565,7 @@ export function LiveDeliberation() {
       {task?.result && (
         <div className="card p-5 mb-8 border border-border-subtle">
           <div className="mono text-xs text-text-muted mb-3">RUN SUMMARY</div>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-4">
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">TOTAL TOKENS</div>
               <div className="mono text-sm text-text-primary">{task.result.total_tokens_used}</div>

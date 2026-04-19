@@ -40,10 +40,13 @@ export interface BenchmarkSummary {
 }
 
 export type BenchmarkDomainName = "math" | "factual" | "reasoning" | "code" | "creative" | "demo";
+export type BenchmarkPromptSourceName = "template" | "custom";
 
 export interface BenchmarkDomainPromptPayload {
   template_id?: string | null;
+  question?: string | null;
   prompt?: string | null;
+  source?: BenchmarkPromptSourceName | null;
 }
 
 export interface BenchmarkCostEstimatePayload {
@@ -176,7 +179,7 @@ export interface BenchmarkRunResponsePayload {
 export interface BenchmarkPromptTemplatePayload {
   id: string;
   title: string;
-  prompt: string;
+  question: string;
 }
 
 export interface BenchmarkPromptTemplatesPayload {

@@ -149,16 +149,13 @@ def estimate_cost_for_models(
         if cost is not None and cost > 0:
             model_costs[model_name] = cost
 
-    if not model_costs and observed_modes <= {"unavailable"}:
+    concrete_modes = observed_modes - {"unavailable"}
+    if not concrete_modes:
         estimation_mode: PricingMode = "unavailable"
-    elif len(observed_modes - {"unavailable"}) > 1:
+    elif len(concrete_modes) > 1 or "unavailable" in observed_modes:
         estimation_mode = "mixed"
-    elif "exact" in observed_modes:
-        estimation_mode = "exact"
-    elif "approx_total_tokens" in observed_modes:
-        estimation_mode = "approx_total_tokens"
     else:
-        estimation_mode = "unavailable"
+        estimation_mode = next(iter(concrete_modes))
 
     total_cost = round(sum(model_costs.values()), 8) if model_costs else None
 

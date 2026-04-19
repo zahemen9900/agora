@@ -196,6 +196,23 @@ def test_stream_messages_encode_json_payloads() -> None:
     }
 
 
+def test_benchmark_stream_messages_encode_json_payloads() -> None:
+    payload = benchmark_routes._benchmark_sse_message(
+        {
+            "event": "queued",
+            "timestamp": "2026-04-18T02:00:00+00:00",
+            "data": {"run_id": "benchmark-stream-run", "status": "queued"},
+        }
+    )
+
+    assert payload["event"] == "queued"
+    assert isinstance(payload["data"], str)
+    assert json.loads(payload["data"]) == {
+        "payload": {"run_id": "benchmark-stream-run", "status": "queued"},
+        "timestamp": "2026-04-18T02:00:00+00:00",
+    }
+
+
 def test_decode_verified_token_accepts_trailing_slash_issuer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -854,6 +871,18 @@ def test_task_create_request_defaults_and_agent_boundaries() -> None:
 def test_benchmark_run_request_defaults_and_agent_boundaries() -> None:
     assert BenchmarkRunRequest().agent_count == 4
     assert BenchmarkRunRequest(agent_count=12).agent_count == 12
+    assert (
+        BenchmarkRunRequest(
+            domain_prompts={
+                "math": {
+                    "template_id": "math-stepwise",
+                    "prompt": "What is 2 + 2?",
+                    "source": "custom",
+                }
+            }
+        ).domain_prompts["math"].question
+        == "What is 2 + 2?"
+    )
 
     with pytest.raises(ValidationError):
         BenchmarkRunRequest(agent_count=13)
@@ -1607,21 +1636,34 @@ async def test_stream_task_replays_timestamped_event_envelopes(
     assert replayed_events == [
         {
             "event": "agent_output",
-            "data": {
-                "payload": first_event["data"],
-                "timestamp": first_event["timestamp"],
-            },
+            "data": json.dumps(
+                {
+                    "payload": first_event["data"],
+                    "timestamp": first_event["timestamp"],
+                }
+            ),
         },
         {
             "event": "complete",
-            "data": {
-                "payload": second_event["data"],
-                "timestamp": second_event["timestamp"],
-            },
+            "data": json.dumps(
+                {
+                    "payload": second_event["data"],
+                    "timestamp": second_event["timestamp"],
+                }
+            ),
         },
     ]
     assert all(set(item) == {"event", "data"} for item in replayed_events)
-    assert all(set(item["data"]) == {"payload", "timestamp"} for item in replayed_events)
+    assert [json.loads(item["data"]) for item in replayed_events] == [
+        {
+            "payload": first_event["data"],
+            "timestamp": first_event["timestamp"],
+        },
+        {
+            "payload": second_event["data"],
+            "timestamp": second_event["timestamp"],
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -1671,10 +1713,12 @@ async def test_stream_ticket_is_one_use_and_namespaced(
         assert [item async for item in first.content] == [
             {
                 "event": "complete",
-                "data": {
-                    "payload": task_payload["events"][0]["data"],
-                    "timestamp": task_payload["events"][0]["timestamp"],
-                },
+                "data": json.dumps(
+                    {
+                        "payload": task_payload["events"][0]["data"],
+                        "timestamp": task_payload["events"][0]["timestamp"],
+                    }
+                ),
             }
         ]
         with pytest.raises(HTTPException) as exc_info:
@@ -2555,6 +2599,8 @@ async def test_benchmark_prompt_templates_endpoint_returns_domain_catalog(
     assert set(domains.keys()) == {"math", "factual", "reasoning", "code", "creative", "demo"}
     assert all(len(entries) >= 4 for entries in domains.values())
     assert all("id" in domains["math"][idx] for idx in range(4))
+    assert all("question" in entry and "prompt" not in entry for entries in domains.values() for entry in entries)
+    assert all(str(entry["question"]).strip().endswith("?") for entries in domains.values() for entry in entries)
 
 
 @pytest.mark.asyncio
@@ -2636,7 +2682,8 @@ async def test_benchmark_detail_endpoint_supports_artifact_and_run_id_lookup(
                 "domain_prompts": {
                     "demo": {
                         "template_id": "demo-balanced",
-                        "prompt": "Demo-focused deliberation prompt.",
+                        "question": "What is the clearest way to explain this benchmark result to a stakeholder?",
+                        "source": "custom",
                     }
                 },
             },
@@ -2661,6 +2708,7 @@ async def test_benchmark_detail_endpoint_supports_artifact_and_run_id_lookup(
     assert by_run_payload["artifact_id"] == "user-artifact"
     assert by_run_payload["request"]["agent_count"] == 8
     assert "demo" in by_run_payload["request"]["domain_prompts"]
+    assert by_run_payload["request"]["domain_prompts"]["demo"]["question"].startswith("What is the clearest")
 
 
 @pytest.mark.asyncio
@@ -2803,6 +2851,58 @@ async def test_benchmark_run_status_exposes_effective_reasoning_presets(
 
 
 @pytest.mark.asyncio
+async def test_benchmark_queued_detail_uses_request_agent_count_and_custom_questions(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    async def fake_execute_benchmark_run(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_execute_benchmark_run", fake_execute_benchmark_run)
+
+    domain_prompts = {
+        domain: {
+            "template_id": f"{domain}-template",
+            "question": f"What should the {domain} benchmark debate?",
+            "source": "custom",
+        }
+        for domain in benchmark_routes._BENCHMARK_DOMAIN_ORDER
+    }
+
+    run_response = await client.post(
+        "/benchmarks/run",
+        json={
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+            "agent_count": 4,
+            "live_agents": False,
+            "seed": 11,
+            "domain_prompts": domain_prompts,
+        },
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["run_id"]
+
+    status_response = await client.get(f"/benchmarks/runs/{run_id}")
+    assert status_response.status_code == 200
+    status_payload = status_response.json()
+    assert status_payload["status"] == "queued"
+    assert status_payload["agent_count"] == 4
+
+    detail_response = await client.get(f"/benchmarks/{run_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["status"] == "queued"
+    assert detail_payload["agent_count"] == 4
+    assert detail_payload["request"]["domain_prompts"]["math"]["question"] == "What should the math benchmark debate?"
+    assert detail_payload["request"]["domain_prompts"]["math"]["source"] == "custom"
+    assert detail_payload["request"]["resolved_domain_prompts"]["math"]["question"] == "What should the math benchmark debate?"
+    assert detail_payload["request"]["resolved_domain_prompts"]["math"]["source"] == "custom"
+
+
+@pytest.mark.asyncio
 async def test_benchmark_stream_replays_events_and_terminal_state(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -2849,17 +2949,21 @@ async def test_benchmark_stream_replays_events_and_terminal_state(
     assert replayed == [
         {
             "event": "queued",
-            "data": {
-                "payload": {"run_id": run_id, "status": "queued"},
-                "timestamp": "2026-04-18T02:00:00+00:00",
-            },
+            "data": json.dumps(
+                {
+                    "payload": {"run_id": run_id, "status": "queued"},
+                    "timestamp": "2026-04-18T02:00:00+00:00",
+                }
+            ),
         },
         {
             "event": "complete",
-            "data": {
-                "payload": {"run_id": run_id, "status": "completed"},
-                "timestamp": "2026-04-18T02:01:00+00:00",
-            },
+            "data": json.dumps(
+                {
+                    "payload": {"run_id": run_id, "status": "completed"},
+                    "timestamp": "2026-04-18T02:01:00+00:00",
+                }
+            ),
         },
     ]
 

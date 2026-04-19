@@ -140,7 +140,7 @@ export function BenchmarkDetail() {
               ...current,
               status: event.event === "failed" ? "failed" : current.status,
               latest_mechanism: typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
-              agent_count: typeof telemetry.agent_count === "number" ? telemetry.agent_count : current.agent_count,
+              agent_count: isPositiveInteger(telemetry.agent_count) ? telemetry.agent_count : current.agent_count,
               total_tokens: typeof telemetry.total_tokens === "number" ? telemetry.total_tokens : current.total_tokens,
               thinking_tokens: typeof telemetry.thinking_tokens === "number" ? telemetry.thinking_tokens : current.thinking_tokens,
               total_latency_ms: typeof telemetry.total_latency_ms === "number" ? telemetry.total_latency_ms : current.total_latency_ms,
@@ -223,6 +223,32 @@ export function BenchmarkDetail() {
     return totalCost / agentCount;
   }, [detail]);
 
+  const costByModel = detail?.cost?.model_estimated_costs_usd
+    ? Object.entries(detail.cost.model_estimated_costs_usd)
+      .sort((a, b) => b[1] - a[1])
+    : [];
+
+  const modelTelemetryRows = detail?.model_telemetry
+    ? Object.entries(detail.model_telemetry)
+      .sort((a, b) => (b[1]?.total_tokens ?? 0) - (a[1]?.total_tokens ?? 0))
+    : [];
+
+  const resolvedPrompts = (() => {
+    const request = detail?.request;
+    if (!request || typeof request !== "object") {
+      return [];
+    }
+    const prompts = request.resolved_domain_prompts;
+    if (typeof prompts !== "object" || prompts === null) {
+      const rawPrompts = request.domain_prompts;
+      if (typeof rawPrompts !== "object" || rawPrompts === null) {
+        return [];
+      }
+      return Object.entries(rawPrompts as Record<string, Record<string, unknown>>);
+    }
+    return Object.entries(prompts as Record<string, Record<string, unknown>>);
+  })();
+
   if (loadError) {
     return (
       <div className="max-w-250 mx-auto pb-20 w-full">
@@ -248,31 +274,6 @@ export function BenchmarkDetail() {
       </div>
     );
   }
-
-  const costByModel = detail.cost?.model_estimated_costs_usd
-    ? Object.entries(detail.cost.model_estimated_costs_usd)
-      .sort((a, b) => b[1] - a[1])
-    : [];
-
-  const modelTelemetryRows = useMemo(() => {
-    if (!detail?.model_telemetry) {
-      return [];
-    }
-    return Object.entries(detail.model_telemetry)
-      .sort((a, b) => (b[1]?.total_tokens ?? 0) - (a[1]?.total_tokens ?? 0));
-  }, [detail?.model_telemetry]);
-
-  const resolvedPrompts = useMemo(() => {
-    const request = detail?.request;
-    if (!request || typeof request !== "object") {
-      return [];
-    }
-    const prompts = request.resolved_domain_prompts;
-    if (typeof prompts !== "object" || prompts === null) {
-      return [];
-    }
-    return Object.entries(prompts as Record<string, Record<string, unknown>>);
-  }, [detail?.request]);
 
   return (
     <div className="max-w-250 mx-auto pb-20 w-full">
@@ -323,7 +324,7 @@ export function BenchmarkDetail() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-8 gap-4 mb-8">
         <MetricCard label="Scope" value={titleCase(detail.scope)} />
         <MetricCard label="Runs" value={formatInt(detail.run_count)} />
-        <MetricCard label="Agents" value={formatInt(detail.agent_count)} />
+        <MetricCard label="Agents" value={formatMaybeInt(detail.agent_count)} />
         <MetricCard label="Mechanism" value={detail.latest_mechanism ? titleCase(detail.latest_mechanism) : "n/a"} />
         <MetricCard label="Total Tokens" value={formatInt(detail.total_tokens)} />
         <MetricCard label="Thinking Tokens" value={formatInt(detail.thinking_tokens)} />
@@ -482,27 +483,30 @@ export function BenchmarkDetail() {
         </div>
 
         <div className="card p-4 sm:p-6">
-          <h3 className="text-lg font-semibold mb-3">Prompt Configuration</h3>
+          <h3 className="text-lg font-semibold mb-3">Question Configuration</h3>
           {resolvedPrompts.length === 0 ? (
-            <p className="text-sm text-text-secondary">No resolved domain prompts stored for this benchmark.</p>
+            <p className="text-sm text-text-secondary">No resolved domain questions stored for this benchmark.</p>
           ) : (
             <div className="space-y-3">
-              {resolvedPrompts.map(([domain, prompt]) => (
-                <div key={domain} className="border border-border-subtle rounded-md p-3 bg-void">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <span className="text-sm text-text-primary">{titleCase(domain)}</span>
-                    <span className="mono text-[10px] text-text-muted">
-                      {String(prompt.source ?? prompt.template_id ?? "template")}
-                    </span>
+              {resolvedPrompts.map(([domain, question]) => {
+                const sourceLabel = String(
+                  question.source ?? (String(question.template_id ?? "") === "custom" ? "custom" : "template"),
+                );
+                return (
+                  <div key={domain} className="border border-border-subtle rounded-md p-3 bg-void">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-sm text-text-primary">{titleCase(domain)}</span>
+                      <span className="mono text-[10px] text-text-muted">{sourceLabel}</span>
+                    </div>
+                    <div className="mono text-[10px] text-text-muted mb-2">
+                      {String(question.template_title ?? question.template_id ?? "Custom Question")}
+                    </div>
+                    <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
+                      {String(question.question ?? question.prompt ?? "")}
+                    </p>
                   </div>
-                  <div className="mono text-[10px] text-text-muted mb-2">
-                    {String(prompt.template_title ?? prompt.template_id ?? "Custom Prompt")}
-                  </div>
-                  <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
-                    {String(prompt.prompt ?? "")}
-                  </p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -666,6 +670,17 @@ function formatInt(value: number | null | undefined): string {
     return "0";
   }
   return Math.round(value).toLocaleString();
+}
+
+function formatMaybeInt(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "n/a";
+  }
+  return Math.round(value).toLocaleString();
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 function titleCase(value: string): string {

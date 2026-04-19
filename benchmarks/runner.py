@@ -101,6 +101,18 @@ class BenchmarkRunner:
         self.orchestrator = orchestrator
         self.agents = agents
 
+    @staticmethod
+    def _task_question(task_item: dict[str, Any]) -> str:
+        """Return the benchmark question to debate for one task item."""
+
+        question = task_item.get("question")
+        if isinstance(question, str) and question.strip():
+            return question.strip()
+        task = task_item.get("task")
+        if isinstance(task, str):
+            return task.strip()
+        return str(task or "").strip()
+
     async def run_comparison(
         self,
         tasks: list[dict[str, Any]],
@@ -112,10 +124,11 @@ class BenchmarkRunner:
         runs: list[dict[str, Any]] = []
 
         for task_index, task_item in enumerate(tasks):
+            question = self._task_question(task_item)
             for mechanism in mechanisms:
                 override = None if mechanism == "selector" else mechanism
                 result = await self.orchestrator.run(
-                    task=task_item["task"],
+                    task=question,
                     stakes=float(task_item.get("stakes", 0.0)),
                     mechanism_override=override,
                     agents=self.agents,
@@ -132,8 +145,9 @@ class BenchmarkRunner:
 
         runs: list[dict[str, Any]] = []
         for task_index, task_item in enumerate(tasks):
-            vote_selection = await self._forced_selection(task_item["task"], MechanismType.VOTE)
-            debate_selection = await self._forced_selection(task_item["task"], MechanismType.DEBATE)
+            question = self._task_question(task_item)
+            vote_selection = await self._forced_selection(question, MechanismType.VOTE)
+            debate_selection = await self._forced_selection(question, MechanismType.DEBATE)
 
             vote_variants = {
                 "simple_majority_vote": self.orchestrator.build_vote_engine(
@@ -162,21 +176,13 @@ class BenchmarkRunner:
             }
 
             for variant_name, engine in vote_variants.items():
-                outcome = await engine.run(
-                    task_item["task"],
-                    vote_selection,
-                    custom_agents=self.agents,
-                )
+                outcome = await engine.run(question, vote_selection, custom_agents=self.agents)
                 runs.append(
                     self._build_run_record(task_index, variant_name, task_item, outcome.result)
                 )
 
             for variant_name, engine in debate_variants.items():
-                outcome = await engine.run(
-                    task_item["task"],
-                    debate_selection,
-                    custom_agents=self.agents,
-                )
+                outcome = await engine.run(question, debate_selection, custom_agents=self.agents)
                 if outcome.result is None:
                     continue
                 runs.append(
@@ -208,12 +214,13 @@ class BenchmarkRunner:
 
         for task_index, task_item in enumerate(training_tasks):
             base_seed_offset = task_index * 3
+            question = self._task_question(task_item)
 
             _seed_rng(base_seed_offset)
-            first = await self.orchestrator.run(task_item["task"], agents=self.agents)
+            first = await self.orchestrator.run(question, agents=self.agents)
 
             _seed_rng(base_seed_offset)
-            second = await self.orchestrator.run(task_item["task"], agents=self.agents)
+            second = await self.orchestrator.run(question, agents=self.agents)
 
             record = self._build_run_record(task_index, "selector", task_item, first)
             record["merkle_root_rerun"] = second.merkle_root
@@ -238,7 +245,7 @@ class BenchmarkRunner:
 
             _seed_rng(base_seed_offset + 1)
             learned = await self.orchestrator.run_and_learn(
-                task_item["task"],
+                question,
                 ground_truth=task_item.get("ground_truth"),
                 agents=self.agents,
             )
@@ -257,8 +264,9 @@ class BenchmarkRunner:
                 )
 
         for task_index, task_item in enumerate(holdout_tasks):
+            question = self._task_question(task_item)
             _seed_rng(len(training_tasks) * 3 + task_index)
-            holdout = await self.orchestrator.run(task_item["task"], agents=self.agents)
+            holdout = await self.orchestrator.run(question, agents=self.agents)
             holdout_record = self._build_run_record(task_index, "selector", task_item, holdout)
             holdout_runs.append(holdout_record)
             if progress_callback is not None:
@@ -508,6 +516,8 @@ class BenchmarkRunner:
         return {
             "task_index": task_index,
             "task": task_item["task"],
+            "question": self._task_question(task_item),
+            "source_task": task_item["task"],
             "category": task_item.get("category", "reasoning"),
             "mode": mode,
             "mechanism_used": result.mechanism_used.value,

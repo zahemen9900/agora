@@ -190,7 +190,8 @@ export interface BenchmarkRunRequest {
 
 export interface BenchmarkDomainPrompt {
   template_id: string | null;
-  prompt: string | null;
+  question: string | null;
+  source: "template" | "custom";
 }
 
 export interface BenchmarkRunResponse {
@@ -283,5 +284,5 @@ export interface BenchmarkPromptTemplatesResponse {
 export interface BenchmarkPromptTemplate {
   id: string;
   title: string;
-  prompt: string;
+  question: string;
 }

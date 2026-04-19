@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from agora.types import ReasoningPresetOverrides, ReasoningPresets
 
@@ -198,6 +198,7 @@ class AuthConfigResponse(BaseModel):
 BenchmarkScopeName = Literal["global", "user"]
 BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
 BenchmarkDomainName = Literal["math", "factual", "reasoning", "code", "creative", "demo"]
+BenchmarkPromptSourceName = Literal["template", "custom"]
 CostEstimationModeName = Literal["exact", "approx_total_tokens", "unavailable", "mixed"]
 
 
@@ -205,7 +206,12 @@ class BenchmarkDomainPrompt(BaseModel):
     """Prompt configuration for a single benchmark domain."""
 
     template_id: str | None = Field(default=None, max_length=120)
-    prompt: str | None = Field(default=None, max_length=8_000)
+    question: str | None = Field(
+        default=None,
+        max_length=8_000,
+        validation_alias=AliasChoices("question", "prompt"),
+    )
+    source: BenchmarkPromptSourceName = "template"
 
 
 class BenchmarkCostEstimateResponse(BaseModel):
@@ -341,7 +347,7 @@ class BenchmarkPromptTemplate(BaseModel):
 
     id: str
     title: str
-    prompt: str
+    question: str
 
 
 class BenchmarkPromptTemplatesResponse(BaseModel):

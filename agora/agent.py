@@ -1258,7 +1258,13 @@ class AgentCaller:
         """Return whether one SDK callable appears to support a given argument."""
 
         try:
-            return argument in inspect.signature(callable_obj).parameters
+            signature = inspect.signature(callable_obj)
+            if argument in signature.parameters:
+                return True
+            return any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
         except (TypeError, ValueError):
             return False
 

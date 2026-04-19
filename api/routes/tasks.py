@@ -779,10 +779,10 @@ def _to_sse_message(event: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "event": str(event.get("event", "update")),
-        "data": {
+        "data": json.dumps({
             "payload": event.get("data", {}),
             "timestamp": event.get("timestamp"),
-        },
+        }),
     }
 
 

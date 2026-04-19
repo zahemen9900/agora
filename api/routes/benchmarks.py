@@ -65,170 +65,133 @@ _BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
     "math": [
         {
             "id": "math-stepwise",
-            "title": "Stepwise Math",
-            "prompt": (
-                "Solve the math task step-by-step and provide only the final numeric answer "
-                "on the last line."
-            ),
+            "title": "Exact Value",
+            "question": "What is the exact value of 7/8 + 5/12?",
         },
         {
             "id": "math-proof-check",
-            "title": "Proof + Check",
-            "prompt": (
-                "Produce a concise derivation, then verify the result with a quick check "
-                "before finalizing."
-            ),
+            "title": "Verification Check",
+            "question": "Which is larger, 3/5 or 5/8, and by how much?",
         },
         {
             "id": "math-fast",
-            "title": "Fast Arithmetic",
-            "prompt": "Optimize for speed and correctness. Keep reasoning short and explicit.",
+            "title": "Sequence Term",
+            "question": "What is the 20th term of the sequence 2, 5, 8, 11, ...?",
         },
         {
             "id": "math-robust",
-            "title": "Robust Edge Cases",
-            "prompt": "Handle edge cases carefully and call out assumptions before solving.",
+            "title": "Rate Problem",
+            "question": "If a machine completes 9 tasks in 12 minutes, how long does it take to complete 27 tasks at the same rate?",
         },
     ],
     "factual": [
         {
             "id": "factual-cited",
-            "title": "Cited Facts",
-            "prompt": (
-                "Answer factually with confidence levels and a short source rationale "
-                "for each claim."
-            ),
+            "title": "Capital Fact",
+            "question": "What is the capital of France?",
         },
         {
             "id": "factual-multihop",
-            "title": "Multi-hop",
-            "prompt": (
-                "Resolve the query through explicit multi-hop reasoning and avoid speculation."
-            ),
+            "title": "Historical Year",
+            "question": "In what year did Apollo 11 land on the Moon?",
         },
         {
             "id": "factual-precision",
-            "title": "Precision First",
-            "prompt": (
-                "Prioritize precision over verbosity. Return concise, directly verifiable claims."
-            ),
+            "title": "Author Check",
+            "question": "Who wrote Pride and Prejudice?",
         },
         {
             "id": "factual-contrast",
-            "title": "Contrastive",
-            "prompt": "Compare candidate answers and choose the one best supported by known facts.",
+            "title": "Planet Fact",
+            "question": "Which planet is the largest in the Solar System?",
         },
     ],
     "reasoning": [
         {
             "id": "reasoning-tradeoff",
-            "title": "Tradeoff Analysis",
-            "prompt": (
-                "Evaluate alternatives using explicit tradeoffs, then decide with a ranked "
-                "recommendation."
-            ),
+            "title": "Tradeoff Call",
+            "question": "Should a system optimize for speed or robustness when the cost of error is high?",
         },
         {
             "id": "reasoning-structured",
-            "title": "Structured Logic",
-            "prompt": (
-                "Use structured premises and conclusions; flag uncertainty where evidence is weak."
-            ),
+            "title": "Evidence Balance",
+            "question": "When evidence is incomplete, should a model hedge or choose the most likely answer?",
         },
         {
             "id": "reasoning-risk",
-            "title": "Risk-aware",
-            "prompt": "Include risk analysis and failure modes before producing the final answer.",
+            "title": "Risk Preference",
+            "question": "Is it better to minimize false positives or false negatives in a high-stakes decision?",
         },
         {
             "id": "reasoning-ethical",
-            "title": "Ethical Lens",
-            "prompt": (
-                "Include ethical implications and stakeholder impact in the final recommendation."
-            ),
+            "title": "Decision Lens",
+            "question": "Is a simpler model preferable if it is marginally less accurate but easier to audit?",
         },
     ],
     "code": [
         {
             "id": "code-bugfix",
-            "title": "Bugfix Focus",
-            "prompt": (
-                "Identify the root cause, propose a minimal fix, and include reasoning "
-                "for correctness."
-            ),
+            "title": "Root Cause",
+            "question": "What is the most likely root cause of this bug?",
         },
         {
             "id": "code-design",
-            "title": "Design Review",
-            "prompt": (
-                "Evaluate design alternatives and choose the most maintainable implementation."
-            ),
+            "title": "Design Choice",
+            "question": "Which approach is more maintainable for this feature, a refactor or a targeted patch?",
         },
         {
             "id": "code-performance",
-            "title": "Performance",
-            "prompt": (
-                "Prioritize algorithmic efficiency and mention time/space complexity tradeoffs."
-            ),
+            "title": "Latency Tradeoff",
+            "question": "How can we reduce latency without changing the public API?",
         },
         {
             "id": "code-tests",
-            "title": "Test-first",
-            "prompt": "Propose implementation plus focused tests that validate critical behavior.",
+            "title": "Regression Test",
+            "question": "Which test would best catch this regression?",
         },
     ],
     "creative": [
         {
             "id": "creative-divergent",
-            "title": "Divergent Ideas",
-            "prompt": (
-                "Generate varied, high-contrast ideas and select a final concept with rationale."
-            ),
+            "title": "Concept Direction",
+            "question": "What concept best fits a premium, industrial benchmark dashboard?",
         },
         {
             "id": "creative-story",
-            "title": "Narrative",
-            "prompt": (
-                "Respond with a concise, vivid narrative while maintaining thematic coherence."
-            ),
+            "title": "Narrative Angle",
+            "question": "Which narrative angle makes a product feel most trustworthy?",
         },
         {
             "id": "creative-product",
-            "title": "Product Brainstorm",
-            "prompt": (
-                "Produce product ideas with user segment, value proposition, and differentiation."
-            ),
+            "title": "Product Angle",
+            "question": "What product idea best serves a technical operator who needs fast decisions?",
         },
         {
             "id": "creative-brand",
             "title": "Brand Voice",
-            "prompt": "Use a distinctive voice and clear tone consistency across the response.",
+            "question": "Which brand voice fits a multi-agent AI operator console best?",
         },
     ],
     "demo": [
         {
             "id": "demo-balanced",
-            "title": "Balanced Demo",
-            "prompt": (
-                "Produce an answer that is clear, auditable, and suitable for stakeholder demos."
-            ),
+            "title": "Stakeholder Summary",
+            "question": "What is the clearest way to explain this benchmark result to a stakeholder?",
         },
         {
             "id": "demo-chain-ready",
-            "title": "Chain-ready",
-            "prompt": (
-                "Prioritize deterministic outputs that are easy to verify in receipts and replay."
-            ),
+            "title": "Replayable Receipt",
+            "question": "What should a replayable deliberation receipt emphasize first?",
         },
         {
             "id": "demo-latency",
-            "title": "Low Latency",
-            "prompt": "Prefer concise reasoning to reduce latency while preserving correctness.",
+            "title": "Concise Summary",
+            "question": "How can we present cost and latency without overwhelming the audience?",
         },
         {
             "id": "demo-confidence",
-            "title": "High Confidence",
-            "prompt": "Favor robust consensus and confidence calibration over short responses.",
+            "title": "Confidence Framing",
+            "question": "Which summary framing makes the result easiest to trust at a glance?",
         },
     ],
 }
@@ -277,10 +240,10 @@ def _benchmark_event_payload(event_type: str, event_data: dict[str, Any]) -> dic
 def _benchmark_sse_message(event: dict[str, Any]) -> dict[str, Any]:
     return {
         "event": str(event.get("event", "update")),
-        "data": {
+        "data": json.dumps({
             "payload": event.get("data", {}),
             "timestamp": event.get("timestamp"),
-        },
+        }),
     }
 
 
@@ -392,6 +355,11 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     return default
 
 
+def _safe_positive_int(value: Any) -> int | None:
+    candidate = _safe_int(value, default=0)
+    return candidate if candidate > 0 else None
+
+
 def _cost_from_object(value: Any) -> BenchmarkCostEstimateResponse | None:
     if not isinstance(value, dict):
         return None
@@ -497,7 +465,7 @@ def _domain_prompt_templates_response() -> BenchmarkPromptTemplatesResponse:
     return BenchmarkPromptTemplatesResponse(
         domains={
             domain: [
-                BenchmarkPromptTemplate(id=item["id"], title=item["title"], prompt=item["prompt"])
+                BenchmarkPromptTemplate(id=item["id"], title=item["title"], question=item["question"])
                 for item in templates
             ]
             for domain, templates in _BENCHMARK_PROMPT_TEMPLATES.items()
@@ -508,10 +476,10 @@ def _domain_prompt_templates_response() -> BenchmarkPromptTemplatesResponse:
 def _resolve_domain_prompt(
     domain: BenchmarkDomainName,
     template_id: str | None,
-    custom_prompt: str | None,
+    question: str | None,
 ) -> str | None:
-    if custom_prompt is not None and custom_prompt.strip():
-        return custom_prompt.strip()
+    if question is not None and question.strip():
+        return question.strip()
 
     if not template_id:
         return None
@@ -519,7 +487,7 @@ def _resolve_domain_prompt(
     templates = _BENCHMARK_PROMPT_TEMPLATES.get(domain, [])
     for template in templates:
         if template["id"] == template_id:
-            return template["prompt"]
+            return template["question"]
     return None
 
 
@@ -529,8 +497,8 @@ def _resolved_domain_prompts(request: BenchmarkRunRequest) -> dict[str, dict[str
         config = request.domain_prompts.get(domain)
         if config is None:
             continue
-        prompt = _resolve_domain_prompt(domain, config.template_id, config.prompt)
-        if not prompt:
+        question = _resolve_domain_prompt(domain, config.template_id, config.question)
+        if not question:
             continue
         template_title = None
         if config.template_id:
@@ -538,11 +506,14 @@ def _resolved_domain_prompts(request: BenchmarkRunRequest) -> dict[str, dict[str
                 if template["id"] == config.template_id:
                     template_title = template["title"]
                     break
+        source = config.source
+        if source not in {"template", "custom"}:
+            source = "custom" if config.template_id == "custom" else "template"
         resolved[domain] = {
             "template_id": config.template_id or "custom",
-            "template_title": template_title or "Custom Prompt",
-            "source": "custom" if config.prompt and config.prompt.strip() else "template",
-            "prompt": prompt,
+            "template_title": template_title or "Custom Question",
+            "source": source,
+            "question": question,
         }
     return resolved
 
@@ -562,14 +533,14 @@ def _apply_domain_prompts(
             transformed.append(task)
             continue
 
-        original_task = str(task.get("task") or "").strip()
-        task_prefix = prompt_config["prompt"].strip()
-        prefixed = dict(task)
-        prefixed["task"] = (
-            f"{task_prefix}\n\nTask:\n{original_task}" if original_task else task_prefix
-        )
-        prefixed["prompt_template_id"] = prompt_config.get("template_id")
-        transformed.append(prefixed)
+        selected_question = str(prompt_config.get("question") or "").strip()
+        enriched = dict(task)
+        if selected_question:
+            enriched["question"] = selected_question
+        enriched["prompt_template_id"] = prompt_config.get("template_id")
+        enriched["prompt_template_title"] = prompt_config.get("template_title")
+        enriched["prompt_source"] = prompt_config.get("source")
+        transformed.append(enriched)
     return transformed
 
 
@@ -669,11 +640,11 @@ def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     benchmark_config = _as_dict(payload.get("benchmark_config"))
-    agent_count = _safe_int(benchmark_config.get("agent_count"), default=0)
-    if agent_count <= 0:
+    agent_count = _safe_positive_int(benchmark_config.get("agent_count"))
+    if agent_count is None:
         for run in runs:
-            candidate = _safe_int(run.get("agent_count"), default=0)
-            if candidate > 0:
+            candidate = _safe_positive_int(run.get("agent_count"))
+            if candidate is not None:
                 agent_count = candidate
                 break
 
@@ -688,7 +659,7 @@ def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
         "total_latency_ms": max(total_latency_ms, 0.0),
         "latest_mechanism": latest_mechanism,
         "models": sorted(model_counts.keys()),
-        "agent_count": agent_count if agent_count > 0 else None,
+        "agent_count": agent_count,
         "model_token_usage": model_usage,
         "model_telemetry": {
             model: ModelTelemetryResponse.model_validate(telemetry)
@@ -784,6 +755,11 @@ def _build_benchmark_detail_response(
 ) -> BenchmarkDetailResponse:
     artifact_payload_raw = _artifact_payload(artifact) if isinstance(artifact, dict) else {}
     payload = _with_complete_summary(artifact_payload_raw) if artifact_payload_raw else {}
+    record_request = (
+        run_record.get("request")
+        if isinstance(run_record, dict) and isinstance(run_record.get("request"), dict)
+        else None
+    )
     if payload:
         telemetry = _artifact_telemetry(payload)
     else:
@@ -807,11 +783,6 @@ def _build_benchmark_detail_response(
                 if isinstance(run_record, dict) and run_record.get("latest_mechanism")
                 else None
             ),
-            "agent_count": (
-                _safe_int(run_record.get("agent_count"), default=0)
-                if isinstance(run_record, dict)
-                else None
-            ),
             "total_tokens": (
                 _safe_int(run_record.get("total_tokens")) if isinstance(run_record, dict) else 0
             ),
@@ -830,12 +801,15 @@ def _build_benchmark_detail_response(
             ),
             "cost": _cost_from_object(run_record) if isinstance(run_record, dict) else None,
         }
+        agent_count = None
+        if isinstance(run_record, dict):
+            agent_count = _safe_positive_int(record_request.get("agent_count")) or _safe_positive_int(
+                run_record.get("agent_count")
+            )
+        telemetry["agent_count"] = agent_count
 
-    record_request = (
-        run_record.get("request")
-        if isinstance(run_record, dict) and isinstance(run_record.get("request"), dict)
-        else None
-    )
+    if telemetry.get("agent_count") is None and isinstance(record_request, dict):
+        telemetry["agent_count"] = _safe_positive_int(record_request.get("agent_count"))
     artifact_created_at = artifact.get("created_at") if isinstance(artifact, dict) else None
     payload_generated_at = payload.get("generated_at") if isinstance(payload, dict) else None
     created_at = _parse_timestamp(
@@ -1222,6 +1196,10 @@ def _to_run_status(
         ),
     )
 
+    agent_count = _safe_positive_int(record.get("agent_count"))
+    if agent_count is None and isinstance(request_payload, dict):
+        agent_count = _safe_positive_int(request_payload.get("agent_count"))
+
     return BenchmarkRunStatusResponse(
         run_id=run_id,
         status=_run_status(str(record.get("status") or "failed")),
@@ -1236,7 +1214,7 @@ def _to_run_status(
         latest_mechanism=(
             str(record.get("latest_mechanism")).strip() if record.get("latest_mechanism") else None
         ),
-        agent_count=(_safe_int(record.get("agent_count"), default=0) or None),
+        agent_count=agent_count,
         total_tokens=(_safe_int(record.get("total_tokens"), default=0) or None),
         thinking_tokens=(_safe_int(record.get("thinking_tokens"), default=0) or None),
         total_latency_ms=(_safe_float(record.get("total_latency_ms")) or None),
@@ -1769,9 +1747,9 @@ async def get_benchmark_catalog(
 async def get_benchmark_prompt_templates(
     user: CurrentUser,
 ) -> BenchmarkPromptTemplatesResponse:
-    """Return benchmark prompt templates grouped by domain for the run wizard."""
+    """Return benchmark question templates grouped by domain for the run wizard."""
 
-    # Human sessions unlock user-scoped benchmark actions, but prompt template browsing
+    # Human sessions unlock user-scoped benchmark actions, but question template browsing
     # can still be available to authenticated API key clients.
     if user.auth_method == "jwt":
         require_human_user(user)
@@ -1878,6 +1856,7 @@ async def trigger_benchmark_run(
     run_id = _build_run_id(user.workspace_id)
     created_at = datetime.now(UTC)
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
+    resolved_domain_prompts = _resolved_domain_prompts(request)
 
     await store.save_user_test_result(
         user.workspace_id,
@@ -1892,6 +1871,7 @@ async def trigger_benchmark_run(
             "request": {
                 **request.model_dump(mode="json"),
                 "reasoning_presets": reasoning_presets.model_dump(mode="json"),
+                "resolved_domain_prompts": resolved_domain_prompts,
             },
             "label": "User-triggered benchmark",
         },
