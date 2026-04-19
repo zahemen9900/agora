@@ -123,6 +123,60 @@ class ThompsonSamplingSelector:
                     }
         return stats
 
+    def to_state(self) -> dict[str, object]:
+        """Serialize arm state for durable stores."""
+
+        with self._lock:
+            return {
+                "mechanisms": [m.value for m in self.mechanisms],
+                "arms": [
+                    {
+                        "mechanism": arm.mechanism.value,
+                        "category": arm.category,
+                        "alpha": arm.alpha,
+                        "beta_param": arm.beta_param,
+                        "total_pulls": arm.total_pulls,
+                        "last_reward": arm.last_reward,
+                    }
+                    for arm in self.arms.values()
+                ],
+            }
+
+    def load_state_payload(self, payload: dict[str, object]) -> None:
+        """Load arm state from an already decoded state payload."""
+
+        if "arms" not in payload:
+            raise ValueError("Invalid bandit state payload")
+
+        loaded_arms: dict[tuple[MechanismType, str], BanditArm] = {}
+        arms_payload = payload.get("arms", [])
+
+        if not isinstance(arms_payload, list):
+            raise ValueError("Invalid arms list in bandit state payload")
+
+        for arm_data in arms_payload:
+            if not isinstance(arm_data, dict):
+                raise ValueError("Invalid arm entry in bandit state payload")
+            mechanism = MechanismType(arm_data["mechanism"])
+            category = str(arm_data["category"])
+            loaded_arms[(mechanism, category)] = BanditArm(
+                mechanism=mechanism,
+                category=category,
+                alpha=float(arm_data["alpha"]),
+                beta_param=float(arm_data["beta_param"]),
+                total_pulls=int(arm_data["total_pulls"]),
+                last_reward=(
+                    None if arm_data.get("last_reward") is None else float(arm_data["last_reward"])
+                ),
+            )
+
+        with self._lock:
+            for mechanism in self.mechanisms:
+                for category in _KNOWN_CATEGORIES:
+                    key = (mechanism, category)
+                    if key in loaded_arms:
+                        self.arms[key] = loaded_arms[key]
+
     def save_state(self, path: str) -> None:
         """Persist arm state as JSON.
 
@@ -134,24 +188,9 @@ class ThompsonSamplingSelector:
         """
 
         state_path = Path(path)
-        serializable = {
-            "mechanisms": [m.value for m in self.mechanisms],
-            "arms": [
-                {
-                    "mechanism": arm.mechanism.value,
-                    "category": arm.category,
-                    "alpha": arm.alpha,
-                    "beta_param": arm.beta_param,
-                    "total_pulls": arm.total_pulls,
-                    "last_reward": arm.last_reward,
-                }
-                for arm in self.arms.values()
-            ],
-        }
-
         state_path.parent.mkdir(parents=True, exist_ok=True)
         with state_path.open("w", encoding="utf-8") as handle:
-            json.dump(serializable, handle, indent=2)
+            json.dump(self.to_state(), handle, indent=2)
 
     def load_state(self, path: str) -> None:
         """Load arm state from JSON.
@@ -170,34 +209,6 @@ class ThompsonSamplingSelector:
 
         if not isinstance(payload, dict) or "arms" not in payload:
             raise ValueError("Invalid bandit state payload")
-
-        loaded_arms: dict[tuple[MechanismType, str], BanditArm] = {}
-        arms_payload = payload.get("arms", [])
-
-        if not isinstance(arms_payload, list):
-            raise ValueError("Invalid arms list in bandit state payload")
-
-        for arm_data in arms_payload:
-            if not isinstance(arm_data, dict):
-                raise ValueError("Invalid arm entry in bandit state payload")
-            mechanism = MechanismType(arm_data["mechanism"])
-            category = arm_data["category"]
-            loaded_arms[(mechanism, category)] = BanditArm(
-                mechanism=mechanism,
-                category=category,
-                alpha=float(arm_data["alpha"]),
-                beta_param=float(arm_data["beta_param"]),
-                total_pulls=int(arm_data["total_pulls"]),
-                last_reward=(
-                    None if arm_data.get("last_reward") is None else float(arm_data["last_reward"])
-                ),
-            )
-
-        with self._lock:
-            for mechanism in self.mechanisms:
-                for category in _KNOWN_CATEGORIES:
-                    key = (mechanism, category)
-                    if key in loaded_arms:
-                        self.arms[key] = loaded_arms[key]
+        self.load_state_payload(payload)
 
         logger.info("bandit_state_loaded", path=path)

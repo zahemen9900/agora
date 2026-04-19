@@ -1,0 +1,52 @@
+import { ProviderGlyph } from "./ProviderGlyph";
+import {
+  REASONING_CONTROL_DEFINITIONS,
+  type ReasoningPresetState,
+} from "../lib/deliberationConfig";
+import { providerTone } from "../lib/modelProviders";
+
+interface ReasoningPresetControlsProps {
+  value: ReasoningPresetState;
+  onChange: (next: ReasoningPresetState) => void;
+}
+
+export function ReasoningPresetControls({
+  value,
+  onChange,
+}: ReasoningPresetControlsProps) {
+  return (
+    <div>
+      <div className="mono text-text-muted text-xs mb-3">REASONING PRESETS</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        {REASONING_CONTROL_DEFINITIONS.map((definition) => (
+          <label
+            key={definition.id}
+            className={`block rounded-md border px-3 py-3 ${providerTone(definition.provider)}`}
+          >
+            <div className="flex items-center gap-2 mb-2">
+              <ProviderGlyph provider={definition.provider} size={14} />
+              <span className="mono text-xs">{definition.label}</span>
+            </div>
+            <div className="mono text-[10px] text-text-muted mb-2">{definition.help}</div>
+            <select
+              value={value[definition.id]}
+              onChange={(event) =>
+                onChange({
+                  ...value,
+                  [definition.id]: event.target.value,
+                } as ReasoningPresetState)
+              }
+              className="w-full rounded-md border border-border-subtle bg-void px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent"
+            >
+              {definition.options.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}

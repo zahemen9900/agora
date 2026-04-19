@@ -1,0 +1,44 @@
+[
+  {
+    "category": "math",
+    "task": "What is 17 * 19?",
+    "ground_truth": "323",
+    "source": "curated_arithmetic_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "math",
+    "task": "Solve for x: 3x + 7 = 22.",
+    "ground_truth": "5",
+    "source": "curated_algebra_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "math",
+    "task": "A rectangle has length 12 and width 5. What is its area?",
+    "ground_truth": "60",
+    "source": "curated_geometry_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "math",
+    "task": "Compute the mean of 4, 8, 10, and 18.",
+    "ground_truth": "10",
+    "source": "curated_statistics_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "math",
+    "task": "If a price rises from 80 to 100, what is the percentage increase?",
+    "ground_truth": "25%",
+    "source": "curated_percentages_v1",
+    "stakes": 0.0
+  },
+  {
+    "category": "math",
+    "task": "What is 2^8?",
+    "ground_truth": "256",
+    "source": "curated_exponents_v1",
+    "stakes": 0.0
+  }
+]

@@ -202,12 +202,39 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+
+# Infra scaffold artifacts
+contract/node_modules/
+contract/target/
+contract/.anchor/
+api/data/
+data/
+.env.*
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
 __marimo__/
 .qodo
-
+support/
+# Keep .claude/.codex content trackable by default.
+# Ignore only reusable skill docs and sensitive key material in these folders.
+.claude/**/SKILL.md
+.claude/**/SKILL-*.md
+.claude/**/*.pem
+.claude/**/*.key
+.claude/settings.json
+.claude/AGENTS.md
+.codex/AGENTS.md
+.codex/**/SKILL.md
+.codex/**/SKILL-*.md
+.codex/**/*.pem
+.codex/**/*.key
+.credentials
 agora-web/read_pdf.js
 docs/*.pdf
 node_modules
+.env.local
+
+.github/agents
+.vercel

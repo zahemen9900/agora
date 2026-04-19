@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 
 import pytest
 
@@ -10,7 +11,16 @@ import agora.config as config_module
 from agora.config import get_config
 
 _CONFIG_ENV_KEYS = (
+    "AGORA_ENV_FILE",
     "ANTHROPIC_API_KEY",
+    "AGORA_GEMINI_API_KEY",
+    "GEMINI_API_KEY",
+    "AGORA_GOOGLE_API_KEY",
+    "GOOGLE_API_KEY",
+    "AGORA_GEMINI_SECRET_NAME",
+    "AGORA_GEMINI_SECRET_PROJECT",
+    "AGORA_GEMINI_SECRET_VERSION",
+    "AGORA_GEMINI_FLASH_THINKING_LEVEL",
     "AGORA_CLAUDE_MODEL",
     "AGORA_ANTHROPIC_THROTTLE_ENABLED",
     "AGORA_ANTHROPIC_REQUESTS_PER_MINUTE",
@@ -18,6 +28,16 @@ _CONFIG_ENV_KEYS = (
     "AGORA_ANTHROPIC_SECRET_NAME",
     "AGORA_ANTHROPIC_SECRET_PROJECT",
     "AGORA_ANTHROPIC_SECRET_VERSION",
+    "AGORA_OPENROUTER_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AGORA_OPENROUTER_SECRET_NAME",
+    "AGORA_OPENROUTER_SECRET_PROJECT",
+    "AGORA_OPENROUTER_SECRET_VERSION",
+    "AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED",
+    "AGORA_KIMI_MODEL",
+    "AGORA_KIMI_REASONING_EFFORT",
+    "AGORA_KIMI_REASONING_EXCLUDE",
+    "AGORA_KIMI_MAX_TOKENS",
     "GOOGLE_CLOUD_PROJECT",
 )
 
@@ -57,6 +77,24 @@ def test_get_config_loads_dotenv_from_current_working_directory(
     assert config.claude_model == "claude-haiku-test"
 
 
+def test_get_config_loads_dotenv_from_explicit_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Config should load dotenv from AGORA_ENV_FILE when provided."""
+
+    shared_env = tmp_path / "shared.env"
+    shared_env.write_text("OPENROUTER_API_KEY=shared-openrouter-key\n", encoding="utf-8")
+
+    monkeypatch.setenv("AGORA_ENV_FILE", str(shared_env))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "shared-openrouter-key"
+
+
 def test_exported_environment_wins_over_dotenv(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -85,6 +123,100 @@ def test_anthropic_throttle_settings_from_env(monkeypatch: pytest.MonkeyPatch) -
     assert config.anthropic_throttle_enabled is False
     assert config.anthropic_requests_per_minute == 7
     assert config.anthropic_throttle_window_seconds == 30.0
+
+
+def test_secret_manager_loader_prefers_native_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Native Secret Manager client should be preferred over gcloud fallback."""
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value_via_client",
+        lambda project_id, secret_name, version: "native-key",
+    )
+
+    def _unexpected_gcloud(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("gcloud fallback should not run when native client succeeds")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value_via_gcloud", _unexpected_gcloud)
+
+    value = config_module._load_secret_manager_value(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value == "native-key"
+
+
+def test_secret_manager_loader_falls_back_to_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gcloud fallback should be used when native client loading fails."""
+
+    def _client_failure(*args, **kwargs):
+        raise RuntimeError("native client unavailable")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value_via_client", _client_failure)
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value_via_gcloud",
+        lambda project_id, secret_name, version: "fallback-key",
+    )
+
+    value = config_module._load_secret_manager_value(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value == "fallback-key"
+
+
+def test_secret_manager_gcloud_loader_sets_non_interactive_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gcloud fallback should disable prompts/pager and return trimmed secret values."""
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, *, check, capture_output, text, env, timeout):
+        captured["command"] = command
+        captured["env"] = env
+        captured["timeout"] = timeout
+        assert check is False
+        assert capture_output is True
+        assert text is True
+        return subprocess.CompletedProcess(command, 0, stdout=" secret-value\n", stderr="")
+
+    monkeypatch.setattr(config_module.shutil, "which", lambda _binary: "/usr/bin/gcloud")
+    monkeypatch.setattr(config_module.subprocess, "run", _fake_run)
+
+    value = config_module._load_secret_manager_value_via_gcloud(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value == "secret-value"
+    assert isinstance(captured["env"], dict)
+    assert captured["env"]["CLOUDSDK_PAGER"] == ""
+    assert captured["env"]["CLOUDSDK_CORE_DISABLE_PROMPTS"] == "1"
+    assert captured["command"][0] == "gcloud"
+    assert captured["timeout"] == 20
+
+
+def test_secret_manager_gcloud_loader_returns_none_without_gcloud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gcloud fallback should fail closed when gcloud is unavailable."""
+
+    monkeypatch.setattr(config_module.shutil, "which", lambda _binary: None)
+
+    value = config_module._load_secret_manager_value_via_gcloud(
+        project_id="demo-project",
+        secret_name="agora-gemini-api-key",
+        version="latest",
+    )
+
+    assert value is None
 
 
 def test_anthropic_api_key_falls_back_to_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,3 +254,205 @@ def test_explicit_api_key_wins_over_secret_manager(monkeypatch: pytest.MonkeyPat
     config = get_config()
 
     assert config.anthropic_api_key == "explicit-key"
+
+
+def test_gemini_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini key should resolve from AGORA_GEMINI_API_KEY first, then fallbacks."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "primary-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "secondary-key")
+    monkeypatch.setenv("AGORA_GOOGLE_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "tertiary-key")
+
+    config = get_config()
+    assert config.gemini_api_key == "primary-key"
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "")
+    config = get_config()
+    assert config.gemini_api_key == "secondary-key"
+
+    get_config.cache_clear()
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    config = get_config()
+    assert config.gemini_api_key == "tertiary-key"
+
+
+def test_gemini_api_key_falls_back_to_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini key should resolve from Secret Manager when env key is absent."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "")
+    monkeypatch.setenv("GEMINI_API_KEY", "")
+    monkeypatch.setenv("AGORA_GOOGLE_API_KEY", "")
+    monkeypatch.setenv("GOOGLE_API_KEY", "")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "gemini-sm-key",
+    )
+
+    config = get_config()
+
+    assert config.gemini_api_key == "gemini-sm-key"
+
+
+def test_explicit_gemini_key_wins_over_secret_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Explicit Gemini key should bypass Secret Manager lookup."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "explicit-gemini-key")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")
+    monkeypatch.setenv("AGORA_GEMINI_SECRET_PROJECT", "demo-project")
+
+    def _unexpected(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("Secret Manager should not be called when Gemini key is explicit")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value", _unexpected)
+
+    config = get_config()
+
+    assert config.gemini_api_key == "explicit-gemini-key"
+
+
+def test_gemini_flash_thinking_level_defaults_and_can_be_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flash callers should default to medium thinking, with an explicit opt-out."""
+
+    monkeypatch.delenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", raising=False)
+    get_config.cache_clear()
+    config = get_config()
+    assert config.gemini_flash_thinking_level == "medium"
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_GEMINI_FLASH_THINKING_LEVEL", "")
+    config = get_config()
+    assert config.gemini_flash_thinking_level is None
+
+
+def test_openrouter_api_key_resolution_priority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenRouter key should resolve from AGORA_OPENROUTER_API_KEY first."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "primary-or-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secondary-or-key")
+
+    config = get_config()
+    assert config.openrouter_api_key == "primary-or-key"
+
+    get_config.cache_clear()
+    monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
+    config = get_config()
+    assert config.openrouter_api_key == "secondary-or-key"
+
+
+def test_openrouter_api_key_deduplicates_repeated_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repeated identical OpenRouter token should collapse to one valid key."""
+
+    valid = "sk-or-v1-abc123"
+    monkeypatch.setenv("OPENROUTER_API_KEY", valid + valid)
+
+    config = get_config()
+
+    assert config.openrouter_api_key == valid
+
+
+def test_kimi_reasoning_defaults_and_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kimi reasoning controls should default sanely and remain overrideable."""
+
+    monkeypatch.delenv("AGORA_KIMI_REASONING_EFFORT", raising=False)
+    monkeypatch.delenv("AGORA_KIMI_REASONING_EXCLUDE", raising=False)
+    monkeypatch.delenv("AGORA_KIMI_MAX_TOKENS", raising=False)
+
+    config = get_config()
+    assert config.kimi_reasoning_effort == "low"
+    assert config.kimi_reasoning_exclude is True
+    assert config.kimi_max_tokens == 512
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_KIMI_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("AGORA_KIMI_REASONING_EXCLUDE", "false")
+    monkeypatch.setenv("AGORA_KIMI_MAX_TOKENS", "256")
+
+    config = get_config()
+    assert config.kimi_reasoning_effort == "medium"
+    assert config.kimi_reasoning_exclude is False
+    assert config.kimi_max_tokens == 256
+
+
+def test_openrouter_api_key_falls_back_to_secret_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter key should resolve from Secret Manager when env key is absent."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "openrouter-sm-key",
+    )
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "openrouter-sm-key"
+
+
+def test_malformed_openrouter_env_key_falls_back_to_secret_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Duplicated-prefix OpenRouter env values should defer to Secret Manager."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-sk-or-v1-corrupted")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")
+
+    monkeypatch.setattr(
+        config_module,
+        "_load_secret_manager_value",
+        lambda project_id, secret_name, version: "openrouter-sm-key",
+    )
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "openrouter-sm-key"
+
+
+def test_explicit_openrouter_key_wins_over_secret_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit OpenRouter key should bypass Secret Manager lookup."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "explicit-openrouter-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key")
+    monkeypatch.setenv("AGORA_OPENROUTER_SECRET_PROJECT", "demo-project")
+
+    def _unexpected(*args, **kwargs):  # pragma: no cover
+        raise AssertionError("Secret Manager should not be called when OpenRouter key is explicit")
+
+    monkeypatch.setattr(config_module, "_load_secret_manager_value", _unexpected)
+
+    config = get_config()
+
+    assert config.openrouter_api_key == "explicit-openrouter-key"
+
+
+def test_openrouter_legacy_x_title_toggle_parses_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Header compatibility toggle should parse standard boolean env values."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "false")
+    config = get_config()
+    assert config.openrouter_legacy_x_title_enabled is False
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "true")
+    config = get_config()
+    assert config.openrouter_legacy_x_title_enabled is True

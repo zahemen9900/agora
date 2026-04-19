@@ -1,57 +1,859 @@
-export async function submitTask(
-  _taskText: string,
-  _agentCount: number,
-  _stakes: number
-) {
-  // mock api call
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  return {
-    taskId: Math.random().toString(36).substring(7),
-    mechanism: Math.random() > 0.5 ? "DEBATE" : "VOTE",
-    confidence: Math.random() * 0.4 + 0.5, // 0.5 to 0.9
-    reasoning: "Thompson sampling indicated optimal mechanism matching for task density."
-  };
+const API_URL = import.meta.env.VITE_AGORA_API_URL ?? "/api";
+
+import type {
+  ApiKeyCreateResponse,
+  ApiKeyMetadataResponse,
+  AuthMeResponse,
+  DeliberationResultResponse,
+  TaskCreateResponse,
+  TaskEvent,
+  TaskStatusResponse,
+} from "./api.generated";
+import type { ReasoningPresetState } from "./deliberationConfig";
+
+export type {
+  ApiKeyCreateResponse,
+  ApiKeyMetadataResponse,
+  ApiKeyScopeName,
+  AuthMethodName,
+  AuthMeResponse,
+  FeatureFlagsResponse,
+  MechanismName,
+  PaymentStatusName,
+  PrincipalResponse,
+  TaskStatusName,
+  TaskCreateResponse,
+  TaskEvent,
+  TaskStatusResponse,
+  WorkspaceResponse,
+  DeliberationResultResponse,
+} from "./api.generated";
+
+interface StreamTicketResponse {
+  ticket: string;
+  expires_at: string;
 }
 
-export async function streamDeliberation(
-  _taskId: string,
-  onEvent: (event: any) => void
-) {
-  let isClosed = false;
+export interface BenchmarkSummary {
+  per_mode: Record<string, Record<string, number>>;
+  per_category: Record<string, Record<string, Record<string, number>>>;
+}
 
-  const simulateStream = async () => {
-    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+export type BenchmarkDomainName = "math" | "factual" | "reasoning" | "code" | "creative" | "demo";
+export type BenchmarkPromptSourceName = "template" | "custom";
 
-    await sleep(500);
-    if(isClosed) return;
-    onEvent({ type: "agent_output", faction: "proponent", agentId: "AgentAlpha", text: "I believe a monolith is vastly superior here." });
+export interface BenchmarkDomainPromptPayload {
+  template_id?: string | null;
+  question?: string | null;
+  prompt?: string | null;
+  source?: BenchmarkPromptSourceName | null;
+}
 
-    await sleep(1500);
-    if(isClosed) return;
-    onEvent({ type: "convergence", entropy: 0.8, infoGain: 0.1, lockedClaims: [] });
+export interface BenchmarkCostEstimatePayload {
+  estimated_cost_usd?: number | null;
+  model_estimated_costs_usd?: Record<string, number>;
+  pricing_version?: string | null;
+  estimated_at?: string | null;
+  estimation_mode?: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
+  pricing_sources?: Record<string, string>;
+}
 
-    await sleep(1000);
-    if(isClosed) return;
-    onEvent({ type: "agent_output", faction: "opponent", agentId: "AgentBeta", text: "Microservices allow independent scaling." });
+export interface ModelTelemetryPayload {
+  total_tokens?: number;
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  thinking_tokens?: number | null;
+  latency_ms?: number;
+  estimated_cost_usd?: number | null;
+  estimation_mode?: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
+}
 
-    await sleep(1500);
-    if(isClosed) return;
-    onEvent({ type: "agent_output", faction: "devil_advocate", agentId: "AgentGamma", text: "Both of you are ignoring the deployment overhead." });
+export interface BenchmarkStagePayload {
+  runs?: Array<Record<string, unknown>>;
+  summary?: BenchmarkSummary;
+}
 
-    await sleep(1000);
-    if(isClosed) return;
-    onEvent({ type: "convergence", entropy: 0.4, infoGain: 0.5, lockedClaims: [{ text: "Deployment overhead is non-zero", method: "Consensus" }] });
+export interface BenchmarkDemoReport {
+  artifact?: string;
+  status?: string;
+  final_status?: string;
+  target?: string;
+  query?: string;
+  mechanism?: string;
+  agent_count?: number;
+  stakes?: number;
+  started_at?: string;
+  completed_at?: string;
+  run_summary?: Record<string, unknown>;
+  tx_summary?: Record<string, unknown>;
+  acceptance_checks?: Record<string, unknown>;
+  run_result?: Record<string, unknown>;
+  status_after_run?: Record<string, unknown>;
+  status_after_pay?: Record<string, unknown>;
+}
 
-    await sleep(1500);
-    if(isClosed) return;
-    onEvent({ type: "receipt", status: "quorum_reached", finalAnswer: "Start with a modular monolith.", confidence: 0.92 });
+export interface BenchmarkPayload {
+  runs?: Array<Record<string, unknown>>;
+  summary?: BenchmarkSummary;
+  pre_learning?: BenchmarkStagePayload;
+  post_learning?: BenchmarkStagePayload;
+  learning_updates?: BenchmarkStagePayload;
+  generated_at?: string;
+  demo_report?: BenchmarkDemoReport;
+}
+
+export interface AuthConfigPayload {
+  workos_client_id: string;
+  workos_authkit_domain: string;
+  auth_issuer: string;
+  auth_audience: string;
+  auth_jwks_url: string;
+}
+
+export type BenchmarkRunStatusName = "queued" | "running" | "completed" | "failed";
+
+export interface BenchmarkRunStatusPayload {
+  run_id: string;
+  status: BenchmarkRunStatusName;
+  created_at: string;
+  updated_at: string;
+  error?: string | null;
+  artifact_id?: string | null;
+  request?: Record<string, unknown> | null;
+  reasoning_presets?: Partial<ReasoningPresetState> | null;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens?: number | null;
+  thinking_tokens?: number | null;
+  total_latency_ms?: number | null;
+  model_telemetry?: Record<string, ModelTelemetryPayload>;
+  cost?: BenchmarkCostEstimatePayload | null;
+}
+
+export interface BenchmarkCatalogEntry {
+  artifact_id: string;
+  scope: "global" | "user";
+  owner_user_id?: string | null;
+  source: string;
+  created_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  status?: string | null;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens?: number;
+  thinking_tokens?: number;
+  total_latency_ms?: number;
+  models?: string[];
+  model_telemetry?: Record<string, ModelTelemetryPayload>;
+  cost?: BenchmarkCostEstimatePayload | null;
+}
+
+export interface BenchmarkCatalogPayload {
+  global_recent: BenchmarkCatalogEntry[];
+  global_frequency: BenchmarkCatalogEntry[];
+  user_recent: BenchmarkCatalogEntry[];
+  user_frequency: BenchmarkCatalogEntry[];
+  user_tests_recent: BenchmarkRunStatusPayload[];
+  user_tests_frequency: BenchmarkRunStatusPayload[];
+}
+
+export interface BenchmarkRunRequestPayload {
+  training_per_category?: number;
+  holdout_per_category?: number;
+  agent_count?: number;
+  live_agents?: boolean;
+  seed?: number;
+  domain_prompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>>;
+  reasoning_presets?: Partial<ReasoningPresetState>;
+}
+
+export interface BenchmarkRunResponsePayload {
+  run_id: string;
+  status: BenchmarkRunStatusName;
+  created_at: string;
+}
+
+export interface BenchmarkPromptTemplatePayload {
+  id: string;
+  title: string;
+  question: string;
+}
+
+export interface BenchmarkPromptTemplatesPayload {
+  domains: Record<BenchmarkDomainName, BenchmarkPromptTemplatePayload[]>;
+}
+
+export interface BenchmarkDetailPayload {
+  benchmark_id: string;
+  artifact_id?: string | null;
+  run_id?: string | null;
+  scope: "global" | "user";
+  source: string;
+  status?: string | null;
+  owner_user_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  run_count: number;
+  mechanism_counts: Record<string, number>;
+  model_counts: Record<string, number>;
+  frequency_score: number;
+  latest_mechanism?: string | null;
+  agent_count?: number | null;
+  total_tokens: number;
+  thinking_tokens: number;
+  total_latency_ms?: number;
+  models: string[];
+  request?: Record<string, unknown> | null;
+  reasoning_presets?: Partial<ReasoningPresetState> | null;
+  model_telemetry?: Record<string, ModelTelemetryPayload>;
+  events?: TaskEvent[];
+  summary: Record<string, unknown>;
+  benchmark_payload: Record<string, unknown>;
+  cost?: BenchmarkCostEstimatePayload | null;
+}
+
+export interface StreamHandle {
+  close: () => void;
+}
+
+const STREAM_MAX_RECONNECT_ATTEMPTS = 6;
+const STREAM_RECONNECT_BASE_DELAY_MS = 500;
+
+export class ApiRequestError extends Error {
+  status: number;
+  detail: unknown;
+  path: string;
+
+  constructor(status: number, message: string, path: string, detail: unknown = null) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.detail = detail;
+    this.path = path;
+  }
+}
+
+function authHeaders(token: string | null): HeadersInit {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function requestJson<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, init);
+  if (!response.ok) {
+    const raw = await response.text();
+    let detail: unknown = null;
+
+    if (raw) {
+      try {
+        detail = JSON.parse(raw) as unknown;
+      } catch {
+        detail = raw;
+      }
+    }
+
+    const detailMessage = (
+      typeof detail === "object"
+      && detail !== null
+      && "detail" in detail
+      && typeof (detail as { detail?: unknown }).detail === "string"
+    )
+      ? (detail as { detail: string }).detail
+      : null;
+
+    const message = detailMessage ?? (raw || `Request failed: ${response.status}`);
+    throw new ApiRequestError(response.status, message, path, detail);
+  }
+  return (await response.json()) as T;
+}
+
+export async function submitTask(
+  taskText: string,
+  agentCount: number,
+  stakes: number,
+  reasoningPresets: Partial<ReasoningPresetState>,
+  token: string | null,
+): Promise<TaskCreateResponse> {
+  return requestJson<TaskCreateResponse>("/tasks", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({
+      task: taskText,
+      agent_count: agentCount,
+      stakes,
+      reasoning_presets: reasoningPresets,
+    }),
+  });
+}
+
+export async function listTasks(token: string | null): Promise<TaskStatusResponse[]> {
+  return requestJson<TaskStatusResponse[]>("/tasks", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getTask(
+  taskId: string,
+  token: string | null,
+  detailed = false,
+): Promise<TaskStatusResponse> {
+  return requestJson<TaskStatusResponse>(
+    `/tasks/${taskId}?detailed=${detailed ? "true" : "false"}`,
+    {
+      headers: authHeaders(token),
+    },
+  );
+}
+
+export async function runTask(taskId: string, token: string | null): Promise<DeliberationResultResponse> {
+  return requestJson<DeliberationResultResponse>(`/tasks/${taskId}/run`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function startTaskRun(taskId: string, token: string | null): Promise<TaskStatusResponse> {
+  return requestJson<TaskStatusResponse>(`/tasks/${taskId}/run-async`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function releaseTaskPayment(
+  taskId: string,
+  token: string | null,
+): Promise<{ released: boolean; tx_hash: string }> {
+  return requestJson<{ released: boolean; tx_hash: string }>(`/tasks/${taskId}/pay`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarks(
+  token: string | null,
+  includeDemo = true,
+): Promise<BenchmarkPayload> {
+  const path = includeDemo ? "/benchmarks?include_demo=true" : "/benchmarks";
+  return requestJson<BenchmarkPayload>(path, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getAuthMe(token: string): Promise<AuthMeResponse> {
+  return requestJson<AuthMeResponse>("/auth/me", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getAuthConfig(): Promise<AuthConfigPayload> {
+  return requestJson<AuthConfigPayload>("/auth/config");
+}
+
+export async function listApiKeys(token: string): Promise<ApiKeyMetadataResponse[]> {
+  return requestJson<ApiKeyMetadataResponse[]>("/api-keys", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function createApiKey(
+  token: string,
+  name: string,
+): Promise<ApiKeyCreateResponse> {
+  return requestJson<ApiKeyCreateResponse>("/api-keys", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function revokeApiKey(
+  token: string,
+  keyId: string,
+): Promise<ApiKeyMetadataResponse> {
+  return requestJson<ApiKeyMetadataResponse>(`/api-keys/${keyId}/revoke`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkCatalog(
+  token: string | null,
+  limit = 25,
+): Promise<BenchmarkCatalogPayload> {
+  const normalizedLimit = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 25;
+  return requestJson<BenchmarkCatalogPayload>(`/benchmarks/catalog?limit=${normalizedLimit}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkPromptTemplates(
+  token: string | null,
+): Promise<BenchmarkPromptTemplatesPayload> {
+  return requestJson<BenchmarkPromptTemplatesPayload>("/benchmarks/prompt-templates", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getBenchmarkDetail(
+  token: string | null,
+  benchmarkId: string,
+): Promise<BenchmarkDetailPayload> {
+  return requestJson<BenchmarkDetailPayload>(`/benchmarks/${encodeURIComponent(benchmarkId)}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function triggerBenchmarkRun(
+  token: string,
+  payload: BenchmarkRunRequestPayload = {},
+): Promise<BenchmarkRunResponsePayload> {
+  return requestJson<BenchmarkRunResponsePayload>("/benchmarks/run", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getBenchmarkRunStatus(
+  token: string,
+  runId: string,
+): Promise<BenchmarkRunStatusPayload> {
+  return requestJson<BenchmarkRunStatusPayload>(`/benchmarks/runs/${runId}`, {
+    headers: authHeaders(token),
+  });
+}
+
+export async function streamBenchmarkRun(
+  runId: string,
+  token: string | null,
+  onEvent: (event: TaskEvent) => void,
+): Promise<StreamHandle> {
+  const eventTypes = [
+    "queued",
+    "started",
+    "domain_progress",
+    "artifact_created",
+    "failed",
+    "complete",
+  ];
+
+  let source: EventSource | null = null;
+  let closed = false;
+  let sawTerminalEvent = false;
+  let reconnectAttempts = 0;
+  let reconnectTimer: number | null = null;
+  const seenSignatures = new Set<string>();
+
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
   };
 
-  simulateStream();
+  const closeSource = () => {
+    if (source) {
+      source.close();
+      source = null;
+    }
+  };
+
+  const emitStreamError = (message: string) => {
+    onEvent({ event: "error", data: { message }, timestamp: null });
+  };
+
+  const scheduleReconnect = (reason: string) => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+    closeSource();
+    reconnectAttempts += 1;
+    if (reconnectAttempts > STREAM_MAX_RECONNECT_ATTEMPTS) {
+      emitStreamError(`Benchmark stream disconnected: ${reason}`);
+      return;
+    }
+    const delayMs = Math.min(8_000, STREAM_RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1));
+    clearReconnectTimer();
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, delayMs);
+  };
+
+  const handleEventMessage = (eventType: string, event: Event) => {
+    if (!hasStringMessageData(event)) {
+      if (eventType === "error") {
+        return;
+      }
+      emitStreamError(`Benchmark stream payload missing data for ${eventType}`);
+      return;
+    }
+    const rawData = event.data.trim();
+    if (!rawData) {
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      emitStreamError(`Benchmark stream payload parse failure for ${eventType}`);
+      return;
+    }
+    const normalized = normalizeStreamEventPayload(parsed);
+    if (!normalized) {
+      emitStreamError(`Benchmark stream payload shape mismatch for ${eventType}`);
+      return;
+    }
+    const signature = eventSignature(eventType, normalized.payload, normalized.timestamp);
+    if (seenSignatures.has(signature)) {
+      return;
+    }
+    seenSignatures.add(signature);
+    onEvent({
+      event: eventType,
+      data: normalized.payload,
+      timestamp: normalized.timestamp,
+    });
+    if (eventType === "complete" || eventType === "failed") {
+      sawTerminalEvent = true;
+      closeSource();
+      clearReconnectTimer();
+    }
+  };
+
+  const connect = async () => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+    let ticketResponse: StreamTicketResponse;
+    try {
+      ticketResponse = await requestJson<StreamTicketResponse>(
+        `/benchmarks/runs/${runId}/stream-ticket`,
+        {
+          method: "POST",
+          headers: authHeaders(token),
+        },
+      );
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError ? error.message : "Failed to request benchmark stream ticket";
+      scheduleReconnect(message);
+      return;
+    }
+
+    const url = new URL(`${API_URL}/benchmarks/runs/${runId}/stream`, window.location.origin);
+    url.searchParams.set("ticket", ticketResponse.ticket);
+
+    closeSource();
+    source = new EventSource(url.toString());
+    for (const eventType of eventTypes) {
+      source.addEventListener(eventType, (event) => {
+        handleEventMessage(eventType, event);
+      });
+    }
+    source.onerror = () => {
+      if (closed || sawTerminalEvent) {
+        return;
+      }
+      scheduleReconnect("connection error");
+    };
+    reconnectAttempts = 0;
+  };
+
+  await connect();
 
   return {
     close: () => {
-      isClosed = true;
+      closed = true;
+      clearReconnectTimer();
+      closeSource();
+    },
+  };
+}
+
+export async function verifyMerkleRoot(
+  transcriptHashes: string[],
+  expectedRoot: string | null,
+): Promise<boolean> {
+  if (!expectedRoot) {
+    return false;
+  }
+  const recomputed = await buildMerkleRoot(transcriptHashes);
+  return recomputed === expectedRoot;
+}
+
+export async function buildMerkleRoot(transcriptHashes: string[]): Promise<string> {
+  if (transcriptHashes.length === 0) {
+    return sha256Hex("");
+  }
+
+  let layer = [...transcriptHashes];
+  while (layer.length > 1) {
+    const nextLayer: string[] = [];
+    for (let index = 0; index < layer.length; index += 2) {
+      const left = layer[index];
+      const right = layer[index + 1] ?? left;
+      nextLayer.push(await sha256Hex(left + right));
     }
+    layer = nextLayer;
+  }
+  return layer[0];
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const encoded = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", encoded);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeStreamEventPayload(
+  rawPayload: unknown,
+): { payload: Record<string, unknown>; timestamp: string | null } | null {
+  const root = asRecord(rawPayload);
+  if (!root) {
+    return null;
+  }
+
+  const timestamp = typeof root.timestamp === "string" ? root.timestamp : null;
+
+  // New envelope shape from backend stream endpoint.
+  const envelopePayload = asRecord(root.payload);
+  if (envelopePayload) {
+    return { payload: envelopePayload, timestamp };
+  }
+
+  // Legacy envelope shape fallback.
+  const legacyPayload = asRecord(root.data);
+  if (legacyPayload && "timestamp" in root) {
+    return { payload: legacyPayload, timestamp };
+  }
+
+  // Older direct event payloads.
+  return { payload: root, timestamp };
+}
+
+function eventSignature(
+  eventType: string,
+  payload: Record<string, unknown>,
+  timestamp: string | null,
+): string {
+  return `${eventType}:${timestamp ?? ""}:${JSON.stringify(payload)}`;
+}
+
+function hasStringMessageData(event: Event): event is MessageEvent<string> {
+  return typeof (event as MessageEvent<unknown>).data === "string";
+}
+
+export async function streamDeliberation(
+  taskId: string,
+  token: string | null,
+  onEvent: (event: TaskEvent) => void,
+): Promise<StreamHandle> {
+  const eventTypes = [
+    "mechanism_selected",
+    "agent_output",
+    "agent_output_delta",
+    "cross_examination",
+    "cross_examination_delta",
+    "thinking_delta",
+    "usage_delta",
+    "convergence_update",
+    "mechanism_switch",
+    "quorum_reached",
+    "receipt_committed",
+    "payment_released",
+    "error",
+    "complete",
+  ];
+
+  let source: EventSource | null = null;
+  let closed = false;
+  let sawTerminalEvent = false;
+  let reconnectAttempts = 0;
+  let reconnectTimer: number | null = null;
+  const seenSignatures = new Set<string>();
+
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const closeSource = () => {
+    if (source) {
+      source.close();
+      source = null;
+    }
+  };
+
+  const emitStreamError = (message: string) => {
+    onEvent({
+      event: "error",
+      data: { message },
+      timestamp: null,
+    });
+  };
+
+  const scheduleReconnect = (reason: string) => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+
+    closeSource();
+    reconnectAttempts += 1;
+    if (reconnectAttempts > STREAM_MAX_RECONNECT_ATTEMPTS) {
+      emitStreamError(`Stream disconnected: ${reason}`);
+      return;
+    }
+
+    const delayMs = Math.min(
+      8_000,
+      STREAM_RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempts - 1),
+    );
+    clearReconnectTimer();
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, delayMs);
+  };
+
+  const handleEventMessage = (eventType: string, event: Event) => {
+    if (!hasStringMessageData(event)) {
+      // Native EventSource transport errors also use the "error" event type
+      // but do not include payload data. Let `source.onerror` handle reconnects.
+      if (eventType === "error") {
+        return;
+      }
+      emitStreamError(`Stream payload missing data for ${eventType}`);
+      return;
+    }
+
+    const message = event;
+    const rawData = message.data.trim();
+    if (rawData.length === 0) {
+      if (eventType === "error") {
+        return;
+      }
+      emitStreamError(`Stream payload missing data for ${eventType}`);
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawData);
+    } catch {
+      if (eventType === "error") {
+        // Some server/edge layers emit plain-text error payloads.
+        onEvent({
+          event: "error",
+          data: { message: rawData },
+          timestamp: null,
+        });
+        return;
+      }
+      emitStreamError(`Stream payload parse failure for ${eventType}`);
+      return;
+    }
+
+    const normalized = normalizeStreamEventPayload(parsed);
+    if (!normalized) {
+      emitStreamError(`Stream payload shape mismatch for ${eventType}`);
+      return;
+    }
+
+    const signature = eventSignature(eventType, normalized.payload, normalized.timestamp);
+    if (seenSignatures.has(signature)) {
+      return;
+    }
+    seenSignatures.add(signature);
+
+    onEvent({
+      event: eventType,
+      data: normalized.payload,
+      timestamp: normalized.timestamp,
+    });
+
+    if (eventType === "complete") {
+      sawTerminalEvent = true;
+      closeSource();
+      clearReconnectTimer();
+    }
+  };
+
+  const connect = async () => {
+    if (closed || sawTerminalEvent) {
+      return;
+    }
+
+    let ticketResponse: StreamTicketResponse;
+    try {
+      ticketResponse = await requestJson<StreamTicketResponse>(
+        `/tasks/${taskId}/stream-ticket`,
+        {
+          method: "POST",
+          headers: authHeaders(token),
+        },
+      );
+    } catch (error) {
+      const message =
+        error instanceof ApiRequestError ? error.message : "Failed to request stream ticket";
+      scheduleReconnect(message);
+      return;
+    }
+
+    const url = new URL(`${API_URL}/tasks/${taskId}/stream`, window.location.origin);
+    url.searchParams.set("ticket", ticketResponse.ticket);
+
+    closeSource();
+    source = new EventSource(url.toString());
+
+    for (const eventType of eventTypes) {
+      source.addEventListener(eventType, (event) => {
+        handleEventMessage(eventType, event);
+      });
+    }
+
+    source.onerror = () => {
+      if (closed || sawTerminalEvent) {
+        return;
+      }
+      scheduleReconnect("connection error");
+    };
+
+    reconnectAttempts = 0;
+  };
+
+  await connect();
+
+  return {
+    close: () => {
+      closed = true;
+      clearReconnectTimer();
+      closeSource();
+    },
   };
 }

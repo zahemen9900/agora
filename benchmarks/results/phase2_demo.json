@@ -1,0 +1,1056 @@
+{
+  "started_at": "2026-04-18T03:26:10Z",
+  "query": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
+  "stakes": 0.01,
+  "agent_count": 4,
+  "mechanism": "vote",
+  "target": "hosted",
+  "strict_defaults_enforced": true,
+  "status": "passed",
+  "api_url": "https://agora-api-rztfxer7ra-uc.a.run.app",
+  "temp_root": "/tmp/agora-phase2-demo-ynehuerv",
+  "credential_bootstrap": {
+    "gcloud_available": true,
+    "gcloud_auth_status": "ok",
+    "credentials_source": "/home/zahemen/projects/dl-lib/agora/.credentials/even-ally-480821-f3-be2827895913.json",
+    "auth_strategy": "existing-account",
+    "gcloud_active_account": "davidzahemenyeboah@signify-ai.org",
+    "google_cloud_project": "even-ally-480821-f3",
+    "gemini_key_source": "secret-manager:gcloud",
+    "anthropic_key_source": "secret-manager:gcloud",
+    "openrouter_key_source": "env",
+    "helius_rpc_source": "secret-manager:gcloud",
+    "solana_keypair_source": "secret-configured"
+  },
+  "preflight": {
+    "target": "hosted",
+    "api_url": "https://agora-api-rztfxer7ra-uc.a.run.app",
+    "helius_rpc_url": "https://devnet.helius-rpc.com/?api-key=964f8d37-afaa-42f2-93bb-1b850700bc94",
+    "solana_network": "devnet",
+    "expected_models": [],
+    "auth_token_hint": "agora_test_Wj9QiTyy9Hiy",
+    "auth_token_source": "secret-manager:gcloud"
+  },
+  "wheel_path": "/home/zahemen/projects/dl-lib/agora/sdk/dist/agora_sdk-0.1.0a1-py3-none-any.whl",
+  "sdk_venv_python": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/bin/python",
+  "health": {
+    "status": "ok",
+    "service": "agora-api",
+    "version": "0.1.0",
+    "solana_network": "devnet"
+  },
+  "demo_auth_me": {
+    "principal": {
+      "auth_method": "api_key",
+      "workspace_id": "hosted-phase2",
+      "user_id": null,
+      "display_name": "phase2-hosted-ci",
+      "email": "",
+      "scopes": [
+        "tasks:read",
+        "tasks:write",
+        "api_keys:read",
+        "api_keys:write"
+      ],
+      "api_key_id": "aa75832b364e4909a4884d975312cc6a"
+    },
+    "workspace": {
+      "id": "hosted-phase2",
+      "display_name": "Hosted Phase2's Workspace",
+      "kind": "personal",
+      "owner_user_id": "hosted-phase2",
+      "created_at": "2026-04-18T01:22:17.127905Z"
+    },
+    "feature_flags": {
+      "benchmarks_visible": false,
+      "api_keys_visible": false
+    }
+  },
+  "workspace_id": "hosted-phase2",
+  "sdk_flow": {
+    "created": {
+      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "mechanism": "vote",
+      "confidence": 1.0,
+      "reasoning": "Mechanism override applied at task creation: forced vote execution.",
+      "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e",
+      "status": "pending"
+    },
+    "run_result": {
+      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "mechanism": "vote",
+      "final_answer": "AGORA_DEMO_OK",
+      "confidence": 0.6416612684716163,
+      "quorum_reached": true,
+      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
+      "agent_count": 4,
+      "agent_models_used": [
+        "gemini-3.1-pro-preview",
+        "moonshotai/kimi-k2-thinking",
+        "gemini-3-flash-preview",
+        "claude-sonnet-4-6"
+      ],
+      "total_tokens_used": 414,
+      "latency_ms": 7298.086336999972,
+      "round_count": 1,
+      "mechanism_switches": 0,
+      "transcript_hashes": [
+        "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
+        "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
+        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
+      ],
+      "convergence_history": [],
+      "locked_claims": []
+    },
+    "status_after_create": {
+      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_text": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
+      "workspace_id": "hosted-phase2",
+      "created_by": "api_key:aa75832b364e4909a4884d975312cc6a",
+      "mechanism": "vote",
+      "mechanism_override": "vote",
+      "status": "pending",
+      "selector_reasoning": "Mechanism override applied at task creation: forced vote execution.",
+      "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e",
+      "selector_confidence": 1.0,
+      "merkle_root": null,
+      "decision_hash": null,
+      "quorum_reached": null,
+      "agent_count": 4,
+      "round_count": 0,
+      "mechanism_switches": 0,
+      "transcript_hashes": [],
+      "solana_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
+      "explorer_url": "https://explorer.solana.com/tx/3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW?cluster=devnet",
+      "payment_amount": 0.01,
+      "payment_status": "locked",
+      "created_at": "2026-04-18T03:26:51.489258Z",
+      "completed_at": null,
+      "result": null,
+      "events": [
+        {
+          "event": "mechanism_selected",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "mechanism": "vote",
+            "mechanism_override": "vote",
+            "confidence": 1.0,
+            "reasoning": "Mechanism override applied at task creation: forced vote execution.",
+            "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e"
+          },
+          "timestamp": "2026-04-18T03:26:51.644730Z"
+        }
+      ]
+    },
+    "status_after_run": {
+      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_text": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
+      "workspace_id": "hosted-phase2",
+      "created_by": "api_key:aa75832b364e4909a4884d975312cc6a",
+      "mechanism": "vote",
+      "mechanism_override": "vote",
+      "status": "completed",
+      "selector_reasoning": "Mechanism override applied at task creation: forced vote execution.",
+      "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e",
+      "selector_confidence": 1.0,
+      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
+      "quorum_reached": true,
+      "agent_count": 4,
+      "round_count": 1,
+      "mechanism_switches": 0,
+      "transcript_hashes": [
+        "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
+        "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
+        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
+      ],
+      "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+      "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
+      "payment_amount": 0.01,
+      "payment_status": "locked",
+      "created_at": "2026-04-18T03:26:51.489258Z",
+      "completed_at": "2026-04-18T03:27:00.908944Z",
+      "result": {
+        "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+        "mechanism": "vote",
+        "final_answer": "AGORA_DEMO_OK",
+        "confidence": 0.6416612684716163,
+        "quorum_reached": true,
+        "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+        "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
+        "agent_count": 4,
+        "agent_models_used": [
+          "gemini-3.1-pro-preview",
+          "moonshotai/kimi-k2-thinking",
+          "gemini-3-flash-preview",
+          "claude-sonnet-4-6"
+        ],
+        "total_tokens_used": 414,
+        "latency_ms": 7298.086336999972,
+        "round_count": 1,
+        "mechanism_switches": 0,
+        "transcript_hashes": [
+          "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
+          "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
+          "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+          "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
+        ],
+        "convergence_history": [],
+        "locked_claims": []
+      },
+      "events": [
+        {
+          "event": "mechanism_selected",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "mechanism": "vote",
+            "mechanism_override": "vote",
+            "confidence": 1.0,
+            "reasoning": "Mechanism override applied at task creation: forced vote execution.",
+            "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e"
+          },
+          "timestamp": "2026-04-18T03:26:51.644730Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-1",
+            "agent_model": "gemini-3.1-pro-preview",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "AGORA_DEMO_OK",
+            "confidence": 1.0,
+            "predicted_group_answer": "AGORA_DEMO_OK"
+          },
+          "timestamp": "2026-04-18T03:26:59.143652Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-2",
+            "agent_model": "moonshotai/kimi-k2-thinking",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "Option B",
+            "confidence": 0.52,
+            "predicted_group_answer": "Option A"
+          },
+          "timestamp": "2026-04-18T03:26:59.363176Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-3",
+            "agent_model": "gemini-3-flash-preview",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "Option A",
+            "confidence": 0.6,
+            "predicted_group_answer": "Option A"
+          },
+          "timestamp": "2026-04-18T03:26:59.571362Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-4",
+            "agent_model": "claude-sonnet-4-6",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "AGORA_DEMO_OK",
+            "confidence": 1.0,
+            "predicted_group_answer": "AGORA_DEMO_OK"
+          },
+          "timestamp": "2026-04-18T03:26:59.783635Z"
+        },
+        {
+          "event": "quorum_reached",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "final_answer": "AGORA_DEMO_OK",
+            "confidence": 0.6416612684716163,
+            "mechanism": "vote",
+            "quorum_reached": true
+          },
+          "timestamp": "2026-04-18T03:27:01.116570Z"
+        },
+        {
+          "event": "receipt_committed",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+            "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+            "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet"
+          },
+          "timestamp": "2026-04-18T03:27:01.333018Z"
+        },
+        {
+          "event": "complete",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "status": "completed"
+          },
+          "timestamp": "2026-04-18T03:27:01.567924Z"
+        }
+      ]
+    },
+    "status_after_pay": {
+      "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+      "task_text": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
+      "workspace_id": "hosted-phase2",
+      "created_by": "api_key:aa75832b364e4909a4884d975312cc6a",
+      "mechanism": "vote",
+      "mechanism_override": "vote",
+      "status": "paid",
+      "selector_reasoning": "Mechanism override applied at task creation: forced vote execution.",
+      "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e",
+      "selector_confidence": 1.0,
+      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
+      "quorum_reached": true,
+      "agent_count": 4,
+      "round_count": 1,
+      "mechanism_switches": 0,
+      "transcript_hashes": [
+        "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
+        "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
+        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
+      ],
+      "solana_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
+      "explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet",
+      "payment_amount": 0.01,
+      "payment_status": "released",
+      "created_at": "2026-04-18T03:26:51.489258Z",
+      "completed_at": "2026-04-18T03:27:00.908944Z",
+      "result": {
+        "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+        "mechanism": "vote",
+        "final_answer": "AGORA_DEMO_OK",
+        "confidence": 0.6416612684716163,
+        "quorum_reached": true,
+        "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+        "decision_hash": "70a98226464516f2e9b338cff3680f3332f39d11ace4524999df8b6784e77fd5",
+        "agent_count": 4,
+        "agent_models_used": [
+          "gemini-3.1-pro-preview",
+          "moonshotai/kimi-k2-thinking",
+          "gemini-3-flash-preview",
+          "claude-sonnet-4-6"
+        ],
+        "total_tokens_used": 414,
+        "latency_ms": 7298.086336999972,
+        "round_count": 1,
+        "mechanism_switches": 0,
+        "transcript_hashes": [
+          "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
+          "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
+          "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+          "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
+        ],
+        "convergence_history": [],
+        "locked_claims": []
+      },
+      "events": [
+        {
+          "event": "mechanism_selected",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "mechanism": "vote",
+            "mechanism_override": "vote",
+            "confidence": 1.0,
+            "reasoning": "Mechanism override applied at task creation: forced vote execution.",
+            "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e"
+          },
+          "timestamp": "2026-04-18T03:26:51.644730Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-1",
+            "agent_model": "gemini-3.1-pro-preview",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "AGORA_DEMO_OK",
+            "confidence": 1.0,
+            "predicted_group_answer": "AGORA_DEMO_OK"
+          },
+          "timestamp": "2026-04-18T03:26:59.143652Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-2",
+            "agent_model": "moonshotai/kimi-k2-thinking",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "Option B",
+            "confidence": 0.52,
+            "predicted_group_answer": "Option A"
+          },
+          "timestamp": "2026-04-18T03:26:59.363176Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-3",
+            "agent_model": "gemini-3-flash-preview",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "Option A",
+            "confidence": 0.6,
+            "predicted_group_answer": "Option A"
+          },
+          "timestamp": "2026-04-18T03:26:59.571362Z"
+        },
+        {
+          "event": "agent_output",
+          "data": {
+            "agent_id": "agent-4",
+            "agent_model": "claude-sonnet-4-6",
+            "role": "voter",
+            "faction": "vote",
+            "round_number": 1,
+            "content": "AGORA_DEMO_OK",
+            "confidence": 1.0,
+            "predicted_group_answer": "AGORA_DEMO_OK"
+          },
+          "timestamp": "2026-04-18T03:26:59.783635Z"
+        },
+        {
+          "event": "quorum_reached",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "final_answer": "AGORA_DEMO_OK",
+            "confidence": 0.6416612684716163,
+            "mechanism": "vote",
+            "quorum_reached": true
+          },
+          "timestamp": "2026-04-18T03:27:01.116570Z"
+        },
+        {
+          "event": "receipt_committed",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+            "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+            "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet"
+          },
+          "timestamp": "2026-04-18T03:27:01.333018Z"
+        },
+        {
+          "event": "complete",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "status": "completed"
+          },
+          "timestamp": "2026-04-18T03:27:01.567924Z"
+        },
+        {
+          "event": "payment_released",
+          "data": {
+            "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+            "tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
+            "explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet"
+          },
+          "timestamp": "2026-04-18T03:27:06.417033Z"
+        }
+      ]
+    },
+    "deliberation_result": {
+      "task": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
+      "mechanism_used": "vote",
+      "mechanism_selection": {
+        "mechanism": "vote",
+        "confidence": 1.0,
+        "reasoning": "Mechanism override applied at task creation: forced vote execution.",
+        "reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e",
+        "bandit_recommendation": "vote",
+        "bandit_confidence": 1.0,
+        "task_features": {
+          "task_text": "Deterministic integration check: reply with exactly the single token AGORA_DEMO_OK and nothing else.",
+          "complexity_score": 0.026000000000000002,
+          "topic_category": "reasoning",
+          "expected_disagreement": 0.7,
+          "answer_space_size": 10,
+          "time_sensitivity": 0.5,
+          "agent_count": 4,
+          "stakes": 0.01
+        }
+      },
+      "final_answer": "AGORA_DEMO_OK",
+      "confidence": 0.6416612684716163,
+      "quorum_reached": true,
+      "round_count": 1,
+      "agent_count": 4,
+      "mechanism_switches": 0,
+      "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f",
+      "transcript_hashes": [
+        "0508371d00c073ef905b4fa1bd6e4872f3bc4455d3542c455ce1cf2b60a72fa1",
+        "aea02a63eb8ea1ecf8dfb4751cb4f0f821ecf7104eb87c787a8777db379d2fe9",
+        "80325f01caae30792833becccd4d4993d0051d4562502ce95b07082f904b7c89",
+        "561f45a98a8101d543e48c948caaa9235ab44f0773a7b72d6ef70715815e18d6"
+      ],
+      "agent_models_used": [
+        "gemini-3.1-pro-preview",
+        "moonshotai/kimi-k2-thinking",
+        "gemini-3-flash-preview",
+        "claude-sonnet-4-6"
+      ],
+      "convergence_history": [],
+      "locked_claims": [],
+      "total_tokens_used": 414,
+      "total_latency_ms": 7298.086336999972,
+      "timestamp": "2026-04-18T03:27:02.749433Z"
+    },
+    "receipt_verification": {
+      "valid": true,
+      "merkle_match": true,
+      "hosted_metadata_match": true,
+      "on_chain_match": null
+    },
+    "payment": {
+      "released": true,
+      "tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm"
+    },
+    "latest_task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+    "task_id_for_result": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+    "module_paths": {
+      "agora": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/__init__.py",
+      "arbitrator": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/sdk/arbitrator.py"
+    }
+  },
+  "sdk_runner_stdout": "",
+  "sdk_runner_stderr": "",
+  "sdk_module_paths": {
+    "agora": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/__init__.py",
+    "arbitrator": "/tmp/agora-phase2-demo-ynehuerv/sdk-venv/lib/python3.11/site-packages/agora/sdk/arbitrator.py"
+  },
+  "event_timeline": {
+    "event_count": 9,
+    "unique_event_types": 6,
+    "event_counts": {
+      "agent_output": 4,
+      "complete": 1,
+      "mechanism_selected": 1,
+      "payment_released": 1,
+      "quorum_reached": 1,
+      "receipt_committed": 1
+    },
+    "first_timestamp": "2026-04-18T03:26:51.644730Z",
+    "last_timestamp": "2026-04-18T03:27:06.417033Z",
+    "event_span_seconds": 14.772,
+    "mechanism_switch_count": 0,
+    "error_event_count": 0,
+    "first_events": [
+      {
+        "event": "mechanism_selected",
+        "timestamp": "2026-04-18T03:26:51.644730Z",
+        "data_excerpt": {
+          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "mechanism": "vote",
+          "confidence": 1.0,
+          "mechanism_override": "vote",
+          "reasoning": "Mechanism override applied at task creation: forced vote execution.",
+          "selector_reasoning_hash": "40e615a516d32229c314bf4693de7809cb6ead20489ab81dc37dd9e4fd5b6a4e"
+        }
+      },
+      {
+        "event": "agent_output",
+        "timestamp": "2026-04-18T03:26:59.143652Z",
+        "data_excerpt": {
+          "agent_id": "agent-1",
+          "role": "voter",
+          "faction": "vote",
+          "confidence": 1.0,
+          "agent_model": "gemini-3.1-pro-preview",
+          "content": "AGORA_DEMO_OK"
+        }
+      },
+      {
+        "event": "agent_output",
+        "timestamp": "2026-04-18T03:26:59.363176Z",
+        "data_excerpt": {
+          "agent_id": "agent-2",
+          "role": "voter",
+          "faction": "vote",
+          "confidence": 0.52,
+          "agent_model": "moonshotai/kimi-k2-thinking",
+          "content": "Option B"
+        }
+      },
+      {
+        "event": "agent_output",
+        "timestamp": "2026-04-18T03:26:59.571362Z",
+        "data_excerpt": {
+          "agent_id": "agent-3",
+          "role": "voter",
+          "faction": "vote",
+          "confidence": 0.6,
+          "agent_model": "gemini-3-flash-preview",
+          "content": "Option A"
+        }
+      },
+      {
+        "event": "agent_output",
+        "timestamp": "2026-04-18T03:26:59.783635Z",
+        "data_excerpt": {
+          "agent_id": "agent-4",
+          "role": "voter",
+          "faction": "vote",
+          "confidence": 1.0,
+          "agent_model": "claude-sonnet-4-6",
+          "content": "AGORA_DEMO_OK"
+        }
+      }
+    ],
+    "last_events": [
+      {
+        "event": "agent_output",
+        "timestamp": "2026-04-18T03:26:59.783635Z",
+        "data_excerpt": {
+          "agent_id": "agent-4",
+          "role": "voter",
+          "faction": "vote",
+          "confidence": 1.0,
+          "agent_model": "claude-sonnet-4-6",
+          "content": "AGORA_DEMO_OK"
+        }
+      },
+      {
+        "event": "quorum_reached",
+        "timestamp": "2026-04-18T03:27:01.116570Z",
+        "data_excerpt": {
+          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "mechanism": "vote",
+          "confidence": 0.6416612684716163,
+          "quorum_reached": true,
+          "final_answer": "AGORA_DEMO_OK"
+        }
+      },
+      {
+        "event": "receipt_committed",
+        "timestamp": "2026-04-18T03:27:01.333018Z",
+        "data_excerpt": {
+          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+          "explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
+          "merkle_root": "e6830a004a11140486c0aa41070dccebda41dde8c048a1d766f8122dde847c0f"
+        }
+      },
+      {
+        "event": "complete",
+        "timestamp": "2026-04-18T03:27:01.567924Z",
+        "data_excerpt": {
+          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "status": "completed"
+        }
+      },
+      {
+        "event": "payment_released",
+        "timestamp": "2026-04-18T03:27:06.417033Z",
+        "data_excerpt": {
+          "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+          "tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
+          "explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet"
+        }
+      }
+    ]
+  },
+  "acceptance_checks": {
+    "initialize_tx_present": true,
+    "receipt_tx_present": true,
+    "payment_tx_present": true,
+    "final_status_paid": true,
+    "payment_status_released": true,
+    "receipt_merkle_match": true,
+    "receipt_hosted_metadata_match": true
+  },
+  "status_snapshots": {
+    "status_after_create": {
+      "status": "pending",
+      "payment_status": "locked",
+      "mechanism": "vote",
+      "solana_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
+      "event_count": 1
+    },
+    "status_after_run": {
+      "status": "completed",
+      "payment_status": "locked",
+      "mechanism": "vote",
+      "solana_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+      "event_count": 8
+    },
+    "status_after_pay": {
+      "status": "paid",
+      "payment_status": "released",
+      "mechanism": "vote",
+      "solana_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
+      "event_count": 9
+    }
+  },
+  "run_summary": {
+    "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+    "mechanism": "vote",
+    "final_status": "paid",
+    "payment_status": "released",
+    "final_answer": "AGORA_DEMO_OK",
+    "confidence": 0.6416612684716163,
+    "round_count": 1,
+    "mechanism_switches": 0,
+    "total_tokens_used": 414,
+    "latency_ms": 7298.086336999972,
+    "agent_models_used": [
+      "gemini-3.1-pro-preview",
+      "moonshotai/kimi-k2-thinking",
+      "gemini-3-flash-preview",
+      "claude-sonnet-4-6"
+    ],
+    "transcript_hash_count": 4,
+    "event_count": 9,
+    "event_type_count": 6,
+    "event_types": [
+      "agent_output",
+      "complete",
+      "mechanism_selected",
+      "payment_released",
+      "quorum_reached",
+      "receipt_committed"
+    ],
+    "event_span_seconds": 14.772,
+    "latest_events": [
+      "2026-04-18T03:26:59.783635Z::agent_output",
+      "2026-04-18T03:27:01.116570Z::quorum_reached",
+      "2026-04-18T03:27:01.333018Z::receipt_committed",
+      "2026-04-18T03:27:01.567924Z::complete",
+      "2026-04-18T03:27:06.417033Z::payment_released"
+    ],
+    "receipt_verification": {
+      "merkle_match": true,
+      "hosted_metadata_match": true
+    },
+    "acceptance_checks": {
+      "initialize_tx_present": true,
+      "receipt_tx_present": true,
+      "payment_tx_present": true,
+      "final_status_paid": true,
+      "payment_status_released": true,
+      "receipt_merkle_match": true,
+      "receipt_hosted_metadata_match": true
+    }
+  },
+  "task_id": "ed09888abe13a2e7e864f1d9656473887da77fb5633253d24e43a86c48c1ef76",
+  "selected_mechanism": "vote",
+  "final_status": "paid",
+  "payment_status": "released",
+  "receipt_verification": {
+    "valid": true,
+    "merkle_match": true,
+    "hosted_metadata_match": true,
+    "on_chain_match": null
+  },
+  "tx_summary": {
+    "initialize_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
+    "initialize_explorer_url": "https://explorer.solana.com/tx/3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW?cluster=devnet",
+    "receipt_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+    "receipt_explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
+    "payment_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
+    "payment_explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet",
+    "agent_models_used": [
+      "gemini-3.1-pro-preview",
+      "moonshotai/kimi-k2-thinking",
+      "gemini-3-flash-preview",
+      "claude-sonnet-4-6"
+    ]
+  },
+  "agent_models_used": [
+    "gemini-3.1-pro-preview",
+    "moonshotai/kimi-k2-thinking",
+    "gemini-3-flash-preview",
+    "claude-sonnet-4-6"
+  ],
+  "initialize_tx_hash": "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW",
+  "initialize_explorer_url": "https://explorer.solana.com/tx/3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW?cluster=devnet",
+  "receipt_tx_hash": "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M",
+  "receipt_explorer_url": "https://explorer.solana.com/tx/27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M?cluster=devnet",
+  "payment_tx_hash": "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm",
+  "payment_explorer_url": "https://explorer.solana.com/tx/2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm?cluster=devnet",
+  "chain_confirmations": {
+    "initialize": {
+      "blockTime": 1776482808,
+      "meta": {
+        "computeUnitsConsumed": 16564,
+        "costUnits": 18268,
+        "err": null,
+        "fee": 5000,
+        "innerInstructions": [
+          {
+            "index": 0,
+            "instructions": [
+              {
+                "accounts": [
+                  0,
+                  1
+                ],
+                "data": "1111d4cKUwWT791nL5fDAsbFp6JG1DCta4wcYqnqqxnR5xHh2EMtDXYfeoNYvmERTvzo7",
+                "programIdIndex": 3,
+                "stackHeight": 2
+              },
+              {
+                "accounts": [
+                  0,
+                  2
+                ],
+                "data": "11117UcthqATmHRa77Wg3s82tLzRTnK5XYivspeekxr5npcoQSJ2xqTBzPHiAUjmbUbqRo",
+                "programIdIndex": 3,
+                "stackHeight": 2
+              },
+              {
+                "accounts": [
+                  0,
+                  2
+                ],
+                "data": "3Bxs4NN8M2Yn4TLb",
+                "programIdIndex": 3,
+                "stackHeight": 2
+              }
+            ]
+          }
+        ],
+        "loadedAddresses": {
+          "readonly": [],
+          "writable": []
+        },
+        "logMessages": [
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd invoke [1]",
+          "Program log: Instruction: InitializeTask",
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program 11111111111111111111111111111111 invoke [2]",
+          "Program 11111111111111111111111111111111 success",
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd consumed 16564 of 200000 compute units",
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd success"
+        ],
+        "postBalances": [
+          11672260854,
+          2749200,
+          10953520,
+          1,
+          1141440
+        ],
+        "postTokenBalances": [],
+        "preBalances": [
+          11685968574,
+          0,
+          0,
+          1,
+          1141440
+        ],
+        "preTokenBalances": [],
+        "rewards": [],
+        "status": {
+          "Ok": null
+        }
+      },
+      "slot": 456295818,
+      "transaction": {
+        "message": {
+          "accountKeys": [
+            "Bij9gHQ1YuZ169YAhJ7YdSzDJ7PMHXV5qzuYJrDrC3JG",
+            "5D38QLiBScRMUajhwKddj7ANEbLawo6Sxuen1jTh8aHw",
+            "8h88QnYRhEZ9yRHgkz9cT2Mdu8XE5dxCLn8eV5vH7Er7",
+            "11111111111111111111111111111111",
+            "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
+          ],
+          "header": {
+            "numReadonlySignedAccounts": 0,
+            "numReadonlyUnsignedAccounts": 2,
+            "numRequiredSignatures": 1
+          },
+          "instructions": [
+            {
+              "accounts": [
+                1,
+                2,
+                0,
+                3
+              ],
+              "data": "TwqY9awpUaZxCrgcAsMytwNMzzjwpVkggvqBRN7Y7cSnoB6ZD8nwyLna3Y2Uvbh33b2hpsLuQnRnfLMj4zMwqVyrKB4yh8WCriLJpty5PzSuuKGgx3VoFCVFANFPzgrgBZ6Bqt1QgBDqxXA9rVyTqBd5EcZqJ",
+              "programIdIndex": 4,
+              "stackHeight": 1
+            }
+          ],
+          "recentBlockhash": "3VjyKA5zhPQZ2vGbEVMeFDUnxTPAETTMHr6HVE5FiH2p"
+        },
+        "signatures": [
+          "3JX1bsU7nhKcLeGyr7WovGiMtM6XPfVdmzjivrC15rTHSVHxdVHVaMAsFiQtxuEEPjt8RRjtVG1mX967DqMdUoxW"
+        ]
+      },
+      "transactionIndex": 20,
+      "version": "legacy"
+    },
+    "receipt": {
+      "blockTime": 1776482819,
+      "meta": {
+        "computeUnitsConsumed": 5126,
+        "costUnits": 6528,
+        "err": null,
+        "fee": 5000,
+        "innerInstructions": [],
+        "loadedAddresses": {
+          "readonly": [],
+          "writable": []
+        },
+        "logMessages": [
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd invoke [1]",
+          "Program log: Instruction: SubmitReceipt",
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd consumed 5126 of 200000 compute units",
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd success"
+        ],
+        "postBalances": [
+          11672250854,
+          2749200,
+          1141440
+        ],
+        "postTokenBalances": [],
+        "preBalances": [
+          11672255854,
+          2749200,
+          1141440
+        ],
+        "preTokenBalances": [],
+        "rewards": [],
+        "status": {
+          "Ok": null
+        }
+      },
+      "slot": 456295848,
+      "transaction": {
+        "message": {
+          "accountKeys": [
+            "Bij9gHQ1YuZ169YAhJ7YdSzDJ7PMHXV5qzuYJrDrC3JG",
+            "5D38QLiBScRMUajhwKddj7ANEbLawo6Sxuen1jTh8aHw",
+            "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
+          ],
+          "header": {
+            "numReadonlySignedAccounts": 0,
+            "numReadonlyUnsignedAccounts": 1,
+            "numRequiredSignatures": 1
+          },
+          "instructions": [
+            {
+              "accounts": [
+                1,
+                0
+              ],
+              "data": "FioA8L3XJiH7MCDe5r6y7Ua1VXmk9i5DsyjNRDFzR3wUB3SctegBUB4V2d5RwVsu3Jssx4sLZUoGiufdTkaDH88UvNJa39sBwTcqzE4vPPvN5WBWULPmmHtfAAW6opQwFsPoffi9npt2hkxvk",
+              "programIdIndex": 2,
+              "stackHeight": 1
+            }
+          ],
+          "recentBlockhash": "9GGyoqfEReDhkkQX8AkMypyYzjwnZEd3B111mD9CSeBG"
+        },
+        "signatures": [
+          "27YLkeGbXQPS8QoJ1rZmEU4ztPcbNXahcy4SgZKoiU1Mx88Yd3nMHqsYv7yVuWmsjKrA9jxWzpEbW1VBnuSeDS6M"
+        ]
+      },
+      "transactionIndex": 31,
+      "version": "legacy"
+    },
+    "payment": {
+      "blockTime": 1776482824,
+      "meta": {
+        "computeUnitsConsumed": 8183,
+        "costUnits": 9869,
+        "err": null,
+        "fee": 5000,
+        "innerInstructions": [],
+        "loadedAddresses": {
+          "readonly": [],
+          "writable": []
+        },
+        "logMessages": [
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd invoke [1]",
+          "Program log: Instruction: ReleasePayment",
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd consumed 8183 of 200000 compute units",
+          "Program 82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd success"
+        ],
+        "postBalances": [
+          11683199374,
+          2749200,
+          0,
+          1,
+          1141440
+        ],
+        "postTokenBalances": [],
+        "preBalances": [
+          11672250854,
+          2749200,
+          10953520,
+          1,
+          1141440
+        ],
+        "preTokenBalances": [],
+        "rewards": [],
+        "status": {
+          "Ok": null
+        }
+      },
+      "slot": 456295862,
+      "transaction": {
+        "message": {
+          "accountKeys": [
+            "Bij9gHQ1YuZ169YAhJ7YdSzDJ7PMHXV5qzuYJrDrC3JG",
+            "5D38QLiBScRMUajhwKddj7ANEbLawo6Sxuen1jTh8aHw",
+            "8h88QnYRhEZ9yRHgkz9cT2Mdu8XE5dxCLn8eV5vH7Er7",
+            "11111111111111111111111111111111",
+            "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
+          ],
+          "header": {
+            "numReadonlySignedAccounts": 0,
+            "numReadonlyUnsignedAccounts": 2,
+            "numRequiredSignatures": 1
+          },
+          "instructions": [
+            {
+              "accounts": [
+                1,
+                2,
+                0,
+                0,
+                3
+              ],
+              "data": "2CZFrLGjRAmmEokMKXkR3VKHm1iVm13YGVCzh9XPviu1sPTXUSMLskR",
+              "programIdIndex": 4,
+              "stackHeight": 1
+            }
+          ],
+          "recentBlockhash": "HKTw7Q4624S1rugcRhnY8Gg2PJo4d5YpQzuvkPGpyH4W"
+        },
+        "signatures": [
+          "2G5gYArWHJ9TwrmVNxK8jW6nk4z8eee5td1ijuY1SNYEffhgZDJGVLVTa2jfm8ASz27pJheMQLZ9fpZkrUZhwMJm"
+        ]
+      },
+      "transactionIndex": 13,
+      "version": "legacy"
+    }
+  },
+  "revoked_key_reuse_status": null,
+  "revocation_proof": {
+    "status": "skipped",
+    "reason": "Hosted target uses a pre-issued token. API key issuance/revocation proof is validated in local target mode."
+  },
+  "finished_at": "2026-04-18T03:27:09Z"
+}

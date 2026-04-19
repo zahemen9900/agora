@@ -1,33 +1,89 @@
-name: ci
+name: CI
 
 on:
   push:
-    branches: ["main", "master"]
+    branches: [main, develop]
   pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  python-lint-test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Create virtual environment
-        run: uv venv .venv --python 3.11
-
       - name: Install dependencies
-        run: uv pip install -e ".[dev]"
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]"
+          uv pip install --system -r api/requirements.txt
+
+      - name: Check generated frontend API types
+        run: python scripts/generate_frontend_api_types.py --check
 
       - name: Lint
-        run: uv run ruff check .
+        run: ruff check agora/ api/ benchmarks/ tests/ scripts/
 
       - name: Test
-        run: uv run pytest -q
+        run: pytest tests/ -v
+        env:
+          GOOGLE_CLOUD_PROJECT: "test-project"
+
+  anchor-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: coral-xyz/setup-anchor@v0.3
+        with:
+          anchor-version: "1.0.0"
+
+      - name: Build Anchor program
+        run: |
+          cd contract
+          anchor build
+
+      - name: Run Anchor tests (localnet)
+        run: |
+          cd contract
+          anchor test --provider.cluster localnet --validator legacy
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: agora-web/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: agora-web
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: agora-web
+        run: npm run build
+
+  sdk-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build SDK package
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build sdk

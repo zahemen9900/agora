@@ -1,13 +1,13 @@
-import { Info } from 'lucide-react';
+import { Info } from "lucide-react";
 
 interface ConvergenceMeterProps {
   entropy: number; // 0.0 to 1.0
-  infoGain: number; // 0.0 to 1.0
+  novelty: number; // 0.0 to 1.0
   lockedClaims: number;
   prevEntropy?: number;
 }
 
-export function ConvergenceMeter({ entropy, infoGain, lockedClaims, prevEntropy = 1.0 }: ConvergenceMeterProps) {
+export function ConvergenceMeter({ entropy, novelty, lockedClaims, prevEntropy = 1.0 }: ConvergenceMeterProps) {
   // Determine if it's improving (declining entropy)
   const isImproving = entropy <= prevEntropy;
   
@@ -42,8 +42,8 @@ export function ConvergenceMeter({ entropy, infoGain, lockedClaims, prevEntropy 
         
         <div className="flex flex-col justify-center">
           <div className="flex justify-between mb-2 text-sm">
-            <span>Information Gain</span>
-            <span className="mono">{infoGain.toFixed(2)}</span>
+            <span>Novelty / JS Divergence</span>
+            <span className="mono">{novelty.toFixed(2)}</span>
           </div>
           <div className="flex justify-between mt-4 text-sm">
             <span>Locked Claims</span>

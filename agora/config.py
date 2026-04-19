@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from functools import lru_cache
 from pathlib import Path
 
@@ -22,6 +24,16 @@ def _env_bool(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _env_optional_str(name: str, default: str | None = None) -> str | None:
+    """Read a stripped string value, treating empty strings as unset."""
+
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip()
+    return value or None
 
 
 def _parse_env_assignment(line: str) -> tuple[str, str] | None:
@@ -50,7 +62,11 @@ def _load_dotenv_if_present() -> None:
     """Load a local `.env` file without overriding exported environment variables."""
 
     repo_root = Path(__file__).resolve().parents[1]
-    candidate_paths = [Path.cwd() / ".env", repo_root / ".env"]
+    candidate_paths: list[Path] = []
+    explicit_env_file = os.getenv("AGORA_ENV_FILE", "").strip()
+    if explicit_env_file:
+        candidate_paths.append(Path(explicit_env_file).expanduser())
+    candidate_paths.extend([Path.cwd() / ".env", repo_root / ".env"])
     seen: set[Path] = set()
 
     for candidate in candidate_paths:
@@ -78,15 +94,76 @@ def _load_secret_manager_value(
     """Read a secret value from Google Secret Manager when available."""
 
     try:
-        from google.cloud import secretmanager
+        payload = _load_secret_manager_value_via_client(
+            project_id=project_id,
+            secret_name=secret_name,
+            version=version,
+        )
+        if payload:
+            return payload
+    except Exception:
+        pass
 
-        client = secretmanager.SecretManagerServiceClient()
-        secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/{version}"
-        response = client.access_secret_version(request={"name": secret_path})
+    try:
+        return _load_secret_manager_value_via_gcloud(
+            project_id=project_id,
+            secret_name=secret_name,
+            version=version,
+        )
     except Exception:
         return None
 
+
+def _load_secret_manager_value_via_client(
+    project_id: str,
+    secret_name: str,
+    version: str = "latest",
+) -> str | None:
+    """Read a secret value via Google Secret Manager client libraries."""
+
+    from google.cloud import secretmanager
+
+    client = secretmanager.SecretManagerServiceClient()
+    secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/{version}"
+    response = client.access_secret_version(request={"name": secret_path})
     payload = response.payload.data.decode("utf-8").strip()
+    return payload or None
+
+
+def _load_secret_manager_value_via_gcloud(
+    project_id: str,
+    secret_name: str,
+    version: str = "latest",
+) -> str | None:
+    """Fallback to gcloud CLI for shells authenticated with gcloud user credentials."""
+
+    if shutil.which("gcloud") is None:
+        return None
+
+    env = os.environ.copy()
+    env.setdefault("CLOUDSDK_PAGER", "")
+    env.setdefault("CLOUDSDK_CORE_DISABLE_PROMPTS", "1")
+    result = subprocess.run(
+        [
+            "gcloud",
+            "secrets",
+            "versions",
+            "access",
+            version,
+            "--secret",
+            secret_name,
+            "--project",
+            project_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    if result.returncode != 0:
+        return None
+    payload = result.stdout.strip()
     return payload or None
 
 
@@ -115,6 +192,70 @@ def _resolve_anthropic_api_key() -> str | None:
     )
 
 
+def _resolve_gemini_api_key() -> str | None:
+    """Resolve Gemini API key from env first, then Secret Manager fallback."""
+
+    explicit_key = (
+        os.getenv("AGORA_GEMINI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("AGORA_GOOGLE_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+    )
+    if explicit_key:
+        return explicit_key
+
+    secret_name = os.getenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key").strip()
+    if not secret_name:
+        return None
+
+    project_id = (
+        os.getenv("AGORA_GEMINI_SECRET_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+    ).strip()
+    if not project_id:
+        return None
+
+    version = (os.getenv("AGORA_GEMINI_SECRET_VERSION") or "latest").strip() or "latest"
+    return _load_secret_manager_value(
+        project_id=project_id,
+        secret_name=secret_name,
+        version=version,
+    )
+
+
+def _resolve_openrouter_api_key() -> str | None:
+    """Resolve OpenRouter API key from env first, then Secret Manager fallback."""
+
+    explicit_key = os.getenv("AGORA_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+    if explicit_key:
+        cleaned = explicit_key.strip()
+        # Guard against accidental duplicated prefix copy/paste corruption.
+        if cleaned.startswith("sk-or-v1-") and cleaned.count("sk-or-v1-") > 1:
+            half = len(cleaned) // 2
+            if len(cleaned) % 2 == 0 and cleaned[:half] == cleaned[half:]:
+                cleaned = cleaned[:half]
+            else:
+                cleaned = ""
+        if cleaned:
+            return cleaned
+
+    secret_name = os.getenv("AGORA_OPENROUTER_SECRET_NAME", "agora-openrouter-api-key").strip()
+    if not secret_name:
+        return None
+
+    project_id = (
+        os.getenv("AGORA_OPENROUTER_SECRET_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or ""
+    ).strip()
+    if not project_id:
+        return None
+
+    version = (os.getenv("AGORA_OPENROUTER_SECRET_VERSION") or "latest").strip() or "latest"
+    return _load_secret_manager_value(
+        project_id=project_id,
+        secret_name=secret_name,
+        version=version,
+    )
+
+
 class AgoraConfig(BaseModel):
     """Typed runtime configuration for model routing and thresholds."""
 
@@ -123,18 +264,31 @@ class AgoraConfig(BaseModel):
     google_cloud_project: str | None = Field(
         default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT")
     )
+    gemini_api_key: str | None = Field(default_factory=_resolve_gemini_api_key)
+    gemini_secret_name: str = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")
+    )
+    gemini_secret_project: str | None = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_PROJECT")
+    )
+    gemini_secret_version: str = Field(
+        default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_VERSION", "latest")
+    )
     google_cloud_location: str = Field(
         default_factory=lambda: os.getenv("AGORA_GOOGLE_CLOUD_LOCATION", "us-central1")
     )
 
     flash_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-2.5-flash")
+        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-3.1-flash-lite-preview")
     )
     pro_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-2.5-pro")
+        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-3-flash-preview")
     )
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
+    )
+    kimi_model: str = Field(
+        default_factory=lambda: os.getenv("AGORA_KIMI_MODEL", "moonshotai/kimi-k2-thinking")
     )
     anthropic_api_key: str | None = Field(default_factory=_resolve_anthropic_api_key)
     anthropic_secret_name: str = Field(
@@ -161,11 +315,67 @@ class AgoraConfig(BaseModel):
         default_factory=lambda: float(os.getenv("AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS", "60")),
         gt=0,
     )
+    openrouter_api_key: str | None = Field(default_factory=_resolve_openrouter_api_key)
+    openrouter_secret_name: str = Field(
+        default_factory=lambda: os.getenv(
+            "AGORA_OPENROUTER_SECRET_NAME",
+            "agora-openrouter-api-key",
+        )
+    )
+    openrouter_secret_project: str | None = Field(
+        default_factory=lambda: os.getenv("AGORA_OPENROUTER_SECRET_PROJECT")
+    )
+    openrouter_secret_version: str = Field(
+        default_factory=lambda: os.getenv("AGORA_OPENROUTER_SECRET_VERSION", "latest")
+    )
+    openrouter_base_url: str = Field(
+        default_factory=lambda: os.getenv(
+            "AGORA_OPENROUTER_BASE_URL",
+            "https://openrouter.ai/api/v1",
+        )
+    )
+    openrouter_http_referer: str | None = Field(
+        default_factory=lambda: _env_optional_str("AGORA_OPENROUTER_HTTP_REFERER")
+    )
+    openrouter_app_title: str | None = Field(
+        default_factory=lambda: _env_optional_str("AGORA_OPENROUTER_APP_TITLE", "Agora Protocol")
+    )
+    openrouter_legacy_x_title_enabled: bool = Field(
+        default_factory=lambda: _env_bool("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", True)
+    )
+    kimi_reasoning_effort: str | None = Field(
+        default_factory=lambda: _env_optional_str("AGORA_KIMI_REASONING_EFFORT", "low")
+    )
+    kimi_reasoning_exclude: bool = Field(
+        default_factory=lambda: _env_bool("AGORA_KIMI_REASONING_EXCLUDE", True)
+    )
+    kimi_max_tokens: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_KIMI_MAX_TOKENS", "512")),
+        ge=1,
+    )
+    claude_effort: str = Field(
+        default_factory=lambda: _env_optional_str("AGORA_CLAUDE_EFFORT", "medium") or "medium"
+    )
 
     # Gemini runtime feature controls.
     gemini_enable_streaming: bool = True
     gemini_enable_thinking: bool = True
     gemini_thinking_budget: int = Field(default=1024, ge=0)
+    gemini_pro_thinking_level: str = Field(
+        default_factory=lambda: (
+            _env_optional_str("AGORA_GEMINI_PRO_THINKING_LEVEL", "high") or "high"
+        )
+    )
+    gemini_flash_thinking_level: str | None = Field(
+        default_factory=lambda: _env_optional_str(
+            "AGORA_GEMINI_FLASH_THINKING_LEVEL",
+            "medium",
+        )
+    )
+    anthropic_concurrent_requests_per_run: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_ANTHROPIC_CONCURRENT_REQUESTS_PER_RUN", "1")),
+        ge=1,
+    )
 
     max_rounds: int = 4
     quorum_threshold: float = 0.6

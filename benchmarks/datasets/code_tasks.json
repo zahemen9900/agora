@@ -1,0 +1,22 @@
+[
+  {"category":"code","task":"In Python, which built-in data structure guarantees unique items and fast membership tests?","ground_truth":"set","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which HTTP status code should an API return for a missing resource?","ground_truth":"404","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"What Git command updates your current branch with remote changes while creating a merge commit by default?","ground_truth":"git pull","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"In JavaScript, which array method creates a new array by transforming each element?","ground_truth":"map","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"What SQL keyword is used to remove duplicate rows from a query result?","ground_truth":"DISTINCT","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which Python tool is commonly used for isolated project environments: venv or pickle?","ground_truth":"venv","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"What is the time complexity of binary search on a sorted array?","ground_truth":"O(log n)","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"In Git, which command stages all tracked modified files?","ground_truth":"git add -u","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which HTTP method is typically idempotent for full resource replacement?","ground_truth":"PUT","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"In Python typing, what type should represent either a string or None?","ground_truth":"str | None","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which SQL clause filters grouped results after aggregation?","ground_truth":"HAVING","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"In React, what hook stores mutable state that does not trigger a re-render when changed?","ground_truth":"useRef","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"What Python keyword is used to define a generator that produces values one at a time?","ground_truth":"yield","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which Unix command recursively searches files for a text pattern quickly?","ground_truth":"rg","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"What JSON value represents the absence of a value?","ground_truth":"null","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which data structure uses FIFO ordering?","ground_truth":"queue","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"In Python, which exception is commonly raised for a missing dictionary key?","ground_truth":"KeyError","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which CSS property changes text color?","ground_truth":"color","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"What does SSE stand for in web streaming?","ground_truth":"Server-Sent Events","source":"curated_code_v2","stakes":0.0},
+  {"category":"code","task":"Which version control strategy keeps a project history linear by replaying commits on top of another branch?","ground_truth":"rebase","source":"curated_code_v2","stakes":0.0}
+]

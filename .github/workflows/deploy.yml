@@ -1,0 +1,70 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-agora-api
+  cancel-in-progress: false
+
+jobs:
+  deploy-api:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SERVICE_NAME: agora-api
+      REGION: us-central1
+      REPOSITORY: agora
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPOSITORY}/${SERVICE_NAME}:${{ github.sha }}"
+          gcloud builds submit --config api/cloudbuild.yaml \
+            --substitutions "_REGION=${REGION},_REPOSITORY=${REPOSITORY},_SERVICE=${SERVICE_NAME},_TAG=${{ github.sha }}" .
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --image "$IMAGE" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --region "$REGION" \
+            --platform managed \
+            --service-account "${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
+            --network default \
+            --subnet default \
+            --vpc-egress private-ranges-only \
+            --update-env-vars "GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }},GCS_BUCKET=${{ vars.AGORA_GCS_BUCKET }},AUTH_REQUIRED=true,AGORA_COORDINATION_BACKEND=redis,AGORA_COORDINATION_NAMESPACE=${{ vars.AGORA_COORDINATION_NAMESPACE }},AGORA_FLASH_MODEL=gemini-3.1-flash-lite-preview,AGORA_PRO_MODEL=gemini-3-flash-preview,AGORA_WORKOS_CLIENT_ID=${{ vars.WORKOS_CLIENT_ID }},AGORA_WORKOS_AUTHKIT_DOMAIN=${{ vars.WORKOS_AUTHKIT_DOMAIN }},AGORA_AUTH_ISSUER=${{ vars.AUTH_ISSUER }},AGORA_AUTH_AUDIENCE=${{ vars.AUTH_AUDIENCE }},AGORA_AUTH_JWKS_URL=${{ vars.AUTH_JWKS_URL }},SOLANA_NETWORK=${{ vars.SOLANA_NETWORK }},PROGRAM_ID=${{ vars.PROGRAM_ID }},SOLANA_KEYPAIR_SECRET_NAME=${{ vars.SOLANA_KEYPAIR_SECRET_NAME }},SOLANA_KEYPAIR_SECRET_PROJECT=${{ vars.SOLANA_KEYPAIR_SECRET_PROJECT }},SOLANA_KEYPAIR_SECRET_VERSION=latest" \
+            --update-secrets "AGORA_GEMINI_API_KEY=agora-gemini-api-key:latest,ANTHROPIC_API_KEY=agora-anthropic-api-key:latest,AGORA_OPENROUTER_API_KEY=agora-openrouter-api-key:latest,HELIUS_RPC_URL=agora-helius-rpc-url:latest,AGORA_API_KEY_PEPPER=agora-api-key-pepper:latest,AGORA_REDIS_URL=agora-redis-url:latest,BENCHMARK_ADMIN_TOKEN=agora-benchmark-admin-token:latest" \
+            --allow-unauthenticated \
+            --no-invoker-iam-check
+
+      - name: Verify deployed health endpoint
+        run: |
+          URL="$(gcloud run services describe "$SERVICE_NAME" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --region "$REGION" \
+            --format='value(status.url)')"
+          echo "URL=$URL"
+          curl -fsS "$URL/health"

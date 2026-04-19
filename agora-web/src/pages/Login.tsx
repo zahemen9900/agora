@@ -1,5 +1,5 @@
 import { ArrowRight } from 'lucide-react';
-import { useAuth } from '../lib/auth';
+import { useAuth } from '../lib/useAuth';
 import { Button } from '../components/ui/Button';
 import { motion } from 'framer-motion';
 import { HeroDiagram } from '../components/landing/HeroDiagram';
@@ -70,7 +70,7 @@ const PAPERS: PaperCardProps[] = [
 ];
 
 export function LoginPage() {
-  const { signIn, isLoading } = useAuth();
+  const { signIn, signUp, isLoading } = useAuth();
 
   return (
     <div className="flex flex-col relative">
@@ -88,7 +88,7 @@ export function LoginPage() {
           <div className="wordmark text-2xl tracking-widest">AGORA</div>
           <div className="flex items-center gap-4">
             <ThemeToggle />
-            <button onClick={signIn} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
+            <button onClick={() => signIn()} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
               {isLoading ? 'Connecting...' : 'Sign In'}
             </button>
           </div>
@@ -137,20 +137,21 @@ export function LoginPage() {
                 <Button
                   variant="primary"
                   size="md"
-                  onClick={signIn}
+                  onClick={() => signIn()}
                   disabled={isLoading}
                   rightIcon={<ArrowRight size={18} />}
                   className="shadow-[0_0_20px_rgba(0,212,170,0.3)] hover:shadow-[0_0_30px_rgba(0,212,170,0.5)] transition-shadow duration-300"
                 >
-                  {isLoading ? 'Connecting...' : 'Launch App'}
+                  {isLoading ? 'Connecting...' : 'Sign In'}
                 </Button>
                 <Button
                   variant="secondary"
                   size="md"
-                  onClick={() => window.open('https://github.com', '_blank')}
+                  onClick={() => signUp()}
+                  disabled={isLoading}
                   rightIcon={<ArrowRight size={18} />}
                 >
-                  Read the Docs
+                  {isLoading ? 'Loading...' : 'Create Account'}
                 </Button>
               </motion.div>
 
@@ -194,7 +195,7 @@ export function LoginPage() {
               vizType="selector"
               accentColor="var(--text-muted)"
               title="The AI Decides How to Decide"
-              description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal mechanism — debate, vote, or Delphi consensus."
+              description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal supported mechanism for now: debate or vote."
             />
             <StepCard
               step={2}
