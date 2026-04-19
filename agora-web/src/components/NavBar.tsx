@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { LogOut, Menu, User as UserIcon, X } from 'lucide-react';
+import { ThemeToggle } from './ui/ThemeToggle';
 
 export function NavBar() {
   const { user, signOut, featureFlags } = useAuth();
@@ -91,7 +92,8 @@ export function NavBar() {
             <LogOut size={16} />
           </button>
 
-          {/* Mobile hamburger */}
+          <ThemeToggle />
+
           <button
             onClick={() => setMenuOpen(o => !o)}
             className="md:hidden flex items-center text-text-secondary hover:text-text-primary transition-colors p-1"

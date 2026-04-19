@@ -425,3 +425,53 @@ button {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--border-muted);
 }
+
+[data-theme="light"] {
+  /* Backgrounds */
+  --bg-void: #E2E4DD;
+  --bg-surface: #ffffff;
+  --bg-elevated: #f4f5f1;
+  --bg-overlay: rgba(226, 228, 221, 0.8);
+
+  /* Borders */
+  --border-subtle: #d2d4cd;
+  --border-muted: #b8bab4;
+  --border-accent: #00d4aa;
+
+  /* Text */
+  --text-primary: #171717;
+  --text-secondary: #525252;
+  --text-muted: #737373;
+  --text-inverse: #ffffff;
+
+  /* Semantic - slight adjustments for contrast if needed, but teal is mostly fine */
+  --accent-muted: rgba(0, 212, 170, 0.2);
+
+  /* Light mode shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.1);
+  --shadow-glow: 0 0 20px rgba(0, 212, 170, 0.25);
+}
+
+[data-theme="light"] .grid-bg {
+  background-image: radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1px);
+}
+
+[data-theme="light"] .section-divider {
+  background: rgba(0,0,0,0.06);
+}
+
+[data-theme="light"] .content-rail {
+  border-left:  1px solid rgba(0,0,0,0.06);
+  border-right: 1px solid rgba(0,0,0,0.06);
+}
+
+[data-theme="light"] .bordered-section {
+  border-top:    1px solid rgba(0,0,0,0.06);
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+}
+
+[data-theme="light"] .skeleton::after {
+  background: linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.03) 50%, rgba(0,0,0,0) 100%);
+}
