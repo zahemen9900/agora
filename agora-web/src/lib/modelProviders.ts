@@ -16,13 +16,13 @@ export function providerFromModel(model: string): ProviderName {
 
 export function providerTone(provider: ProviderName): string {
   if (provider === "gemini") {
-    return "text-cyan-300 border-cyan-500/40 bg-cyan-500/10";
+    return "text-text-primary border-[rgba(255,255,255,0.2)] bg-[rgba(255,255,255,0.06)]";
   }
   if (provider === "claude") {
-    return "text-fuchsia-300 border-fuchsia-500/40 bg-fuchsia-500/10";
+    return "text-text-primary border-border-muted bg-[rgba(255,255,255,0.03)]";
   }
   if (provider === "kimi") {
-    return "text-amber-300 border-amber-500/40 bg-amber-500/10";
+    return "text-text-secondary border-border-subtle bg-void";
   }
-  return "text-text-secondary border-border-muted bg-surface";
+  return "text-text-muted border-border-subtle bg-void";
 }

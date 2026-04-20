@@ -24,10 +24,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     ref
   ) => {
     const baseClasses =
-      'group relative inline-flex items-center justify-center font-mono font-semibold outline-none transition-all duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden tracking-widest uppercase';
-
-    // Chamfer clip-path — matches .btn-primary/.btn-secondary in index.css
-    const chamfer = 'polygon(12px 0, 100% 0, 100% calc(100% - 12px), calc(100% - 12px) 100%, 0 100%, 0 12px)';
+      'group relative inline-flex items-center justify-center font-sans font-semibold outline-none transition-all duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden rounded-full';
 
     const sizeClasses = {
       sm: 'text-xs',
@@ -45,29 +42,25 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       primary: {
         background: 'var(--accent)',
         color: 'var(--text-inverse)',
-        clipPath: chamfer,
       },
       secondary: {
         background: 'var(--bg-elevated)',
         color: 'var(--text-primary)',
         border: '1px solid var(--border-muted)',
-        clipPath: chamfer,
       },
       ghost: {
         background: 'transparent',
         color: 'var(--text-secondary)',
       },
       glow: {
-        background: 'rgba(0,212,170,0.08)',
+        background: 'rgba(0,229,153,0.08)',
         color: 'var(--accent)',
-        border: '1px solid rgba(0,212,170,0.2)',
-        clipPath: chamfer,
+        border: '1px solid rgba(0,229,153,0.2)',
       },
       danger: {
         background: 'rgba(255,71,87,0.08)',
         color: 'var(--danger)',
         border: '1px solid rgba(255,71,87,0.2)',
-        clipPath: chamfer,
       },
     };
 
@@ -75,7 +68,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={`${baseClasses} ${sizeClasses[size]} ${className}`}
-        style={{ ...variantStyles[variant], ...sizeStyles[size], wordSpacing: '0.25em' }}
+        style={{ ...variantStyles[variant], ...sizeStyles[size] }}
         disabled={disabled || isLoading}
         {...props}
       >

@@ -151,7 +151,7 @@ export function TaskSubmit() {
   };
 
   return (
-    <div className="max-w-200 mx-auto mt-10">
+    <div className="max-w-5xl mx-auto mt-10">
       <div className="text-center mb-10">
         <h1 className="mb-4 text-3xl md:text-5xl">What should your agents deliberate on?</h1>
         <p className="text-text-secondary text-lg">
@@ -160,10 +160,10 @@ export function TaskSubmit() {
       </div>
 
       <div className="card p-8 mb-16">
-        <div className="l-corners" />
+
 
         <textarea
-          className="mono w-full min-h-30 bg-void text-text-primary border border-border-subtle rounded-lg p-4 text-base resize-none outline-none mb-6 focus:border-accent transition-colors"
+          className="mono w-full min-h-40 bg-void text-text-primary border border-border-subtle rounded-lg p-5 text-base resize-none outline-none mb-6 focus:border-accent transition-colors"
           placeholder="Enter a question, decision, or problem for multi-agent deliberation..."
           value={taskText}
           onChange={(event) => {
@@ -268,42 +268,46 @@ export function TaskSubmit() {
       </div>
 
       <div className="mt-16">
-        <h2 className="text-xl mb-6">Recent Deliberations</h2>
+        <h2 className="text-xl mb-8">Recent Deliberations</h2>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-8">
           {(recentTasks.length > 0
             ? recentTasks
-            : EXAMPLE_TASKS.map((task, index) => makeExampleTask(task, index)))?.map((task) => (
-            <div key={task.task_id} className="card p-5 flex flex-col">
-              <div className="l-corners" />
-              <p className="text-[0.95rem] mb-4 flex-1 text-text-primary">
-                "{task.task_text.length > 60 ? `${task.task_text.substring(0, 60)}...` : task.task_text}"
-              </p>
-
-              <div className="flex justify-between items-center mb-4">
-                <span className="badge">{task.mechanism.toUpperCase()}</span>
-                <span className="text-sm text-text-secondary">{task.status}</span>
-              </div>
-
-              <div className="mono text-text-muted text-xs flex justify-between gap-4">
-                <span>{task.result ? `${task.result.latency_ms.toFixed(0)} ms` : "pending"}</span>
-                <span>{task.merkle_root ? `${task.merkle_root.slice(0, 12)}...` : "no receipt"}</span>
-              </div>
-
-              <button
+            : EXAMPLE_TASKS.map((task, index) => makeExampleTask(task, index)))?.map((task) => {
+            const isExample = task.task_id.startsWith("example-");
+            return (
+              <div 
+                key={task.task_id} 
+                className="card p-8 flex flex-col cursor-pointer transition-all hover:border-accent hover:bg-[var(--bg-card-hover)]"
                 onClick={() => {
-                  if (task.task_id.startsWith("example-")) {
+                  if (isExample) {
                     setTaskText(task.task_text);
-                    return;
+                  } else {
+                    navigate(`/task/${task.task_id}`);
                   }
-                  navigate(`/task/${task.task_id}`);
                 }}
-                className="btn-secondary w-full mt-4 p-2 text-sm flex justify-center gap-2"
               >
-                <Play size={14} /> {task.task_id.startsWith("example-") ? "Try this task" : "Open task"}
-              </button>
-            </div>
-          ))}
+                <div className="text-accent mb-6">
+                  <Play size={24} strokeWidth={1.5} />
+                </div>
+                
+                <h3 className="text-text-primary text-lg font-medium mb-2 line-clamp-2" style={{ fontFamily: 'var(--font-sans)', textTransform: 'none' }}>
+                  {task.task_text}
+                </h3>
+                
+                <p className="text-sm text-text-secondary mb-6 flex-1 line-clamp-2">
+                  {isExample ? "Try this example task in the deliberation engine" : `Status: ${task.status} • Hash: ${task.merkle_root ? task.merkle_root.slice(0, 8) : "Pending"}`}
+                </p>
+
+                <div className="flex items-center gap-3 mt-auto pt-4 border-t border-border-subtle">
+                  <span className="badge">{task.mechanism.toUpperCase()}</span>
+                  <span className="mono text-xs text-text-muted">
+                    {task.result ? `${task.result.latency_ms.toFixed(0)} ms` : "waiting..."}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
