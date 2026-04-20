@@ -16,6 +16,7 @@ import {
   ArrowRight,
   ChevronLeft,
   ChevronRight,
+  Loader2,
   RefreshCcw,
   X,
 } from "lucide-react";
@@ -758,6 +759,12 @@ export function Benchmarks() {
                 <span className="mono text-xs text-text-muted">RUN ID</span>
                 <span className="mono text-xs text-text-primary break-all">{activeBenchmarkRun.run_id}</span>
                 <span className="badge">{titleCase(activeBenchmarkRun.status)}</span>
+                {activeBenchmarkRun.status === "queued" || activeBenchmarkRun.status === "running" ? (
+                  <span className="inline-flex items-center gap-2 mono text-[11px] text-accent">
+                    <Loader2 size={12} className="animate-spin" />
+                    live benchmark running
+                  </span>
+                ) : null}
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-text-secondary mb-2">
                 <div>Tokens {formatInt(activeBenchmarkRun.total_tokens ?? 0)}</div>

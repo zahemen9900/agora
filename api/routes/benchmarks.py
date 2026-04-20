@@ -200,7 +200,7 @@ _BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
 _background_benchmark_runs: dict[str, asyncio.Task[None]] = {}
 _legacy_backfill_complete = False
 _legacy_backfill_lock: asyncio.Lock | None = None
-_STREAM_POLL_INTERVAL_SECONDS = 0.5
+_STREAM_POLL_INTERVAL_SECONDS = 0.15
 
 
 def _get_legacy_backfill_lock() -> asyncio.Lock:
@@ -1482,7 +1482,7 @@ async def _execute_benchmark_run(
 
         orchestrator = AgoraOrchestrator(
             agent_count=request.agent_count,
-            allow_offline_fallback=not request.live_agents,
+            allow_offline_fallback=True,
             reasoning_presets=reasoning_presets,
         )
         selector_state = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
@@ -2052,7 +2052,7 @@ async def stream_benchmark_run(
         for event in events:
             yield _benchmark_sse_message(event)
 
-        if any(event.get("event") in {"complete", "failed"} for event in events):
+        if any(event.get("event") in {"complete", "failed", "error"} for event in events):
             return
 
         stream_id = _benchmark_stream_key(workspace_id, run_id)
@@ -2074,7 +2074,7 @@ async def stream_benchmark_run(
                         payload = _benchmark_sse_message(event)
                         next_event_index += 1
                         yield payload
-                        if payload["event"] in {"complete", "failed"}:
+                        if payload["event"] in {"complete", "failed", "error"}:
                             return
                     continue
 
@@ -2083,7 +2083,7 @@ async def stream_benchmark_run(
                 payload = _benchmark_sse_message(item)
                 yield payload
                 next_event_index += 1
-                if payload["event"] in {"complete", "failed"}:
+                if payload["event"] in {"complete", "failed", "error"}:
                     break
         finally:
             stream.unsubscribe(stream_id, queue)

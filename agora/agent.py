@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import os
+import random
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -56,6 +57,26 @@ logger = structlog.get_logger(__name__)
 
 _STREAM_EVENT_PREFIX = "\u001eAGORA_STREAM_EVENT\u001e"
 _STREAM_EVENT_SEPARATOR = "\u001f"
+
+
+def _emit_stream_event(
+    stream_callback: Callable[[str], None] | None,
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Forward a structured live-stream event through the chunk callback."""
+
+    if stream_callback is None:
+        return
+
+    try:
+        stream_callback(
+            f"{_STREAM_EVENT_PREFIX}{event_type}"
+            f"{_STREAM_EVENT_SEPARATOR}{json.dumps(payload, default=str)}"
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("stream_callback_error", error=str(exc))
 
 
 class AgentCallError(RuntimeError):
@@ -202,6 +223,7 @@ class AgentCaller:
         self._anthropic_throttle_enabled = config.anthropic_throttle_enabled
         self._anthropic_requests_per_minute = config.anthropic_requests_per_minute
         self._anthropic_throttle_window_seconds = config.anthropic_throttle_window_seconds
+        self.model_call_timeout_seconds = max(1.0, float(config.model_call_timeout_seconds))
         self._claude_effort = config.claude_effort if claude_effort is None else claude_effort
         self._claude_thinking_display = (
             "summarized" if claude_thinking_display is None else claude_thinking_display
@@ -306,35 +328,54 @@ class AgentCaller:
         Raises:
             AgentCallError: If all retry attempts fail.
         """
+        try:
+            if self.provider == "claude":
+                return await asyncio.wait_for(
+                    self._call_claude(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        response_format=response_format,
+                        temperature=temperature,
+                        stream=stream,
+                        stream_callback=stream_callback,
+                    ),
+                    timeout=self.model_call_timeout_seconds,
+                )
 
-        if self.provider == "claude":
-            return await self._call_claude(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response_format=response_format,
-                temperature=temperature,
-                stream=stream,
-                stream_callback=stream_callback,
+            if self.provider == "openrouter":
+                return await asyncio.wait_for(
+                    self._call_openrouter(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        response_format=response_format,
+                        temperature=temperature,
+                        stream=stream,
+                        stream_callback=stream_callback,
+                    ),
+                    timeout=self.model_call_timeout_seconds,
+                )
+
+            return await asyncio.wait_for(
+                self._call_gemini(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_format=response_format,
+                    temperature=temperature,
+                    stream=stream,
+                    stream_callback=stream_callback,
+                ),
+                timeout=self.model_call_timeout_seconds,
             )
-
-        if self.provider == "openrouter":
-            return await self._call_openrouter(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response_format=response_format,
-                temperature=temperature,
-                stream=stream,
-                stream_callback=stream_callback,
+        except TimeoutError as exc:
+            logger.warning(
+                "agent_call_timeout",
+                model=self.model,
+                provider=self.provider,
+                timeout_seconds=self.model_call_timeout_seconds,
             )
-
-        return await self._call_gemini(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            response_format=response_format,
-            temperature=temperature,
-            stream=stream,
-            stream_callback=stream_callback,
-        )
+            raise AgentCallError(
+                f"Model call timed out after {self.model_call_timeout_seconds}s for model {self.model}."
+            ) from exc
 
     async def _call_gemini(
         self,
@@ -353,7 +394,7 @@ class AgentCaller:
             raise AgentCallError("google-genai types are unavailable.")
 
         effective_temperature = self.temperature if temperature is None else temperature
-        backoff_seconds = 0.5
+        backoff_seconds = random.uniform(3.0, 5.0)
         max_retries = 3
 
         for attempt in range(1, max_retries + 1):
@@ -361,16 +402,17 @@ class AgentCaller:
             try:
                 config_kwargs: dict[str, Any] = {
                     "temperature": effective_temperature,
-                    "system_instruction": system_prompt,
+                    "systemInstruction": system_prompt,
                 }
                 thinking_config = self._build_gemini_thinking_config()
                 if thinking_config is not None:
-                    config_kwargs["thinking_config"] = thinking_config
+                    config_kwargs["thinkingConfig"] = thinking_config
 
                 raw_message: Any | None = None
+                if response_format is not None:
+                    config_kwargs["responseMimeType"] = "application/json"
+                    config_kwargs["responseSchema"] = response_format
                 if response_format is not None and not stream:
-                    config_kwargs["response_mime_type"] = "application/json"
-                    config_kwargs["response_schema"] = response_format
                     response_config = genai_types.GenerateContentConfig(**config_kwargs)
                     raw_message = await self._gemini_client.aio.models.generate_content(
                         model=self.model,
@@ -438,8 +480,20 @@ class AgentCaller:
                     backoff_seconds=backoff_seconds,
                     error=str(exc),
                 )
+                _emit_stream_event(
+                    stream_callback,
+                    event_type="provider_retrying",
+                    payload={
+                        "provider": self.provider,
+                        "model": self.model,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "backoff_seconds": round(backoff_seconds, 3),
+                        "error": str(exc),
+                    },
+                )
                 await asyncio.sleep(backoff_seconds)
-                backoff_seconds *= 2.0
+                backoff_seconds = min(10.0, backoff_seconds * 2.0)
             except GeminiAPIError as exc:
                 status_code = self._extract_status_code(exc)
                 retryable_status = isinstance(status_code, int) and (
@@ -456,8 +510,21 @@ class AgentCaller:
                         status_code=status_code,
                         error=str(exc),
                     )
+                    _emit_stream_event(
+                        stream_callback,
+                        event_type="provider_retrying",
+                        payload={
+                            "provider": self.provider,
+                            "model": self.model,
+                            "attempt": attempt,
+                            "max_retries": max_retries,
+                            "status_code": status_code,
+                            "backoff_seconds": round(backoff_seconds, 3),
+                            "error": str(exc),
+                        },
+                    )
                     await asyncio.sleep(backoff_seconds)
-                    backoff_seconds *= 2.0
+                    backoff_seconds = min(10.0, backoff_seconds * 2.0)
                     continue
 
                 if retryable_status:
@@ -702,6 +769,18 @@ class AgentCaller:
                     backoff_seconds=backoff_seconds,
                     error=str(exc),
                 )
+                _emit_stream_event(
+                    stream_callback,
+                    event_type="provider_retrying",
+                    payload={
+                        "provider": self.provider,
+                        "model": self.model,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "backoff_seconds": round(backoff_seconds, 3),
+                        "error": str(exc),
+                    },
+                )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2.0
             except (OpenAIAPIConnectionError, OpenAIAPITimeoutError, TimeoutError) as exc:
@@ -724,6 +803,18 @@ class AgentCaller:
                     backoff_seconds=backoff_seconds,
                     error=str(exc),
                 )
+                _emit_stream_event(
+                    stream_callback,
+                    event_type="provider_retrying",
+                    payload={
+                        "provider": self.provider,
+                        "model": self.model,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "backoff_seconds": round(backoff_seconds, 3),
+                        "error": str(exc),
+                    },
+                )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2.0
             except OpenAIAPIStatusError as exc:
@@ -741,6 +832,19 @@ class AgentCaller:
                         backoff_seconds=backoff_seconds,
                         status_code=status_code,
                         error=str(exc),
+                    )
+                    _emit_stream_event(
+                        stream_callback,
+                        event_type="provider_retrying",
+                        payload={
+                            "provider": self.provider,
+                            "model": self.model,
+                            "attempt": attempt,
+                            "max_retries": max_retries,
+                            "status_code": status_code,
+                            "backoff_seconds": round(backoff_seconds, 3),
+                            "error": str(exc),
+                        },
                     )
                     await asyncio.sleep(backoff_seconds)
                     backoff_seconds *= 2.0
@@ -799,6 +903,15 @@ class AgentCaller:
             raise AgentCallError("Anthropic client was not initialized.")
 
         effective_temperature = self.temperature if temperature is None else temperature
+        thinking_config = self._build_claude_thinking_config()
+        if thinking_config is not None and effective_temperature != 1.0:
+            logger.debug(
+                "claude_temperature_adjusted_for_thinking",
+                model=self.model,
+                requested_temperature=effective_temperature,
+                adjusted_temperature=1.0,
+            )
+            effective_temperature = 1.0
         backoff_seconds = 0.5
         max_retries = 3
 
@@ -823,7 +936,7 @@ class AgentCaller:
                                     "system": system_prompt,
                                     "messages": [{"role": "user", "content": user_prompt}],
                                     "output_format": response_format,
-                                    "thinking": self._build_claude_thinking_config(),
+                                    "thinking": thinking_config,
                                 },
                             )
                             parse_result = parse_api(**parse_kwargs)
@@ -927,6 +1040,18 @@ class AgentCaller:
                     backoff_seconds=backoff_seconds,
                     error=str(exc),
                 )
+                _emit_stream_event(
+                    stream_callback,
+                    event_type="provider_retrying",
+                    payload={
+                        "provider": self.provider,
+                        "model": self.model,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "backoff_seconds": round(backoff_seconds, 3),
+                        "error": str(exc),
+                    },
+                )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2.0
             except (AnthropicAPIConnectionError, AnthropicAPITimeoutError, TimeoutError) as exc:
@@ -948,6 +1073,18 @@ class AgentCaller:
                     attempt=attempt,
                     backoff_seconds=backoff_seconds,
                     error=str(exc),
+                )
+                _emit_stream_event(
+                    stream_callback,
+                    event_type="provider_retrying",
+                    payload={
+                        "provider": self.provider,
+                        "model": self.model,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "backoff_seconds": round(backoff_seconds, 3),
+                        "error": str(exc),
+                    },
                 )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2.0
@@ -980,6 +1117,19 @@ class AgentCaller:
                         backoff_seconds=backoff_seconds,
                         status_code=status_code,
                         error=str(exc),
+                    )
+                    _emit_stream_event(
+                        stream_callback,
+                        event_type="provider_retrying",
+                        payload={
+                            "provider": self.provider,
+                            "model": self.model,
+                            "attempt": attempt,
+                            "max_retries": max_retries,
+                            "status_code": status_code,
+                            "backoff_seconds": round(backoff_seconds, 3),
+                            "error": str(exc),
+                        },
                     )
                     await asyncio.sleep(backoff_seconds)
                     backoff_seconds *= 2.0
@@ -1123,6 +1273,18 @@ class AgentCaller:
                     backoff_seconds=backoff_seconds,
                     error=str(exc),
                 )
+                _emit_stream_event(
+                    stream_callback,
+                    event_type="provider_retrying",
+                    payload={
+                        "provider": self.provider,
+                        "model": self.model,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "backoff_seconds": round(backoff_seconds, 3),
+                        "error": str(exc),
+                    },
+                )
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds *= 2.0
             except (OpenAIAPIConnectionError, OpenAIAPITimeoutError, TimeoutError) as exc:
@@ -1162,6 +1324,19 @@ class AgentCaller:
                         backoff_seconds=backoff_seconds,
                         status_code=status_code,
                         error=str(exc),
+                    )
+                    _emit_stream_event(
+                        stream_callback,
+                        event_type="provider_retrying",
+                        payload={
+                            "provider": self.provider,
+                            "model": self.model,
+                            "attempt": attempt,
+                            "max_retries": max_retries,
+                            "status_code": status_code,
+                            "backoff_seconds": round(backoff_seconds, 3),
+                            "error": str(exc),
+                        },
                     )
                     await asyncio.sleep(backoff_seconds)
                     backoff_seconds *= 2.0
@@ -1266,40 +1441,38 @@ class AgentCaller:
         if genai_types is None:
             return None
 
-        attempts: list[dict[str, Any]] = []
-        normalized_level = (self.thinking_level or "").strip()
+        normalized_level = (self.thinking_level or "").strip().upper()
         if normalized_level:
-            attempts.extend(
-                [
-                    {"include_thoughts": True, "thinking_level": normalized_level},
-                    {"include_thoughts": True, "thinkingLevel": normalized_level},
-                    {"include_thoughts": True, "thinking_level": normalized_level.upper()},
-                    {"include_thoughts": True, "thinkingLevel": normalized_level.upper()},
-                ]
-            )
-        elif self.enable_thinking and self.thinking_budget is not None:
-            attempts.extend(
-                [
-                    {"include_thoughts": True, "thinking_budget": self.thinking_budget},
-                    {"include_thoughts": True, "thinkingBudget": self.thinking_budget},
-                ]
-            )
+            thinking_level = getattr(genai_types.ThinkingLevel, normalized_level, None)
+            if thinking_level is not None:
+                try:
+                    return genai_types.ThinkingConfig(
+                        includeThoughts=True,
+                        thinkingLevel=thinking_level,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "gemini_thinking_config_unavailable",
+                        model=self.model,
+                        thinking_level=self.thinking_level,
+                        thinking_budget=self.thinking_budget,
+                        error=str(exc),
+                    )
 
-        last_error: Exception | None = None
-        for payload in attempts:
+        if self.enable_thinking and self.thinking_budget is not None:
             try:
-                return genai_types.ThinkingConfig(**payload)
+                return genai_types.ThinkingConfig(
+                    includeThoughts=True,
+                    thinkingBudget=self.thinking_budget,
+                )
             except Exception as exc:
-                last_error = exc
-
-        if last_error is not None:
-            logger.warning(
-                "gemini_thinking_config_unavailable",
-                model=self.model,
-                thinking_level=self.thinking_level,
-                thinking_budget=self.thinking_budget,
-                error=str(last_error),
-            )
+                logger.warning(
+                    "gemini_thinking_config_unavailable",
+                    model=self.model,
+                    thinking_level=self.thinking_level,
+                    thinking_budget=self.thinking_budget,
+                    error=str(exc),
+                )
         return None
 
     def _build_claude_thinking_config(self) -> dict[str, str]:
@@ -1688,6 +1861,36 @@ class AgentCaller:
                     return value
             return None
 
+        def _sum_ints(*values: int | None) -> int | None:
+            total = 0
+            found = False
+            for value in values:
+                if value is None:
+                    continue
+                total += max(0, int(value))
+                found = True
+            return total if found else None
+
+        def _extract_prompt_tokens(source: Any) -> int | None:
+            base_input = _pick_int(source, "input_tokens", "prompt_tokens", "prompt_token_count")
+            cache_creation_tokens = _pick_int(source, "cache_creation_input_tokens")
+            if cache_creation_tokens is None:
+                cache_creation = None
+                if isinstance(source, dict):
+                    cache_creation = source.get("cache_creation")
+                else:
+                    cache_creation = getattr(source, "cache_creation", None)
+                cache_creation_tokens = _pick_int(
+                    cache_creation,
+                    "ephemeral_1h_input_tokens",
+                    "ephemeral_5m_input_tokens",
+                )
+            cache_read_tokens = _pick_int(
+                source,
+                "cache_read_input_tokens",
+            )
+            return _sum_ints(base_input, cache_creation_tokens, cache_read_tokens)
+
         input_tokens: int | None = None
         output_tokens: int | None = None
         thinking_tokens: int | None = None
@@ -1697,17 +1900,7 @@ class AgentCaller:
         if raw_message is not None:
             usage_metadata = getattr(raw_message, "usage_metadata", None)
             if usage_metadata is not None:
-                input_tokens = _coalesce_int(
-                    input_tokens,
-                    _pick_int(
-                        usage_metadata,
-                        "input_tokens",
-                        "prompt_token_count",
-                        "promptTokenCount",
-                        "prompt_tokens",
-                        "promptTokens",
-                    ),
-                )
+                input_tokens = _coalesce_int(input_tokens, _extract_prompt_tokens(usage_metadata))
                 output_tokens = _coalesce_int(
                     output_tokens,
                     _pick_int(
@@ -1745,15 +1938,7 @@ class AgentCaller:
             response_metadata = getattr(raw_message, "response_metadata", None)
             if isinstance(response_metadata, dict):
                 response_usage = response_metadata.get("usage")
-                input_tokens = _coalesce_int(
-                    input_tokens,
-                    _pick_int(
-                        response_usage,
-                        "input_tokens",
-                        "prompt_tokens",
-                        "prompt_token_count",
-                    ),
-                )
+                input_tokens = _coalesce_int(input_tokens, _extract_prompt_tokens(response_usage))
                 output_tokens = _coalesce_int(
                     output_tokens,
                     _pick_int(
@@ -1781,10 +1966,7 @@ class AgentCaller:
 
             usage = getattr(raw_message, "usage", None)
             if usage is not None:
-                input_tokens = _coalesce_int(
-                    input_tokens,
-                    _pick_int(usage, "input_tokens", "prompt_tokens"),
-                )
+                input_tokens = _coalesce_int(input_tokens, _extract_prompt_tokens(usage))
                 output_tokens = _coalesce_int(
                     output_tokens,
                     _pick_int(

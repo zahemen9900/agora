@@ -662,6 +662,32 @@ async def test_create_list_get_task_with_local_store(
 
 
 @pytest.mark.asyncio
+async def test_create_task_preserves_requested_offline_fallback_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "offline-fallback-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(
+                task="Keep my fallback preference",
+                agent_count=3,
+                stakes=0.0,
+                allow_offline_fallback=False,
+            ),
+            _override_user(),
+        )
+        fetched = await task_routes.get_task_status(create.task_id, _override_user())
+    finally:
+        task_routes._store = None
+
+    assert fetched.allow_offline_fallback is False
+
+
+@pytest.mark.asyncio
 async def test_create_task_resolves_and_persists_reasoning_presets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1876,6 +1902,37 @@ async def test_persist_and_emit_preserves_full_timestamped_envelope(
     assert live_payload["event"] == "agent_output"
     assert live_payload["data"]["content"] == "BTC"
     assert live_payload["timestamp"] is not None
+
+
+@pytest.mark.asyncio
+async def test_persist_and_emit_benchmark_event_persists_before_streaming() -> None:
+    calls: list[str] = []
+
+    class _RecordingStore:
+        async def append_user_test_event(
+            self,
+            workspace_id: str,
+            run_id: str,
+            payload: dict[str, object],
+        ) -> None:
+            del workspace_id, run_id, payload
+            calls.append("append")
+
+    class _RecordingStream:
+        async def emit(self, stream_key: str, payload: dict[str, object]) -> None:
+            del stream_key, payload
+            calls.append("emit")
+
+    await benchmark_routes._persist_and_emit_benchmark_event(
+        store=_RecordingStore(),
+        stream=_RecordingStream(),
+        workspace_id="workspace-1",
+        run_id="run-1",
+        event_type="queued",
+        event_data={"run_id": "run-1"},
+    )
+
+    assert calls == ["append", "emit"]
 
 
 @pytest.mark.asyncio

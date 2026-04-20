@@ -13,7 +13,14 @@ from typing import Any
 
 import structlog
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from agora.agent import (
     AgentCaller,
@@ -67,50 +74,98 @@ _STREAM_EVENT_SEPARATOR = "\u001f"
 class _InitialAnswerResponse(BaseModel):
     """Structured schema for initial agent answer generation."""
 
-    answer: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    answer: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def _coerce_answer(cls, value: Any) -> str:
+        return "" if value is None else str(value)
 
 
 class _OpeningResponse(BaseModel):
     """Structured schema for opening statements."""
 
-    claim: str
-    evidence: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    claim: str = ""
+    evidence: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("claim", "evidence", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: Any) -> str:
+        return "" if value is None else str(value)
 
 
 class _CrossExamItem(BaseModel):
     """Cross-examination critique for one faction."""
 
-    faction: str
-    weakest_claim: str
-    flaw: str
-    attack_axis: str
-    counterexample: str
-    failure_mode: str
-    question: str
+    faction: str = ""
+    weakest_claim: str = ""
+    flaw: str = ""
+    attack_axis: str = ""
+    counterexample: str = ""
+    failure_mode: str = ""
+    question: str = ""
+
+    @field_validator(
+        "faction",
+        "weakest_claim",
+        "flaw",
+        "attack_axis",
+        "counterexample",
+        "failure_mode",
+        "question",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_text(cls, value: Any) -> str:
+        return "" if value is None else str(value)
 
 
 class _CrossExamResponse(BaseModel):
     """Structured response for devil's advocate critiques."""
 
-    analyses: list[_CrossExamItem]
+    analyses: list[_CrossExamItem] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_payload(cls, value: Any) -> dict[str, Any]:
+        if value is None:
+            return {"analyses": []}
+        if isinstance(value, list):
+            return {"analyses": value}
+        if isinstance(value, dict):
+            analyses = value.get("analyses")
+            if isinstance(analyses, list):
+                return value
+            return {"analyses": []}
+        return {"analyses": []}
 
 
 class _RebuttalResponse(BaseModel):
     """Structured schema for rebuttal statements."""
 
-    answer: str
-    defense: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    answer: str = ""
+    defense: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("answer", "defense", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: Any) -> str:
+        return "" if value is None else str(value)
 
 
 class _SynthesisResponse(BaseModel):
     """Structured schema for final synthesis."""
 
-    final_answer: str
-    confidence: float = Field(ge=0.0, le=1.0)
-    summary: str
+    final_answer: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    summary: str = ""
+
+    @field_validator("final_answer", "summary", mode="before")
+    @classmethod
+    def _coerce_text(cls, value: Any) -> str:
+        return "" if value is None else str(value)
 
 
 class DebateEngineOutcome(BaseModel):
@@ -1179,20 +1234,17 @@ class DebateEngine:
             fallback_count=len(fallback_events),
             fallback_events=fallback_events,
             total_tokens_used=total_tokens,
-            input_tokens_used=(
-                int(sum(model_input_token_usage.values()))
-                if model_input_token_usage
-                else None
+            input_tokens_used=self._compact_split_total(
+                counter=0,
+                model_usage=model_input_token_usage,
             ),
-            output_tokens_used=(
-                int(sum(model_output_token_usage.values()))
-                if model_output_token_usage
-                else None
+            output_tokens_used=self._compact_split_total(
+                counter=0,
+                model_usage=model_output_token_usage,
             ),
-            thinking_tokens_used=(
-                int(sum(model_thinking_token_usage.values()))
-                if model_thinking_token_usage
-                else None
+            thinking_tokens_used=self._compact_split_total(
+                counter=0,
+                model_usage=model_thinking_token_usage,
             ),
             total_latency_ms=total_latency_ms,
             cost=cost,
@@ -1320,6 +1372,11 @@ class DebateEngine:
                     "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
                 }
             logger.warning("structured_response_type_mismatch", expected=response_model.__name__)
+            raise AgentCallError(
+                "Provider returned unsupported response type for "
+                f"debate.{response_model.__name__}: provider_{tier}_returned_unsupported_response_type"
+            )
+
         except AgentCallError as exc:
             logger.warning(
                 "debate_agent_fallback",
@@ -1327,7 +1384,8 @@ class DebateEngine:
                 response_model=response_model.__name__,
                 error=str(exc),
             )
-            if tier == "claude":
+            fallback_reason = f"provider_{tier}_unavailable_or_invalid"
+            if tier != "kimi":
                 try:
                     kimi_response, kimi_usage = await self._call_provider(
                         tier="kimi",
@@ -1335,11 +1393,14 @@ class DebateEngine:
                         user_prompt=user_prompt,
                         response_format=response_model,
                         temperature=temperature,
+                        stream=stream,
+                        stream_callback=stream_callback,
                     )
                     if isinstance(kimi_response, response_model):
                         logger.info(
                             "debate_agent_fallback_to_kimi_success",
                             response_model=response_model.__name__,
+                            from_tier=tier,
                         )
                         model_name = self._model_name("kimi")
                         input_tokens = kimi_usage.get("input_tokens")
@@ -1393,20 +1454,294 @@ class DebateEngine:
                                 kimi_usage.get("thinking_trace_chars", 0) or 0
                             ),
                         }
+                    kimi_response, fallback_used = self._coerce_debate_response(
+                        response_model=response_model,
+                        response_text=str(kimi_response),
+                        fallback=fallback,
+                    )
+                    if fallback_used and not self.allow_offline_fallback:
+                        logger.warning(
+                            "debate_kimi_response_empty_retrying",
+                            from_tier=tier,
+                            response_model=response_model.__name__,
+                        )
+                        kimi_response, kimi_usage = await self._call_provider(
+                            tier="kimi",
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_format=None,
+                            temperature=temperature,
+                        )
+                        kimi_response, fallback_used = self._coerce_debate_response(
+                            response_model=response_model,
+                            response_text=str(kimi_response),
+                            fallback=fallback,
+                        )
+                        if fallback_used and not self.allow_offline_fallback:
+                            raise AgentCallError(
+                                "Provider fallback disabled for "
+                                f"debate.{response_model.__name__}: "
+                                "provider_kimi_empty_response"
+                            )
+                    logger.info(
+                        "debate_agent_fallback_to_kimi_success",
+                        response_model=response_model.__name__,
+                        from_tier=tier,
+                        coerced=True,
+                    )
+                    model_name = self._model_name("kimi")
+                    input_tokens = kimi_usage.get("input_tokens")
+                    output_tokens = kimi_usage.get("output_tokens")
+                    thinking_tokens = kimi_usage.get(
+                        "thinking_tokens",
+                        kimi_usage.get("reasoning_tokens"),
+                    )
+                    total_tokens = int(
+                        kimi_usage.get("tokens")
+                        or kimi_usage.get("total_tokens")
+                        or (
+                            int(input_tokens or 0)
+                            + int(output_tokens or 0)
+                            + int(thinking_tokens or 0)
+                        )
+                    )
+                    return kimi_response, {
+                        "tokens": total_tokens,
+                        "total_tokens": total_tokens,
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "thinking_tokens": thinking_tokens,
+                        "reasoning_tokens": kimi_usage.get("reasoning_tokens"),
+                        "model_tokens": {model_name: total_tokens},
+                        "model_input_tokens": (
+                            {model_name: int(input_tokens)}
+                            if input_tokens is not None
+                            else {}
+                        ),
+                        "model_output_tokens": (
+                            {model_name: int(output_tokens)}
+                            if output_tokens is not None
+                            else {}
+                        ),
+                        "model_thinking_tokens": (
+                            {model_name: int(thinking_tokens)}
+                            if thinking_tokens is not None
+                            else {}
+                        ),
+                        "latency_ms": float(kimi_usage.get("latency_ms", 0.0)),
+                        "model": model_name,
+                        "provider": kimi_usage.get(
+                            "provider",
+                            self._provider_for_tier("kimi"),
+                        ),
+                        "thinking_trace_present": bool(
+                            kimi_usage.get("thinking_trace_present", False)
+                        ),
+                        "thinking_trace_chars": int(
+                            kimi_usage.get("thinking_trace_chars", 0) or 0
+                        ),
+                    }
                 except AgentCallError as kimi_exc:
                     logger.warning(
                         "debate_kimi_fallback_failed",
                         response_model=response_model.__name__,
                         error=str(kimi_exc),
+                        from_tier=tier,
                     )
+                    fallback_reason = f"provider_{tier}_and_kimi_unavailable_or_invalid"
+
+        if tier == "kimi" and response_model in {
+            _InitialAnswerResponse,
+            _OpeningResponse,
+            _RebuttalResponse,
+            _SynthesisResponse,
+        }:
+            try:
+                kimi_response, kimi_usage = await self._call_provider(
+                    tier="kimi",
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_format=response_model,
+                    temperature=temperature,
+                    stream=stream,
+                    stream_callback=stream_callback,
+                )
+                if not isinstance(kimi_response, response_model):
+                    kimi_response, fallback_used = self._coerce_debate_response(
+                        response_model=response_model,
+                        response_text=str(kimi_response),
+                        fallback=fallback,
+                    )
+                    if fallback_used and not self.allow_offline_fallback:
+                        logger.warning(
+                            "debate_kimi_response_empty_retrying",
+                            from_tier=tier,
+                            response_model=response_model.__name__,
+                        )
+                        kimi_response, kimi_usage = await self._call_provider(
+                            tier="kimi",
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_format=None,
+                            temperature=temperature,
+                            stream=stream,
+                            stream_callback=stream_callback,
+                        )
+                        kimi_response, fallback_used = self._coerce_debate_response(
+                            response_model=response_model,
+                            response_text=str(kimi_response),
+                            fallback=fallback,
+                        )
+                        if fallback_used and not self.allow_offline_fallback:
+                            raise AgentCallError(
+                                "Provider fallback disabled for "
+                                f"debate.{response_model.__name__}: "
+                                "provider_kimi_empty_response"
+                            )
+                logger.info(
+                    "debate_agent_fallback_to_kimi_success",
+                    response_model=response_model.__name__,
+                    from_tier=tier,
+                    coerced=not isinstance(kimi_response, response_model),
+                )
+                model_name = self._model_name("kimi")
+                input_tokens = kimi_usage.get("input_tokens")
+                output_tokens = kimi_usage.get("output_tokens")
+                thinking_tokens = kimi_usage.get(
+                    "thinking_tokens",
+                    kimi_usage.get("reasoning_tokens"),
+                )
+                total_tokens = int(
+                    kimi_usage.get("tokens")
+                    or kimi_usage.get("total_tokens")
+                    or (
+                        int(input_tokens or 0)
+                        + int(output_tokens or 0)
+                        + int(thinking_tokens or 0)
+                    )
+                )
+                return kimi_response, {
+                    "tokens": total_tokens,
+                    "total_tokens": total_tokens,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "thinking_tokens": thinking_tokens,
+                    "reasoning_tokens": kimi_usage.get("reasoning_tokens"),
+                    "model_tokens": {model_name: total_tokens},
+                    "model_input_tokens": (
+                        {model_name: int(input_tokens)}
+                        if input_tokens is not None
+                        else {}
+                    ),
+                    "model_output_tokens": (
+                        {model_name: int(output_tokens)}
+                        if output_tokens is not None
+                        else {}
+                    ),
+                    "model_thinking_tokens": (
+                        {model_name: int(thinking_tokens)}
+                        if thinking_tokens is not None
+                        else {}
+                    ),
+                    "latency_ms": float(kimi_usage.get("latency_ms", 0.0)),
+                    "model": model_name,
+                    "provider": kimi_usage.get(
+                        "provider",
+                        self._provider_for_tier("kimi"),
+                    ),
+                    "thinking_trace_present": bool(
+                        kimi_usage.get("thinking_trace_present", False)
+                    ),
+                    "thinking_trace_chars": int(
+                        kimi_usage.get("thinking_trace_chars", 0) or 0
+                    ),
+                }
+            except AgentCallError as exc:
+                logger.warning(
+                    "debate_agent_fallback",
+                    tier="kimi",
+                    response_model=response_model.__name__,
+                    error=str(exc),
+                )
+                return self._offline_structured_fallback(
+                    fallback=fallback,
+                    component=f"debate.{response_model.__name__}",
+                    reason="provider_kimi_unavailable_or_invalid",
+                    model=self._model_name("kimi"),
+                    provider=self._provider_for_tier("kimi"),
+                )
 
         return self._offline_structured_fallback(
             fallback=fallback,
             component=f"debate.{response_model.__name__}",
-            reason=f"provider_{tier}_unavailable_or_invalid",
+            reason=fallback_reason,
             model=self._model_name(tier),
             provider=self._provider_for_tier(tier),
         )
+
+    @staticmethod
+    def _coerce_debate_response(
+        *,
+        response_model: type[BaseModel],
+        response_text: str,
+        fallback: BaseModel,
+    ) -> tuple[BaseModel, bool]:
+        """Coerce live Kimi text into one of the debate response schemas."""
+
+        cleaned = response_text.strip()
+        if not cleaned:
+            return fallback, True
+
+        try:
+            parsed = json.loads(AgentCaller._extract_json_payload(cleaned))
+            if isinstance(parsed, dict):
+                if response_model is _InitialAnswerResponse:
+                    parsed.setdefault("answer", parsed.get("final_answer", cleaned))
+                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
+                    return _InitialAnswerResponse.model_validate(parsed), False
+                if response_model is _OpeningResponse:
+                    parsed.setdefault("claim", parsed.get("answer", cleaned))
+                    parsed.setdefault("evidence", parsed.get("reasoning", cleaned))
+                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
+                    return _OpeningResponse.model_validate(parsed), False
+                if response_model is _RebuttalResponse:
+                    parsed.setdefault("answer", parsed.get("final_answer", cleaned))
+                    parsed.setdefault("defense", parsed.get("reasoning", cleaned))
+                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
+                    return _RebuttalResponse.model_validate(parsed), False
+                if response_model is _SynthesisResponse:
+                    parsed.setdefault("final_answer", parsed.get("answer", cleaned))
+                    parsed.setdefault("summary", parsed.get("reasoning", cleaned))
+                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
+                    return _SynthesisResponse.model_validate(parsed), False
+        except (json.JSONDecodeError, ValidationError):
+            pass
+
+        if response_model is _InitialAnswerResponse:
+            return _InitialAnswerResponse(
+                answer=cleaned,
+                confidence=getattr(fallback, "confidence", 0.55),
+            ), False
+        if response_model is _OpeningResponse:
+            return _OpeningResponse(
+                claim=cleaned,
+                evidence=cleaned,
+                confidence=getattr(fallback, "confidence", 0.55),
+            ), False
+        if response_model is _RebuttalResponse:
+            return _RebuttalResponse(
+                answer=cleaned,
+                defense=cleaned,
+                confidence=getattr(fallback, "confidence", 0.55),
+            ), False
+        if response_model is _SynthesisResponse:
+            return _SynthesisResponse(
+                final_answer=cleaned,
+                summary=cleaned,
+                confidence=getattr(fallback, "confidence", 0.55),
+            ), False
+
+        return fallback, True
 
     def _offline_structured_fallback(
         self,
@@ -1494,19 +1829,23 @@ class DebateEngine:
             response, usage = await caller.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
+                response_format=_CrossExamResponse,
                 temperature=temperature,
                 stream=stream,
                 stream_callback=stream_callback,
             )
-            response_text = (
-                response.model_dump_json() if isinstance(response, BaseModel) else str(response)
-            )
-            parsed, fallback_used = self._coerce_cross_exam_response(response_text, fallback)
-            if fallback_used and not self.allow_offline_fallback:
-                raise AgentCallError(
-                    "Provider fallback disabled for debate.cross_examination: "
-                    "provider_kimi_empty_response"
+            if isinstance(response, _CrossExamResponse):
+                parsed = response
+            else:
+                response_text = (
+                    response.model_dump_json() if isinstance(response, BaseModel) else str(response)
                 )
+                parsed, fallback_used = self._coerce_cross_exam_response(response_text, fallback)
+                if fallback_used and not self.allow_offline_fallback:
+                    raise AgentCallError(
+                        "Provider fallback disabled for debate.cross_examination: "
+                        "provider_kimi_empty_response"
+                    )
             total_tokens = int(
                 usage.get("tokens")
                 or usage.get("total_tokens")
@@ -1681,6 +2020,21 @@ class DebateEngine:
                                 **base_payload,
                                 "thinking_delta": payload,
                                 "thinking_so_far": "".join(thinking_buffer),
+                            },
+                        )
+                    )
+                    return
+                if stream_kind == "provider_retrying":
+                    try:
+                        retry_payload = json.loads(payload)
+                    except json.JSONDecodeError:
+                        retry_payload = {"message": payload}
+                    loop.create_task(
+                        event_sink(
+                            "provider_retrying",
+                            {
+                                **base_payload,
+                                **retry_payload,
                             },
                         )
                     )
@@ -2102,6 +2456,14 @@ class DebateEngine:
             if amount is None:
                 continue
             store[model] = store.get(model, 0) + max(0, int(amount))
+
+    @staticmethod
+    def _compact_split_total(*, counter: int, model_usage: dict[str, int]) -> int | None:
+        """Prefer per-model split totals when available."""
+
+        if model_usage:
+            return max(0, sum(max(0, int(value)) for value in model_usage.values()))
+        return counter if counter > 0 else None
 
     @staticmethod
     def _accumulate_fallback_events(

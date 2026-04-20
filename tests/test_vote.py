@@ -77,6 +77,17 @@ class _SuccessfulVoteCaller:
         ), {"input_tokens": 6, "output_tokens": 4, "latency_ms": 10.0}
 
 
+class _RawTextCaller:
+    def __init__(self, model: str, response: str) -> None:
+        self.model = model
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    async def call(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response, {"input_tokens": 6, "output_tokens": 4, "latency_ms": 15.0}
+
+
 def test_isp_aggregation_all_agents_agree() -> None:
     """When all agents agree, the single answer should dominate normalized weight."""
 
@@ -121,6 +132,23 @@ def test_confidence_calibration_softens_extremes() -> None:
 
     assert 0.5 < high < 0.99
     assert 0.01 < low < 0.5
+
+
+def test_vote_response_coerces_scalar_text_fields() -> None:
+    """Structured vote payloads should tolerate scalar text-like JSON values."""
+
+    response = _VoteResponse.model_validate(
+        {
+            "answer": 323,
+            "confidence": 0.7,
+            "predicted_group_answer": 1,
+            "reasoning": 42,
+        }
+    )
+
+    assert response.answer == "323"
+    assert response.predicted_group_answer == "1"
+    assert response.reasoning == "42"
 
 
 def test_four_agent_vote_routes_kimi_as_active_diversity_tier() -> None:
@@ -190,7 +218,36 @@ async def test_call_structured_kimi_coerces_raw_vote() -> None:
     assert response.predicted_group_answer == "Kimi raw answer"
     assert usage["tokens"] == 13
     assert usage["latency_ms"] == pytest.approx(15.0)
-    assert "response_format" not in kimi.calls[0]
+    assert kimi.calls[0]["response_format"] is _VoteResponse
+
+
+@pytest.mark.asyncio
+async def test_call_structured_flash_raw_text_falls_back_to_kimi() -> None:
+    """Non-Kimi providers that return raw text should still fall through to live Kimi."""
+
+    flash = _RawTextCaller("gemini-3.1-flash-lite-preview", "flash raw text")
+    kimi = _RawTextCaller("moonshotai/kimi-k2-thinking", "Kimi fallback answer")
+    engine = VoteEngine(agent_count=4, flash_agent=flash, kimi_agent=kimi)
+    fallback = _VoteResponse(
+        answer="deterministic fallback",
+        confidence=0.2,
+        predicted_group_answer="deterministic fallback",
+        reasoning="offline fallback",
+    )
+
+    response, usage = await engine._call_structured(
+        tier="flash",
+        system_prompt="Return JSON.",
+        user_prompt="Vote on the best option",
+        response_model=_VoteResponse,
+        fallback=fallback,
+    )
+
+    assert response.answer == "Kimi fallback answer"
+    assert response.predicted_group_answer == "Kimi fallback answer"
+    assert usage["model"] == "moonshotai/kimi-k2-thinking"
+    assert len(flash.calls) == 1
+    assert len(kimi.calls) == 1
 
 
 @pytest.mark.asyncio

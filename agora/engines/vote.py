@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import structlog
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agora.agent import (
     AgentCaller,
@@ -57,6 +57,15 @@ class _VoteResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     predicted_group_answer: str
     reasoning: str
+
+    @field_validator("answer", "predicted_group_answer", "reasoning", mode="before")
+    @classmethod
+    def _coerce_text_fields(cls, value: Any) -> str:
+        """Coerce provider JSON scalars into text fields instead of failing hard."""
+
+        if value is None:
+            return ""
+        return str(value)
 
 
 class VoteEngineOutcome(BaseModel):
@@ -281,9 +290,18 @@ class VoteEngine:
             fallback_count=len(self._fallback_events_from_usage(usage)),
             fallback_events=self._fallback_events_from_usage(usage),
             total_tokens_used=token_counter,
-            input_tokens_used=input_token_counter if input_token_counter > 0 else None,
-            output_tokens_used=output_token_counter if output_token_counter > 0 else None,
-            thinking_tokens_used=thinking_token_counter if thinking_token_counter > 0 else None,
+            input_tokens_used=self._compact_split_total(
+                counter=input_token_counter,
+                model_usage=model_input_token_usage,
+            ),
+            output_tokens_used=self._compact_split_total(
+                counter=output_token_counter,
+                model_usage=model_output_token_usage,
+            ),
+            thinking_tokens_used=self._compact_split_total(
+                counter=thinking_token_counter,
+                model_usage=model_thinking_token_usage,
+            ),
             total_latency_ms=latency_ms,
             cost=cost,
             reasoning_presets=self.reasoning_presets,
@@ -696,12 +714,17 @@ class VoteEngine:
             logger.warning(
                 "vote_structured_response_type_mismatch", expected=response_model.__name__
             )
+            raise AgentCallError(
+                "Provider returned unsupported response type for "
+                f"vote.{response_model.__name__}: provider_{tier}_returned_unsupported_response_type"
+            )
         except AgentCallError as exc:
             logger.warning(
                 "vote_agent_fallback", error=str(exc), response_model=response_model.__name__
             )
 
-            if tier == "claude":
+            fallback_reason = f"provider_{tier}_unavailable_or_invalid"
+            if tier != "kimi":
                 try:
                     assert isinstance(fallback, _VoteResponse)
                     kimi_response, kimi_usage = await self._call_kimi_vote(
@@ -714,6 +737,7 @@ class VoteEngine:
                     logger.info(
                         "vote_agent_fallback_to_kimi_success",
                         response_model=response_model.__name__,
+                        from_tier=tier,
                     )
                     return kimi_response, kimi_usage
                 except AgentCallError as kimi_exc:
@@ -721,12 +745,14 @@ class VoteEngine:
                         "vote_kimi_fallback_failed",
                         error=str(kimi_exc),
                         response_model=response_model.__name__,
+                        from_tier=tier,
                     )
+                    fallback_reason = f"provider_{tier}_and_kimi_unavailable_or_invalid"
 
         return self._offline_structured_fallback(
             fallback=fallback,
             component=f"vote.{response_model.__name__}",
-            reason=f"provider_{tier}_unavailable_or_invalid",
+            reason=fallback_reason,
             model=self._model_name(tier),
             provider=self._provider_for_tier(tier),
         )
@@ -778,22 +804,37 @@ class VoteEngine:
         """Call Kimi as a raw voter and coerce output into vote schema."""
 
         caller = self._get_caller("kimi")
-        response, usage = await caller.call(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=temperature,
-            stream=stream,
-            stream_callback=stream_callback,
-        )
-        if isinstance(response, _VoteResponse):
-            vote = response
-        else:
-            vote, fallback_used = self._coerce_vote_response(str(response), fallback)
-            if fallback_used and not self.allow_offline_fallback:
-                raise AgentCallError(
-                    "Provider fallback disabled for vote._VoteResponse: "
-                    "provider_kimi_empty_response"
+        response: str | _VoteResponse
+        usage: dict[str, Any]
+        vote: _VoteResponse
+        fallback_used = False
+        for attempt in range(2):
+            response, usage = await caller.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_format=_VoteResponse,
+                temperature=temperature,
+                stream=stream,
+                stream_callback=stream_callback,
+            )
+            if isinstance(response, _VoteResponse):
+                vote = response
+                fallback_used = False
+            else:
+                vote, fallback_used = self._coerce_vote_response(str(response), fallback)
+            if not fallback_used or self.allow_offline_fallback:
+                break
+            if attempt == 0:
+                logger.warning(
+                    "vote_kimi_response_empty_retrying",
+                    model=self._model_name("kimi"),
+                    provider=self._provider_for_tier("kimi"),
                 )
+                continue
+            raise AgentCallError(
+                "Provider fallback disabled for vote._VoteResponse: "
+                "provider_kimi_empty_response"
+            )
 
         input_tokens = usage.get("input_tokens")
         output_tokens = usage.get("output_tokens")
@@ -1140,6 +1181,14 @@ class VoteEngine:
         await event_sink("usage_delta", self._usage_delta_payload(usage=usage, output=output))
 
     @staticmethod
+    def _compact_split_total(*, counter: int, model_usage: dict[str, int]) -> int | None:
+        """Prefer per-model split totals when they are available."""
+
+        if model_usage:
+            return max(0, sum(max(0, int(value)) for value in model_usage.values()))
+        return counter if counter > 0 else None
+
+    @staticmethod
     def _make_stream_delta_callback(
         event_sink: EventSink | None,
         *,
@@ -1173,6 +1222,21 @@ class VoteEngine:
                                 **base_payload,
                                 "thinking_delta": payload,
                                 "thinking_so_far": "".join(thinking_buffer),
+                            },
+                        )
+                    )
+                    return
+                if stream_kind == "provider_retrying":
+                    try:
+                        retry_payload = json.loads(payload)
+                    except json.JSONDecodeError:
+                        retry_payload = {"message": payload}
+                    loop.create_task(
+                        event_sink(
+                            "provider_retrying",
+                            {
+                                **base_payload,
+                                **retry_payload,
                             },
                         )
                     )

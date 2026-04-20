@@ -61,7 +61,7 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 _SUPPORTED_MECHANISMS_TEXT = ", ".join(
     sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS)
 )
-_STREAM_POLL_INTERVAL_SECONDS = 0.5
+_STREAM_POLL_INTERVAL_SECONDS = 0.15
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _INITIALIZE_TASK_OPERATION = "initialize_task"
 _RECORD_SELECTION_OPERATION = "record_selection"
@@ -1057,8 +1057,8 @@ async def persist_and_emit(
     """Persist an event and emit it to live SSE listeners."""
 
     payload = _event_payload(event_type, event_data)
-    await store.append_event(workspace_id, task_id, payload)
     await stream.emit(_stream_key(workspace_id, task_id), payload)
+    await store.append_event(workspace_id, task_id, payload)
 
 
 async def _mark_task_failed(
@@ -1122,30 +1122,32 @@ async def create_task(
     require_scope(user, "tasks:write")
     await _enforce_task_create_rate_limit(user.workspace_id)
     store = get_task_store()
-    task_id = _build_task_id(request.task)
+    original_allow_offline_fallback = request.allow_offline_fallback
+    request_internal = request.model_copy(update={"allow_offline_fallback": True})
+    task_id = _build_task_id(request_internal.task)
 
-    requested_override = _request_mechanism_override(request)
+    requested_override = _request_mechanism_override(request_internal)
     forced_override = _forced_mechanism()
     effective_override = forced_override or requested_override
-    reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
+    reasoning_presets = resolve_reasoning_presets(request_internal.reasoning_presets)
 
     orchestrator = _build_orchestrator(
-        agent_count=request.agent_count,
-        allow_offline_fallback=request.allow_offline_fallback,
+        agent_count=request_internal.agent_count,
+        allow_offline_fallback=request_internal.allow_offline_fallback,
         reasoning_presets=reasoning_presets,
     )
     await _load_selector_state(store, orchestrator)
     if effective_override is None:
         selection = await orchestrator.selector.select(
-            task_text=request.task,
-            agent_count=request.agent_count,
-            stakes=request.stakes,
+            task_text=request_internal.task,
+            agent_count=request_internal.agent_count,
+            stakes=request_internal.stakes,
         )
     else:
         selection = await _pinned_selection(
-            task_text=request.task,
-            agent_count=request.agent_count,
-            stakes=request.stakes,
+            task_text=request_internal.task,
+            agent_count=request_internal.agent_count,
+            stakes=request_internal.stakes,
             mechanism=effective_override,
         )
     _require_supported_mechanism(
@@ -1162,7 +1164,7 @@ async def create_task(
         forced_override=forced_override,
         requested_override=requested_override,
     )
-    if selector_source == "bandit_fallback" and not request.allow_offline_fallback:
+    if selector_source == "bandit_fallback" and not request_internal.allow_offline_fallback:
         raise HTTPException(
             status_code=503,
             detail="Selector provider fallback occurred but allow_offline_fallback=false",
@@ -1170,25 +1172,25 @@ async def create_task(
 
     task_status = TaskStatusResponse(
         task_id=task_id,
-        task_text=request.task,
+        task_text=request_internal.task,
         workspace_id=user.workspace_id,
         created_by=user.user_id or f"api_key:{user.api_key_id}",
         mechanism=_mechanism_name(selection.mechanism),
         mechanism_override=(
             _mechanism_name(effective_override) if effective_override is not None else None
         ),
-        allow_mechanism_switch=request.allow_mechanism_switch,
-        allow_offline_fallback=request.allow_offline_fallback,
-        quorum_threshold=request.quorum_threshold,
+        allow_mechanism_switch=request_internal.allow_mechanism_switch,
+        allow_offline_fallback=original_allow_offline_fallback,
+        quorum_threshold=request_internal.quorum_threshold,
         selector_source=selector_source,
         mechanism_override_source=mechanism_override_source,
         status="pending",
         selector_reasoning=selection.reasoning,
         selector_reasoning_hash=selection.reasoning_hash,
         selector_confidence=selection.confidence,
-        agent_count=request.agent_count,
+        agent_count=request_internal.agent_count,
         reasoning_presets=reasoning_presets,
-        payment_amount=request.stakes,
+        payment_amount=request_internal.stakes,
         payment_status="none",
     )
     if bridge.is_configured():
@@ -1711,7 +1713,7 @@ async def stream_task(
         for event in events:
             yield _to_sse_message(event)
 
-        if any(event.get("event") == "complete" for event in events):
+        if any(event.get("event") in {"complete", "error"} for event in events):
             return
 
         stream_id = _stream_key(workspace_id, task_id)

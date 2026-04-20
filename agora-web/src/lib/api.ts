@@ -219,6 +219,8 @@ export interface StreamHandle {
   close: () => void;
 }
 
+export type AccessTokenSupplier = () => Promise<string | null>;
+
 const STREAM_MAX_RECONNECT_ATTEMPTS = 6;
 const STREAM_RECONNECT_BASE_DELAY_MS = 500;
 
@@ -439,15 +441,17 @@ export async function getBenchmarkRunStatus(
 
 export async function streamBenchmarkRun(
   runId: string,
-  token: string | null,
+  tokenSupplier: AccessTokenSupplier,
   onEvent: (event: TaskEvent) => void,
 ): Promise<StreamHandle> {
   const eventTypes = [
     "queued",
     "started",
     "domain_progress",
+    "provider_retrying",
     "artifact_created",
     "failed",
+    "error",
     "complete",
   ];
 
@@ -476,6 +480,30 @@ export async function streamBenchmarkRun(
     onEvent({ event: "error", data: { message }, timestamp: null });
   };
 
+  const requestStreamTicket = async (): Promise<StreamTicketResponse> => {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await tokenSupplier();
+      try {
+        return await requestJson<StreamTicketResponse>(`/benchmarks/runs/${runId}/stream-ticket`, {
+          method: "POST",
+          headers: authHeaders(token),
+        });
+      } catch (error) {
+        lastError = error;
+        if (error instanceof ApiRequestError && error.status === 401 && attempt === 0) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error("Failed to request benchmark stream ticket");
+  };
+
   const scheduleReconnect = (reason: string) => {
     if (closed || sawTerminalEvent) {
       return;
@@ -497,6 +525,9 @@ export async function streamBenchmarkRun(
   const handleEventMessage = (eventType: string, event: Event) => {
     if (!hasStringMessageData(event)) {
       if (eventType === "error") {
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
         return;
       }
       emitStreamError(`Benchmark stream payload missing data for ${eventType}`);
@@ -504,17 +535,40 @@ export async function streamBenchmarkRun(
     }
     const rawData = event.data.trim();
     if (!rawData) {
+      if (eventType === "error") {
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
+        return;
+      }
+      emitStreamError(`Benchmark stream payload missing data for ${eventType}`);
       return;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(rawData);
     } catch {
+      if (eventType === "error") {
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
+        onEvent({
+          event: "error",
+          data: { message: rawData },
+          timestamp: null,
+        });
+        return;
+      }
       emitStreamError(`Benchmark stream payload parse failure for ${eventType}`);
       return;
     }
     const normalized = normalizeStreamEventPayload(parsed);
     if (!normalized) {
+      if (eventType === "error") {
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
+      }
       emitStreamError(`Benchmark stream payload shape mismatch for ${eventType}`);
       return;
     }
@@ -528,7 +582,7 @@ export async function streamBenchmarkRun(
       data: normalized.payload,
       timestamp: normalized.timestamp,
     });
-    if (eventType === "complete" || eventType === "failed") {
+    if (eventType === "complete" || eventType === "failed" || eventType === "error") {
       sawTerminalEvent = true;
       closeSource();
       clearReconnectTimer();
@@ -541,13 +595,7 @@ export async function streamBenchmarkRun(
     }
     let ticketResponse: StreamTicketResponse;
     try {
-      ticketResponse = await requestJson<StreamTicketResponse>(
-        `/benchmarks/runs/${runId}/stream-ticket`,
-        {
-          method: "POST",
-          headers: authHeaders(token),
-        },
-      );
+      ticketResponse = await requestStreamTicket();
     } catch (error) {
       const message =
         error instanceof ApiRequestError ? error.message : "Failed to request benchmark stream ticket";
@@ -669,7 +717,7 @@ function hasStringMessageData(event: Event): event is MessageEvent<string> {
 
 export async function streamDeliberation(
   taskId: string,
-  token: string | null,
+  tokenSupplier: AccessTokenSupplier,
   onEvent: (event: TaskEvent) => void,
 ): Promise<StreamHandle> {
   const eventTypes = [
@@ -680,6 +728,7 @@ export async function streamDeliberation(
     "cross_examination_delta",
     "thinking_delta",
     "usage_delta",
+    "provider_retrying",
     "convergence_update",
     "mechanism_switch",
     "quorum_reached",
@@ -718,6 +767,30 @@ export async function streamDeliberation(
     });
   };
 
+  const requestStreamTicket = async (): Promise<StreamTicketResponse> => {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const token = await tokenSupplier();
+      try {
+        return await requestJson<StreamTicketResponse>(`/tasks/${taskId}/stream-ticket`, {
+          method: "POST",
+          headers: authHeaders(token),
+        });
+      } catch (error) {
+        lastError = error;
+        if (error instanceof ApiRequestError && error.status === 401 && attempt === 0) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (lastError instanceof Error) {
+      throw lastError;
+    }
+    throw new Error("Failed to request task stream ticket");
+  };
+
   const scheduleReconnect = (reason: string) => {
     if (closed || sawTerminalEvent) {
       return;
@@ -746,6 +819,9 @@ export async function streamDeliberation(
       // Native EventSource transport errors also use the "error" event type
       // but do not include payload data. Let `source.onerror` handle reconnects.
       if (eventType === "error") {
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
         return;
       }
       emitStreamError(`Stream payload missing data for ${eventType}`);
@@ -756,6 +832,9 @@ export async function streamDeliberation(
     const rawData = message.data.trim();
     if (rawData.length === 0) {
       if (eventType === "error") {
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
         return;
       }
       emitStreamError(`Stream payload missing data for ${eventType}`);
@@ -768,6 +847,9 @@ export async function streamDeliberation(
     } catch {
       if (eventType === "error") {
         // Some server/edge layers emit plain-text error payloads.
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
         onEvent({
           event: "error",
           data: { message: rawData },
@@ -781,6 +863,11 @@ export async function streamDeliberation(
 
     const normalized = normalizeStreamEventPayload(parsed);
     if (!normalized) {
+      if (eventType === "error") {
+        sawTerminalEvent = true;
+        closeSource();
+        clearReconnectTimer();
+      }
       emitStreamError(`Stream payload shape mismatch for ${eventType}`);
       return;
     }
@@ -797,7 +884,7 @@ export async function streamDeliberation(
       timestamp: normalized.timestamp,
     });
 
-    if (eventType === "complete") {
+    if (eventType === "complete" || eventType === "error") {
       sawTerminalEvent = true;
       closeSource();
       clearReconnectTimer();
@@ -811,13 +898,7 @@ export async function streamDeliberation(
 
     let ticketResponse: StreamTicketResponse;
     try {
-      ticketResponse = await requestJson<StreamTicketResponse>(
-        `/tasks/${taskId}/stream-ticket`,
-        {
-          method: "POST",
-          headers: authHeaders(token),
-        },
-      );
+      ticketResponse = await requestStreamTicket();
     } catch (error) {
       const message =
         error instanceof ApiRequestError ? error.message : "Failed to request stream ticket";

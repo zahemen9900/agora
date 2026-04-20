@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -58,6 +60,15 @@ class _FakeGeminiGenerateContentConfig:
 class _FakeGeminiThinkingConfig:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
+
+
+_FakeGeminiThinkingLevel = SimpleNamespace(
+    LOW="LOW",
+    MEDIUM="MEDIUM",
+    HIGH="HIGH",
+    MINIMAL="MINIMAL",
+    THINKING_LEVEL_UNSPECIFIED="THINKING_LEVEL_UNSPECIFIED",
+)
 
 
 class _FakeGeminiPart:
@@ -220,6 +231,7 @@ def _patch_gemini_sdk(
         SimpleNamespace(
             GenerateContentConfig=_FakeGeminiGenerateContentConfig,
             ThinkingConfig=_FakeGeminiThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
         ),
     )
 
@@ -404,6 +416,7 @@ async def test_gemini_structured_output_parses_pydantic(monkeypatch: pytest.Monk
         SimpleNamespace(
             GenerateContentConfig=_FakeGeminiGenerateContentConfig,
             ThinkingConfig=_FakeGeminiThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
         ),
     )
 
@@ -424,7 +437,9 @@ async def test_gemini_structured_output_parses_pydantic(monkeypatch: pytest.Monk
     assert kwargs is not None
     assert kwargs["model"] == "gemini-2.5-pro"
     config = kwargs["config"]
-    assert config.kwargs["response_mime_type"] == "application/json"
+    assert config.kwargs["systemInstruction"] == "Return structured JSON."
+    assert config.kwargs["responseMimeType"] == "application/json"
+    assert config.kwargs["responseSchema"] is _StructuredResponse
 
 
 @pytest.mark.asyncio
@@ -454,6 +469,7 @@ async def test_gemini_streaming_returns_full_text_and_usage(
         SimpleNamespace(
             GenerateContentConfig=_FakeGeminiGenerateContentConfig,
             ThinkingConfig=_FakeGeminiThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
         ),
     )
 
@@ -478,6 +494,92 @@ async def test_gemini_streaming_returns_full_text_and_usage(
     assert usage["output_tokens"] == 4
     assert usage["thinking_tokens"] == 2
     assert usage["total_tokens"] == 9
+
+
+@pytest.mark.asyncio
+async def test_gemini_retries_transient_503s_and_emits_retry_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient Gemini 503s should retry after a visible backoff notice."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "gemini-test-key")
+
+    class _RetryableGeminiError(Exception):
+        def __init__(self, message: str = "503 unavailable") -> None:
+            super().__init__(message)
+            self.status_code = 503
+
+    class _RetryingGeminiModels:
+        def __init__(self, outcomes: list[Any]) -> None:
+            self.outcomes = list(outcomes)
+            self.last_generate_kwargs: dict[str, Any] | None = None
+            self.call_count = 0
+
+        async def generate_content(self, **kwargs: Any) -> _FakeGeminiResponse:
+            self.last_generate_kwargs = kwargs
+            self.call_count += 1
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+    class _RetryingGeminiClient:
+        def __init__(self, api_key: str) -> None:
+            self.api_key = api_key
+            self.models = _RetryingGeminiModels(
+                [
+                    _RetryableGeminiError(),
+                    _FakeGeminiResponse("ok", input_tokens=4, output_tokens=6),
+                ]
+            )
+            self.aio = SimpleNamespace(models=self.models)
+
+    created: dict[str, _RetryingGeminiClient] = {}
+
+    def _fake_client_ctor(*, api_key: str) -> _RetryingGeminiClient:
+        client = _RetryingGeminiClient(api_key=api_key)
+        created["client"] = client
+        return client
+
+    async def _fake_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(agent_module, "genai", SimpleNamespace(Client=_fake_client_ctor))
+    monkeypatch.setattr(
+        agent_module,
+        "genai_types",
+        SimpleNamespace(
+            GenerateContentConfig=_FakeGeminiGenerateContentConfig,
+            ThinkingConfig=_FakeGeminiThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
+        ),
+    )
+    monkeypatch.setattr(agent_module, "GeminiAPIError", _RetryableGeminiError)
+    monkeypatch.setattr(agent_module.random, "uniform", lambda *_args, **_kwargs: 3.5)
+    monkeypatch.setattr(agent_module.asyncio, "sleep", _fake_sleep)
+
+    caller = agent_module.AgentCaller(model="gemini-2.5-flash", temperature=0.4)
+    streamed_events: list[str] = []
+    text, usage = await caller.call(
+        system_prompt="You are concise.",
+        user_prompt="Say hello",
+        stream_callback=streamed_events.append,
+    )
+
+    assert text == "ok"
+    assert usage["provider"] == "gemini"
+    assert usage["input_tokens"] == 4
+    assert usage["output_tokens"] == 6
+    assert created["client"].models.call_count == 2
+    assert streamed_events
+    assert streamed_events[0].startswith("\u001eAGORA_STREAM_EVENT\u001eprovider_retrying\u001f")
+    retry_payload = json.loads(streamed_events[0].split("\u001f", 1)[1])
+    assert retry_payload["provider"] == "gemini"
+    assert retry_payload["model"] == "gemini-2.5-flash"
+    assert retry_payload["attempt"] == 1
+    assert retry_payload["max_retries"] == 3
+    assert retry_payload["backoff_seconds"] == pytest.approx(3.5)
+    assert retry_payload["status_code"] == 503
 
 
 def test_openrouter_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -692,6 +794,7 @@ async def test_flash_caller_uses_minimal_gemini_thinking_level(
         SimpleNamespace(
             GenerateContentConfig=_FakeGeminiGenerateContentConfig,
             ThinkingConfig=_FakeGeminiThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
         ),
     )
 
@@ -701,8 +804,8 @@ async def test_flash_caller_uses_minimal_gemini_thinking_level(
     kwargs = created["client"].models.last_generate_kwargs
     assert kwargs is not None
     config = kwargs["config"]
-    thinking_config = config.kwargs["thinking_config"]
-    assert thinking_config.kwargs == {"include_thoughts": True, "thinking_level": "minimal"}
+    thinking_config = config.kwargs["thinkingConfig"]
+    assert thinking_config.kwargs == {"includeThoughts": True, "thinkingLevel": "MINIMAL"}
 
 
 @pytest.mark.asyncio
@@ -728,6 +831,7 @@ async def test_pro_caller_uses_configured_gemini_thinking_level(
         SimpleNamespace(
             GenerateContentConfig=_FakeGeminiGenerateContentConfig,
             ThinkingConfig=_FakeGeminiThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
         ),
     )
 
@@ -737,8 +841,8 @@ async def test_pro_caller_uses_configured_gemini_thinking_level(
     kwargs = created["client"].models.last_generate_kwargs
     assert kwargs is not None
     config = kwargs["config"]
-    thinking_config = config.kwargs["thinking_config"]
-    assert thinking_config.kwargs == {"include_thoughts": True, "thinking_level": "low"}
+    thinking_config = config.kwargs["thinkingConfig"]
+    assert thinking_config.kwargs == {"includeThoughts": True, "thinkingLevel": "LOW"}
 
 
 @pytest.mark.asyncio
@@ -770,6 +874,7 @@ async def test_gemini_thinking_config_falls_back_to_compatible_shape(
         SimpleNamespace(
             GenerateContentConfig=_FakeGeminiGenerateContentConfig,
             ThinkingConfig=_AliasOnlyThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
         ),
     )
 
@@ -779,14 +884,24 @@ async def test_gemini_thinking_config_falls_back_to_compatible_shape(
     kwargs = created["client"].models.last_generate_kwargs
     assert kwargs is not None
     config = kwargs["config"]
-    thinking_config = config.kwargs["thinking_config"]
-    assert thinking_config.kwargs == {"include_thoughts": True, "thinkingLevel": "high"}
+    thinking_config = config.kwargs["thinkingConfig"]
+    assert thinking_config.kwargs == {"includeThoughts": True, "thinkingLevel": "HIGH"}
 
 
 class _FakeMessage:
-    def __init__(self, text: str, input_tokens: int = 0, output_tokens: int = 0) -> None:
+    def __init__(
+        self,
+        text: str,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        *,
+        cache_creation_input_tokens: int = 0,
+        cache_read_input_tokens: int = 0,
+    ) -> None:
         self.content = [{"type": "text", "text": text}]
         self.usage = SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens)
+        self.usage.cache_creation_input_tokens = cache_creation_input_tokens
+        self.usage.cache_read_input_tokens = cache_read_input_tokens
 
 
 class _FakeMessagesAPI:
@@ -911,6 +1026,7 @@ async def test_claude_uses_async_anthropic_client(monkeypatch) -> None:
     assert kwargs is not None
     assert kwargs["model"] == "claude-sonnet-4-6"
     assert kwargs["max_tokens"] == get_config().anthropic_max_tokens
+    assert kwargs["temperature"] == 1.0
     assert kwargs["messages"][0]["role"] == "user"
     assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert kwargs["output_config"] == {"effort": "medium"}
@@ -949,6 +1065,7 @@ async def test_claude_structured_prefers_sdk_parse_when_available(monkeypatch) -
     assert usage["output_tokens"] == 7
     assert fake_client.messages.last_parse_kwargs is not None
     assert fake_client.messages.last_parse_kwargs["output_format"] is _StructuredResponse
+    assert fake_client.messages.last_parse_kwargs["temperature"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -979,6 +1096,32 @@ async def test_claude_structured_parsing_tolerates_markdown_fence(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_claude_usage_includes_cache_tokens(monkeypatch) -> None:
+    """Claude usage normalization should count cached prompt tokens as input."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    fake_message = _FakeMessage(
+        "final",
+        input_tokens=11,
+        output_tokens=7,
+        cache_creation_input_tokens=3,
+        cache_read_input_tokens=4,
+    )
+    fake_client = _FakeAnthropicClient(response=fake_message)
+    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: fake_client)
+
+    caller = AgentCaller(model="claude-sonnet-4-6", temperature=0.3)
+    response, usage = await caller.call(
+        system_prompt="Be concise.",
+        user_prompt="Say hello",
+    )
+
+    assert response == "final"
+    assert usage["input_tokens"] == 18
+    assert usage["output_tokens"] == 7
+
+
+@pytest.mark.asyncio
 async def test_claude_streaming_returns_full_text_and_usage(monkeypatch) -> None:
     """Streaming mode should concatenate chunks and preserve final usage stats."""
 
@@ -1000,6 +1143,29 @@ async def test_claude_streaming_returns_full_text_and_usage(monkeypatch) -> None
     assert streamed_chunks == ["Hel", "lo"]
     assert usage["input_tokens"] == 5
     assert usage["output_tokens"] == 7
+    assert fake_client.messages.last_create_kwargs is not None
+    assert fake_client.messages.last_create_kwargs["temperature"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_claude_call_times_out_with_model_timeout(monkeypatch) -> None:
+    """Claude calls should fail fast when the configured model timeout is exceeded."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("AGORA_MODEL_CALL_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: object())
+
+    caller = AgentCaller(model="claude-sonnet-4-6", temperature=0.4)
+
+    async def _slow_claude(**kwargs: Any):
+        del kwargs
+        await asyncio.sleep(1.5)
+        return "late", {}
+
+    monkeypatch.setattr(caller, "_call_claude", _slow_claude)
+
+    with pytest.raises(AgentCallError, match="timed out"):
+        await caller.call(system_prompt="Be brief.", user_prompt="Say hello")
 
 
 @pytest.mark.asyncio
@@ -1049,3 +1215,4 @@ async def test_claude_falls_back_when_create_signature_lacks_output_config(
     assert usage["output_tokens"] == 4
     assert messages_api.last_create_kwargs is not None
     assert "output_config" not in messages_api.last_create_kwargs
+    assert messages_api.last_create_kwargs["temperature"] == 1.0

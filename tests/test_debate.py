@@ -97,6 +97,17 @@ class _SchemaAwareDebateCaller:
         )
 
 
+class _RawTextDebateCaller:
+    def __init__(self, model: str, response: str) -> None:
+        self.model = model
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    async def call(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response, {"input_tokens": 5, "output_tokens": 7, "latency_ms": 11.0}
+
+
 def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
     """Faction assignment should keep counted debaters and a separate DA id."""
 
@@ -146,6 +157,24 @@ def test_verify_claims_extracts_arithmetic_equalities_from_json() -> None:
     assert "3*3=9" in claim_texts
 
 
+def test_rebuttal_response_coerces_partial_payload() -> None:
+    """Partial rebuttal JSON should not crash structured debate parsing."""
+
+    response = _RebuttalResponse.model_validate({"answer": 323})
+
+    assert response.answer == "323"
+    assert response.defense == ""
+    assert response.confidence == pytest.approx(0.5)
+
+
+def test_cross_exam_response_coerces_partial_payload() -> None:
+    """Malformed cross-exam JSON should degrade to an empty analysis list."""
+
+    response = _CrossExamResponse.model_validate({"answer": ": "})
+
+    assert response.analyses == []
+
+
 @pytest.mark.asyncio
 async def test_cross_examination_uses_kimi_devil_advocate() -> None:
     """Devil's Advocate cross-examination should use Kimi rather than Gemini Pro."""
@@ -174,7 +203,7 @@ async def test_cross_examination_uses_kimi_devil_advocate() -> None:
     assert output.agent_model == "moonshotai/kimi-k2-thinking"
     assert usage["tokens"] == 12
     assert json.loads(output.content)["analyses"][0]["flaw"] == "unsupported"
-    assert "response_format" not in kimi.calls[0]
+    assert kimi.calls[0]["response_format"] is _CrossExamResponse
     assert pro.calls == []
 
 
@@ -249,8 +278,8 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         "gemini-3.1-flash-lite-preview": 4.0,
         "gemini-3-flash-preview": 11.0,
     }
-    assert result.input_tokens_used is None
-    assert result.output_tokens_used is None
+    assert result.input_tokens_used == 5
+    assert result.output_tokens_used == 7
     assert result.thinking_tokens_used is None
     assert usage["tokens"] == 12
     assert result.agent_models_used == [
@@ -260,6 +289,30 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
     ]
     assert pro.calls[0]["response_format"] is _SynthesisResponse
     assert kimi.calls == []
+
+
+@pytest.mark.asyncio
+async def test_call_structured_flash_raw_text_falls_back_to_kimi() -> None:
+    """Non-Kimi debate providers should fall through to Kimi when they ignore schema."""
+
+    flash = _RawTextDebateCaller("gemini-3.1-flash-lite-preview", "flash raw text")
+    kimi = _RawTextDebateCaller("moonshotai/kimi-k2-thinking", "Kimi fallback answer")
+    engine = DebateEngine(agent_count=3, flash_agent=flash, kimi_agent=kimi)
+    fallback = _InitialAnswerResponse(answer="deterministic fallback", confidence=0.2)
+
+    response, usage = await engine._call_structured(
+        tier="flash",
+        system_prompt="Return JSON.",
+        user_prompt="Debate on the best option",
+        response_model=_InitialAnswerResponse,
+        fallback=fallback,
+    )
+
+    assert response.answer == "Kimi fallback answer"
+    assert response.confidence == pytest.approx(0.2)
+    assert usage["model"] == "moonshotai/kimi-k2-thinking"
+    assert len(flash.calls) == 1
+    assert len(kimi.calls) == 1
 
 
 @pytest.mark.asyncio
