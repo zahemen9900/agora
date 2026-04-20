@@ -94,6 +94,30 @@ def test_sdk_smoke_build_report_includes_summary() -> None:
     assert report["receipt_verification"]["valid"] is True
 
 
+def test_sdk_smoke_formats_stream_events() -> None:
+    module = _load_module()
+
+    agent_event = module._format_stream_event(
+        {
+            "event": "agent_output_delta",
+            "data": {"content": "hello world", "role": "proponent"},
+            "timestamp": "2026-04-20T10:00:00Z",
+        }
+    )
+    generic_event = module._format_stream_event(
+        {
+            "event": "usage_delta",
+            "data": {"total_tokens": 7},
+            "timestamp": "2026-04-20T10:00:01Z",
+        }
+    )
+
+    assert "agent_output_delta" in agent_event
+    assert "hello world" in agent_event
+    assert "usage_delta" in generic_event
+    assert '"total_tokens": 7' in generic_event
+
+
 def test_sdk_smoke_wrapper_installs_before_run() -> None:
     script = (SCRIPT_DIR / "run.sh").read_text(encoding="utf-8")
     install_line = 'pip install "$ROOT_DIR/sdk"'
@@ -102,6 +126,14 @@ def test_sdk_smoke_wrapper_installs_before_run() -> None:
     assert install_line in script
     assert run_line in script
     assert script.index(install_line) < script.index(run_line)
+
+
+def test_sdk_smoke_runner_streams_before_final_json() -> None:
+    script = (SCRIPT_DIR / "run_phase2_sdk_smoke.py").read_text(encoding="utf-8")
+
+    assert "stream_task_events" in script
+    assert "start_task_run" in script
+    assert "final json payload" in script
 
 
 @pytest.mark.paid_integration
@@ -135,5 +167,6 @@ def test_sdk_smoke_script_live() -> None:
     assert completed.returncode == 0, completed.stdout + "\n" + completed.stderr
     assert '"final_answer"' in completed.stdout
     assert '"receipt_verification"' in completed.stdout
-    report_start = completed.stdout.index("{")
-    json.loads(completed.stdout[report_start:])
+    marker = "[sdk] final json payload:\n"
+    assert marker in completed.stdout
+    json.loads(completed.stdout.split(marker, 1)[1])

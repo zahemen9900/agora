@@ -34,6 +34,35 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+### Hosted streaming mode
+
+```python
+import asyncio
+
+from agora.sdk import AgoraArbitrator
+
+
+async def main() -> None:
+    async with AgoraArbitrator(
+        api_url="https://your-agora-api.example.com",
+        auth_token="agora_live_your_public_id.your_secret",
+    ) as arbitrator:
+        created = await arbitrator.create_task(
+            "Should we use microservices or a monolith?",
+            mechanism="vote",
+        )
+        await arbitrator.start_task_run(created.task_id)
+
+        async for event in arbitrator.stream_task_events(created.task_id):
+            print(event)
+
+        result = await arbitrator.get_task_result(created.task_id)
+    print(result.model_dump_json(indent=2))
+
+
+asyncio.run(main())
+```
+
 ### Local callable mode
 
 ```python

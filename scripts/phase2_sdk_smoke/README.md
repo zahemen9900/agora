@@ -7,8 +7,9 @@ The wrapper script does two things in order:
 1. Creates a fresh virtualenv and installs `agora-sdk` from `../sdk`.
 2. Loads `AGORA_API_KEY` from `../../.env` and runs a simple hosted vote prompt.
 
-The smoke test prints a JSON report with the installed package version, request settings,
-receipt verification status, and the full deliberation result.
+The smoke test streams hosted task events into the terminal first, then prints a JSON report
+with the installed package version, request settings, receipt verification status, and the full
+deliberation result.
 
 ## Run
 

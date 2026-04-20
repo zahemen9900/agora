@@ -899,6 +899,108 @@ async def test_sdk_get_task_result_tracks_task_id_mapping(
     assert arbitrator.task_id_for_result(result) == "task-mapped"
 
 
+@pytest.mark.asyncio
+async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(
+        api_url="https://example.invalid",
+        auth_token="agora_test_public.secret",
+        mechanism="vote",
+        agent_count=4,
+        strict_verification=False,
+    )
+    seen_calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def fake_post(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("POST", url, dict(kwargs)))
+        if url == "/tasks/task-stream/run-async":
+            return _FakeResponse(
+                {
+                    "task_id": "task-stream",
+                    "task_text": "Stream this task",
+                    "workspace_id": "user-1",
+                    "created_by": "user-1",
+                    "mechanism": "vote",
+                    "status": "pending",
+                    "selector_reasoning": "Vote is stable.",
+                    "selector_reasoning_hash": "selector-hash",
+                    "selector_confidence": 1.0,
+                    "agent_count": 4,
+                    "reasoning_presets": {
+                        "gemini_pro": "high",
+                        "gemini_flash": "high",
+                        "kimi": "high",
+                        "claude": "high",
+                    },
+                }
+            )
+        if url == "/tasks/task-stream/stream-ticket":
+            return _FakeResponse({"ticket": "ticket-stream"})
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+    class _FakeStreamResponse:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = lines
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+
+    class _FakeStreamContext:
+        def __init__(self, lines: list[str]) -> None:
+            self._response = _FakeStreamResponse(lines)
+
+        async def __aenter__(self) -> _FakeStreamResponse:
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_stream(method: str, url: str, *_args: object, **kwargs: object) -> _FakeStreamContext:
+        seen_calls.append((method, url, dict(kwargs)))
+        assert method == "GET"
+        assert url == "/tasks/task-stream/stream"
+        assert kwargs.get("params") == {"ticket": "ticket-stream"}
+        return _FakeStreamContext(
+            [
+                "event: agent_output_delta",
+                'data: {"payload": {"content": "hello", "role": "proponent"}, "timestamp": "2026-04-20T10:00:00Z"}',
+                "",
+                "event: complete",
+                'data: {"payload": {"task_id": "task-stream", "status": "completed"}, "timestamp": "2026-04-20T10:01:00Z"}',
+                "",
+            ]
+        )
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+    monkeypatch.setattr(arbitrator._client, "stream", fake_stream)
+
+    started = await arbitrator.start_task_run("task-stream")
+    events = [event async for event in arbitrator.stream_task_events("task-stream")]
+    await arbitrator.aclose()
+
+    assert started.status == "pending"
+    assert events == [
+        {
+            "event": "agent_output_delta",
+            "data": {"content": "hello", "role": "proponent"},
+            "timestamp": "2026-04-20T10:00:00Z",
+        },
+        {
+            "event": "complete",
+            "data": {"task_id": "task-stream", "status": "completed"},
+            "timestamp": "2026-04-20T10:01:00Z",
+        },
+    ]
+    assert arbitrator.latest_task_id == "task-stream"
+    assert seen_calls[0][1] == "/tasks/task-stream/run-async"
+    assert seen_calls[1][1] == "/tasks/task-stream/stream-ticket"
+
+
 class _FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload

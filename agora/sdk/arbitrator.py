@@ -407,6 +407,17 @@ class AgoraArbitrator:
         self._latest_task_id = task_id
         return HostedDeliberationResult.model_validate(response.json())
 
+    async def start_task_run(self, task_id: str) -> HostedTaskStatus:
+        """Start a hosted task in the background and return the current status."""
+
+        response = await self._client.post(
+            f"/tasks/{task_id}/run-async",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        self._latest_task_id = task_id
+        return HostedTaskStatus.model_validate(response.json())
+
     async def get_task_status(
         self,
         task_id: str,
@@ -469,48 +480,24 @@ class AgoraArbitrator:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream benchmark run SSE events with replay from the hosted API."""
 
-        ticket_response = await self._client.post(
-            f"/benchmarks/runs/{run_id}/stream-ticket",
-            headers=self._headers(),
-        )
-        ticket_response.raise_for_status()
-        ticket_payload = ticket_response.json()
-        ticket = str(ticket_payload["ticket"])
+        async for event in self._stream_hosted_events(
+            ticket_path=f"/benchmarks/runs/{run_id}/stream-ticket",
+            stream_path=f"/benchmarks/runs/{run_id}/stream",
+        ):
+            yield event
 
-        async with self._client.stream(
-            "GET",
-            f"/benchmarks/runs/{run_id}/stream",
-            params={"ticket": ticket},
-            headers=self._headers(),
-        ) as response:
-            response.raise_for_status()
-            event_type = "message"
-            data_lines: list[str] = []
+    async def stream_task_events(
+        self,
+        task_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream hosted task SSE events with replay from the hosted API."""
 
-            async for line in response.aiter_lines():
-                if line.startswith("event:"):
-                    event_type = line[6:].strip()
-                    continue
-                if line.startswith("data:"):
-                    data_lines.append(line[5:].strip())
-                    continue
-                if line:
-                    continue
-                if not data_lines:
-                    event_type = "message"
-                    continue
-                raw_data = "\n".join(data_lines)
-                data_lines = []
-                try:
-                    payload = json.loads(raw_data)
-                except json.JSONDecodeError:
-                    payload = {"payload": {"message": raw_data}, "timestamp": None}
-                yield {
-                    "event": event_type,
-                    "data": payload.get("payload", payload),
-                    "timestamp": payload.get("timestamp"),
-                }
-                event_type = "message"
+        self._latest_task_id = task_id
+        async for event in self._stream_hosted_events(
+            ticket_path=f"/tasks/{task_id}/stream-ticket",
+            stream_path=f"/tasks/{task_id}/stream",
+        ):
+            yield event
 
     async def release_payment(self, task_id: str) -> HostedPaymentReleaseResponse:
         """Release payment for a completed hosted task."""
@@ -678,6 +665,67 @@ class AgoraArbitrator:
             "merkle_match": merkle_match,
             "hosted_metadata_match": hosted_metadata_match,
             "on_chain_match": on_chain_match,
+        }
+
+    async def _stream_hosted_events(
+        self,
+        *,
+        ticket_path: str,
+        stream_path: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream normalized SSE events from a hosted API endpoint."""
+
+        ticket_response = await self._client.post(ticket_path, headers=self._headers())
+        ticket_response.raise_for_status()
+        ticket_payload = ticket_response.json()
+        ticket = str(ticket_payload["ticket"])
+
+        async with self._client.stream(
+            "GET",
+            stream_path,
+            params={"ticket": ticket},
+            headers=self._headers(),
+        ) as response:
+            response.raise_for_status()
+            event_type = "message"
+            data_lines: list[str] = []
+
+            async for line in response.aiter_lines():
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+                    continue
+                if line:
+                    continue
+                if not data_lines:
+                    event_type = "message"
+                    continue
+                raw_data = "\n".join(data_lines)
+                data_lines = []
+                yield self._normalize_sse_event(event_type=event_type, raw_data=raw_data)
+                event_type = "message"
+
+    @staticmethod
+    def _normalize_sse_event(event_type: str, raw_data: str) -> dict[str, Any]:
+        """Normalize an SSE event payload into the SDK's public event shape."""
+
+        try:
+            payload = json.loads(raw_data)
+        except json.JSONDecodeError:
+            payload = {"payload": {"message": raw_data}, "timestamp": None}
+        if not isinstance(payload, dict):
+            payload = {"payload": {"message": raw_data}, "timestamp": None}
+
+        normalized_payload = payload.get("payload", payload)
+        if not isinstance(normalized_payload, dict):
+            normalized_payload = {"message": normalized_payload}
+
+        return {
+            "event": event_type,
+            "data": normalized_payload,
+            "timestamp": payload.get("timestamp"),
         }
 
     async def _verify_onchain_receipt(

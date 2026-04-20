@@ -2022,6 +2022,77 @@ async def test_stream_task_replays_timestamped_event_envelopes(
 
 
 @pytest.mark.asyncio
+async def test_stream_task_error_replay_is_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "stream-replay-error"))
+    user = _override_user()
+    task_id = "task-stream-error"
+    task_payload = {
+        "task_id": task_id,
+        "task_text": "Replay the error path",
+        "workspace_id": user.workspace_id,
+        "mechanism": "vote",
+        "status": "failed",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [],
+    }
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content):
+            self.content = content
+
+    class _FailingStream:
+        def subscribe(self, _stream_id: str) -> object:
+            raise AssertionError("terminal task error should not subscribe for live updates")
+
+        def unsubscribe(self, _stream_id: str, _queue: object) -> None:
+            raise AssertionError("unsubscribe should not be called")
+
+    task_routes._store = store
+    await store.upsert_user(user.id, user.email, user.display_name)
+    await store.save_task(user.workspace_id, task_id, task_payload)
+    await store.append_event(
+        user.workspace_id,
+        task_id,
+        {
+            "event": "error",
+            "data": {"message": "provider unavailable"},
+            "timestamp": "2026-04-14T13:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+    monkeypatch.setattr(task_routes, "get_stream_manager", lambda: _FailingStream())
+
+    try:
+        ticket = (await task_routes._issue_stream_ticket(user.workspace_id, task_id))["ticket"]
+        response = await task_routes.stream_task(task_id, ticket=ticket)
+        replayed_events = [item async for item in response.content]
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert replayed_events == [
+        {
+            "event": "error",
+            "data": json.dumps(
+                {
+                    "payload": {"message": "provider unavailable"},
+                    "timestamp": "2026-04-14T13:00:00+00:00",
+                }
+            ),
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stream_ticket_is_one_use_and_namespaced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3404,6 +3475,66 @@ async def test_benchmark_stream_replays_events_and_terminal_state(
             "data": json.dumps(
                 {
                     "payload": {"run_id": run_id, "status": "completed"},
+                    "timestamp": "2026-04-18T02:01:00+00:00",
+                }
+            ),
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_benchmark_stream_error_replay_is_terminal(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+
+    run_id = "benchmark-stream-error"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "failed",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "updated_at": "2026-04-18T02:01:00+00:00",
+            "events": [
+                {
+                    "event": "error",
+                    "data": {"message": "provider unavailable"},
+                    "timestamp": "2026-04-18T02:01:00+00:00",
+                },
+            ],
+        },
+    )
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content):
+            self.content = content
+
+    class _FailingStream:
+        def subscribe(self, _stream_id: str) -> object:
+            raise AssertionError("terminal benchmark error should not subscribe for live updates")
+
+        def unsubscribe(self, _stream_id: str, _queue: object) -> None:
+            raise AssertionError("unsubscribe should not be called")
+
+    monkeypatch.setattr(benchmark_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+    monkeypatch.setattr(benchmark_routes, "get_stream_manager", lambda: _FailingStream())
+
+    ticket = await benchmark_routes.create_benchmark_stream_ticket(run_id, _override_user())
+    response = await benchmark_routes.stream_benchmark_run(run_id, ticket=ticket["ticket"])
+    replayed = [item async for item in response.content]
+
+    assert replayed == [
+        {
+            "event": "error",
+            "data": json.dumps(
+                {
+                    "payload": {"message": "provider unavailable"},
                     "timestamp": "2026-04-18T02:01:00+00:00",
                 }
             ),
