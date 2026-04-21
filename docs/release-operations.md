@@ -25,11 +25,19 @@ python -m build sdk
 python -m twine check sdk/dist/*
 ```
 
+The SDK now resolves the canonical hosted Cloud Run backend by default, so release smoke
+and install checks do not need a manual hosted API URL.
+
 ### Publish (When Authorized)
 
 ```bash
 python -m twine upload --repository pypi sdk/dist/*
 ```
+
+Trusted publishing is wired for the repository in `.github/workflows/publish-sdk.yml`
+using the PyPI project settings for `agora-sdk` / `zahemen9900` / `agora` / `pypi`.
+This cycle keeps the publish step manual; the workflow is ready for the next authorization
+without requiring a new setup pass.
 
 ### Post-Publish Verification
 

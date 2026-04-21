@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_DIR = ROOT / "scripts" / "phase2_sdk_smoke"
 
@@ -27,7 +26,6 @@ def _load_module():
 def test_sdk_smoke_parses_agora_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     monkeypatch.setenv("AGORA_API_KEY", "agora_live_public.secret")
-    monkeypatch.setenv("AGORA_API_URL", "https://example.com")
     monkeypatch.setenv("AGORA_PHASE2_SMOKE_PROMPT", "   Should we use X or Y?   ")
     monkeypatch.setenv("AGORA_PHASE2_SMOKE_MECHANISM", "vote")
     monkeypatch.setenv("AGORA_PHASE2_SMOKE_AGENT_COUNT", "2")
@@ -37,7 +35,6 @@ def test_sdk_smoke_parses_agora_api_key(monkeypatch: pytest.MonkeyPatch) -> None
 
     config = module._parse_args([])
 
-    assert config.api_url == "https://example.com"
     assert config.auth_token == "agora_live_public.secret"
     assert config.prompt == "Should we use X or Y?"
     assert config.mechanism == "vote"
@@ -47,10 +44,39 @@ def test_sdk_smoke_parses_agora_api_key(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.quorum_threshold == 0.75
 
 
+def test_sdk_smoke_rejects_invalid_agent_count_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    monkeypatch.setenv("AGORA_PHASE2_SMOKE_AGENT_COUNT", "not-a-number")
+
+    with pytest.raises(ValueError, match="AGORA_PHASE2_SMOKE_AGENT_COUNT must be a valid integer"):
+        module._int_env("AGORA_PHASE2_SMOKE_AGENT_COUNT", 4)
+
+
+def test_sdk_smoke_rejects_invalid_quorum_threshold_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    monkeypatch.setenv("AGORA_PHASE2_QUORUM_THRESHOLD", "not-a-float")
+
+    with pytest.raises(ValueError, match="AGORA_PHASE2_QUORUM_THRESHOLD must be a valid float"):
+        module._float_env("AGORA_PHASE2_QUORUM_THRESHOLD", 0.6)
+
+
+def test_sdk_smoke_missing_auth_token_message_is_generic(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    monkeypatch.delenv("AGORA_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        module._parse_args([])
+
+    message = str(exc_info.value)
+    assert "AGORA_API_KEY is required" in message
+    assert "/home/zahemen/projects/dl-lib/agora/.env" not in message
+
+
 def test_sdk_smoke_build_report_includes_summary() -> None:
     module = _load_module()
     config = module.SmokeConfig(
-        api_url="https://example.com",
         auth_token="agora_live_public.secret",
         prompt="Should we use a monolith or microservices?",
         mechanism="vote",
@@ -82,14 +108,18 @@ def test_sdk_smoke_build_report_includes_summary() -> None:
     report = module._build_report(
         config=config,
         result=_FakeResult(),
-        verification={"valid": True, "merkle_match": True, "hosted_metadata_match": True, "on_chain_match": None},
+        verification={
+            "valid": True,
+            "merkle_match": True,
+            "hosted_metadata_match": True,
+            "on_chain_match": None,
+        },
     )
 
     assert report["summary"]["mechanism_used"] == "vote"
     assert report["summary"]["final_answer"] == "Use a modular monolith"
     assert report["summary"]["model_count"] == 2
     assert report["summary"]["model_telemetry_models"] == ["model-a", "model-b"]
-    assert report["request"]["api_url"] == "https://example.com"
     assert report["request"]["mechanism"] == "vote"
     assert report["receipt_verification"]["valid"] is True
 
@@ -125,6 +155,7 @@ def test_sdk_smoke_wrapper_installs_before_run() -> None:
 
     assert install_line in script
     assert run_line in script
+    assert "AGORA_API_URL" not in script
     assert script.index(install_line) < script.index(run_line)
 
 
@@ -134,6 +165,7 @@ def test_sdk_smoke_runner_streams_before_final_json() -> None:
     assert "stream_task_events" in script
     assert "start_task_run" in script
     assert "final json payload" in script
+    assert "--api-url" not in script
 
 
 @pytest.mark.paid_integration

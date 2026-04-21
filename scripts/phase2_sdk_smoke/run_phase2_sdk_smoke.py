@@ -14,7 +14,6 @@ from typing import Any
 
 from agora.sdk import AgoraArbitrator
 
-DEFAULT_API_URL = "https://agora-api-dcro4pg6ca-uc.a.run.app"
 DEFAULT_PROMPT = (
     "Should we use a monolith or microservices for a small internal tool?"
 )
@@ -22,7 +21,6 @@ DEFAULT_PROMPT = (
 
 @dataclass(frozen=True)
 class SmokeConfig:
-    api_url: str
     auth_token: str
     prompt: str
     mechanism: str | None
@@ -39,19 +37,37 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _default_api_url() -> str:
-    return os.getenv("AGORA_API_URL", DEFAULT_API_URL).rstrip("/")
-
-
 def _default_prompt() -> str:
     return os.getenv("AGORA_PHASE2_SMOKE_PROMPT", DEFAULT_PROMPT).strip()
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid integer, got: {raw!r}") from exc
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+
+    try:
+        return float(raw.strip())
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid float, got: {raw!r}") from exc
 
 
 def _build_config(args: argparse.Namespace) -> SmokeConfig:
     auth_token = args.auth_token.strip()
     if not auth_token:
         raise RuntimeError(
-            "AGORA_API_KEY is required. Set it in /home/zahemen/projects/dl-lib/agora/.env "
+            "AGORA_API_KEY is required. Set it in the environment, in a .env file, "
             "or pass --auth-token explicitly."
         )
     if args.agent_count < 1:
@@ -59,7 +75,6 @@ def _build_config(args: argparse.Namespace) -> SmokeConfig:
     if args.quorum_threshold < 0.0 or args.quorum_threshold > 1.0:
         raise RuntimeError("--quorum-threshold must be between 0.0 and 1.0")
     return SmokeConfig(
-        api_url=args.api_url.rstrip("/"),
         auth_token=auth_token,
         prompt=args.prompt.strip(),
         mechanism=args.mechanism,
@@ -72,9 +87,11 @@ def _build_config(args: argparse.Namespace) -> SmokeConfig:
 
 def _parse_args(argv: list[str] | None = None) -> SmokeConfig:
     parser = argparse.ArgumentParser(
-        description="Install agora-sdk, run a simple hosted arbitration prompt, and print the result."
+        description=(
+            "Install agora-sdk, run a simple hosted arbitration prompt, "
+            "and print the result."
+        )
     )
-    parser.add_argument("--api-url", default=_default_api_url())
     parser.add_argument("--auth-token", default=os.getenv("AGORA_API_KEY", ""))
     parser.add_argument("--prompt", default=_default_prompt())
     parser.add_argument(
@@ -85,7 +102,7 @@ def _parse_args(argv: list[str] | None = None) -> SmokeConfig:
     parser.add_argument(
         "--agent-count",
         type=int,
-        default=int(os.getenv("AGORA_PHASE2_SMOKE_AGENT_COUNT", "4")),
+        default=_int_env("AGORA_PHASE2_SMOKE_AGENT_COUNT", 3),
     )
     parser.add_argument(
         "--allow-mechanism-switch",
@@ -100,7 +117,7 @@ def _parse_args(argv: list[str] | None = None) -> SmokeConfig:
     parser.add_argument(
         "--quorum-threshold",
         type=float,
-        default=float(os.getenv("AGORA_PHASE2_QUORUM_THRESHOLD", "0.6")),
+        default=_float_env("AGORA_PHASE2_QUORUM_THRESHOLD", 0.6),
     )
     return _build_config(parser.parse_args(argv))
 
@@ -139,7 +156,6 @@ def _build_report(
             "agora_module_path": str(getattr(agora_module, "__file__", "")),
         },
         "request": {
-            "api_url": config.api_url,
             "prompt": config.prompt,
             "mechanism": config.mechanism,
             "agent_count": config.agent_count,
@@ -175,14 +191,14 @@ async def _consume_task_stream(arbitrator: AgoraArbitrator, task_id: str) -> Non
     async for event in arbitrator.stream_task_events(task_id):
         print(_format_stream_event(event))
         if event.get("event") == "error":
-            raise RuntimeError(f"Hosted task failed: {json.dumps(event.get('data', {}), sort_keys=True)}")
+            error_payload = json.dumps(event.get("data", {}), sort_keys=True)
+            raise RuntimeError(f"Hosted task failed: {error_payload}")
         if event.get("event") == "complete":
             return
 
 
 async def _run(config: SmokeConfig) -> dict[str, Any]:
     async with AgoraArbitrator(
-        api_url=config.api_url,
         auth_token=config.auth_token,
         mechanism=config.mechanism,
         agent_count=config.agent_count,
@@ -226,7 +242,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[sdk] agora-sdk version: {_installed_sdk_version()}")
     print(f"[sdk] python: {sys.executable}")
-    print(f"[sdk] api_url: {config.api_url}")
     print(f"[sdk] prompt: {config.prompt}")
 
     report = asyncio.run(_run(config))

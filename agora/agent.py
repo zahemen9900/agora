@@ -2016,6 +2016,19 @@ class AgentCaller:
                 for value in (input_tokens, output_tokens, thinking_tokens)
                 if value is not None
             )
+        if total_tokens is not None:
+            if input_tokens is None and output_tokens is not None and thinking_tokens is not None:
+                derived_input = total_tokens - output_tokens - thinking_tokens
+                if derived_input >= 0:
+                    input_tokens = derived_input
+            if output_tokens is None and input_tokens is not None and thinking_tokens is not None:
+                derived_output = total_tokens - input_tokens - thinking_tokens
+                if derived_output >= 0:
+                    output_tokens = derived_output
+            if thinking_tokens is None and input_tokens is not None and output_tokens is not None:
+                derived_thinking = total_tokens - input_tokens - output_tokens
+                if derived_thinking >= 0:
+                    thinking_tokens = derived_thinking
 
         thinking_trace_present = False
         thinking_trace_chars = 0
@@ -2130,7 +2143,7 @@ def claude_caller(*, effort: str | None = None) -> AgentCaller:
     config = get_config()
     return AgentCaller(
         model=config.claude_model,
-        temperature=0.5,
+        temperature=1.0,
         claude_effort=effort or config.claude_effort,
     )
 

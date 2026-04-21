@@ -3,7 +3,6 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_API_URL="https://agora-api-dcro4pg6ca-uc.a.run.app"
 VENV_DIR="$(mktemp -d -t agora-phase2-sdk-smoke-XXXXXX)"
 BASE_PYTHON="${AGORA_PHASE2_SDK_SMOKE_BASE_PYTHON:-}"
 
@@ -47,14 +46,12 @@ if [[ -z "${AGORA_API_KEY:-}" ]]; then
   exit 1
 fi
 
-API_URL="${AGORA_API_URL:-$DEFAULT_API_URL}"
 PROMPT="${AGORA_PHASE2_SMOKE_PROMPT:-Should we use a monolith or microservices for a small internal tool?}"
-AGENT_COUNT="${AGORA_PHASE2_SMOKE_AGENT_COUNT:-4}"
+AGENT_COUNT="${AGORA_PHASE2_SMOKE_AGENT_COUNT:-3}"
 MECHANISM="${AGORA_PHASE2_SMOKE_MECHANISM:-vote}"
 
 echo "[run] executing hosted SDK smoke test"
 "$VENV_DIR/bin/python" "$SCRIPT_DIR/run_phase2_sdk_smoke.py" \
-  --api-url "$API_URL" \
   --auth-token "$AGORA_API_KEY" \
   --prompt "$PROMPT" \
   --mechanism "$MECHANISM" \

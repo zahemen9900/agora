@@ -11,6 +11,7 @@ import pytest
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
+from agora.sdk.config import CANONICAL_HOSTED_API_URL, resolve_hosted_api_url
 from api.auth import AuthenticatedUser
 from api.main import app
 from api.routes import benchmarks as benchmark_routes
@@ -22,25 +23,38 @@ from benchmarks.runner import BenchmarkRunner
 def test_benchmark_runner_loads_curated_dataset() -> None:
     dataset = BenchmarkRunner.load_dataset("math")
     dataset_by_spec_name = BenchmarkRunner.load_dataset("math_tasks")
+    demo_dataset = BenchmarkRunner.load_dataset("demo")
 
     assert len(dataset) == 20
     assert dataset == dataset_by_spec_name
     assert {item["category"] for item in dataset} == {"math"}
     assert all("task" in item for item in dataset)
     assert all("source" in item for item in dataset)
+    assert len(demo_dataset) == 20
+    assert {item["category"] for item in demo_dataset} == {"demo"}
+    assert all("?" in item["task"] for item in demo_dataset)
 
 
 def test_benchmark_runner_builds_default_phase2_split() -> None:
     training, holdout = BenchmarkRunner.build_phase2_task_split()
 
-    assert len(training) == 30
-    assert len(holdout) == 10
+    assert len(training) == 36
+    assert len(holdout) == 12
     assert {item["category"] for item in training} == {
         "math",
         "factual",
         "reasoning",
         "code",
         "creative",
+        "demo",
+    }
+    assert {item["category"] for item in holdout} == {
+        "math",
+        "factual",
+        "reasoning",
+        "code",
+        "creative",
+        "demo",
     }
 
 def _assert_normalized_selector_summary(
@@ -52,6 +66,7 @@ def _assert_normalized_selector_summary(
     summary = payload["summary"]
 
     assert summary["per_mode"]["selector"]["accuracy"] == pytest.approx(mode_accuracy)
+    assert summary["per_mechanism"]["selector"]["accuracy"] == pytest.approx(mode_accuracy)
     assert summary["per_mode"]["debate"]["accuracy"] == pytest.approx(0.0)
     assert summary["per_mode"]["vote"]["accuracy"] == pytest.approx(0.0)
     assert summary["per_category"]["reasoning"]["selector"]["accuracy"] == pytest.approx(
@@ -422,6 +437,8 @@ async def test_benchmarks_route_include_demo_keeps_stage_runs_without_synthesize
         payload = response.json()
         assert payload["post_learning"]["runs"][0]["task"] == "Stage run task"
         assert payload["demo_report"]["artifact"] == "phase2_demo_local_2026-04-17.json"
+        assert "demo" in payload["summary"]["per_category"]
+        assert "vote" in payload["summary"]["per_mechanism"]
         assert "runs" not in payload
     finally:
         task_routes._store = None
@@ -495,6 +512,8 @@ async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_miss
         assert payload["runs"][0]["task"] == "Synthesized run query"
         assert payload["runs"][0]["mode"] == "vote"
         assert payload["runs"][0]["task_id"] == "demo-task-2"
+        assert "demo" in payload["summary"]["per_category"]
+        assert "vote" in payload["summary"]["per_mechanism"]
     finally:
         task_routes._store = None
         benchmark_routes._RESULTS_DIR = original_results_dir
@@ -540,6 +559,8 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
         training_per_category=1,
         holdout_per_category=1,
     )
+    training = [task for task in training if task["category"] != "demo"]
+    holdout = [task for task in holdout if task["category"] != "demo"]
     orchestrator = AgoraOrchestrator(agent_count=3)
     runner = BenchmarkRunner(orchestrator, agents=[deterministic_agent] * 3)
 
@@ -716,7 +737,6 @@ async def test_sdk_verify_receipt_lenient_allows_missing_task_mapping() -> None:
 
 def test_sdk_hosted_mode_keeps_bearer_auth_token_interface() -> None:
     arbitrator = AgoraArbitrator(
-        api_url="https://example.invalid",
         auth_token="agora_test_public.secret",
         strict_verification=False,
     )
@@ -731,7 +751,6 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     arbitrator = AgoraArbitrator(
-        api_url="https://example.invalid",
         auth_token="agora_test_public.secret",
         mechanism="vote",
         agent_count=4,
@@ -839,7 +858,6 @@ async def test_sdk_get_task_result_tracks_task_id_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     arbitrator = AgoraArbitrator(
-        api_url="https://example.invalid",
         auth_token="agora_test_public.secret",
         strict_verification=False,
     )
@@ -904,7 +922,6 @@ async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     arbitrator = AgoraArbitrator(
-        api_url="https://example.invalid",
         auth_token="agora_test_public.secret",
         mechanism="vote",
         agent_count=4,
@@ -1010,6 +1027,59 @@ class _FakeResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+@pytest.mark.asyncio
+async def test_sdk_hosted_api_url_defaults_to_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGORA_API_URL", raising=False)
+    monkeypatch.delenv("AGORA_ALLOW_API_URL_OVERRIDE", raising=False)
+
+    arbitrator = AgoraArbitrator(strict_verification=False)
+    node = AgoraNode()
+    try:
+        assert resolve_hosted_api_url() == CANONICAL_HOSTED_API_URL
+        assert arbitrator.config.api_url == CANONICAL_HOSTED_API_URL
+        assert node.arbitrator.config.api_url == CANONICAL_HOSTED_API_URL
+    finally:
+        await arbitrator.aclose()
+        await node.aclose()
+
+
+def test_sdk_hosted_api_url_override_env_is_ignored_without_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGORA_API_URL", "https://example.invalid")
+    monkeypatch.delenv("AGORA_ALLOW_API_URL_OVERRIDE", raising=False)
+
+    assert resolve_hosted_api_url() == CANONICAL_HOSTED_API_URL
+
+
+def test_sdk_hosted_api_url_override_requires_gate() -> None:
+    with pytest.raises(ValueError, match="AGORA_ALLOW_API_URL_OVERRIDE=1"):
+        AgoraArbitrator(
+            api_url="https://example.invalid",
+            strict_verification=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sdk_hosted_api_url_override_can_be_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGORA_ALLOW_API_URL_OVERRIDE", "1")
+    monkeypatch.setenv("AGORA_API_URL", "https://example.invalid")
+
+    arbitrator = AgoraArbitrator(
+        api_url="https://example.invalid",
+        strict_verification=False,
+    )
+    try:
+        assert resolve_hosted_api_url() == "https://example.invalid"
+        assert arbitrator.config.api_url == "https://example.invalid"
+    finally:
+        await arbitrator.aclose()
 
 
 @pytest.mark.asyncio

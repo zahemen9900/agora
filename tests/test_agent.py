@@ -1143,6 +1143,7 @@ async def test_claude_streaming_returns_full_text_and_usage(monkeypatch) -> None
     assert streamed_chunks == ["Hel", "lo"]
     assert usage["input_tokens"] == 5
     assert usage["output_tokens"] == 7
+    assert usage["thinking_tokens"] == 0
     assert fake_client.messages.last_create_kwargs is not None
     assert fake_client.messages.last_create_kwargs["temperature"] == 1.0
 

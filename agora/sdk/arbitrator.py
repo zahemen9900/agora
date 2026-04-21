@@ -18,6 +18,7 @@ from solders.pubkey import Pubkey
 from agora.runtime.costing import build_result_costing
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.sdk.config import CANONICAL_HOSTED_API_URL, resolve_hosted_api_url
 from agora.selector.features import extract_features
 from agora.types import (
     ConvergenceMetrics,
@@ -66,7 +67,7 @@ class ArbitratorConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    api_url: str = "http://localhost:8000"
+    api_url: str = CANONICAL_HOSTED_API_URL
     solana_wallet: str | None = None
     mechanism: MechanismName | None = None
     agent_count: int = 4
@@ -290,7 +291,7 @@ class AgoraArbitrator:
 
     def __init__(
         self,
-        api_url: str = "http://localhost:8000",
+        api_url: str | None = None,
         solana_wallet: str | None = None,
         mechanism: MechanismName | None = None,
         agent_count: int = 4,
@@ -304,8 +305,9 @@ class AgoraArbitrator:
         program_id: str = DEFAULT_PROGRAM_ID,
         http_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> None:
+        resolved_api_url = resolve_hosted_api_url(api_url)
         self.config = ArbitratorConfig(
-            api_url=api_url,
+            api_url=resolved_api_url,
             solana_wallet=solana_wallet,
             mechanism=mechanism,
             agent_count=agent_count,
@@ -320,7 +322,7 @@ class AgoraArbitrator:
             http_timeout_seconds=http_timeout_seconds,
         )
         self._client = httpx.AsyncClient(
-            base_url=api_url,
+            base_url=resolved_api_url,
             timeout=httpx.Timeout(self.config.http_timeout_seconds),
         )
         self._hasher = TranscriptHasher()
@@ -1172,7 +1174,7 @@ class AgoraNode:
 
     def __init__(
         self,
-        api_url: str = "http://localhost:8000",
+        api_url: str | None = None,
         solana_wallet: str | None = None,
         mechanism: MechanismName | None = None,
         agent_count: int = 4,

@@ -127,3 +127,24 @@ def test_locked_claim_growth_contributes_to_novelty() -> None:
     assert second.js_divergence == 0.0
     assert second.locked_claim_growth > 0.0
     assert second.novelty_score > 0.0
+
+
+def test_compute_metrics_clamps_answer_churn_to_unit_interval(monkeypatch) -> None:
+    """Floating-point churn should never escape the Pydantic unit interval."""
+
+    monitor = StateMonitor()
+    outputs = [
+        make_agent_output("agent-1", '{"current_answer":"Option A"}', role="pro_rebuttal"),
+        make_agent_output("agent-2", '{"current_answer":"Option B"}', role="opp_rebuttal"),
+    ]
+
+    monitor.compute_metrics(outputs)
+    monkeypatch.setattr(
+        monitor,
+        "_answer_churn",
+        lambda previous, current: 1.0000000000000002,
+    )
+
+    metrics = monitor.compute_metrics(outputs)
+
+    assert metrics.answer_churn == 1.0

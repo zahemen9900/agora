@@ -17,12 +17,15 @@ deliberation result.
 ./scripts/phase2_sdk_smoke/run.sh
 ```
 
-You can override the prompt or API URL with:
+You can override the prompt or mechanism with:
 
 ```bash
 AGORA_PHASE2_SMOKE_PROMPT="Should we use a monolith or microservices?" \
-AGORA_API_URL="https://your-api.example.com" \
 ./scripts/phase2_sdk_smoke/run.sh
 ```
 
 Set `AGORA_PHASE2_SMOKE_MECHANISM=debate` if you want to force the other hosted mechanism.
+
+The smoke wrapper itself always targets the canonical hosted Cloud Run backend through the SDK
+default. For internal testing only, set `AGORA_ALLOW_API_URL_OVERRIDE=1` and use the SDK
+directly with a manual `AGORA_API_URL`.

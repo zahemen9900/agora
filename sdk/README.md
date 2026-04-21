@@ -21,10 +21,7 @@ from agora.sdk import AgoraArbitrator
 
 
 async def main() -> None:
-    async with AgoraArbitrator(
-        api_url="https://your-agora-api.example.com",
-        auth_token="agora_live_your_public_id.your_secret",
-    ) as arbitrator:
+    async with AgoraArbitrator(auth_token="agora_live_your_public_id.your_secret") as arbitrator:
         result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
     print(result.mechanism_used.value)
     print(result.final_answer)
@@ -43,10 +40,7 @@ from agora.sdk import AgoraArbitrator
 
 
 async def main() -> None:
-    async with AgoraArbitrator(
-        api_url="https://your-agora-api.example.com",
-        auth_token="agora_live_your_public_id.your_secret",
-    ) as arbitrator:
+    async with AgoraArbitrator(auth_token="agora_live_your_public_id.your_secret") as arbitrator:
         created = await arbitrator.create_task(
             "Should we use microservices or a monolith?",
             mechanism="vote",
@@ -102,10 +96,7 @@ from langgraph.graph import StateGraph
 graph = StateGraph(dict)
 graph.add_node(
     "deliberate",
-    AgoraNode(
-        api_url="https://your-agora-api.example.com",
-        strict_verification=True,
-    ),
+    AgoraNode(strict_verification=True),
 )
 ```
 
@@ -113,7 +104,7 @@ For long-lived LangGraph workers or repeated node construction, close the wrappe
 HTTP client explicitly:
 
 ```python
-async with AgoraNode(api_url="https://your-agora-api.example.com") as agora_node:
+async with AgoraNode() as agora_node:
     state = await agora_node({"task": "Pick the safer deployment plan."})
 ```
 
@@ -133,9 +124,16 @@ async with AgoraNode(api_url="https://your-agora-api.example.com") as agora_node
 - Hosted mode keeps the same `auth_token=` interface, but the token should be an Agora API key such as `agora_live_<public_id>.<secret>` or `agora_test_<public_id>.<secret>` in non-production environments.
 - Strict hosted E2E should use a real staging API key, not a fabricated JWT.
 
+### Hosted API URL policy
+
+Hosted SDK calls resolve the canonical Cloud Run backend automatically. Do not pass a manual
+hosted URL in normal usage. For internal testing only, set `AGORA_ALLOW_API_URL_OVERRIDE=1`
+and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the SDK.
+
 ## Verification Controls
 
-- `AgoraArbitrator` defaults to 4-agent hosted execution and strict receipt verification.
+- `AgoraArbitrator` defaults to 4-agent hosted execution, the canonical Cloud Run API URL,
+  and strict receipt verification.
 - `AgoraNode` supports `strict_verification`, `solana_wallet`, and async cleanup pass-through for parity with `AgoraArbitrator`.
 - Set `strict_verification=False` only when intentionally opting into lenient verification behavior.
 
