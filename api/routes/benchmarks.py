@@ -200,7 +200,7 @@ _BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
 _background_benchmark_runs: dict[str, asyncio.Task[None]] = {}
 _legacy_backfill_complete = False
 _legacy_backfill_lock: asyncio.Lock | None = None
-_STREAM_POLL_INTERVAL_SECONDS = 0.5
+_STREAM_POLL_INTERVAL_SECONDS = 0.15
 
 
 def _get_legacy_backfill_lock() -> asyncio.Lock:
@@ -279,7 +279,90 @@ def _as_dict(value: Any) -> dict[str, Any]:
 def _is_summary_block(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
-    return isinstance(value.get("per_mode"), dict) or isinstance(value.get("per_category"), dict)
+    return any(
+        isinstance(value.get(section), dict)
+        for section in ("per_mode", "per_mechanism", "per_category")
+    )
+
+
+def _merge_metric_sections(
+    raw_section: Any,
+    derived_section: Any,
+    *,
+    metric_keys: tuple[str, ...],
+    fallback_keys: tuple[str, ...] = (),
+) -> dict[str, dict[str, float]]:
+    raw_map = _as_dict(raw_section)
+    derived_map = _as_dict(derived_section)
+    ordered_keys: list[str] = []
+
+    for key in fallback_keys:
+        normalized = str(key).strip().lower()
+        if normalized and normalized not in ordered_keys:
+            ordered_keys.append(normalized)
+
+    for source in (raw_map, derived_map):
+        for key in source.keys():
+            if not isinstance(key, str):
+                continue
+            normalized = key.strip().lower()
+            if normalized and normalized not in ordered_keys:
+                ordered_keys.append(normalized)
+
+    merged: dict[str, dict[str, float]] = {}
+    for key in ordered_keys:
+        raw_metrics = _as_dict(raw_map.get(key))
+        derived_metrics = _as_dict(derived_map.get(key))
+        merged[key] = {
+            metric_key: _safe_float(
+                raw_metrics.get(metric_key)
+                if raw_metrics.get(metric_key) is not None
+                else derived_metrics.get(metric_key)
+            )
+            for metric_key in metric_keys
+        }
+    return merged
+
+
+def _merge_category_sections(
+    raw_section: Any,
+    derived_section: Any,
+) -> dict[str, dict[str, dict[str, float]]]:
+    raw_map = _as_dict(raw_section)
+    derived_map = _as_dict(derived_section)
+    ordered_categories: list[str] = []
+
+    for category in _BENCHMARK_DOMAIN_ORDER:
+        normalized = str(category).strip().lower()
+        if normalized and normalized not in ordered_categories:
+            ordered_categories.append(normalized)
+
+    for source in (raw_map, derived_map):
+        for key in source.keys():
+            if not isinstance(key, str):
+                continue
+            normalized = key.strip().lower()
+            if normalized and normalized not in ordered_categories:
+                ordered_categories.append(normalized)
+
+    category_metrics: dict[str, dict[str, dict[str, float]]] = {}
+    for category in ordered_categories:
+        raw_mechanisms = _as_dict(raw_map.get(category))
+        derived_mechanisms = _as_dict(derived_map.get(category))
+        category_metrics[category] = _merge_metric_sections(
+            raw_mechanisms,
+            derived_mechanisms,
+            metric_keys=(
+                "accuracy",
+                "avg_tokens",
+                "avg_latency_ms",
+                "avg_thinking_tokens",
+                "avg_estimated_cost_usd",
+            ),
+            fallback_keys=_BENCHMARK_MECHANISMS,
+        )
+
+    return category_metrics
 
 
 def _resolve_summary_block(payload: dict[str, Any]) -> dict[str, Any]:
@@ -683,50 +766,48 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
     cloned = dict(payload)
     summary = _resolve_summary_block(cloned)
     derived_summary = BenchmarkRunner._summarize_runs(_runs_for_summary(cloned))
-    per_mode_raw = _as_dict(summary.get("per_mode")) or _as_dict(derived_summary.get("per_mode"))
-    per_category_raw = _as_dict(summary.get("per_category")) or _as_dict(
-        derived_summary.get("per_category")
+    raw_per_mode = _as_dict(summary.get("per_mode"))
+    raw_per_mechanism = _as_dict(summary.get("per_mechanism"))
+    raw_per_category = _as_dict(summary.get("per_category"))
+    derived_per_mode = _as_dict(derived_summary.get("per_mode"))
+    derived_per_mechanism = _as_dict(derived_summary.get("per_mechanism"))
+    derived_per_category = _as_dict(derived_summary.get("per_category"))
+
+    per_mode_complete = _merge_metric_sections(
+        raw_per_mode or raw_per_mechanism,
+        derived_per_mode or derived_per_mechanism,
+        metric_keys=(
+            "accuracy",
+            "avg_tokens",
+            "avg_latency_ms",
+            "avg_rounds",
+            "switch_rate",
+            "avg_thinking_tokens",
+            "avg_estimated_cost_usd",
+        ),
+        fallback_keys=_BENCHMARK_MECHANISMS,
     )
-
-    all_categories: list[str] = list(_BENCHMARK_DOMAIN_ORDER)
-    all_categories.extend(
-        category
-        for category in per_category_raw.keys()
-        if isinstance(category, str) and category not in all_categories
+    per_mechanism_complete = _merge_metric_sections(
+        raw_per_mechanism or raw_per_mode,
+        derived_per_mechanism or derived_per_mode,
+        metric_keys=(
+            "accuracy",
+            "avg_tokens",
+            "avg_latency_ms",
+            "avg_rounds",
+            "switch_rate",
+            "avg_thinking_tokens",
+            "avg_estimated_cost_usd",
+        ),
+        fallback_keys=_BENCHMARK_MECHANISMS,
     )
+    per_category_complete = _merge_category_sections(raw_per_category, derived_per_category)
 
-    per_mode_complete: dict[str, dict[str, float]] = {}
-    for mechanism in _BENCHMARK_MECHANISMS:
-        raw_metrics = _as_dict(per_mode_raw.get(mechanism))
-        per_mode_complete[mechanism] = {
-            "accuracy": _safe_float(raw_metrics.get("accuracy")),
-            "avg_tokens": _safe_float(raw_metrics.get("avg_tokens")),
-            "avg_latency_ms": _safe_float(raw_metrics.get("avg_latency_ms")),
-            "avg_rounds": _safe_float(raw_metrics.get("avg_rounds")),
-            "switch_rate": _safe_float(raw_metrics.get("switch_rate")),
-            "avg_thinking_tokens": _safe_float(raw_metrics.get("avg_thinking_tokens")),
-            "avg_estimated_cost_usd": _safe_float(raw_metrics.get("avg_estimated_cost_usd")),
-        }
-
-    per_category_complete: dict[str, dict[str, dict[str, float]]] = {}
-    for category in all_categories:
-        category_key = str(category)
-        category_metrics = _as_dict(per_category_raw.get(category_key))
-        per_category_complete[category_key] = {}
-        for mechanism in _BENCHMARK_MECHANISMS:
-            mode_metrics = _as_dict(category_metrics.get(mechanism))
-            per_category_complete[category_key][mechanism] = {
-                "accuracy": _safe_float(mode_metrics.get("accuracy")),
-                "avg_tokens": _safe_float(mode_metrics.get("avg_tokens")),
-                "avg_latency_ms": _safe_float(mode_metrics.get("avg_latency_ms")),
-                "avg_thinking_tokens": _safe_float(mode_metrics.get("avg_thinking_tokens")),
-                "avg_estimated_cost_usd": _safe_float(mode_metrics.get("avg_estimated_cost_usd")),
-            }
-
-    cloned["summary"] = {
-        "per_mode": per_mode_complete,
-        "per_category": per_category_complete,
-    }
+    normalized_summary = dict(summary)
+    normalized_summary["per_mode"] = per_mode_complete
+    normalized_summary["per_mechanism"] = per_mechanism_complete
+    normalized_summary["per_category"] = per_category_complete
+    cloned["summary"] = normalized_summary
     return cloned
 
 
@@ -932,6 +1013,16 @@ def _synthesize_demo_runs(demo_payload: dict[str, Any]) -> list[dict[str, Any]]:
     merkle_root = run_result.get("merkle_root") or status_after_run.get("merkle_root")
     explorer_url = status_after_run.get("explorer_url") or tx_summary.get("receipt_explorer_url")
     latency_ms = run_result.get("latency_ms")
+    total_tokens = run_result.get("total_tokens_used") or run_result.get("total_tokens")
+    confidence = run_result.get("confidence")
+    quorum_reached = bool(run_result.get("quorum_reached"))
+    correct = bool(quorum_reached and _safe_float(confidence) >= 0.6)
+    round_count = _safe_int(run_result.get("round_count") or demo_payload.get("round_count"), default=1)
+    mechanism_switches = _safe_int(
+        run_result.get("mechanism_switches") or demo_payload.get("mechanism_switches"),
+    )
+    agent_count = _safe_positive_int(run_result.get("agent_count") or demo_payload.get("agent_count"))
+    agent_models_used = run_result.get("agent_models_used")
 
     if not any([task_id, task_text, mode, merkle_root, explorer_url, latency_ms]):
         return []
@@ -942,7 +1033,12 @@ def _synthesize_demo_runs(demo_payload: dict[str, Any]) -> list[dict[str, Any]]:
             "task": task_text,
             "category": "demo",
             "mode": mode or "selector",
+            "mechanism_used": mode or "selector",
+            "correct": correct,
+            "tokens_used": _safe_int(total_tokens, default=0),
             "latency_ms": latency_ms,
+            "rounds": round_count,
+            "switches": mechanism_switches,
             "merkle_root": merkle_root,
             "explorer_url": explorer_url,
             "confidence": run_result.get("confidence"),
@@ -950,7 +1046,8 @@ def _synthesize_demo_runs(demo_payload: dict[str, Any]) -> list[dict[str, Any]]:
             "status": status_after_pay.get("status")
             or status_after_run.get("status")
             or demo_payload.get("final_status"),
-            "agent_models_used": run_result.get("agent_models_used"),
+            "agent_count": agent_count,
+            "agent_models_used": agent_models_used,
         }
     ]
 
@@ -989,11 +1086,26 @@ def _extract_runs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     demo_report = _as_dict(payload.get("demo_report"))
     run_result = _as_dict(demo_report.get("run_result"))
     if run_result:
+        confidence = run_result.get("confidence")
+        quorum_reached = bool(run_result.get("quorum_reached"))
         runs.append(
             {
+                "mode": (
+                    run_result.get("mode")
+                    or demo_report.get("mechanism")
+                    or run_result.get("mechanism")
+                ),
                 "mechanism_used": run_result.get("mechanism") or demo_report.get("mechanism"),
                 "model": run_result.get("model"),
+                "agent_count": run_result.get("agent_count") or demo_report.get("agent_count"),
                 "agent_models_used": run_result.get("agent_models_used"),
+                "correct": bool(quorum_reached and _safe_float(confidence) >= 0.6),
+                "tokens_used": run_result.get("total_tokens_used") or run_result.get("tokens_used"),
+                "latency_ms": run_result.get("latency_ms"),
+                "rounds": run_result.get("round_count"),
+                "switches": run_result.get("mechanism_switches"),
+                "confidence": confidence,
+                "final_answer": run_result.get("final_answer"),
             }
         )
 
@@ -1003,8 +1115,9 @@ def _extract_runs(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _runs_for_summary(payload: dict[str, Any]) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for run in _extract_runs(payload):
-        mode = (
-            str(run.get("mode") or run.get("mechanism_used") or run.get("mechanism") or "selector")
+        mode = str(run.get("mode") or run.get("stage") or "selector").strip().lower()
+        mechanism = (
+            str(run.get("mechanism_used") or run.get("mechanism") or run.get("mode") or "selector")
             .strip()
             .lower()
         )
@@ -1012,6 +1125,8 @@ def _runs_for_summary(payload: dict[str, Any]) -> list[dict[str, Any]]:
         normalized.append(
             {
                 "mode": mode,
+                "stage": mode,
+                "mechanism_used": mechanism,
                 "category": category,
                 "correct": bool(run.get("correct")),
                 "tokens_used": _safe_int(run.get("tokens_used") or run.get("total_tokens_used")),
@@ -1482,7 +1597,7 @@ async def _execute_benchmark_run(
 
         orchestrator = AgoraOrchestrator(
             agent_count=request.agent_count,
-            allow_offline_fallback=not request.live_agents,
+            allow_offline_fallback=True,
             reasoning_presets=reasoning_presets,
         )
         selector_state = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
@@ -2052,7 +2167,7 @@ async def stream_benchmark_run(
         for event in events:
             yield _benchmark_sse_message(event)
 
-        if any(event.get("event") in {"complete", "failed"} for event in events):
+        if any(event.get("event") in {"complete", "failed", "error"} for event in events):
             return
 
         stream_id = _benchmark_stream_key(workspace_id, run_id)
@@ -2074,7 +2189,7 @@ async def stream_benchmark_run(
                         payload = _benchmark_sse_message(event)
                         next_event_index += 1
                         yield payload
-                        if payload["event"] in {"complete", "failed"}:
+                        if payload["event"] in {"complete", "failed", "error"}:
                             return
                     continue
 
@@ -2083,7 +2198,7 @@ async def stream_benchmark_run(
                 payload = _benchmark_sse_message(item)
                 yield payload
                 next_event_index += 1
-                if payload["event"] in {"complete", "failed"}:
+                if payload["event"] in {"complete", "failed", "error"}:
                     break
         finally:
             stream.unsubscribe(stream_id, queue)

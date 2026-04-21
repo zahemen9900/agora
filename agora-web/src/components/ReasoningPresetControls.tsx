@@ -21,13 +21,13 @@ export function ReasoningPresetControls({
         {REASONING_CONTROL_DEFINITIONS.map((definition) => (
           <label
             key={definition.id}
-            className={`block rounded-md border px-3 py-3 ${providerTone(definition.provider)}`}
+            className={`flex flex-col p-4 border border-border-subtle rounded-xl transition-colors hover:border-[rgba(255,255,255,0.3)] ${providerTone(definition.provider).replace(/border-[^\s]+/, '')}`}
           >
             <div className="flex items-center gap-2 mb-2">
               <ProviderGlyph provider={definition.provider} size={14} />
-              <span className="mono text-xs">{definition.label}</span>
+              <span className="mono text-xs font-medium">{definition.label}</span>
             </div>
-            <div className="mono text-[10px] text-text-muted mb-2">{definition.help}</div>
+            <div className="mono text-[10px] text-text-muted mb-4 flex-1">{definition.help}</div>
             <select
               value={value[definition.id]}
               onChange={(event) =>
@@ -36,7 +36,7 @@ export function ReasoningPresetControls({
                   [definition.id]: event.target.value,
                 } as ReasoningPresetState)
               }
-              className="w-full rounded-md border border-border-subtle bg-void px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent"
+              className="w-full rounded-full border border-border-subtle bg-transparent px-4 py-2 text-sm text-text-primary focus:outline-none focus:border-border-muted appearance-none disabled:opacity-50"
             >
               {definition.options.map((option) => (
                 <option key={option.value} value={option.value}>

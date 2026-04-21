@@ -9,7 +9,7 @@
 
 ## SDK Release Runbook (Manual, Current Cycle)
 
-Target package: `agora-sdk==0.1.0a1`
+Target package: `agora-arbitrator-sdk==0.1.0a1`
 
 ### Prerequisites
 
@@ -25,19 +25,27 @@ python -m build sdk
 python -m twine check sdk/dist/*
 ```
 
+The SDK now resolves the canonical hosted Cloud Run backend by default, so release smoke
+and install checks do not need a manual hosted API URL.
+
 ### Publish (When Authorized)
 
 ```bash
 python -m twine upload --repository pypi sdk/dist/*
 ```
 
+Trusted publishing is wired for the repository in `.github/workflows/deploy-sdk.yml`
+using the PyPI project settings for `agora-arbitrator-sdk` / `zahemen9900` / `agora` / `pypi`.
+This cycle keeps the publish step manual; the workflow is ready for the next authorization
+without requiring a new setup pass.
+
 ### Post-Publish Verification
 
 ```bash
-python -m venv /tmp/agora-sdk-verify
-source /tmp/agora-sdk-verify/bin/activate
+python -m venv /tmp/agora-arbitrator-sdk-verify
+source /tmp/agora-arbitrator-sdk-verify/bin/activate
 python -m pip install --upgrade pip
-python -m pip install agora-sdk==0.1.0a1
+python -m pip install agora-arbitrator-sdk==0.1.0a1
 python - <<'PY'
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 print("sdk-import-ok")

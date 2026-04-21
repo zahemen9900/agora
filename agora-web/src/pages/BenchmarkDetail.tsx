@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, RefreshCcw } from "lucide-react";
+import { ArrowLeft, Check, Clipboard, Loader2, RefreshCcw } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -52,6 +52,10 @@ export function BenchmarkDetail() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [timeline, setTimeline] = useState<TaskEvent[]>([]);
+  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const timelineContainerRef = useRef<HTMLDivElement | null>(null);
+  const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
+  const followTimelineRef = useRef(true);
 
   const loadDetail = useCallback(async () => {
     if (!benchmarkId) {
@@ -115,8 +119,7 @@ export function BenchmarkDetail() {
     let handle: { close: () => void } | null = null;
 
     void (async () => {
-      const token = await getAccessToken();
-      handle = await streamBenchmarkRun(detailRunId, token, (event) => {
+      handle = await streamBenchmarkRun(detailRunId, getAccessToken, (event) => {
         if (cancelled) {
           return;
         }
@@ -137,21 +140,30 @@ export function BenchmarkDetail() {
             if (!current) {
               return current;
             }
+            const eventFailed = event.event === "failed" || event.event === "error";
             return {
               ...current,
-              status: event.event === "failed" ? "failed" : current.status,
-              latest_mechanism: typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
+              status: eventFailed ? "failed" : current.status,
+              latest_mechanism:
+                typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
               agent_count: isPositiveInteger(telemetry.agent_count) ? telemetry.agent_count : current.agent_count,
               total_tokens: typeof telemetry.total_tokens === "number" ? telemetry.total_tokens : current.total_tokens,
-              thinking_tokens: typeof telemetry.thinking_tokens === "number" ? telemetry.thinking_tokens : current.thinking_tokens,
-              total_latency_ms: typeof telemetry.total_latency_ms === "number" ? telemetry.total_latency_ms : current.total_latency_ms,
+              thinking_tokens:
+                typeof telemetry.thinking_tokens === "number" ? telemetry.thinking_tokens : current.thinking_tokens,
+              total_latency_ms:
+                typeof telemetry.total_latency_ms === "number" ? telemetry.total_latency_ms : current.total_latency_ms,
               model_telemetry: (telemetry.model_telemetry as typeof current.model_telemetry) ?? current.model_telemetry,
               cost: (telemetry.cost as typeof current.cost) ?? current.cost,
             };
           });
         }
 
-        if (event.event === "artifact_created" || event.event === "complete" || event.event === "failed") {
+        if (
+          event.event === "artifact_created"
+          || event.event === "complete"
+          || event.event === "failed"
+          || event.event === "error"
+        ) {
           void loadDetail();
         }
       });
@@ -224,15 +236,60 @@ export function BenchmarkDetail() {
     return totalCost / agentCount;
   }, [detail]);
 
-  const costByModel = detail?.cost?.model_estimated_costs_usd
-    ? Object.entries(detail.cost.model_estimated_costs_usd)
-      .sort((a, b) => b[1] - a[1])
-    : [];
+  const costByModel = useMemo(() => {
+    if (!detail?.cost?.model_estimated_costs_usd) {
+      return [];
+    }
+    return Object.entries(detail.cost.model_estimated_costs_usd)
+      .sort((a, b) => b[1] - a[1]);
+  }, [detail?.cost?.model_estimated_costs_usd]);
+
+  const costByModelMap = useMemo(() => new Map(costByModel), [costByModel]);
 
   const modelTelemetryRows = detail?.model_telemetry
     ? Object.entries(detail.model_telemetry)
       .sort((a, b) => (b[1]?.total_tokens ?? 0) - (a[1]?.total_tokens ?? 0))
     : [];
+
+  const timelineJson = useMemo(() => prettyJson(timeline), [timeline]);
+
+  useEffect(() => {
+    followTimelineRef.current = true;
+  }, [detailRunId]);
+
+  useEffect(() => {
+    if (!followTimelineRef.current || timeline.length === 0) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      latestTimelineEntryRef.current?.scrollIntoView({ block: "end", inline: "nearest" });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [timeline]);
+
+  const handleTimelineScroll = useCallback(() => {
+    const container = timelineContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    followTimelineRef.current = distanceFromBottom < 120;
+  }, []);
+
+  const handleCopyTimeline = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(timelineJson);
+      setCopyState("copied");
+      window.setTimeout(() => setCopyState("idle"), 1500);
+    } catch (error) {
+      console.error(error);
+    }
+  }, [timelineJson]);
 
   const resolvedPrompts = (() => {
     const request = detail?.request;
@@ -305,9 +362,12 @@ export function BenchmarkDetail() {
       {detail.status === "queued" || detail.status === "running" ? (
         <div className="card p-4 sm:p-6 mb-8 border border-accent/40">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
-            <div>
-              <div className="mono text-xs text-text-muted mb-1">LIVE STATUS</div>
-              <div className="text-lg text-text-primary">{titleCase(detail.status)}</div>
+            <div className="flex items-center gap-3">
+              <Loader2 size={16} className="animate-spin text-accent" />
+              <div>
+                <div className="mono text-xs text-text-muted mb-1">LIVE STATUS</div>
+                <div className="text-lg text-text-primary">{titleCase(detail.status)}</div>
+              </div>
             </div>
             <div className="mono text-xs text-text-secondary">
               {detail.run_id ?? detail.benchmark_id}
@@ -318,6 +378,21 @@ export function BenchmarkDetail() {
             <div>Thinking {formatMaybeRuntimeInt(detail.thinking_tokens, detail.status)}</div>
             <div>Latency {formatMaybeRuntimeLatency(detail.total_latency_ms ?? null, detail.status)}</div>
             <div>Cost {formatUsd(detail.cost?.estimated_cost_usd ?? null)}</div>
+          </div>
+        </div>
+      ) : null}
+
+      {detail.status === "failed" ? (
+        <div className="card p-4 sm:p-6 mb-8 border border-red-400/50 bg-red-400/10">
+          <div className="flex items-center gap-3">
+            <Loader2 size={16} className="text-red-400" />
+            <div>
+              <div className="mono text-xs text-text-muted mb-1">BENCHMARK FAILED</div>
+              <div className="text-sm text-text-primary">
+                The run stopped before completion. Refreshing the detail page should keep the
+                persisted artifact visible, but the underlying provider error needs another pass.
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
@@ -336,10 +411,28 @@ export function BenchmarkDetail() {
 
       {timeline.length > 0 ? (
         <div className="card p-4 sm:p-6 mb-8">
-          <h3 className="text-lg font-semibold mb-3">Run Timeline</h3>
-          <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="text-lg font-semibold">Run Timeline</h3>
+            <button
+              type="button"
+              className="btn-secondary inline-flex items-center gap-2"
+              onClick={() => void handleCopyTimeline()}
+            >
+              {copyState === "copied" ? <Check size={14} /> : <Clipboard size={14} />}
+              {copyState === "copied" ? "Copied" : "Copy JSON"}
+            </button>
+          </div>
+          <div
+            ref={timelineContainerRef}
+            onScroll={handleTimelineScroll}
+            className="space-y-3 max-h-96 overflow-y-auto pr-1"
+          >
             {timeline.map((event, index) => (
-              <div key={`${event.event}-${event.timestamp ?? index}`} className="border border-border-subtle rounded-md p-3 bg-void">
+              <div
+                key={`${event.event}-${event.timestamp ?? index}`}
+                ref={index === timeline.length - 1 ? latestTimelineEntryRef : undefined}
+                className="border border-border-subtle rounded-md p-3 bg-void"
+              >
                 <div className="flex items-center justify-between gap-3 mb-1">
                   <div className="mono text-xs text-text-primary">{event.event.replace(/_/g, " ")}</div>
                   <div className="mono text-[10px] text-text-muted">{formatDateTime(event.timestamp)}</div>
@@ -477,7 +570,7 @@ export function BenchmarkDetail() {
                     <div>Output {formatMaybeInt(telemetry.output_tokens)}</div>
                     <div>Thinking {formatMaybeInt(telemetry.thinking_tokens)}</div>
                     <div>Latency {formatLatency(telemetry.latency_ms ?? null)}</div>
-                    <div>Cost {formatUsd(telemetry.estimated_cost_usd ?? null)}</div>
+                    <div>Cost {formatUsd(telemetry.estimated_cost_usd ?? costByModelMap.get(model) ?? null)}</div>
                   </div>
                 </div>
               ))}

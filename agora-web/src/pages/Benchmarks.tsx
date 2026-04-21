@@ -16,6 +16,7 @@ import {
   ArrowRight,
   ChevronLeft,
   ChevronRight,
+  Loader2,
   RefreshCcw,
   X,
 } from "lucide-react";
@@ -758,6 +759,12 @@ export function Benchmarks() {
                 <span className="mono text-xs text-text-muted">RUN ID</span>
                 <span className="mono text-xs text-text-primary break-all">{activeBenchmarkRun.run_id}</span>
                 <span className="badge">{titleCase(activeBenchmarkRun.status)}</span>
+                {activeBenchmarkRun.status === "queued" || activeBenchmarkRun.status === "running" ? (
+                  <span className="inline-flex items-center gap-2 mono text-[11px] text-accent">
+                    <Loader2 size={12} className="animate-spin" />
+                    live benchmark running
+                  </span>
+                ) : null}
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-text-secondary mb-2">
                 <div>Tokens {formatInt(activeBenchmarkRun.total_tokens ?? 0)}</div>
@@ -1265,10 +1272,11 @@ function deriveSummary(payload: BenchmarkPayload | null): BenchmarkSummary {
   return fallback;
 }
 
-function ensureCompleteSummary(summary: BenchmarkSummary): BenchmarkSummary {
+function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSummary {
+  const safePerMode = summary.per_mode || {};
   const perMode: Record<string, Record<string, number>> = {};
   for (const mechanism of BENCHMARK_MECHANISMS) {
-    const metrics = summary.per_mode[mechanism] ?? {};
+    const metrics = safePerMode[mechanism] ?? {};
     perMode[mechanism] = {
       accuracy: asNumber(metrics.accuracy),
       avg_tokens: asNumber(metrics.avg_tokens),
@@ -1280,14 +1288,15 @@ function ensureCompleteSummary(summary: BenchmarkSummary): BenchmarkSummary {
     };
   }
 
+  const safePerCategory = summary.per_category || {};
   const perCategory: Record<string, Record<string, Record<string, number>>> = {};
   const categories = new Set<string>(BENCHMARK_DOMAINS);
-  Object.keys(summary.per_category).forEach((category) => categories.add(category));
+  Object.keys(safePerCategory).forEach((category) => categories.add(category));
 
   for (const category of categories) {
     perCategory[category] = {};
     for (const mechanism of BENCHMARK_MECHANISMS) {
-      const metrics = summary.per_category[category]?.[mechanism] ?? {};
+      const metrics = safePerCategory[category]?.[mechanism] ?? {};
       perCategory[category][mechanism] = {
         accuracy: asNumber(metrics.accuracy),
         avg_tokens: asNumber(metrics.avg_tokens),

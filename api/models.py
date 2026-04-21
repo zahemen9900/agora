@@ -133,6 +133,8 @@ class TaskStatusResponse(BaseModel):
     chain_operations: dict[str, ChainOperationRecord] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
+    failure_reason: str | None = None
+    latest_error_event: TaskEvent | None = None
     result: DeliberationResultResponse | None = None
     events: list[TaskEvent] = Field(default_factory=list)
 

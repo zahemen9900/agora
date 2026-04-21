@@ -315,6 +315,10 @@ class AgoraConfig(BaseModel):
         default_factory=lambda: float(os.getenv("AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS", "60")),
         gt=0,
     )
+    model_call_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("AGORA_MODEL_CALL_TIMEOUT_SECONDS", "180")),
+        gt=0,
+    )
     openrouter_api_key: str | None = Field(default_factory=_resolve_openrouter_api_key)
     openrouter_secret_name: str = Field(
         default_factory=lambda: os.getenv(

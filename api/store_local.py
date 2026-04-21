@@ -176,11 +176,12 @@ class LocalTaskStore:
             allow_missing=True,
             operation="ensure_personal_workspace.read_workspace",
         )
+        display_name = (name or email or user_id).strip() or user_id
+        desired_display_name = f"{display_name}'s Workspace"
         if workspace is None:
-            display_name = (name or email or user_id).strip() or user_id
             workspace = {
                 "id": workspace_id,
-                "display_name": f"{display_name}'s Workspace",
+                "display_name": desired_display_name,
                 "kind": "personal",
                 "owner_user_id": user_id,
                 "created_at": now,
@@ -189,6 +190,13 @@ class LocalTaskStore:
                 workspace_path,
                 workspace,
                 operation="ensure_personal_workspace.write_workspace",
+            )
+        elif name and str(workspace.get("display_name") or "") != desired_display_name:
+            workspace["display_name"] = desired_display_name
+            self._write_json(
+                workspace_path,
+                workspace,
+                operation="ensure_personal_workspace.refresh_workspace",
             )
         if user.get("workspace_id") != workspace_id:
             user["workspace_id"] = workspace_id

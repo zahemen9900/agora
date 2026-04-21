@@ -26,7 +26,9 @@ _DATASET_ALIASES = {
     "reasoning": "reasoning_tasks",
     "code": "code_tasks",
     "creative": "creative_tasks",
+    "demo": "demo_tasks",
 }
+
 
 def _normalized_model_token_usage(
     model_token_usage: dict[str, int],
@@ -373,7 +375,7 @@ class BenchmarkRunner:
         training_per_category: int = 6,
         holdout_per_category: int = 2,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Build the default 30-train / 10-holdout Phase 2 split."""
+        """Build the default 36-train / 12-holdout Phase 2 split."""
 
         training_tasks: list[dict[str, Any]] = []
         holdout_tasks: list[dict[str, Any]] = []
@@ -700,7 +702,7 @@ class BenchmarkRunner:
         """Score a result against task metadata or proxy heuristic."""
 
         category = str(task_item.get("category", "reasoning")).lower()
-        if category == "creative":
+        if category in {"creative", "demo"}:
             return result.quorum_reached and result.confidence >= 0.6
 
         ground_truth = task_item.get("ground_truth")
@@ -727,18 +729,35 @@ class BenchmarkRunner:
 
     @staticmethod
     def _summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
-        """Aggregate benchmark records by mode and category."""
+        """Aggregate benchmark records by stage, actual mechanism, and category."""
 
         if not runs:
-            return {"per_mode": {}, "per_category": {}}
+            return {"per_mode": {}, "per_mechanism": {}, "per_category": {}}
 
         per_mode: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        per_mechanism: dict[str, list[dict[str, Any]]] = defaultdict(list)
         per_category: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
             lambda: defaultdict(list)
         )
         for run in runs:
-            per_mode[run["mode"]].append(run)
-            per_category[run["category"]][run["mode"]].append(run)
+            stage_key = str(
+                run.get("mode")
+                or run.get("stage")
+                or run.get("mechanism_used")
+                or run.get("mechanism")
+                or "selector"
+            ).strip().lower() or "selector"
+            mechanism_key = str(
+                run.get("mechanism_used")
+                or run.get("mechanism")
+                or run.get("mode")
+                or "selector"
+            ).strip().lower() or "selector"
+            category_key = str(run.get("category") or "unknown").strip().lower() or "unknown"
+
+            per_mode[stage_key].append(run)
+            per_mechanism[mechanism_key].append(run)
+            per_category[category_key][mechanism_key].append(run)
 
         mode_summary = {
             mode: {
@@ -759,9 +778,30 @@ class BenchmarkRunner:
             for mode, mode_runs in per_mode.items()
         }
 
+        mechanism_summary = {
+            mechanism: {
+                "accuracy": sum(1 for run in mechanism_runs if run["correct"]) / len(mechanism_runs),
+                "avg_tokens": sum(run["tokens_used"] for run in mechanism_runs) / len(mechanism_runs),
+                "avg_latency_ms": sum(run["latency_ms"] for run in mechanism_runs)
+                / len(mechanism_runs),
+                "avg_rounds": sum(run["rounds"] for run in mechanism_runs) / len(mechanism_runs),
+                "switch_rate": sum(run["switches"] for run in mechanism_runs)
+                / len(mechanism_runs),
+                "avg_thinking_tokens": sum(
+                    float(run.get("thinking_tokens_used") or 0) for run in mechanism_runs
+                )
+                / len(mechanism_runs),
+                "avg_estimated_cost_usd": sum(
+                    float(run.get("estimated_cost_usd") or 0.0) for run in mechanism_runs
+                )
+                / len(mechanism_runs),
+            }
+            for mechanism, mechanism_runs in per_mechanism.items()
+        }
+
         category_summary = {
             category: {
-                mode: {
+                mechanism: {
                     "accuracy": sum(1 for run in category_runs if run["correct"])
                     / len(category_runs),
                     "avg_tokens": sum(run["tokens_used"] for run in category_runs)
@@ -777,12 +817,13 @@ class BenchmarkRunner:
                     )
                     / len(category_runs),
                 }
-                for mode, category_runs in mode_runs.items()
+                for mechanism, category_runs in mode_runs.items()
             }
             for category, mode_runs in per_category.items()
         }
 
         return {
             "per_mode": mode_summary,
+            "per_mechanism": mechanism_summary,
             "per_category": category_summary,
         }

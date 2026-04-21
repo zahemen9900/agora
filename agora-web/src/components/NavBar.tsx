@@ -21,7 +21,7 @@ export function NavBar() {
         <div className="flex items-center w-auto md:w-[200px]">
           <Link
             to="/"
-            className="wordmark text-xl text-text-primary transition-all duration-200 hover:text-accent hover:drop-shadow-[0_0_20px_rgba(0,212,170,0.25)]"
+            className="wordmark text-xl text-text-primary transition-all duration-200 hover:text-accent hover:drop-shadow-[0_0_20px_rgba(0,229,153,0.3)]"
           >
             AGORA
           </Link>
@@ -35,7 +35,7 @@ export function NavBar() {
           >
             Tasks
             {isNavActive('/tasks') && (
-               <div className="absolute -bottom-4.5 left-0 right-0 h-0.5 bg-accent shadow-[0_0_20px_rgba(0,212,170,0.15)]" />
+               <div className="absolute -bottom-4.5 left-0 right-0 h-0.5 bg-accent shadow-[0_0_20px_rgba(0,229,153,0.25)]" />
             )}
           </Link>
           {canViewBenchmarks ? (
@@ -45,7 +45,7 @@ export function NavBar() {
             >
               Benchmarks
               {isNavActive('/benchmarks') && (
-                <div className="absolute -bottom-4.5 left-0 right-0 h-0.5 bg-accent shadow-[0_0_20px_rgba(0,212,170,0.15)]" />
+                <div className="absolute -bottom-4.5 left-0 right-0 h-0.5 bg-accent shadow-[0_0_20px_rgba(0,229,153,0.25)]" />
               )}
             </Link>
           ) : null}
@@ -56,7 +56,7 @@ export function NavBar() {
             >
               API Keys
               {isNavActive('/api-keys') && (
-                <div className="absolute -bottom-4.5 left-0 right-0 h-0.5 bg-accent shadow-[0_0_20px_rgba(0,212,170,0.15)]" />
+                <div className="absolute -bottom-4.5 left-0 right-0 h-0.5 bg-accent shadow-[0_0_20px_rgba(0,229,153,0.25)]" />
               )}
             </Link>
           ) : null}

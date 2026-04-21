@@ -35,6 +35,7 @@ def mechanism_is_supported(mechanism: MechanismType) -> bool:
 
 
 ProviderTierName = Literal["pro", "flash", "kimi", "claude"]
+LocalProviderName = Literal["gemini", "anthropic", "openrouter"]
 GeminiProReasoningPreset = Literal["low", "high"]
 ReasoningPresetName = Literal["low", "medium", "high"]
 ExecutionMode = Literal["live", "fallback", "mixed", "offline_benchmark"]
@@ -190,6 +191,34 @@ class CostEstimate(BaseModel):
     estimated_at: datetime | None = None
     estimation_mode: CostEstimationMode | None = None
     pricing_sources: dict[str, str] = Field(default_factory=dict)
+
+
+class LocalModelSpec(BaseModel):
+    """Explicit local participant model selection for SDK/runtime local execution."""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider: LocalProviderName
+    model: str = Field(min_length=1)
+    reasoning_preset: str | None = None
+
+
+class LocalProviderKeys(BaseModel):
+    """Explicit provider credentials for SDK local execution."""
+
+    model_config = ConfigDict(frozen=True)
+
+    gemini_api_key: str | None = None
+    anthropic_api_key: str | None = None
+    openrouter_api_key: str | None = None
+
+
+class LocalDebateConfig(BaseModel):
+    """Optional explicit auxiliary model selections for local debate execution."""
+
+    model_config = ConfigDict(frozen=True)
+
+    devils_advocate_model: LocalModelSpec | None = None
 
 
 class DebateState(BaseModel):

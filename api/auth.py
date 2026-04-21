@@ -222,6 +222,50 @@ def _audiences_from_claims(claims: dict[str, object]) -> list[str]:
     return []
 
 
+def _first_name_from_display_name(value: str | None) -> str:
+    if not isinstance(value, str):
+        return ""
+    trimmed = value.strip()
+    if not trimmed:
+        return ""
+    return trimmed.split()[0]
+
+
+def _claim_string(payload: dict[str, object], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    nested_user = payload.get("user")
+    if isinstance(nested_user, dict):
+        for key in keys:
+          value = nested_user.get(key)
+          if isinstance(value, str) and value.strip():
+              return value.strip()
+    return ""
+
+
+def _workos_display_name(payload: dict[str, object], *, email: str, user_id: str) -> str:
+    raw_name = _claim_string(
+        payload,
+        "firstName",
+        "first_name",
+        "givenName",
+        "given_name",
+        "name",
+        "full_name",
+        "displayName",
+        "display_name",
+    )
+    if raw_name:
+        return _first_name_from_display_name(raw_name)
+
+    if email:
+        return email.strip()
+
+    return user_id
+
+
 def _decode_unverified_claims(raw_token: str) -> dict[str, object] | None:
     """Decode token claims without signature validation for diagnostics/fallbacks."""
 
@@ -530,9 +574,7 @@ async def get_current_user(
     if not isinstance(email, str):
         email = ""
 
-    display_name = payload.get("first_name") or payload.get("name") or email or user_id
-    if not isinstance(display_name, str):  # pragma: no cover - defensive typing guard
-        display_name = user_id
+    display_name = _workos_display_name(payload, email=email, user_id=user_id)
 
     workspace = await store.ensure_personal_workspace(
         user_id=user_id,

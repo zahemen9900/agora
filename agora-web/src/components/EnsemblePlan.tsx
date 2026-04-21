@@ -23,7 +23,7 @@ export function EnsemblePlan({
   footer,
 }: EnsemblePlanProps) {
   return (
-    <div className="rounded-lg border border-border-subtle p-4 bg-void/60">
+    <div className="p-1">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <div className="mono text-xs text-text-muted">{title}</div>
         <span className="badge">{label}</span>
@@ -42,22 +42,22 @@ export function EnsemblePlan({
         ))}
       </div>
 
-      <div className="space-y-2 max-h-60 overflow-auto pr-1">
+      <div className="space-y-3 max-h-60 overflow-auto pr-1 pb-1">
         {items.map((item) => (
           <div
             key={item.id}
-            className={`rounded-md border px-3 py-2 ${providerTone(item.provider)}`}
+            className={`border border-border-subtle rounded-xl p-4 transition-colors hover:border-[rgba(255,255,255,0.3)] ${providerTone(item.provider).replace(/border-[^\s]+/, '')}`}
           >
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-3 mb-3">
               <div className="flex items-center gap-2 min-w-0">
                 <ProviderGlyph provider={item.provider} size={14} />
-                <span className="mono text-[11px] truncate">{item.model}</span>
+                <span className="mono text-xs font-medium truncate">{item.model}</span>
               </div>
-              <span className="mono text-[10px] text-text-muted">{item.badge}</span>
+              <span className="mono text-[10px] text-text-primary tracking-widest">{item.badge}</span>
             </div>
-            <div className="mt-1 flex items-center justify-between gap-3">
-              <span className="mono text-[10px] text-text-muted">{item.role}</span>
-              <span className="mono text-[10px] text-text-muted">{item.reasoningLabel}</span>
+            <div className="flex items-center justify-between gap-3">
+              <span className="mono text-[11px] text-text-muted">{item.role}</span>
+              <span className="mono text-[10px] text-text-muted uppercase">{item.reasoningLabel}</span>
             </div>
           </div>
         ))}

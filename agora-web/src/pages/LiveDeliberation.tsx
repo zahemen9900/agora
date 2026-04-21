@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
+import Markdown, { type Components } from "react-markdown";
 import {
   AlertTriangle,
   ArrowRightLeft,
@@ -10,6 +11,7 @@ import {
   Loader2,
   Zap,
 } from "lucide-react";
+import remarkGfm from "remark-gfm";
 
 import { ConvergenceMeter } from "../components/ConvergenceMeter";
 import { ProviderGlyph } from "../components/ProviderGlyph";
@@ -96,6 +98,9 @@ function eventCardTone(eventType: string): string {
   if (eventType === "usage_delta") {
     return "border-l-violet-400";
   }
+  if (eventType === "provider_retrying") {
+    return "border-l-amber-400";
+  }
   if (eventType === "convergence_update") {
     return "border-l-violet-400";
   }
@@ -150,6 +155,9 @@ function detailLabelForEvent(event: TimelineEvent): string {
   }
   if (event.type === "usage_delta") {
     return "usage telemetry";
+  }
+  if (event.type === "provider_retrying") {
+    return "provider retry state";
   }
   if (event.type === "complete") {
     return "completion metadata";
@@ -239,6 +247,97 @@ function formatTimestamp(value: string | null): string {
     return value;
   }
   return parsed.toLocaleTimeString();
+}
+
+function isNearDocumentBottom(threshold = 120): boolean {
+  if (typeof window === "undefined") {
+    return true;
+  }
+
+  const scrollTop = window.scrollY ?? window.pageYOffset ?? 0;
+  const viewportBottom = scrollTop + window.innerHeight;
+  const documentBottom = document.documentElement.scrollHeight;
+  return documentBottom - viewportBottom < threshold;
+}
+
+const markdownComponents = {
+  p({ children }) {
+    return <p className="mb-2 last:mb-0">{children}</p>;
+  },
+  h1({ children }) {
+    return <h1 className="mb-2 text-lg font-semibold text-text-primary">{children}</h1>;
+  },
+  h2({ children }) {
+    return <h2 className="mb-2 text-base font-semibold text-text-primary">{children}</h2>;
+  },
+  h3({ children }) {
+    return <h3 className="mb-2 text-sm font-semibold text-text-primary">{children}</h3>;
+  },
+  ul({ children }) {
+    return <ul className="mb-2 ml-5 list-disc space-y-1">{children}</ul>;
+  },
+  ol({ children }) {
+    return <ol className="mb-2 ml-5 list-decimal space-y-1">{children}</ol>;
+  },
+  li({ children }) {
+    return <li className="break-words">{children}</li>;
+  },
+  blockquote({ children }) {
+    return <blockquote className="mb-2 border-l-2 border-accent/40 pl-3 italic text-text-secondary">{children}</blockquote>;
+  },
+  strong({ children }) {
+    return <strong className="font-semibold text-text-primary">{children}</strong>;
+  },
+  em({ children }) {
+    return <em className="italic text-text-primary/90">{children}</em>;
+  },
+  a({ href, children }) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        className="text-accent underline underline-offset-2"
+      >
+        {children}
+      </a>
+    );
+  },
+  code(props) {
+    const { inline, className, children, ...rest } = props as {
+      inline?: boolean;
+      className?: string;
+      children?: ReactNode;
+    } & Record<string, unknown>;
+
+    if (inline) {
+      return (
+        <code
+          className="rounded bg-surface px-1.5 py-0.5 mono text-[0.85em] text-text-primary"
+          {...rest}
+        >
+          {children}
+        </code>
+      );
+    }
+
+    return (
+      <code className={`block whitespace-pre-wrap mono text-[10px] text-text-secondary ${className ?? ""}`} {...rest}>
+        {children}
+      </code>
+    );
+  },
+  pre({ children }) {
+    return <pre className="mb-2 overflow-x-auto rounded-lg border border-border-subtle bg-void p-3">{children}</pre>;
+  },
+} satisfies Components;
+
+function MarkdownSummary({ children }: { children: string }) {
+  return (
+    <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      {children}
+    </Markdown>
+  );
 }
 
 function buildEventKey(event: TaskEvent): string {
@@ -402,6 +501,25 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
     };
   }
 
+  if (event.event === "provider_retrying") {
+    const provider = safeString(data.provider, "provider").toUpperCase();
+    const model = safeString(data.model, "model");
+    const attempt = safeNumber(data.attempt, 0);
+    const maxRetries = safeNumber(data.max_retries, 0);
+    const backoffSeconds = safeNumber(data.backoff_seconds, 0);
+    const statusCode = typeof data.status_code === "number" ? ` · ${Math.round(data.status_code)}` : "";
+    return {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${provider} retrying`,
+      summary: `${model} retry in ${backoffSeconds.toFixed(1)}s (attempt ${attempt}/${maxRetries})${statusCode}`,
+      timestamp: event.timestamp,
+      details: data,
+      agentModel: model,
+      stage: "provider_retrying",
+    };
+  }
+
   if (event.event === "convergence_update") {
     const entropy = safeNumber(data.disagreement_entropy, 0);
     const novelty = safeNumber(data.information_gain_delta, 0);
@@ -500,6 +618,7 @@ export function LiveDeliberation() {
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [switchBanner, setSwitchBanner] = useState<string | null>(null);
+  const [retryNotice, setRetryNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [convergence, setConvergence] = useState({
     entropy: 1.0,
@@ -515,6 +634,38 @@ export function LiveDeliberation() {
 
   const seenEventKeysRef = useRef<Set<string>>(new Set());
   const taskMechanismRef = useRef("debate");
+  const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
+  const autoScrollStartedRef = useRef(false);
+  const [followLiveUpdates, setFollowLiveUpdates] = useState(true);
+
+  useEffect(() => {
+    autoScrollStartedRef.current = false;
+    const resetFrame = window.requestAnimationFrame(() => {
+      setFollowLiveUpdates(true);
+    });
+    return () => {
+      window.cancelAnimationFrame(resetFrame);
+    };
+  }, [taskId]);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const nearBottom = isNearDocumentBottom();
+      if (nearBottom) {
+        setFollowLiveUpdates(true);
+        return;
+      }
+
+      if (autoScrollStartedRef.current) {
+        setFollowLiveUpdates(false);
+      }
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+    };
+  }, []);
 
   const setConvergenceFromEvents = useCallback((eventList: TaskEvent[]) => {
     const latest = [...eventList].reverse().find((event) => event.event === "convergence_update");
@@ -547,6 +698,23 @@ export function LiveDeliberation() {
     setTimeline((current) => upsertTimelineEvent(current, mappedEvent));
 
     const data = asRecord(event.data) ?? {};
+
+    if (event.event !== "provider_retrying") {
+      setRetryNotice(null);
+    }
+
+    if (event.event === "provider_retrying") {
+      const provider = safeString(data.provider, "Provider");
+      const model = safeString(data.model, "model");
+      const attempt = safeNumber(data.attempt, 0);
+      const maxRetries = safeNumber(data.max_retries, 0);
+      const backoffSeconds = safeNumber(data.backoff_seconds, 0);
+      setRetryNotice(
+        `${provider.toUpperCase()} retrying ${model} in ${backoffSeconds.toFixed(1)}s `
+        + `(attempt ${attempt}/${maxRetries})`,
+      );
+      return;
+    }
 
     if (event.event === "convergence_update") {
       setConvergence((current) => ({
@@ -584,11 +752,13 @@ export function LiveDeliberation() {
     if (event.event === "error") {
       setTask((current) => (current ? { ...current, status: "failed" } : current));
       setErrorMessage(safeString(data.message, "An error occurred"));
+      setRetryNotice(null);
       return;
     }
 
     if (event.event === "complete" && taskId) {
       setTask((current) => (current ? { ...current, status: "completed" } : current));
+      setRetryNotice(null);
       const resolvedTaskId = taskId;
       void (async () => {
         const token = await getAccessToken();
@@ -633,7 +803,7 @@ export function LiveDeliberation() {
       }
       setConvergenceFromEvents(status.events);
 
-      streamHandle = await streamDeliberation(resolvedTaskId, token, (event) => {
+      streamHandle = await streamDeliberation(resolvedTaskId, getAccessToken, (event) => {
         handleStreamEvent(event);
       });
 
@@ -712,6 +882,21 @@ export function LiveDeliberation() {
     ? "We have the task and the stream is attached. The backend is spinning up the run now."
     : "The deliberation is still in flight. Fresh events should keep landing in the timeline below.";
 
+  useEffect(() => {
+    if (!followLiveUpdates || timeline.length === 0) {
+      return;
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      latestTimelineEntryRef.current?.scrollIntoView({ block: "end", inline: "nearest" });
+      autoScrollStartedRef.current = true;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [followLiveUpdates, timeline]);
+
   return (
     <div className="relative">
       <header className="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-border-subtle mb-8 gap-4 md:gap-0">
@@ -731,6 +916,19 @@ export function LiveDeliberation() {
       </header>
 
       <AnimatePresence>
+        {retryNotice && !errorMessage && (
+          <motion.div
+            initial={{ opacity: 0, y: -16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="p-4 mb-6 border border-amber-400 rounded-lg bg-[rgba(255,184,76,0.08)] text-amber-400"
+          >
+            <div className="flex items-center gap-2">
+              <Loader2 size={16} className="animate-spin" />
+              <span>{retryNotice}</span>
+            </div>
+          </motion.div>
+        )}
         {switchBanner && (
           <motion.div
             initial={{ opacity: 0, y: -20 }}
@@ -912,11 +1110,13 @@ export function LiveDeliberation() {
         <h3 className="mono text-sm mb-4 text-accent tracking-widest">LIVE DELIBERATION TIMELINE</h3>
         <div className="space-y-3">
           {timeline.map((entry) => {
+            const isLatestEntry = entry.key === timeline[timeline.length - 1]?.key;
             const provider = providerFromModel(entry.agentModel ?? "");
             const usageLine = formatUsageLine(entry.details);
             return (
               <motion.div
                 key={entry.key}
+                ref={isLatestEntry ? latestTimelineEntryRef : undefined}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 className={`card p-4 border-l-4 ${eventCardTone(entry.type)}`}
@@ -946,8 +1146,8 @@ export function LiveDeliberation() {
                   <span className="mono text-[10px] text-text-muted">{formatTimestamp(entry.timestamp)}</span>
                 </div>
 
-                <div className="text-text-primary mb-2 whitespace-pre-wrap break-words">
-                  {entry.summary}
+                <div className="text-text-primary mb-2 break-words">
+                  <MarkdownSummary>{entry.summary}</MarkdownSummary>
                 </div>
 
                 {usageLine ? (

@@ -17,7 +17,7 @@ from agora.engines.debate import (
     _RebuttalResponse,
     _SynthesisResponse,
 )
-from agora.types import DebateState, MechanismType
+from agora.types import DebateState, LocalModelSpec, LocalProviderKeys, MechanismType
 from tests.helpers import make_agent_output, make_selection
 
 _PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in {
@@ -97,6 +97,17 @@ class _SchemaAwareDebateCaller:
         )
 
 
+class _RawTextDebateCaller:
+    def __init__(self, model: str, response: str) -> None:
+        self.model = model
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    async def call(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response, {"input_tokens": 5, "output_tokens": 7, "latency_ms": 11.0}
+
+
 def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
     """Faction assignment should keep counted debaters and a separate DA id."""
 
@@ -146,6 +157,24 @@ def test_verify_claims_extracts_arithmetic_equalities_from_json() -> None:
     assert "3*3=9" in claim_texts
 
 
+def test_rebuttal_response_coerces_partial_payload() -> None:
+    """Partial rebuttal JSON should not crash structured debate parsing."""
+
+    response = _RebuttalResponse.model_validate({"answer": 323})
+
+    assert response.answer == "323"
+    assert response.defense == ""
+    assert response.confidence == pytest.approx(0.5)
+
+
+def test_cross_exam_response_coerces_partial_payload() -> None:
+    """Malformed cross-exam JSON should degrade to an empty analysis list."""
+
+    response = _CrossExamResponse.model_validate({"answer": ": "})
+
+    assert response.analyses == []
+
+
 @pytest.mark.asyncio
 async def test_cross_examination_uses_kimi_devil_advocate() -> None:
     """Devil's Advocate cross-examination should use Kimi rather than Gemini Pro."""
@@ -174,7 +203,7 @@ async def test_cross_examination_uses_kimi_devil_advocate() -> None:
     assert output.agent_model == "moonshotai/kimi-k2-thinking"
     assert usage["tokens"] == 12
     assert json.loads(output.content)["analyses"][0]["flaw"] == "unsupported"
-    assert "response_format" not in kimi.calls[0]
+    assert kimi.calls[0]["response_format"] is _CrossExamResponse
     assert pro.calls == []
 
 
@@ -249,8 +278,8 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
         "gemini-3.1-flash-lite-preview": 4.0,
         "gemini-3-flash-preview": 11.0,
     }
-    assert result.input_tokens_used is None
-    assert result.output_tokens_used is None
+    assert result.input_tokens_used == 5
+    assert result.output_tokens_used == 7
     assert result.thinking_tokens_used is None
     assert usage["tokens"] == 12
     assert result.agent_models_used == [
@@ -260,6 +289,30 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
     ]
     assert pro.calls[0]["response_format"] is _SynthesisResponse
     assert kimi.calls == []
+
+
+@pytest.mark.asyncio
+async def test_call_structured_flash_raw_text_falls_back_to_kimi() -> None:
+    """Non-Kimi debate providers should fall through to Kimi when they ignore schema."""
+
+    flash = _RawTextDebateCaller("gemini-3.1-flash-lite-preview", "flash raw text")
+    kimi = _RawTextDebateCaller("moonshotai/kimi-k2-thinking", "Kimi fallback answer")
+    engine = DebateEngine(agent_count=3, flash_agent=flash, kimi_agent=kimi)
+    fallback = _InitialAnswerResponse(answer="deterministic fallback", confidence=0.2)
+
+    response, usage = await engine._call_structured(
+        tier="flash",
+        system_prompt="Return JSON.",
+        user_prompt="Debate on the best option",
+        response_model=_InitialAnswerResponse,
+        fallback=fallback,
+    )
+
+    assert response.answer == "Kimi fallback answer"
+    assert response.confidence == pytest.approx(0.2)
+    assert usage["model"] == "moonshotai/kimi-k2-thinking"
+    assert len(flash.calls) == 1
+    assert len(kimi.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -288,6 +341,91 @@ async def test_debate_initial_answers_follow_balanced_provider_cycle() -> None:
         "moonshotai/kimi-k2-thinking": 10,
         "claude-sonnet-4-6": 10,
     }
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_debate_roster_preserves_selected_model_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specs = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+
+    def fake_build_local_model_caller(*, spec: LocalModelSpec, provider_keys: LocalProviderKeys | None):
+        assert provider_keys is not None
+        return _SchemaAwareDebateCaller(spec.model)
+
+    monkeypatch.setattr("agora.engines.debate.build_local_model_caller", fake_build_local_model_caller)
+    engine = DebateEngine(
+        agent_count=3,
+        participant_models=specs,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            anthropic_api_key="anth-key",
+        ),
+    )
+
+    outputs, usage = await engine._assign_initial_answers("Choose an architecture.")
+
+    assert [output.agent_model for output in outputs] == [spec.model for spec in specs]
+    assert usage["model_tokens"] == {
+        "gemini-3-flash-preview": 10,
+        "gemini-3.1-flash-lite-preview": 10,
+        "claude-sonnet-4-6": 10,
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_debate_devils_advocate_uses_configured_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    participant_specs = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+    devils_advocate_spec = LocalModelSpec(
+        provider="openrouter",
+        model="moonshotai/kimi-k2-thinking",
+    )
+
+    kimi_response = (
+        '[{"faction":"pro","weakest_claim":"claim A","flaw":"unsupported",'
+        '"attack_axis":"evidence_gap","counterexample":"A concrete counterexample matters.",'
+        '"failure_mode":"Unsupported claim","question":"What evidence supports claim A?"}]'
+    )
+
+    def fake_build_local_model_caller(*, spec: LocalModelSpec, provider_keys: LocalProviderKeys | None):
+        assert provider_keys is not None
+        if spec.model == "moonshotai/kimi-k2-thinking":
+            return _FakeDebateCaller(spec.model, kimi_response)
+        return _SchemaAwareDebateCaller(spec.model)
+
+    monkeypatch.setattr("agora.engines.debate.build_local_model_caller", fake_build_local_model_caller)
+    engine = DebateEngine(
+        agent_count=3,
+        participant_models=participant_specs,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            anthropic_api_key="anth-key",
+            openrouter_api_key="or-key",
+        ),
+        devils_advocate_model=devils_advocate_spec,
+    )
+
+    output, usage = await engine._cross_examination(
+        task="Which architecture is more robust?",
+        round_number=1,
+        devil_advocate_id="debate-devils-advocate",
+        pro_outputs=[make_agent_output("agent-1", "Answer A", role="pro_opening")],
+        opp_outputs=[make_agent_output("agent-2", "Answer B", role="opp_opening")],
+    )
+
+    assert output.agent_model == "moonshotai/kimi-k2-thinking"
+    assert output.role == "devil_advocate"
+    assert usage["model"] == "moonshotai/kimi-k2-thinking"
 
 
 @pytest.mark.asyncio

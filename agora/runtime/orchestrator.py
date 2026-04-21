@@ -14,6 +14,7 @@ from agora.engines.debate import DebateEngine
 from agora.engines.vote import VoteEngine
 from agora.runtime.costing import build_result_costing
 from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.local_models import validate_local_model_config
 from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.monitor import StateMonitor
 from agora.selector.features import extract_features
@@ -21,6 +22,9 @@ from agora.selector.selector import AgoraSelector
 from agora.types import (
     SUPPORTED_MECHANISMS,
     DeliberationResult,
+    LocalDebateConfig,
+    LocalModelSpec,
+    LocalProviderKeys,
     MechanismSelection,
     MechanismTraceSegment,
     MechanismType,
@@ -50,6 +54,9 @@ class AgoraOrchestrator:
         | ReasoningPresetOverrides
         | dict[str, Any]
         | None = None,
+        local_models: list[LocalModelSpec] | None = None,
+        local_provider_keys: LocalProviderKeys | None = None,
+        local_debate_config: LocalDebateConfig | None = None,
     ) -> None:
         """Initialize orchestrator dependencies.
 
@@ -63,6 +70,14 @@ class AgoraOrchestrator:
         self.default_stakes = max(0.0, min(1.0, default_stakes))
         self.allow_offline_fallback = allow_offline_fallback
         self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
+        self.local_models = list(local_models) if local_models is not None else None
+        self.local_provider_keys = local_provider_keys
+        self.local_debate_config = local_debate_config
+        validate_local_model_config(
+            local_models=self.local_models,
+            provider_keys=self.local_provider_keys,
+            debate_config=self.local_debate_config,
+        )
 
         self.selector = AgoraSelector(
             bandit_state_path=bandit_state_path,
@@ -85,6 +100,13 @@ class AgoraOrchestrator:
             monitor=self.monitor,
             hasher=self.hasher,
             reasoning_presets=self.reasoning_presets,
+            participant_models=self.local_models,
+            provider_keys=self.local_provider_keys,
+            devils_advocate_model=(
+                None
+                if self.local_debate_config is None
+                else self.local_debate_config.devils_advocate_model
+            ),
             **engine_kwargs,
         )
 
@@ -99,6 +121,8 @@ class AgoraOrchestrator:
             agent_count=self.agent_count,
             hasher=self.hasher,
             reasoning_presets=self.reasoning_presets,
+            participant_models=self.local_models,
+            provider_keys=self.local_provider_keys,
             **engine_kwargs,
         )
 

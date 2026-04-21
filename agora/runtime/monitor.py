@@ -56,14 +56,14 @@ class StateMonitor:
             normalized_answer = self.extract_answer_signal(output)
             weight = min(1.0, max(0.0, output.confidence))
             weighted_counts[normalized_answer] += weight if weight > 0.0 else 1e-9
-        total_weight = sum(weighted_counts.values())
+        total_weight = math.fsum(weighted_counts.values())
         distribution = {
             answer: weight / total_weight for answer, weight in weighted_counts.items()
         }
 
         probabilities = list(distribution.values())
-        entropy = -sum(p * math.log2(p) for p in probabilities if p > 0.0)
-        dominant_share = max(probabilities)
+        entropy = max(0.0, -math.fsum(p * math.log2(p) for p in probabilities if p > 0.0))
+        dominant_share = self._clamp_unit_interval(max(probabilities))
 
         if self._last_entropy is None:
             entropy_delta = 0.0
@@ -77,6 +77,8 @@ class StateMonitor:
                 distribution,
             )
             answer_churn = self._answer_churn(previous_distribution, distribution)
+            js_divergence = max(0.0, js_divergence)
+            answer_churn = self._clamp_unit_interval(answer_churn)
 
         normalized_locked_claim_count = (
             max(0, int(locked_claim_count)) if locked_claim_count is not None else 0
@@ -139,7 +141,17 @@ class StateMonitor:
         """Return total distribution mass that moved between answers."""
 
         keys = set(previous) | set(current)
-        return 0.5 * sum(abs(current.get(key, 0.0) - previous.get(key, 0.0)) for key in keys)
+        return 0.5 * math.fsum(
+            abs(current.get(key, 0.0) - previous.get(key, 0.0)) for key in keys
+        )
+
+    @staticmethod
+    def _clamp_unit_interval(value: float) -> float:
+        """Keep bounded convergence metrics within the Pydantic contract."""
+
+        if not math.isfinite(value):
+            return 0.0
+        return min(1.0, max(0.0, value))
 
     @staticmethod
     def extract_answer_signal(output: AgentOutput) -> str:

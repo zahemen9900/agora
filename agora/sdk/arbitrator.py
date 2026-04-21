@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic
 from typing import Any, Literal
 
 import httpx
@@ -18,12 +20,16 @@ from solders.pubkey import Pubkey
 from agora.runtime.costing import build_result_costing
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
+from agora.sdk.config import CANONICAL_HOSTED_API_URL, resolve_hosted_api_url
 from agora.selector.features import extract_features
 from agora.types import (
     ConvergenceMetrics,
     CostEstimate,
     DeliberationResult,
     FallbackEvent,
+    LocalDebateConfig,
+    LocalModelSpec,
+    LocalProviderKeys,
     MechanismSelection,
     MechanismTraceSegment,
     MechanismType,
@@ -66,7 +72,7 @@ class ArbitratorConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    api_url: str = "http://localhost:8000"
+    api_url: str = CANONICAL_HOSTED_API_URL
     solana_wallet: str | None = None
     mechanism: MechanismName | None = None
     agent_count: int = 4
@@ -75,6 +81,9 @@ class ArbitratorConfig(BaseModel):
     allow_offline_fallback: bool = False
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     auth_token: str | None = None
+    local_models: list[LocalModelSpec] | None = None
+    local_provider_keys: LocalProviderKeys | None = None
+    local_debate_config: LocalDebateConfig | None = None
     strict_verification: bool = True
     rpc_url: str = ""
     program_id: str = DEFAULT_PROGRAM_ID
@@ -180,6 +189,8 @@ class HostedTaskStatus(BaseModel):
     chain_operations: dict[str, HostedChainOperationRecord] = Field(default_factory=dict)
     created_at: str | None = None
     completed_at: str | None = None
+    failure_reason: str | None = None
+    latest_error_event: dict[str, Any] | None = None
     result: HostedDeliberationResult | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -281,6 +292,37 @@ class HostedPaymentReleaseResponse(BaseModel):
     tx_hash: str
 
 
+class HostedTaskError(RuntimeError):
+    """Base class for structured hosted task lifecycle failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        task_id: str,
+        status: TaskStatusName,
+        failure_reason: str | None = None,
+        latest_error_event: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.task_id = task_id
+        self.status = status
+        self.failure_reason = failure_reason
+        self.latest_error_event = latest_error_event
+
+
+class HostedTaskExecutionError(HostedTaskError):
+    """Raised when a hosted task reaches a failed terminal state."""
+
+
+class HostedTaskNotCompleteError(HostedTaskError):
+    """Raised when a hosted task result is requested before terminal success."""
+
+
+class HostedTaskProtocolError(HostedTaskError):
+    """Raised when the hosted API returns an invalid terminal task payload."""
+
+
 class ReceiptVerificationError(RuntimeError):
     """Raised when strict receipt verification fails."""
 
@@ -290,7 +332,7 @@ class AgoraArbitrator:
 
     def __init__(
         self,
-        api_url: str = "http://localhost:8000",
+        api_url: str | None = None,
         solana_wallet: str | None = None,
         mechanism: MechanismName | None = None,
         agent_count: int = 4,
@@ -299,28 +341,43 @@ class AgoraArbitrator:
         allow_offline_fallback: bool = False,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
+        local_models: list[LocalModelSpec] | None = None,
+        local_provider_keys: LocalProviderKeys | None = None,
+        local_debate_config: LocalDebateConfig | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
         program_id: str = DEFAULT_PROGRAM_ID,
         http_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> None:
+        if auth_token is not None and local_models is not None:
+            raise ValueError("auth_token cannot be combined with explicit local_models execution")
+        normalized_agent_count = agent_count
+        if local_models is not None and agent_count == 4 and len(local_models) != 4:
+            normalized_agent_count = len(local_models)
+        if local_models is not None and normalized_agent_count != len(local_models):
+            raise ValueError("agent_count must match len(local_models) for explicit local roster execution")
+
+        resolved_api_url = resolve_hosted_api_url(api_url)
         self.config = ArbitratorConfig(
-            api_url=api_url,
+            api_url=resolved_api_url,
             solana_wallet=solana_wallet,
             mechanism=mechanism,
-            agent_count=agent_count,
+            agent_count=normalized_agent_count,
             reasoning_presets=reasoning_presets,
             allow_mechanism_switch=allow_mechanism_switch,
             allow_offline_fallback=allow_offline_fallback,
             quorum_threshold=quorum_threshold,
             auth_token=auth_token,
+            local_models=local_models,
+            local_provider_keys=local_provider_keys,
+            local_debate_config=local_debate_config,
             strict_verification=strict_verification,
             rpc_url=rpc_url,
             program_id=program_id,
             http_timeout_seconds=http_timeout_seconds,
         )
         self._client = httpx.AsyncClient(
-            base_url=api_url,
+            base_url=resolved_api_url,
             timeout=httpx.Timeout(self.config.http_timeout_seconds),
         )
         self._hasher = TranscriptHasher()
@@ -407,6 +464,17 @@ class AgoraArbitrator:
         self._latest_task_id = task_id
         return HostedDeliberationResult.model_validate(response.json())
 
+    async def start_task_run(self, task_id: str) -> HostedTaskStatus:
+        """Start a hosted task in the background and return the current status."""
+
+        response = await self._client.post(
+            f"/tasks/{task_id}/run-async",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        self._latest_task_id = task_id
+        return HostedTaskStatus.model_validate(response.json())
+
     async def get_task_status(
         self,
         task_id: str,
@@ -428,9 +496,37 @@ class AgoraArbitrator:
         """Fetch and convert a hosted task into the core deliberation result type."""
 
         status = await self.get_task_status(task_id, detailed=True)
+        self._raise_for_non_successful_result_status(status)
         result = await self._status_to_result(status)
         self._result_task_ids[result.merkle_root] = task_id
         return result
+
+    async def wait_for_task_result(
+        self,
+        task_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        poll_interval_seconds: float = 1.0,
+    ) -> DeliberationResult:
+        """Poll task status until success, failure, or timeout."""
+
+        deadline = None if timeout_seconds is None else monotonic() + max(0.0, timeout_seconds)
+        interval = max(0.05, poll_interval_seconds)
+
+        while True:
+            status = await self.get_task_status(task_id, detailed=True)
+            if status.status in {"completed", "paid"}:
+                result = await self._status_to_result(status)
+                self._result_task_ids[result.merkle_root] = task_id
+                return result
+            if status.status == "failed":
+                raise self._execution_error_from_status(status)
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for hosted task {task_id} to complete "
+                    f"(last status={status.status})"
+                )
+            await asyncio.sleep(interval)
 
     async def run_benchmark(self, **payload: Any) -> HostedBenchmarkRunResponse:
         """Trigger a hosted benchmark run."""
@@ -469,48 +565,24 @@ class AgoraArbitrator:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream benchmark run SSE events with replay from the hosted API."""
 
-        ticket_response = await self._client.post(
-            f"/benchmarks/runs/{run_id}/stream-ticket",
-            headers=self._headers(),
-        )
-        ticket_response.raise_for_status()
-        ticket_payload = ticket_response.json()
-        ticket = str(ticket_payload["ticket"])
+        async for event in self._stream_hosted_events(
+            ticket_path=f"/benchmarks/runs/{run_id}/stream-ticket",
+            stream_path=f"/benchmarks/runs/{run_id}/stream",
+        ):
+            yield event
 
-        async with self._client.stream(
-            "GET",
-            f"/benchmarks/runs/{run_id}/stream",
-            params={"ticket": ticket},
-            headers=self._headers(),
-        ) as response:
-            response.raise_for_status()
-            event_type = "message"
-            data_lines: list[str] = []
+    async def stream_task_events(
+        self,
+        task_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream hosted task SSE events with replay from the hosted API."""
 
-            async for line in response.aiter_lines():
-                if line.startswith("event:"):
-                    event_type = line[6:].strip()
-                    continue
-                if line.startswith("data:"):
-                    data_lines.append(line[5:].strip())
-                    continue
-                if line:
-                    continue
-                if not data_lines:
-                    event_type = "message"
-                    continue
-                raw_data = "\n".join(data_lines)
-                data_lines = []
-                try:
-                    payload = json.loads(raw_data)
-                except json.JSONDecodeError:
-                    payload = {"payload": {"message": raw_data}, "timestamp": None}
-                yield {
-                    "event": event_type,
-                    "data": payload.get("payload", payload),
-                    "timestamp": payload.get("timestamp"),
-                }
-                event_type = "message"
+        self._latest_task_id = task_id
+        async for event in self._stream_hosted_events(
+            ticket_path=f"/tasks/{task_id}/stream-ticket",
+            stream_path=f"/tasks/{task_id}/stream",
+        ):
+            yield event
 
     async def release_payment(self, task_id: str) -> HostedPaymentReleaseResponse:
         """Release payment for a completed hosted task."""
@@ -539,7 +611,10 @@ class AgoraArbitrator:
     ) -> DeliberationResult:
         """Run arbitration remotely through the API or locally with custom agents."""
 
-        if agents is not None:
+        if agents is not None and self.config.local_models is not None:
+            raise ValueError("agents cannot be combined with explicit local_models execution")
+
+        if agents is not None or self.config.local_models is not None:
             local_agent_count = len(agents) if agents else self.config.agent_count
             orchestrator = AgoraOrchestrator(
                 agent_count=local_agent_count,
@@ -549,6 +624,9 @@ class AgoraArbitrator:
                     else allow_offline_fallback
                 ),
                 reasoning_presets=self.config.reasoning_presets,
+                local_models=self.config.local_models,
+                local_provider_keys=self.config.local_provider_keys,
+                local_debate_config=self.config.local_debate_config,
             )
             orchestrator.vote_engine = orchestrator.build_vote_engine(
                 quorum_threshold=(
@@ -609,8 +687,8 @@ class AgoraArbitrator:
             allow_offline_fallback=allow_offline_fallback,
             quorum_threshold=quorum_threshold,
         )
-        await self.run_task(created.task_id)
-        return await self.get_task_result(created.task_id)
+        await self.start_task_run(created.task_id)
+        return await self.wait_for_task_result(created.task_id)
 
     async def verify_receipt(
         self,
@@ -678,6 +756,67 @@ class AgoraArbitrator:
             "merkle_match": merkle_match,
             "hosted_metadata_match": hosted_metadata_match,
             "on_chain_match": on_chain_match,
+        }
+
+    async def _stream_hosted_events(
+        self,
+        *,
+        ticket_path: str,
+        stream_path: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream normalized SSE events from a hosted API endpoint."""
+
+        ticket_response = await self._client.post(ticket_path, headers=self._headers())
+        ticket_response.raise_for_status()
+        ticket_payload = ticket_response.json()
+        ticket = str(ticket_payload["ticket"])
+
+        async with self._client.stream(
+            "GET",
+            stream_path,
+            params={"ticket": ticket},
+            headers=self._headers(),
+        ) as response:
+            response.raise_for_status()
+            event_type = "message"
+            data_lines: list[str] = []
+
+            async for line in response.aiter_lines():
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].strip())
+                    continue
+                if line:
+                    continue
+                if not data_lines:
+                    event_type = "message"
+                    continue
+                raw_data = "\n".join(data_lines)
+                data_lines = []
+                yield self._normalize_sse_event(event_type=event_type, raw_data=raw_data)
+                event_type = "message"
+
+    @staticmethod
+    def _normalize_sse_event(event_type: str, raw_data: str) -> dict[str, Any]:
+        """Normalize an SSE event payload into the SDK's public event shape."""
+
+        try:
+            payload = json.loads(raw_data)
+        except json.JSONDecodeError:
+            payload = {"payload": {"message": raw_data}, "timestamp": None}
+        if not isinstance(payload, dict):
+            payload = {"payload": {"message": raw_data}, "timestamp": None}
+
+        normalized_payload = payload.get("payload", payload)
+        if not isinstance(normalized_payload, dict):
+            normalized_payload = {"message": normalized_payload}
+
+        return {
+            "event": event_type,
+            "data": normalized_payload,
+            "timestamp": payload.get("timestamp"),
         }
 
     async def _verify_onchain_receipt(
@@ -968,6 +1107,34 @@ class AgoraArbitrator:
 
         await self._client.aclose()
 
+    @staticmethod
+    def _execution_error_from_status(status: HostedTaskStatus) -> HostedTaskExecutionError:
+        """Build a structured execution error from hosted task status."""
+
+        message = status.failure_reason or "Hosted task failed without an error message"
+        return HostedTaskExecutionError(
+            message,
+            task_id=status.task_id,
+            status=status.status,
+            failure_reason=status.failure_reason,
+            latest_error_event=status.latest_error_event,
+        )
+
+    @staticmethod
+    def _raise_for_non_successful_result_status(status: HostedTaskStatus) -> None:
+        """Raise structured SDK errors for non-success task result requests."""
+
+        if status.status == "failed":
+            raise AgoraArbitrator._execution_error_from_status(status)
+        if status.status in {"pending", "in_progress"}:
+            raise HostedTaskNotCompleteError(
+                f"Hosted task {status.task_id} is not complete yet (status={status.status})",
+                task_id=status.task_id,
+                status=status.status,
+                failure_reason=status.failure_reason,
+                latest_error_event=status.latest_error_event,
+            )
+
     async def _status_to_result(
         self,
         status_payload: HostedTaskStatus | dict[str, Any],
@@ -980,7 +1147,13 @@ class AgoraArbitrator:
             status = HostedTaskStatus.model_validate(status_payload)
 
         if status.result is None:
-            raise ValueError("Task status did not include a result payload")
+            raise HostedTaskProtocolError(
+                "Task status did not include a result payload",
+                task_id=status.task_id,
+                status=status.status,
+                failure_reason=status.failure_reason,
+                latest_error_event=status.latest_error_event,
+            )
 
         mechanism = MechanismType(str(status.mechanism).lower())
         features = await extract_features(
@@ -1124,7 +1297,7 @@ class AgoraNode:
 
     def __init__(
         self,
-        api_url: str = "http://localhost:8000",
+        api_url: str | None = None,
         solana_wallet: str | None = None,
         mechanism: MechanismName | None = None,
         agent_count: int = 4,
@@ -1132,6 +1305,9 @@ class AgoraNode:
         allow_offline_fallback: bool = False,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
+        local_models: list[LocalModelSpec] | None = None,
+        local_provider_keys: LocalProviderKeys | None = None,
+        local_debate_config: LocalDebateConfig | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
         program_id: str = DEFAULT_PROGRAM_ID,
@@ -1146,6 +1322,9 @@ class AgoraNode:
             allow_offline_fallback=allow_offline_fallback,
             quorum_threshold=quorum_threshold,
             auth_token=auth_token,
+            local_models=local_models,
+            local_provider_keys=local_provider_keys,
+            local_debate_config=local_debate_config,
             strict_verification=strict_verification,
             rpc_url=rpc_url,
             program_id=program_id,

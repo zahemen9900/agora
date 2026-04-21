@@ -662,6 +662,32 @@ async def test_create_list_get_task_with_local_store(
 
 
 @pytest.mark.asyncio
+async def test_create_task_preserves_requested_offline_fallback_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "offline-fallback-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(
+                task="Keep my fallback preference",
+                agent_count=3,
+                stakes=0.0,
+                allow_offline_fallback=False,
+            ),
+            _override_user(),
+        )
+        fetched = await task_routes.get_task_status(create.task_id, _override_user())
+    finally:
+        task_routes._store = None
+
+    assert fetched.allow_offline_fallback is False
+
+
+@pytest.mark.asyncio
 async def test_create_task_resolves_and_persists_reasoning_presets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1429,6 +1455,10 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
             detailed=True,
         )
         assert failed_status.status == "failed"
+        assert failed_status.failure_reason == "Failed to submit receipt on Solana"
+        assert failed_status.latest_error_event is not None
+        assert failed_status.latest_error_event.event == "error"
+        assert failed_status.latest_error_event.data["message"] == "Failed to submit receipt on Solana"
         assert failed_status.chain_operations["submit_receipt"].status == "failed"
         assert any(event.event == "error" for event in failed_status.events)
     finally:
@@ -1879,6 +1909,37 @@ async def test_persist_and_emit_preserves_full_timestamped_envelope(
 
 
 @pytest.mark.asyncio
+async def test_persist_and_emit_benchmark_event_persists_before_streaming() -> None:
+    calls: list[str] = []
+
+    class _RecordingStore:
+        async def append_user_test_event(
+            self,
+            workspace_id: str,
+            run_id: str,
+            payload: dict[str, object],
+        ) -> None:
+            del workspace_id, run_id, payload
+            calls.append("append")
+
+    class _RecordingStream:
+        async def emit(self, stream_key: str, payload: dict[str, object]) -> None:
+            del stream_key, payload
+            calls.append("emit")
+
+    await benchmark_routes._persist_and_emit_benchmark_event(
+        store=_RecordingStore(),
+        stream=_RecordingStream(),
+        workspace_id="workspace-1",
+        run_id="run-1",
+        event_type="queued",
+        event_data={"run_id": "run-1"},
+    )
+
+    assert calls == ["append", "emit"]
+
+
+@pytest.mark.asyncio
 async def test_stream_task_replays_timestamped_event_envelopes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1903,7 +1964,8 @@ async def test_stream_task_replays_timestamped_event_envelopes(
     }
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     task_routes._store = store
@@ -1965,6 +2027,78 @@ async def test_stream_task_replays_timestamped_event_envelopes(
 
 
 @pytest.mark.asyncio
+async def test_stream_task_error_replay_is_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "stream-replay-error"))
+    user = _override_user()
+    task_id = "task-stream-error"
+    task_payload = {
+        "task_id": task_id,
+        "task_text": "Replay the error path",
+        "workspace_id": user.workspace_id,
+        "mechanism": "vote",
+        "status": "failed",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [],
+    }
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
+            self.content = content
+
+    class _FailingStream:
+        def subscribe(self, _stream_id: str) -> object:
+            raise AssertionError("terminal task error should not subscribe for live updates")
+
+        def unsubscribe(self, _stream_id: str, _queue: object) -> None:
+            raise AssertionError("unsubscribe should not be called")
+
+    task_routes._store = store
+    await store.upsert_user(user.id, user.email, user.display_name)
+    await store.save_task(user.workspace_id, task_id, task_payload)
+    await store.append_event(
+        user.workspace_id,
+        task_id,
+        {
+            "event": "error",
+            "data": {"message": "provider unavailable"},
+            "timestamp": "2026-04-14T13:00:00+00:00",
+        },
+    )
+    monkeypatch.setattr(task_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+    monkeypatch.setattr(task_routes, "get_stream_manager", lambda: _FailingStream())
+
+    try:
+        ticket = (await task_routes._issue_stream_ticket(user.workspace_id, task_id))["ticket"]
+        response = await task_routes.stream_task(task_id, ticket=ticket)
+        replayed_events = [item async for item in response.content]
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert replayed_events == [
+        {
+            "event": "error",
+            "data": json.dumps(
+                {
+                    "payload": {"message": "provider unavailable"},
+                    "timestamp": "2026-04-14T13:00:00+00:00",
+                }
+            ),
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_stream_ticket_is_one_use_and_namespaced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1996,7 +2130,8 @@ async def test_stream_ticket_is_one_use_and_namespaced(
     }
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     task_routes._store = store
@@ -2054,7 +2189,8 @@ async def test_stream_ticket_expiry_is_rejected(
     }
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     task_routes._store = store
@@ -3323,7 +3459,8 @@ async def test_benchmark_stream_replays_events_and_terminal_state(
     )
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     monkeypatch.setattr(benchmark_routes, "EventSourceResponse", _CapturedEventSourceResponse)
@@ -3347,6 +3484,67 @@ async def test_benchmark_stream_replays_events_and_terminal_state(
             "data": json.dumps(
                 {
                     "payload": {"run_id": run_id, "status": "completed"},
+                    "timestamp": "2026-04-18T02:01:00+00:00",
+                }
+            ),
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_benchmark_stream_error_replay_is_terminal(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+
+    run_id = "benchmark-stream-error"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "failed",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "updated_at": "2026-04-18T02:01:00+00:00",
+            "events": [
+                {
+                    "event": "error",
+                    "data": {"message": "provider unavailable"},
+                    "timestamp": "2026-04-18T02:01:00+00:00",
+                },
+            ],
+        },
+    )
+
+    class _CapturedEventSourceResponse:
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
+            self.content = content
+
+    class _FailingStream:
+        def subscribe(self, _stream_id: str) -> object:
+            raise AssertionError("terminal benchmark error should not subscribe for live updates")
+
+        def unsubscribe(self, _stream_id: str, _queue: object) -> None:
+            raise AssertionError("unsubscribe should not be called")
+
+    monkeypatch.setattr(benchmark_routes, "EventSourceResponse", _CapturedEventSourceResponse)
+    monkeypatch.setattr(benchmark_routes, "get_stream_manager", lambda: _FailingStream())
+
+    ticket = await benchmark_routes.create_benchmark_stream_ticket(run_id, _override_user())
+    response = await benchmark_routes.stream_benchmark_run(run_id, ticket=ticket["ticket"])
+    replayed = [item async for item in response.content]
+
+    assert replayed == [
+        {
+            "event": "error",
+            "data": json.dumps(
+                {
+                    "payload": {"message": "provider unavailable"},
                     "timestamp": "2026-04-18T02:01:00+00:00",
                 }
             ),
