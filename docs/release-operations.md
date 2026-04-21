@@ -35,13 +35,14 @@ and install checks do not need a manual hosted API URL.
 ### Publish (Preferred)
 
 ```bash
-gh workflow run deploy-sdk.yml --ref main -f publish=true
-gh run watch
+git tag sdk-v0.1.0a4
+git push origin sdk-v0.1.0a4
 ```
 
 Trusted publishing is wired for the repository in `.github/workflows/deploy-sdk.yml`
 using the PyPI project settings for `agora-arbitrator-sdk` / `zahemen9900` / `agora` / `pypi`.
-This is now the canonical release path. Local `twine upload` is fallback-only for emergency recovery.
+Tag pushes matching `sdk-v*` publish automatically. Manual `workflow_dispatch`
+is still available as fallback. Local `twine upload` is fallback-only for emergency recovery.
 
 ### Post-Publish Verification
 
