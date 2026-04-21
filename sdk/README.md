@@ -6,6 +6,10 @@ Agora decides whether a task should be resolved by structured debate or confiden
 
 Hosted and local results both expose the same Phase 2 telemetry contract: per-model tokens, input/output/thinking token splits when available, latency, and estimated USD cost.
 
+Maintainer note: the canonical Python source tree lives in `agora/` at the repo
+root. The `sdk/` directory exists only as the SDK release wrapper for PyPI
+metadata, README content, and build entrypoints.
+
 ## Quickstart
 
 ```bash
@@ -240,5 +244,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a3`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a4`.
 - Preferred publish path is the trusted GitHub workflow in `.github/workflows/deploy-sdk.yml`.

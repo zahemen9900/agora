@@ -18,7 +18,6 @@ Unlike the technical-security backlog, almost everything in this document is ind
 - `#2` multi-worker / crash-unsafe task execution coordination
 - `#3` GCS store swallowing infrastructure errors
 - `#4` non-transactional Solana write flow
-- `#5` duplicated `agora/` and `sdk/agora/` package trees
 - `#6` manually duplicated backend/frontend schemas
 - `#7` placeholder public surfaces
 - `#8` selector import cycle
@@ -31,14 +30,12 @@ None of these require WorkOS to be finished. None require API keys to exist firs
 - `#1` false public mechanism contract
 - `#2` multi-worker / crash-unsafe execution coordination
 - `#4` Solana write-flow reconciliation and idempotency
-- `#5` duplicated package trees
 
 Why these four first:
 
 - `#1` keeps the public API/SDK contract honest before external users depend on it.
 - `#2` is the biggest correctness problem in hosted execution.
 - `#4` determines whether hosted side effects are recoverable once more real users and credentials exist.
-- `#5` reduces the chance that auth/API-key work drifts between mirrored source trees.
 
 ### Does not need to block auth work
 
@@ -209,43 +206,25 @@ Why I did not auto-fix it:
 - This needs a full state machine design, not a cleanup edit.
 - The safe version requires product decisions about retry, reconciliation, and eventual consistency.
 
-### 5. The repo still has two mirrored Python package trees
+### 5. Resolved: SDK packaging no longer mirrors the Python source tree
 
 **Dispatch status**
 
-- Start now
-- Strongly recommended before nontrivial auth/API-key changes land in both SDK and backend
+Resolved on 2026-04-21
 
-`agora/` and `sdk/agora/` are effectively duplicated codebases. This is the biggest maintainability problem left in the repo.
+This issue is no longer open. The repo now uses `agora/` as the single source
+tree, and `sdk/` is only the release wrapper for `agora-arbitrator-sdk`.
 
-Why this matters:
+What changed:
 
-- Every nontrivial change risks drift between runtime and SDK behavior.
-- Tooling gets confused because both trees resolve to the same module names.
-- Type-checking requires special handling to avoid duplicate-module collisions.
+- The `sdk/agora` symlinked mirror was removed.
+- SDK builds package `agora*` directly from the repo-root source tree.
+- The release path remains `python -m build sdk` and GitHub trusted publishing.
 
-Evidence:
+Why this note remains here:
 
-- `agora/agent.py:1` and `sdk/agora/agent.py:1`
-- `agora/__init__.py:1` and `sdk/agora/__init__.py:1`
-- `agora/selector/__init__.py:1` and `sdk/agora/selector/__init__.py:1`
-
-Observed tooling symptom:
-
-- Plain `mypy` over both trees reports duplicate modules for `agora.*`.
-
-Recommended fix:
-
-1. Pick a single source tree.
-2. Make the SDK package either:
-   - package the main `agora/` source directly, or
-   - become a thin compatibility layer that re-exports from one canonical implementation.
-3. Stop requiring mirrored edits in both locations.
-
-Why I did not auto-fix it:
-
-- This is an architectural refactor with nontrivial packaging risk.
-- The repo already has active uncommitted changes in both trees.
+- Historical references elsewhere in this document use the original numbering.
+- The duplication risk that previously affected SDK/backend drift is gone.
 
 ## Priority 2
 
@@ -317,13 +296,13 @@ Why I did not auto-fix it:
 - Start now if someone is already in the selector package
 - Otherwise keep behind the correctness work above
 
-The selector package re-export pattern creates a package-level cycle between `agora.selector` and `agora.selector.selector`.
+The selector package re-export pattern creates a package-level cycle between
+`agora.selector` and `agora.selector.selector`.
 
 Evidence:
 
 - `agora/selector/__init__.py:3`
 - `agora/selector/selector.py:9`
-- same mirrored structure under `sdk/agora/selector/`
 
 Why this matters:
 

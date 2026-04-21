@@ -9,7 +9,7 @@
 
 ## SDK Release Runbook (Trusted Publishing, Current Cycle)
 
-Target package: `agora-arbitrator-sdk==0.1.0a3`
+Target package: `agora-arbitrator-sdk==0.1.0a4`
 
 ### Prerequisites
 
@@ -24,6 +24,10 @@ python -m pip install --upgrade pip build twine
 python -m build sdk
 python -m twine check sdk/dist/*
 ```
+
+The public SDK package is `agora-arbitrator-sdk`. Source code lives in the
+repo-root `agora/` tree; the `sdk/` directory is metadata-only and remains the
+canonical build entrypoint for release operations.
 
 The SDK now resolves the canonical hosted Cloud Run backend by default, so release smoke
 and install checks do not need a manual hosted API URL.
@@ -45,7 +49,7 @@ This is now the canonical release path. Local `twine upload` is fallback-only fo
 python -m venv /tmp/agora-arbitrator-sdk-verify
 source /tmp/agora-arbitrator-sdk-verify/bin/activate
 python -m pip install --upgrade pip
-python -m pip install agora-arbitrator-sdk==0.1.0a3
+python -m pip install agora-arbitrator-sdk==0.1.0a4
 python - <<'PY'
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 print("sdk-import-ok")
