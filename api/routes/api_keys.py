@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import (
@@ -28,6 +29,7 @@ from api.models import (
 )
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
+logger = structlog.get_logger(__name__)
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 
 
@@ -35,7 +37,8 @@ def _metadata_response(record: dict[str, object]) -> ApiKeyMetadataResponse:
     return ApiKeyMetadataResponse.model_validate(record)
 
 
-@router.get("/", response_model=list[ApiKeyMetadataResponse])
+@router.get("", response_model=list[ApiKeyMetadataResponse])
+@router.get("/", response_model=list[ApiKeyMetadataResponse], include_in_schema=False)
 async def list_api_keys(user: CurrentUser) -> list[ApiKeyMetadataResponse]:
     """Return safe metadata for the current workspace's API keys."""
 
@@ -46,7 +49,8 @@ async def list_api_keys(user: CurrentUser) -> list[ApiKeyMetadataResponse]:
     return [_metadata_response(record) for record in keys]
 
 
-@router.post("/", response_model=ApiKeyCreateResponse)
+@router.post("", response_model=ApiKeyCreateResponse)
+@router.post("/", response_model=ApiKeyCreateResponse, include_in_schema=False)
 async def create_api_key(
     request: ApiKeyCreateRequest,
     user: CurrentUser,
@@ -57,6 +61,12 @@ async def create_api_key(
     require_scope(user, "api_keys:write")
     store = get_auth_store()
     key_id, public_id, secret = generate_api_key_material()
+    try:
+        secret_hash = hash_api_key_secret(secret)
+    except RuntimeError as exc:
+        logger.error("api_key_creation_misconfigured", error=str(exc))
+        raise HTTPException(status_code=503, detail="API key creation is not configured") from exc
+
     created_at = datetime.now(UTC)
     expires_at = default_api_key_expiry()
     record = {
@@ -64,7 +74,7 @@ async def create_api_key(
         "workspace_id": user.workspace_id,
         "name": request.name.strip(),
         "public_id": public_id,
-        "secret_hash": hash_api_key_secret(secret),
+        "secret_hash": secret_hash,
         "scopes": list(DEFAULT_API_KEY_SCOPES),
         "created_by_user_id": user.user_id or "",
         "created_at": created_at.isoformat(),

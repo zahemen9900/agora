@@ -1,21 +1,9 @@
-import { useEffect } from "react";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 import { useNavigate } from "react-router-dom";
 
-/**
- * OAuth callback handler.
- * The AuthKitProvider handles the token exchange automatically.
- * This component just shows a loading state during the process.
- */
 export function Callback() {
   const { isLoading, authStatus } = useAuth();
   const navigate = useNavigate();
-
-  useEffect(() => {
-    if (!isLoading && authStatus === "authenticated") {
-      navigate("/", { replace: true });
-    }
-  }, [authStatus, isLoading, navigate]);
 
   if (!isLoading && authStatus === "unauthenticated") {
     return (

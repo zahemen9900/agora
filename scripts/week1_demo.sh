@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-API_URL="${AGORA_API_URL:-https://agora-api-rztfxer7ra-uc.a.run.app}"
+API_URL="${AGORA_API_URL:-https://agora-api-dcro4pg6ca-uc.a.run.app}"
 RUN_ANCHOR_CHECKS="${RUN_ANCHOR_CHECKS:-auto}"
 RUN_GEMINI_SMOKE="${RUN_GEMINI_SMOKE:-auto}"
 RUN_CLAUDE_SMOKE="${RUN_CLAUDE_SMOKE:-auto}"
@@ -16,9 +16,8 @@ DEMO_ORCHESTRATOR_TIMEOUT_SECONDS="${DEMO_ORCHESTRATOR_TIMEOUT_SECONDS:-180}"
 DEMO_MODEL_TIMEOUT_SECONDS="${DEMO_MODEL_TIMEOUT_SECONDS:-120}"
 DEMO_ALL_MODELS_TIMEOUT_SECONDS="${DEMO_ALL_MODELS_TIMEOUT_SECONDS:-240}"
 DEMO_ALL_MODELS_MAX_ATTEMPTS="${DEMO_ALL_MODELS_MAX_ATTEMPTS:-3}"
-AGORA_GCLOUD_CREDENTIALS_FILE="${AGORA_GCLOUD_CREDENTIALS_FILE:-}"
-DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3-flash-preview}"
-DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3.1-pro-preview}"
+DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3.1-flash-lite-preview}"
+DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3-flash-preview}"
 DEMO_CLAUDE_MODEL="${DEMO_CLAUDE_MODEL:-claude-sonnet-4-6}"
 DEMO_KIMI_MODEL="${DEMO_KIMI_MODEL:-moonshotai/kimi-k2-thinking}"
 DEMO_QUERY_DEFAULT="Week 1 demo: should teams use debate or vote?"
@@ -218,66 +217,20 @@ setup_gcloud_auth() {
     return 0
   fi
 
-  local candidates=()
-  if [[ -n "$AGORA_GCLOUD_CREDENTIALS_FILE" ]]; then
-    candidates+=("$AGORA_GCLOUD_CREDENTIALS_FILE")
-  fi
-  if [[ -n "$ORIG_GOOGLE_APPLICATION_CREDENTIALS" ]]; then
-    candidates+=("$ORIG_GOOGLE_APPLICATION_CREDENTIALS")
-  fi
-  candidates+=(
-    "/home/zahemen/projects/dl-lib/agora/.credentials/even-ally-480821-f3-be2827895913.json"
-    "$ROOT_DIR/.credentials/even-ally-480821-f3-be2827895913.json"
-    "$ROOT_DIR/../../agora/.credentials/even-ally-480821-f3-be2827895913.json"
-  )
-
-  local selected=""
-  for path in "${candidates[@]}"; do
-    if [[ -n "$path" && -f "$path" ]]; then
-      selected="$path"
-      break
-    fi
-  done
-
-  if [[ -z "$selected" ]]; then
-    log_warn "No service-account credentials file found for gcloud automation."
-    log_warn "Set AGORA_GCLOUD_CREDENTIALS_FILE to your key JSON to avoid reauthentication prompts."
-    GCLOUD_AUTH_STATUS="missing-key-file"
-    return 0
-  fi
-
-  export GOOGLE_APPLICATION_CREDENTIALS="$selected"
-  export CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE="$selected"
-  GCLOUD_AUTH_SOURCE="$selected"
-
-  local key_project
-  key_project="$($PYTHON_BIN - <<'PY'
-import json
-import os
-from pathlib import Path
-
-path = Path(os.environ["GOOGLE_APPLICATION_CREDENTIALS"])
-try:
-    data = json.loads(path.read_text(encoding="utf-8"))
-except Exception:
-    print("")
-else:
-    print(data.get("project_id", ""), end="")
-PY
-)"
-
-  if [[ -n "$key_project" ]]; then
-    export CLOUDSDK_CORE_PROJECT="$key_project"
-  fi
-
-  env CLOUDSDK_CORE_DISABLE_PROMPTS=1 gcloud auth activate-service-account --key-file "$selected" >/dev/null 2>&1 || true
+  GCLOUD_ACTIVE_ACCOUNT="$(env CLOUDSDK_CORE_DISABLE_PROMPTS=1 gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n1 || true)"
   if env CLOUDSDK_CORE_DISABLE_PROMPTS=1 gcloud auth print-access-token >/dev/null 2>&1; then
     GCLOUD_AUTH_STATUS="ok"
+    GCLOUD_AUTH_SOURCE="gcloud-user"
+  elif env CLOUDSDK_CORE_DISABLE_PROMPTS=1 gcloud auth application-default print-access-token >/dev/null 2>&1; then
+    GCLOUD_AUTH_STATUS="ok"
+    GCLOUD_AUTH_SOURCE="application-default"
   else
     GCLOUD_AUTH_STATUS="failed"
+    GCLOUD_AUTH_SOURCE="none"
+    log_warn "gcloud auth is unavailable for Secret Manager access."
+    log_warn "Run 'gcloud auth login' and 'gcloud auth application-default login' before using hosted demos."
   fi
 
-  GCLOUD_ACTIVE_ACCOUNT="$(env CLOUDSDK_CORE_DISABLE_PROMPTS=1 gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n1 || true)"
   if [[ -z "$GCLOUD_ACTIVE_ACCOUNT" ]]; then
     GCLOUD_ACTIVE_ACCOUNT="unknown"
   fi

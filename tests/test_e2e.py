@@ -19,7 +19,7 @@ from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
 from tests.helpers import make_selection
 
-_DEFAULT_HOSTED_API_URL = "https://agora-api-rztfxer7ra-uc.a.run.app"
+_DEFAULT_HOSTED_API_URL = "https://agora-api-dcro4pg6ca-uc.a.run.app"
 
 
 def _override_user() -> AuthenticatedUser:
@@ -50,8 +50,9 @@ async def test_local_api_e2e_flow(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
             return selection
 
     class _FakeOrchestrator:
-        def __init__(self, agent_count: int):
+        def __init__(self, agent_count: int, reasoning_presets=None):
             self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
             self.selector = _FakeSelector()
 
         async def run(
@@ -86,9 +87,9 @@ async def test_local_api_e2e_flow(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
                 merkle_root=merkle_root,
                 transcript_hashes=transcript_hashes,
                 agent_models_used=[
-                    "gemini-3.1-pro-preview",
-                    "moonshotai/kimi-k2-thinking",
                     "gemini-3-flash-preview",
+                    "moonshotai/kimi-k2-thinking",
+                    "gemini-3.1-flash-lite-preview",
                 ],
                 convergence_history=[],
                 locked_claims=[],
@@ -150,9 +151,9 @@ async def test_local_api_e2e_flow(tmp_path, monkeypatch: pytest.MonkeyPatch) -> 
     assert run_response.quorum_reached is True
     assert run_response.agent_count == 3
     assert run_response.agent_models_used == [
-        "gemini-3.1-pro-preview",
-        "moonshotai/kimi-k2-thinking",
         "gemini-3-flash-preview",
+        "moonshotai/kimi-k2-thinking",
+        "gemini-3.1-flash-lite-preview",
     ]
 
     status_response = await task_routes.get_task_status(task_id, user, detailed=True)

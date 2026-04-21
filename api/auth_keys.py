@@ -18,6 +18,7 @@ DEFAULT_API_KEY_SCOPES = [
 
 _LIVE_PREFIX = "agora_live_"
 _TEST_PREFIX = "agora_test_"
+_DEV_FALLBACK_API_KEY_PEPPER = "agora-dev-api-key-pepper"
 
 
 def api_key_token_prefix() -> str:
@@ -31,11 +32,18 @@ def is_api_key_token(value: str) -> bool:
     return value.startswith(_LIVE_PREFIX) or value.startswith(_TEST_PREFIX)
 
 
+def _is_production_environment() -> bool:
+    environment = settings.environment.strip().lower()
+    return environment in {"prod", "production"}
+
+
 def _api_key_pepper_bytes() -> bytes:
     pepper = settings.api_key_pepper.strip()
-    if not pepper:
+    if pepper:
+        return pepper.encode("utf-8")
+    if _is_production_environment():
         raise RuntimeError("API key verification is not configured. Set AGORA_API_KEY_PEPPER.")
-    return pepper.encode("utf-8")
+    return _DEV_FALLBACK_API_KEY_PEPPER.encode("utf-8")
 
 
 def hash_api_key_secret(secret: str) -> str:

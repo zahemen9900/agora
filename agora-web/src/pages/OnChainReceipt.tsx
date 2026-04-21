@@ -10,7 +10,7 @@ import {
   verifyMerkleRoot,
   type TaskStatusResponse,
 } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 export function OnChainReceipt() {
   const { taskId } = useParams();
@@ -154,12 +154,27 @@ export function OnChainReceipt() {
               </td>
               <td className="py-4 text-right"></td>
             </tr>
+            <tr className="border-b border-border-subtle">
+              <td className="py-4 text-text-secondary">Configured Stake</td>
+              <td colSpan={2} className="py-4">
+                <div className="mono text-sm text-text-primary">
+                  {task ? `${formatSolAmount(task.payment_amount)} SOL` : "n/a"}
+                </div>
+              </td>
+            </tr>
+            <tr className="border-b border-border-subtle">
+              <td className="py-4 text-text-secondary">Locked Payment</td>
+              <td colSpan={2} className="py-4">
+                <div className="mono text-sm text-text-primary">
+                  {task?.payment_status === "locked" ? `${formatSolAmount(task.payment_amount)} SOL` : "n/a"}
+                </div>
+              </td>
+            </tr>
             <tr>
-              <td className="py-4 text-text-secondary">Payment Status</td>
+              <td className="py-4 text-text-secondary">Released Payment</td>
               <td colSpan={2} className="py-4">
                 <div className="mono inline-flex items-center gap-2 bg-accent-muted text-accent px-3 py-1 rounded text-sm">
-                  {task ? `${task.payment_amount.toFixed(2)} SOL` : "0.00 SOL"} —{" "}
-                  {paymentReleased ? "Released" : task?.payment_status ?? "none"}
+                  {paymentReleased ? `${formatSolAmount(task?.payment_amount ?? 0)} SOL` : "n/a"}
                   {paymentReleased ? <CheckCircle2 size={14} /> : null}
                 </div>
               </td>
@@ -203,4 +218,12 @@ export function OnChainReceipt() {
       </div>
     </div>
   );
+}
+
+function formatSolAmount(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "n/a";
+  }
+  const trimmed = value.toFixed(6).replace(/\.?0+$/, "");
+  return trimmed.length > 0 ? trimmed : "0";
 }

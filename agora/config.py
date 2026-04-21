@@ -279,10 +279,10 @@ class AgoraConfig(BaseModel):
     )
 
     flash_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-3-flash-preview")
+        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-3.1-flash-lite-preview")
     )
     pro_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-3.1-pro-preview")
+        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-3-flash-preview")
     )
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -313,6 +313,10 @@ class AgoraConfig(BaseModel):
     )
     anthropic_throttle_window_seconds: float = Field(
         default_factory=lambda: float(os.getenv("AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS", "60")),
+        gt=0,
+    )
+    model_call_timeout_seconds: float = Field(
+        default_factory=lambda: float(os.getenv("AGORA_MODEL_CALL_TIMEOUT_SECONDS", "180")),
         gt=0,
     )
     openrouter_api_key: str | None = Field(default_factory=_resolve_openrouter_api_key)
@@ -353,16 +357,28 @@ class AgoraConfig(BaseModel):
         default_factory=lambda: int(os.getenv("AGORA_KIMI_MAX_TOKENS", "512")),
         ge=1,
     )
+    claude_effort: str = Field(
+        default_factory=lambda: _env_optional_str("AGORA_CLAUDE_EFFORT", "medium") or "medium"
+    )
 
     # Gemini runtime feature controls.
     gemini_enable_streaming: bool = True
     gemini_enable_thinking: bool = True
     gemini_thinking_budget: int = Field(default=1024, ge=0)
+    gemini_pro_thinking_level: str = Field(
+        default_factory=lambda: (
+            _env_optional_str("AGORA_GEMINI_PRO_THINKING_LEVEL", "high") or "high"
+        )
+    )
     gemini_flash_thinking_level: str | None = Field(
         default_factory=lambda: _env_optional_str(
             "AGORA_GEMINI_FLASH_THINKING_LEVEL",
-            "minimal",
+            "medium",
         )
+    )
+    anthropic_concurrent_requests_per_run: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_ANTHROPIC_CONCURRENT_REQUESTS_PER_RUN", "1")),
+        ge=1,
     )
 
     max_rounds: int = 4

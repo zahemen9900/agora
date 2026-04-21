@@ -1,4 +1,4 @@
-"""Stub Solana client interface for Week 1 integration boundaries."""
+"""Solana client interface for protocol-facing on-chain operations."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class SolanaReceipt(BaseModel):
 
 
 class SolanaClient:
-    """Stub interface for on-chain operations implemented by API/contract tracks."""
+    """Interface for optional on-chain operations implemented by deployment adapters."""
 
     async def submit_receipt(self, receipt: SolanaReceipt) -> str:
         """Submit a receipt to Solana.
@@ -28,10 +28,10 @@ class SolanaClient:
             receipt: Receipt payload.
 
         Raises:
-            NotImplementedError: Week 1 placeholder.
+            NotImplementedError: No concrete Solana adapter is configured.
         """
 
-        raise NotImplementedError("Solana client submission is implemented in Josh's track")
+        raise NotImplementedError("Solana receipt submission requires a configured adapter")
 
     async def record_mechanism_switch(
         self, task_id: str, from_mechanism: str, to_mechanism: str
@@ -44,10 +44,10 @@ class SolanaClient:
             to_mechanism: New mechanism.
 
         Raises:
-            NotImplementedError: Week 1 placeholder.
+            NotImplementedError: No concrete Solana adapter is configured.
         """
 
-        raise NotImplementedError("Mechanism switch recording is implemented in Josh's track")
+        raise NotImplementedError("Mechanism switch recording requires a configured adapter")
 
     async def get_task_status(self, task_id: str) -> dict[str, Any]:
         """Query task status from chain/indexer.
@@ -56,7 +56,7 @@ class SolanaClient:
             task_id: Task identifier.
 
         Raises:
-            NotImplementedError: Week 1 placeholder.
+            NotImplementedError: No concrete Solana adapter is configured.
         """
 
-        raise NotImplementedError("Task status retrieval is implemented in Josh's track")
+        raise NotImplementedError("Task status retrieval requires a configured adapter")

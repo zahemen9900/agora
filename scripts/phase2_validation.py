@@ -93,6 +93,7 @@ async def _run_validation(args: argparse.Namespace) -> dict[str, Any]:
     orchestrator = AgoraOrchestrator(
         agent_count=args.agent_count,
         bandit_state_path=args.bandit_state_path,
+        allow_offline_fallback=args.live_agents,
     )
     agents = None if args.live_agents else [_offline_agent] * args.agent_count
     deterministic_seed = None if args.live_agents else args.seed

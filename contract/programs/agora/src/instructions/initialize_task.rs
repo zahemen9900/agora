@@ -47,7 +47,7 @@ pub fn handler(
         AgoraError::InvalidThreshold
     );
     require!(
-        agent_count > 0 && agent_count <= 10,
+        agent_count > 0 && agent_count <= 12,
         AgoraError::InvalidAgentCount
     );
     require!(mechanism <= MAX_MECHANISM, AgoraError::InvalidMechanism);

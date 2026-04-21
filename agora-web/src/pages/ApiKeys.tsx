@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, Copy, KeyRound, ShieldX } from "lucide-react";
 
 import {
@@ -8,7 +8,7 @@ import {
   type ApiKeyCreateResponse,
   type ApiKeyMetadataResponse,
 } from "../lib/api";
-import { useAuth } from "../lib/auth";
+import { useAuth } from "../lib/useAuth";
 
 export function ApiKeys() {
   const { getAccessToken, workspace } = useAuth();
@@ -19,11 +19,7 @@ export function ApiKeys() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void loadKeys();
-  }, []);
-
-  async function loadKeys() {
+  const loadKeys = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -38,7 +34,11 @@ export function ApiKeys() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [getAccessToken]);
+
+  useEffect(() => {
+    void loadKeys();
+  }, [loadKeys]);
 
   async function handleCreate() {
     if (!name.trim()) {

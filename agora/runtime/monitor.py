@@ -20,17 +20,26 @@ class StateMonitor:
         """Initialize monitor state."""
 
         self._last_entropy: float | None = None
+        self._last_distribution: dict[str, float] | None = None
+        self._last_locked_claim_count: int | None = None
 
     def reset(self) -> None:
         """Reset monitor state for a new task execution."""
 
         self._last_entropy = None
+        self._last_distribution = None
+        self._last_locked_claim_count = None
 
-    def compute_metrics(self, agent_outputs: list[AgentOutput]) -> ConvergenceMetrics:
+    def compute_metrics(
+        self,
+        agent_outputs: list[AgentOutput],
+        locked_claim_count: int | None = None,
+    ) -> ConvergenceMetrics:
         """Compute convergence metrics from current round outputs.
 
         Args:
             agent_outputs: Agent outputs for one round/phase.
+            locked_claim_count: Total verified claims available after the round.
 
         Returns:
             ConvergenceMetrics: Entropy, information gain delta, and distribution stats.
@@ -42,28 +51,107 @@ class StateMonitor:
         if not agent_outputs:
             raise ValueError("compute_metrics requires at least one agent output")
 
-        normalized_answers = [self.extract_answer_signal(output) for output in agent_outputs]
-        counts = Counter(normalized_answers)
-        total = len(normalized_answers)
+        weighted_counts: Counter[str] = Counter()
+        for output in agent_outputs:
+            normalized_answer = self.extract_answer_signal(output)
+            weight = min(1.0, max(0.0, output.confidence))
+            weighted_counts[normalized_answer] += weight if weight > 0.0 else 1e-9
+        total_weight = math.fsum(weighted_counts.values())
+        distribution = {
+            answer: weight / total_weight for answer, weight in weighted_counts.items()
+        }
 
-        probabilities = [count / total for count in counts.values()]
-        entropy = -sum(p * math.log2(p) for p in probabilities if p > 0.0)
-        dominant_share = max(probabilities)
+        probabilities = list(distribution.values())
+        entropy = max(0.0, -math.fsum(p * math.log2(p) for p in probabilities if p > 0.0))
+        dominant_share = self._clamp_unit_interval(max(probabilities))
 
         if self._last_entropy is None:
-            info_gain_delta = 0.0
+            entropy_delta = 0.0
+            js_divergence = 0.0
+            answer_churn = 0.0
         else:
-            info_gain_delta = abs(entropy - self._last_entropy)
+            entropy_delta = self._last_entropy - entropy
+            previous_distribution = self._last_distribution or {}
+            js_divergence = self._jensen_shannon_divergence(
+                previous_distribution,
+                distribution,
+            )
+            answer_churn = self._answer_churn(previous_distribution, distribution)
+            js_divergence = max(0.0, js_divergence)
+            answer_churn = self._clamp_unit_interval(answer_churn)
+
+        normalized_locked_claim_count = (
+            max(0, int(locked_claim_count)) if locked_claim_count is not None else 0
+        )
+        if self._last_locked_claim_count is None:
+            locked_claim_growth = 0.0
+        else:
+            growth_delta = max(0, normalized_locked_claim_count - self._last_locked_claim_count)
+            locked_claim_growth = growth_delta / max(1, normalized_locked_claim_count)
+
+        novelty_score = min(1.0, (0.5 * js_divergence) + (0.5 * locked_claim_growth))
         self._last_entropy = entropy
+        self._last_distribution = distribution
+        self._last_locked_claim_count = normalized_locked_claim_count
 
         round_number = max(output.round_number for output in agent_outputs)
         return ConvergenceMetrics(
             round_number=round_number,
             disagreement_entropy=entropy,
-            information_gain_delta=info_gain_delta,
-            unique_answers=len(counts),
+            entropy_delta=entropy_delta,
+            js_divergence=js_divergence,
+            answer_churn=answer_churn,
+            locked_claim_count=normalized_locked_claim_count,
+            locked_claim_growth=locked_claim_growth,
+            novelty_score=novelty_score,
+            information_gain_delta=novelty_score,
+            unique_answers=len(distribution),
             dominant_answer_share=dominant_share,
+            answer_distribution=distribution,
         )
+
+    @staticmethod
+    def _jensen_shannon_divergence(
+        previous: dict[str, float],
+        current: dict[str, float],
+    ) -> float:
+        """Compute bounded distribution movement between consecutive rounds."""
+
+        keys = set(previous) | set(current)
+        if not keys:
+            return 0.0
+
+        def kl_divergence(p_dist: dict[str, float], q_dist: dict[str, float]) -> float:
+            divergence = 0.0
+            for key in keys:
+                p = p_dist.get(key, 0.0)
+                q = q_dist.get(key, 0.0)
+                if p > 0.0 and q > 0.0:
+                    divergence += p * math.log2(p / q)
+            return divergence
+
+        midpoint = {key: 0.5 * (previous.get(key, 0.0) + current.get(key, 0.0)) for key in keys}
+        return 0.5 * kl_divergence(previous, midpoint) + 0.5 * kl_divergence(
+            current,
+            midpoint,
+        )
+
+    @staticmethod
+    def _answer_churn(previous: dict[str, float], current: dict[str, float]) -> float:
+        """Return total distribution mass that moved between answers."""
+
+        keys = set(previous) | set(current)
+        return 0.5 * math.fsum(
+            abs(current.get(key, 0.0) - previous.get(key, 0.0)) for key in keys
+        )
+
+    @staticmethod
+    def _clamp_unit_interval(value: float) -> float:
+        """Keep bounded convergence metrics within the Pydantic contract."""
+
+        if not math.isfinite(value):
+            return 0.0
+        return min(1.0, max(0.0, value))
 
     @staticmethod
     def extract_answer_signal(output: AgentOutput) -> str:
@@ -96,15 +184,29 @@ class StateMonitor:
             return payload if payload.strip() else None
 
         if isinstance(payload, dict):
-            for key in ("faction_answer", "answer", "final_answer", "claim"):
+            for key in ("current_answer", "answer", "final_answer", "claim"):
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
                     return value
 
-            for value in payload.values():
+            for key, value in payload.items():
+                if key in {
+                    "assigned_answer",
+                    "faction_answer",
+                    "defense",
+                    "evidence",
+                    "reasoning",
+                    "summary",
+                }:
+                    continue
                 extracted = StateMonitor._extract_signal_from_payload(value)
                 if extracted is not None:
                     return extracted
+
+            for key in ("assigned_answer", "faction_answer"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
 
         if isinstance(payload, list):
             for item in payload:
@@ -144,8 +246,12 @@ class StateMonitor:
             return False, "Insufficient rounds for plateau detection"
 
         trailing = convergence_history[-plateau_rounds:]
-        if all(metric.information_gain_delta < plateau_threshold for metric in trailing):
-            return True, "Information gain plateau detected"
+        if all(
+            abs(metric.entropy_delta) < plateau_threshold
+            and metric.information_gain_delta < plateau_threshold
+            for metric in trailing
+        ):
+            return True, "Novelty plateau detected"
 
         return False, "Continue deliberation"
 

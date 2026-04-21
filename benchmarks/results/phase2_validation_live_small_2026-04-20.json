@@ -1,0 +1,1130 @@
+{
+  "generated_at": "2026-04-20T18:58:36.483881+00:00",
+  "pre_learning": {
+    "runs": [],
+    "summary": {
+      "per_mode": {},
+      "per_category": {}
+    }
+  },
+  "learning_updates": {
+    "runs": [],
+    "summary": {
+      "per_mode": {},
+      "per_category": {}
+    }
+  },
+  "post_learning": {
+    "runs": [
+      {
+        "task_index": 0,
+        "task": "What is 17 * 19?",
+        "question": "What is 17 * 19?",
+        "source_task": "What is 17 * 19?",
+        "category": "math",
+        "mode": "selector",
+        "mechanism_used": "vote",
+        "correct": true,
+        "confidence": 1.0,
+        "tokens_used": 2261,
+        "latency_ms": 26457.85793500181,
+        "rounds": 1,
+        "switches": 0,
+        "quorum_reached": true,
+        "merkle_root": "06c9bbbad9f55aa39a27419e688c647c3e420ef5b798d55f7d61b8e36f1aacbe",
+        "final_answer": "323",
+        "selector_reasoning": "The task is a simple arithmetic calculation with a single correct answer. Independent voting is the most effective mechanism for factual/mathematical tasks of low complexity, as it leverages the wisdom of the crowd to filter out individual calculation errors without the risk of one agent's mistake persuasively misleading others in a debate.",
+        "selector_reasoning_hash": "c2c9508c7add9bf35a9613236bb3303f53e34b1a7305f3fccf643ac2e0e92ec0",
+        "agent_count": 4,
+        "agent_models_used": [
+          "gemini-3-flash-preview",
+          "gemini-3.1-flash-lite-preview",
+          "moonshotai/kimi-k2-thinking",
+          "claude-sonnet-4-6"
+        ],
+        "model_token_usage": {
+          "gemini-3-flash-preview": 423,
+          "gemini-3.1-flash-lite-preview": 411,
+          "moonshotai/kimi-k2-thinking": 882,
+          "claude-sonnet-4-6": 545
+        },
+        "model_input_token_usage": {
+          "gemini-3-flash-preview": 183,
+          "gemini-3.1-flash-lite-preview": 183,
+          "moonshotai/kimi-k2-thinking": 339,
+          "claude-sonnet-4-6": 499
+        },
+        "model_output_token_usage": {
+          "gemini-3-flash-preview": 99,
+          "gemini-3.1-flash-lite-preview": 81,
+          "moonshotai/kimi-k2-thinking": 543,
+          "claude-sonnet-4-6": 46
+        },
+        "model_latency_ms": {
+          "gemini-3-flash-preview": 4616.881328001909,
+          "gemini-3.1-flash-lite-preview": 3684.8358120005287,
+          "moonshotai/kimi-k2-thinking": 15409.866665999289,
+          "claude-sonnet-4-6": 2746.274129000085
+        },
+        "convergence_history": [],
+        "mechanism_trace": [
+          {
+            "mechanism": "vote",
+            "start_round": 1,
+            "end_round": 1,
+            "transcript_hashes": [
+              "d9f395c431809f1889bfeba7f943812921894b626704dee5a7fd3c7f43072b98",
+              "19bc762431c8f122e29572573bad21208c48a100efbefa3ec0b3699236521ad3",
+              "acf405cda4e8cda121babe8a53fc4e8f51be8543b45b0d59ed1002317128bd29",
+              "04d0312a81ebc3facec3fa263c211eb7c567a9fb52c0df4f07c3d8e3cafee114"
+            ],
+            "convergence_history": [],
+            "switch_reason": null,
+            "switch_reason_hash": null
+          }
+        ],
+        "transcript_hash_count": 4,
+        "execution_mode": "live",
+        "selector_source": "llm_reasoning",
+        "fallback_count": 0,
+        "fallback_events": [],
+        "mechanism_override_source": null,
+        "model_telemetry": {
+          "gemini-3-flash-preview": {
+            "total_tokens": 423,
+            "input_tokens": 183,
+            "output_tokens": 99,
+            "thinking_tokens": 141,
+            "latency_ms": 4616.881328001909,
+            "estimated_cost_usd": 0.0008115,
+            "estimation_mode": "exact"
+          },
+          "gemini-3.1-flash-lite-preview": {
+            "total_tokens": 411,
+            "input_tokens": 183,
+            "output_tokens": 81,
+            "thinking_tokens": 147,
+            "latency_ms": 3684.8358120005287,
+            "estimated_cost_usd": 0.0001095,
+            "estimation_mode": "exact"
+          },
+          "moonshotai/kimi-k2-thinking": {
+            "total_tokens": 882,
+            "input_tokens": 339,
+            "output_tokens": 543,
+            "thinking_tokens": 483,
+            "latency_ms": 15409.866665999289,
+            "estimated_cost_usd": 0.0027684,
+            "estimation_mode": "exact"
+          },
+          "claude-sonnet-4-6": {
+            "total_tokens": 545,
+            "input_tokens": 499,
+            "output_tokens": 46,
+            "thinking_tokens": null,
+            "latency_ms": 2746.274129000085,
+            "estimated_cost_usd": 0.004905,
+            "estimation_mode": "approx_total_tokens"
+          }
+        },
+        "input_tokens_used": 1204,
+        "output_tokens_used": 769,
+        "model_thinking_token_usage": {
+          "gemini-3-flash-preview": 141,
+          "gemini-3.1-flash-lite-preview": 147,
+          "moonshotai/kimi-k2-thinking": 483
+        },
+        "thinking_tokens_used": 771,
+        "estimated_cost_usd": 0.0085944,
+        "model_estimated_costs_usd": {
+          "gemini-3-flash-preview": 0.0008115,
+          "gemini-3.1-flash-lite-preview": 0.0001095,
+          "moonshotai/kimi-k2-thinking": 0.0027684,
+          "claude-sonnet-4-6": 0.004905
+        },
+        "pricing_version": "2026-04-18",
+        "cost_estimated_at": "2026-04-18T00:00:00+00:00",
+        "estimation_mode": "mixed",
+        "pricing_sources": {
+          "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+          "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+          "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+          "claude-sonnet-4-6": "https://claude.com/pricing"
+        },
+        "cost": {
+          "estimated_cost_usd": 0.0085944,
+          "model_estimated_costs_usd": {
+            "gemini-3-flash-preview": 0.0008115,
+            "gemini-3.1-flash-lite-preview": 0.0001095,
+            "moonshotai/kimi-k2-thinking": 0.0027684,
+            "claude-sonnet-4-6": 0.004905
+          },
+          "pricing_version": "2026-04-18",
+          "estimated_at": "2026-04-18T00:00:00Z",
+          "estimation_mode": "mixed",
+          "pricing_sources": {
+            "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+            "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+            "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+            "claude-sonnet-4-6": "https://claude.com/pricing"
+          }
+        }
+      },
+      {
+        "task_index": 1,
+        "task": "What is the capital city of Japan?",
+        "question": "What is the capital city of Japan?",
+        "source_task": "What is the capital city of Japan?",
+        "category": "factual",
+        "mode": "selector",
+        "mechanism_used": "vote",
+        "correct": true,
+        "confidence": 0.8348008065281406,
+        "tokens_used": 1367,
+        "latency_ms": 9312.599662996945,
+        "rounds": 1,
+        "switches": 0,
+        "quorum_reached": true,
+        "merkle_root": "dd0108bceebd9392c6fe9e671a3e40fd77b578447d6b87e5cb78c9731b8dafe3",
+        "final_answer": "Tokyo",
+        "selector_reasoning": "The task is a simple factual query with a single, universally accepted answer. Independent voting is the most efficient mechanism for aggregating consensus on such straightforward information, as there is no nuance or subjective interpretation requiring a debate.",
+        "selector_reasoning_hash": "8909120d941aa793a5d85fa5983e3ea30167193e067323062f74621aca117324",
+        "agent_count": 4,
+        "agent_models_used": [
+          "gemini-3-flash-preview",
+          "gemini-3.1-flash-lite-preview",
+          "moonshotai/kimi-k2-thinking",
+          "claude-sonnet-4-6"
+        ],
+        "model_token_usage": {
+          "gemini-3-flash-preview": 435,
+          "gemini-3.1-flash-lite-preview": 391,
+          "claude-sonnet-4-6": 541
+        },
+        "model_input_token_usage": {
+          "gemini-3-flash-preview": 181,
+          "gemini-3.1-flash-lite-preview": 181,
+          "claude-sonnet-4-6": 498
+        },
+        "model_output_token_usage": {
+          "gemini-3-flash-preview": 44,
+          "gemini-3.1-flash-lite-preview": 48,
+          "claude-sonnet-4-6": 43
+        },
+        "model_latency_ms": {
+          "gemini-3-flash-preview": 3883.6588189988106,
+          "gemini-3.1-flash-lite-preview": 3187.7592710006866,
+          "moonshotai/kimi-k2-thinking": 0.0,
+          "claude-sonnet-4-6": 2241.181572997448
+        },
+        "convergence_history": [],
+        "mechanism_trace": [
+          {
+            "mechanism": "vote",
+            "start_round": 1,
+            "end_round": 1,
+            "transcript_hashes": [
+              "a2263bd86f6cf78a126f69d3bd9927aa17bc344c7fa6a0cb7754d9b7500284e9",
+              "d730712d6c9f3328d06b9d237658b675133d4140558212424e7ca102814ce067",
+              "3314e7d4331649473fab82872af5c0041abca62469e9b803cfd9619d3f57f884",
+              "47c82e8b4515b95068397a9795ab40cb3d6c89a1ac9fdfa79227a2b897ae0f9c"
+            ],
+            "convergence_history": [],
+            "switch_reason": null,
+            "switch_reason_hash": null
+          }
+        ],
+        "transcript_hash_count": 4,
+        "execution_mode": "mixed",
+        "selector_source": "llm_reasoning",
+        "fallback_count": 1,
+        "fallback_events": [
+          {
+            "component": "vote._VoteResponse",
+            "reason": "provider_kimi_unavailable_or_invalid",
+            "fallback_type": "deterministic",
+            "timestamp": "2026-04-20T18:45:10.605959Z"
+          }
+        ],
+        "mechanism_override_source": null,
+        "model_telemetry": {
+          "gemini-3-flash-preview": {
+            "total_tokens": 435,
+            "input_tokens": 181,
+            "output_tokens": 44,
+            "thinking_tokens": 210,
+            "latency_ms": 3883.6588189988106,
+            "estimated_cost_usd": 0.0008525,
+            "estimation_mode": "exact"
+          },
+          "gemini-3.1-flash-lite-preview": {
+            "total_tokens": 391,
+            "input_tokens": 181,
+            "output_tokens": 48,
+            "thinking_tokens": 162,
+            "latency_ms": 3187.7592710006866,
+            "estimated_cost_usd": 0.0001021,
+            "estimation_mode": "exact"
+          },
+          "moonshotai/kimi-k2-thinking": {
+            "total_tokens": 0,
+            "input_tokens": null,
+            "output_tokens": null,
+            "thinking_tokens": null,
+            "latency_ms": 0.0,
+            "estimated_cost_usd": null,
+            "estimation_mode": "unavailable"
+          },
+          "claude-sonnet-4-6": {
+            "total_tokens": 541,
+            "input_tokens": 498,
+            "output_tokens": 43,
+            "thinking_tokens": null,
+            "latency_ms": 2241.181572997448,
+            "estimated_cost_usd": 0.004869,
+            "estimation_mode": "approx_total_tokens"
+          }
+        },
+        "input_tokens_used": 860,
+        "output_tokens_used": 135,
+        "model_thinking_token_usage": {
+          "gemini-3-flash-preview": 210,
+          "gemini-3.1-flash-lite-preview": 162
+        },
+        "thinking_tokens_used": 372,
+        "estimated_cost_usd": 0.0058236,
+        "model_estimated_costs_usd": {
+          "gemini-3-flash-preview": 0.0008525,
+          "gemini-3.1-flash-lite-preview": 0.0001021,
+          "claude-sonnet-4-6": 0.004869
+        },
+        "pricing_version": "2026-04-18",
+        "cost_estimated_at": "2026-04-18T00:00:00+00:00",
+        "estimation_mode": "mixed",
+        "pricing_sources": {
+          "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+          "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+          "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+          "claude-sonnet-4-6": "https://claude.com/pricing"
+        },
+        "cost": {
+          "estimated_cost_usd": 0.0058236,
+          "model_estimated_costs_usd": {
+            "gemini-3-flash-preview": 0.0008525,
+            "gemini-3.1-flash-lite-preview": 0.0001021,
+            "claude-sonnet-4-6": 0.004869
+          },
+          "pricing_version": "2026-04-18",
+          "estimated_at": "2026-04-18T00:00:00Z",
+          "estimation_mode": "mixed",
+          "pricing_sources": {
+            "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+            "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+            "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+            "claude-sonnet-4-6": "https://claude.com/pricing"
+          }
+        }
+      },
+      {
+        "task_index": 2,
+        "task": "A project is late because reviews take too long. Is the better first intervention clearer review ownership or adding more meetings?",
+        "question": "A project is late because reviews take too long. Is the better first intervention clearer review ownership or adding more meetings?",
+        "source_task": "A project is late because reviews take too long. Is the better first intervention clearer review ownership or adding more meetings?",
+        "category": "reasoning",
+        "mode": "selector",
+        "mechanism_used": "vote",
+        "correct": true,
+        "confidence": 0.6616930566128233,
+        "tokens_used": 27928,
+        "latency_ms": 410040.55609500944,
+        "rounds": 1,
+        "switches": 1,
+        "quorum_reached": true,
+        "merkle_root": "0b7e4794284bcba25d26e31bd8714583e6b2f08df7005d9821781a7c2d65dea9",
+        "final_answer": "clearer review ownership",
+        "selector_reasoning": "The high expected disagreement (0.7) and the qualitative nature of the project management task suggest that a debate is the most effective mechanism. A debate will allow agents to explore the trade-offs between structural interventions (ownership) and synchronous communication (meetings), surfacing the underlying logic for why one should be prioritized over the other as a 'first' step.",
+        "selector_reasoning_hash": "9a610c6deb8b5721ea2665349ab8f7dc57a854cafb926802f996f9caf76425c2",
+        "agent_count": 4,
+        "agent_models_used": [
+          "gemini-3-flash-preview",
+          "moonshotai/kimi-k2-thinking",
+          "gemini-3.1-flash-lite-preview",
+          "claude-sonnet-4-6"
+        ],
+        "model_token_usage": {
+          "gemini-3-flash-preview": 3910,
+          "gemini-3.1-flash-lite-preview": 3561,
+          "moonshotai/kimi-k2-thinking": 16518,
+          "claude-sonnet-4-6": 3939
+        },
+        "model_input_token_usage": {
+          "moonshotai/kimi-k2-thinking": 5056,
+          "gemini-3-flash-preview": 196,
+          "gemini-3.1-flash-lite-preview": 196,
+          "claude-sonnet-4-6": 514
+        },
+        "model_output_token_usage": {
+          "moonshotai/kimi-k2-thinking": 4588,
+          "gemini-3-flash-preview": 87,
+          "gemini-3.1-flash-lite-preview": 71,
+          "claude-sonnet-4-6": 98
+        },
+        "model_latency_ms": {
+          "gemini-3-flash-preview": 46998.96555699888,
+          "gemini-3.1-flash-lite-preview": 25615.223566004715,
+          "moonshotai/kimi-k2-thinking": 287286.8909389981,
+          "claude-sonnet-4-6": 50139.47603300767
+        },
+        "convergence_history": [
+          {
+            "round_number": 1,
+            "disagreement_entropy": 1.9963087634600905,
+            "entropy_delta": 0.0,
+            "js_divergence": 0.0,
+            "answer_churn": 0.0,
+            "locked_claim_count": 0,
+            "locked_claim_growth": 0.0,
+            "novelty_score": 0.0,
+            "information_gain_delta": 0.0,
+            "unique_answers": 4,
+            "dominant_answer_share": 0.274390243902439,
+            "answer_distribution": {
+              "clearer review ownership remains the superior first intervention because it addresses the primary cause of latency\u2014unassigned wait time\u2014without the high coordination cost of additional meetings.": 0.274390243902439,
+              "clearer review ownership remains the superior intervention.": 0.2591463414634146,
+              "clearer review ownership is the better first intervention. the faction answer makes no 40-60% latency claim; it argues from diffusion of responsibility principles. diagnostic differentiation requires measuring idle wait time, reviewer participation overlap, and queue accumulation patterns.": 0.22865853658536583,
+              "clearer review ownership remains the superior first intervention": 0.23780487804878048
+            }
+          },
+          {
+            "round_number": 2,
+            "disagreement_entropy": 1.9963087634600905,
+            "entropy_delta": 0.0,
+            "js_divergence": 0.9999999999999998,
+            "answer_churn": 0.9999999999999998,
+            "locked_claim_count": 0,
+            "locked_claim_growth": 0.0,
+            "novelty_score": 0.4999999999999999,
+            "information_gain_delta": 0.4999999999999999,
+            "unique_answers": 4,
+            "dominant_answer_share": 0.274390243902439,
+            "answer_distribution": {
+              "clearer review ownership remains the superior intervention because it transforms an invisible delay into a manageable resource allocation problem, which meetings only further obscure.": 0.274390243902439,
+              "clearer review ownership remains the superior first intervention because it provides the necessary structure to surface, rather than mask, expertise gaps and quality concerns.": 0.2591463414634146,
+              ": clearer review ownership remains the better first intervention even at 95% reviewer utilization.": 0.22865853658536583,
+              "clearer review ownership remains the superior first intervention, though the critique surfaces real implementation risks worth addressing directly.": 0.23780487804878048
+            }
+          }
+        ],
+        "mechanism_trace": [
+          {
+            "mechanism": "debate",
+            "start_round": 1,
+            "end_round": 2,
+            "transcript_hashes": [
+              "b5f50da26c00963510f99b299241b83f5675073e7aeae305f5cbdebbaf566e99",
+              "b161c42eca8da7597c16ac6e844eda6107b978f2a2fe4ca49835388b7f85d64d",
+              "9de9a3ed7f65d6646a3dec52d53551df7a425479c2881ee3dd233a8ee735d118",
+              "bba4d823f8b732ef7ab9363dc540fe69812fe85c42ecb9eee8f6386a1581c0ec",
+              "445bc847e69dd414c9efe7b1946c506ebb2d6f5ff6d8e5da722feb2e7a7adea6",
+              "a6c8f88921e4e539cc7a26633a9e40a71ba0e3b6cdd97ddd2a4d6d49a0891f59",
+              "d41f767c5eb1ed4395596bbe799fecddbe3b60602ed88750e199e8eede5f3dd5",
+              "3b123b55363d07bd4030c52417ace7766231b01618fe124bb0ca803c48598cf9",
+              "4731750265adcdd00e97259d66ea7a34fc927500e3a7518794ff025d4a95426d",
+              "4914080571745bef5f1f54b6bd3d5f3fa06ee30e52b0eba80397d020195f6798",
+              "b848d3c6da4f6b983a4bc42c4476043164c671bea81ce63cc14600c5c273cb0e",
+              "7a3d4ab36f6a27f1074c45cad0e26f770d27542843fb4b88a8dd87ad02f33128",
+              "e5b64ddcb0034a870359f7e23cc936de7e186f019df5bf6b406ff597304b9963",
+              "843004efd2c560920baa0f0925b28805cf7501788a87ac5553d0a65f8c4f63f4",
+              "8b4e6dd85f1d83c7f3b25d1491dba4f0ea032c8db32cced315fb4a4066ea39a1",
+              "7ac51b03ae7d00075e60e106d9fc58226c76ee37dd71afa30768f4cb59b0177e",
+              "1473ee2bf7764b45727db933b1f0951986b03f97269a3f7476012c036967f5e6",
+              "509be4560f18a1fcddda01fe6f178dac196e6e45ee1320390204f2e0cf7652e6"
+            ],
+            "convergence_history": [
+              {
+                "round_number": 1,
+                "disagreement_entropy": 1.9963087634600905,
+                "entropy_delta": 0.0,
+                "js_divergence": 0.0,
+                "answer_churn": 0.0,
+                "locked_claim_count": 0,
+                "locked_claim_growth": 0.0,
+                "novelty_score": 0.0,
+                "information_gain_delta": 0.0,
+                "unique_answers": 4,
+                "dominant_answer_share": 0.274390243902439,
+                "answer_distribution": {
+                  "clearer review ownership remains the superior first intervention because it addresses the primary cause of latency\u2014unassigned wait time\u2014without the high coordination cost of additional meetings.": 0.274390243902439,
+                  "clearer review ownership remains the superior intervention.": 0.2591463414634146,
+                  "clearer review ownership is the better first intervention. the faction answer makes no 40-60% latency claim; it argues from diffusion of responsibility principles. diagnostic differentiation requires measuring idle wait time, reviewer participation overlap, and queue accumulation patterns.": 0.22865853658536583,
+                  "clearer review ownership remains the superior first intervention": 0.23780487804878048
+                }
+              },
+              {
+                "round_number": 2,
+                "disagreement_entropy": 1.9963087634600905,
+                "entropy_delta": 0.0,
+                "js_divergence": 0.9999999999999998,
+                "answer_churn": 0.9999999999999998,
+                "locked_claim_count": 0,
+                "locked_claim_growth": 0.0,
+                "novelty_score": 0.4999999999999999,
+                "information_gain_delta": 0.4999999999999999,
+                "unique_answers": 4,
+                "dominant_answer_share": 0.274390243902439,
+                "answer_distribution": {
+                  "clearer review ownership remains the superior intervention because it transforms an invisible delay into a manageable resource allocation problem, which meetings only further obscure.": 0.274390243902439,
+                  "clearer review ownership remains the superior first intervention because it provides the necessary structure to surface, rather than mask, expertise gaps and quality concerns.": 0.2591463414634146,
+                  ": clearer review ownership remains the better first intervention even at 95% reviewer utilization.": 0.22865853658536583,
+                  "clearer review ownership remains the superior first intervention, though the critique surfaces real implementation risks worth addressing directly.": 0.23780487804878048
+                }
+              }
+            ],
+            "switch_reason": "No traction after multiple rounds; switching to vote",
+            "switch_reason_hash": "427ed2e8a43975e025a048573977fc3044ce6cfa3f21b853c40e9d31d9a769ac"
+          },
+          {
+            "mechanism": "vote",
+            "start_round": 1,
+            "end_round": 1,
+            "transcript_hashes": [
+              "2e15372855f27fed05874a97cba5e994738ff954ac97fe9537c19428fe4e5326",
+              "ab9cd2b17b92c3d7c60bb8758182e7892179bed278f43b01b40f6a2b372676bc",
+              "f92d9071222743db1a0150630283d584676d03417abdf339013bfdbc58a007fb",
+              "3eb2dc4928293719ede8c5e13ee815d20265eb25b43e4cf39215a554f9e348dc"
+            ],
+            "convergence_history": [],
+            "switch_reason": null,
+            "switch_reason_hash": null
+          }
+        ],
+        "transcript_hash_count": 23,
+        "execution_mode": "live",
+        "selector_source": "llm_reasoning",
+        "fallback_count": 0,
+        "fallback_events": [],
+        "mechanism_override_source": null,
+        "model_telemetry": {
+          "gemini-3-flash-preview": {
+            "total_tokens": 3910,
+            "input_tokens": 196,
+            "output_tokens": 87,
+            "thinking_tokens": 287,
+            "latency_ms": 46998.96555699888,
+            "estimated_cost_usd": 0.00122,
+            "estimation_mode": "exact"
+          },
+          "moonshotai/kimi-k2-thinking": {
+            "total_tokens": 16518,
+            "input_tokens": 5056,
+            "output_tokens": 4588,
+            "thinking_tokens": 3584,
+            "latency_ms": 287286.8909389981,
+            "estimated_cost_usd": 0.0234636,
+            "estimation_mode": "exact"
+          },
+          "gemini-3.1-flash-lite-preview": {
+            "total_tokens": 3561,
+            "input_tokens": 196,
+            "output_tokens": 71,
+            "thinking_tokens": 273,
+            "latency_ms": 25615.223566004715,
+            "estimated_cost_usd": 0.0001572,
+            "estimation_mode": "exact"
+          },
+          "claude-sonnet-4-6": {
+            "total_tokens": 3939,
+            "input_tokens": 514,
+            "output_tokens": 98,
+            "thinking_tokens": null,
+            "latency_ms": 50139.47603300767,
+            "estimated_cost_usd": 0.035451,
+            "estimation_mode": "approx_total_tokens"
+          }
+        },
+        "input_tokens_used": 5962,
+        "output_tokens_used": 4844,
+        "model_thinking_token_usage": {
+          "moonshotai/kimi-k2-thinking": 3584,
+          "gemini-3-flash-preview": 287,
+          "gemini-3.1-flash-lite-preview": 273
+        },
+        "thinking_tokens_used": 4144,
+        "estimated_cost_usd": 0.0602918,
+        "model_estimated_costs_usd": {
+          "gemini-3-flash-preview": 0.00122,
+          "moonshotai/kimi-k2-thinking": 0.0234636,
+          "gemini-3.1-flash-lite-preview": 0.0001572,
+          "claude-sonnet-4-6": 0.035451
+        },
+        "pricing_version": "2026-04-18",
+        "cost_estimated_at": "2026-04-18T00:00:00+00:00",
+        "estimation_mode": "mixed",
+        "pricing_sources": {
+          "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+          "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+          "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+          "claude-sonnet-4-6": "https://claude.com/pricing"
+        },
+        "cost": {
+          "estimated_cost_usd": 0.0602918,
+          "model_estimated_costs_usd": {
+            "gemini-3-flash-preview": 0.00122,
+            "moonshotai/kimi-k2-thinking": 0.0234636,
+            "gemini-3.1-flash-lite-preview": 0.0001572,
+            "claude-sonnet-4-6": 0.035451
+          },
+          "pricing_version": "2026-04-18",
+          "estimated_at": "2026-04-18T00:00:00Z",
+          "estimation_mode": "mixed",
+          "pricing_sources": {
+            "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+            "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+            "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+            "claude-sonnet-4-6": "https://claude.com/pricing"
+          }
+        }
+      },
+      {
+        "task_index": 3,
+        "task": "In Python, which built-in data structure guarantees unique items and fast membership tests?",
+        "question": "In Python, which built-in data structure guarantees unique items and fast membership tests?",
+        "source_task": "In Python, which built-in data structure guarantees unique items and fast membership tests?",
+        "category": "code",
+        "mode": "selector",
+        "mechanism_used": "vote",
+        "correct": true,
+        "confidence": 1.0,
+        "tokens_used": 2461,
+        "latency_ms": 31062.46889600152,
+        "rounds": 1,
+        "switches": 0,
+        "quorum_reached": true,
+        "merkle_root": "acb11292378f189ea816c098e78e18e8301e8231d1a31d331b89fc6eaf095599",
+        "final_answer": "set",
+        "selector_reasoning": "The task is a straightforward factual question about Python's built-in data structures with a single, unambiguous correct answer ('set'). Independent aggregation through voting is the most efficient mechanism for factual retrieval where high consensus is expected among agents.",
+        "selector_reasoning_hash": "4d13e4ebf549e76570bbc45819dae8462e4896b4b7db4b52c850db101a8af5d7",
+        "agent_count": 4,
+        "agent_models_used": [
+          "gemini-3-flash-preview",
+          "gemini-3.1-flash-lite-preview",
+          "moonshotai/kimi-k2-thinking",
+          "claude-sonnet-4-6"
+        ],
+        "model_token_usage": {
+          "gemini-3-flash-preview": 549,
+          "gemini-3.1-flash-lite-preview": 462,
+          "moonshotai/kimi-k2-thinking": 879,
+          "claude-sonnet-4-6": 571
+        },
+        "model_input_token_usage": {
+          "gemini-3-flash-preview": 190,
+          "gemini-3.1-flash-lite-preview": 190,
+          "moonshotai/kimi-k2-thinking": 347,
+          "claude-sonnet-4-6": 508
+        },
+        "model_output_token_usage": {
+          "gemini-3-flash-preview": 63,
+          "gemini-3.1-flash-lite-preview": 71,
+          "moonshotai/kimi-k2-thinking": 532,
+          "claude-sonnet-4-6": 63
+        },
+        "model_latency_ms": {
+          "gemini-3-flash-preview": 4882.023834001302,
+          "gemini-3.1-flash-lite-preview": 3889.487331001874,
+          "moonshotai/kimi-k2-thinking": 19877.822564998496,
+          "claude-sonnet-4-6": 2413.1351659998472
+        },
+        "convergence_history": [],
+        "mechanism_trace": [
+          {
+            "mechanism": "vote",
+            "start_round": 1,
+            "end_round": 1,
+            "transcript_hashes": [
+              "7e94e9edf24f6951c01f0a1e9493c538178627018f8f6be27ce18e5115b17abc",
+              "63fd56d66c60c7927bcccce8ec5419eeaace50456d4d4edae47a84ad8ae99d51",
+              "cad5c68cf77e669bb755265b0be111ea22beb1e5e34d42ac6200c107a6239624",
+              "056aa410a353612d48408c9d61d17e2b9af8219bb00ca52af8dd83ea91b9ee5c"
+            ],
+            "convergence_history": [],
+            "switch_reason": null,
+            "switch_reason_hash": null
+          }
+        ],
+        "transcript_hash_count": 4,
+        "execution_mode": "live",
+        "selector_source": "llm_reasoning",
+        "fallback_count": 0,
+        "fallback_events": [],
+        "mechanism_override_source": null,
+        "model_telemetry": {
+          "gemini-3-flash-preview": {
+            "total_tokens": 549,
+            "input_tokens": 190,
+            "output_tokens": 63,
+            "thinking_tokens": 296,
+            "latency_ms": 4882.023834001302,
+            "estimated_cost_usd": 0.001172,
+            "estimation_mode": "exact"
+          },
+          "gemini-3.1-flash-lite-preview": {
+            "total_tokens": 462,
+            "input_tokens": 190,
+            "output_tokens": 71,
+            "thinking_tokens": 201,
+            "latency_ms": 3889.487331001874,
+            "estimated_cost_usd": 0.0001278,
+            "estimation_mode": "exact"
+          },
+          "moonshotai/kimi-k2-thinking": {
+            "total_tokens": 879,
+            "input_tokens": 347,
+            "output_tokens": 532,
+            "thinking_tokens": 474,
+            "latency_ms": 19877.822564998496,
+            "estimated_cost_usd": 0.0027232,
+            "estimation_mode": "exact"
+          },
+          "claude-sonnet-4-6": {
+            "total_tokens": 571,
+            "input_tokens": 508,
+            "output_tokens": 63,
+            "thinking_tokens": null,
+            "latency_ms": 2413.1351659998472,
+            "estimated_cost_usd": 0.005139,
+            "estimation_mode": "approx_total_tokens"
+          }
+        },
+        "input_tokens_used": 1235,
+        "output_tokens_used": 729,
+        "model_thinking_token_usage": {
+          "gemini-3-flash-preview": 296,
+          "gemini-3.1-flash-lite-preview": 201,
+          "moonshotai/kimi-k2-thinking": 474
+        },
+        "thinking_tokens_used": 971,
+        "estimated_cost_usd": 0.009162,
+        "model_estimated_costs_usd": {
+          "gemini-3-flash-preview": 0.001172,
+          "gemini-3.1-flash-lite-preview": 0.0001278,
+          "moonshotai/kimi-k2-thinking": 0.0027232,
+          "claude-sonnet-4-6": 0.005139
+        },
+        "pricing_version": "2026-04-18",
+        "cost_estimated_at": "2026-04-18T00:00:00+00:00",
+        "estimation_mode": "mixed",
+        "pricing_sources": {
+          "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+          "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+          "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+          "claude-sonnet-4-6": "https://claude.com/pricing"
+        },
+        "cost": {
+          "estimated_cost_usd": 0.009162,
+          "model_estimated_costs_usd": {
+            "gemini-3-flash-preview": 0.001172,
+            "gemini-3.1-flash-lite-preview": 0.0001278,
+            "moonshotai/kimi-k2-thinking": 0.0027232,
+            "claude-sonnet-4-6": 0.005139
+          },
+          "pricing_version": "2026-04-18",
+          "estimated_at": "2026-04-18T00:00:00Z",
+          "estimation_mode": "mixed",
+          "pricing_sources": {
+            "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+            "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+            "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+            "claude-sonnet-4-6": "https://claude.com/pricing"
+          }
+        }
+      },
+      {
+        "task_index": 4,
+        "task": "Write a one-line product tagline for an AI deliberation engine used by engineering teams.",
+        "question": "Write a one-line product tagline for an AI deliberation engine used by engineering teams.",
+        "source_task": "Write a one-line product tagline for an AI deliberation engine used by engineering teams.",
+        "category": "creative",
+        "mode": "selector",
+        "mechanism_used": "vote",
+        "correct": false,
+        "confidence": 0.2738651423120733,
+        "tokens_used": 25217,
+        "latency_ms": 422753.4512389939,
+        "rounds": 1,
+        "switches": 1,
+        "quorum_reached": false,
+        "merkle_root": "b881ce3bfb200fdcd7579f32c7e4c1a6a738add1907e1de1002f552fad314f62",
+        "final_answer": "Architecting consensus for high-velocity engineering teams.",
+        "selector_reasoning": "The task is highly subjective with a high expected disagreement score (0.9). While 'vote' is good for brainstorming, 'debate' is superior for refining creative outputs for a specific target audience (engineering teams) by forcing agents to justify word choices and tone, ensuring the final tagline resonates with technical precision and collaborative utility.",
+        "selector_reasoning_hash": "72fe6b489431267c56aa7487de20aa66df582b74577278798454ed223ddef5fe",
+        "agent_count": 4,
+        "agent_models_used": [
+          "gemini-3-flash-preview",
+          "moonshotai/kimi-k2-thinking",
+          "gemini-3.1-flash-lite-preview",
+          "claude-sonnet-4-6"
+        ],
+        "model_token_usage": {
+          "gemini-3-flash-preview": 3269,
+          "gemini-3.1-flash-lite-preview": 2597,
+          "moonshotai/kimi-k2-thinking": 16098,
+          "claude-sonnet-4-6": 3253
+        },
+        "model_input_token_usage": {
+          "moonshotai/kimi-k2-thinking": 2934,
+          "gemini-3-flash-preview": 190,
+          "gemini-3.1-flash-lite-preview": 190,
+          "claude-sonnet-4-6": 509
+        },
+        "model_output_token_usage": {
+          "moonshotai/kimi-k2-thinking": 5810,
+          "gemini-3-flash-preview": 73,
+          "gemini-3.1-flash-lite-preview": 84,
+          "claude-sonnet-4-6": 191
+        },
+        "model_latency_ms": {
+          "gemini-3-flash-preview": 32272.3041179961,
+          "gemini-3.1-flash-lite-preview": 20602.691622996645,
+          "moonshotai/kimi-k2-thinking": 341184.8700689989,
+          "claude-sonnet-4-6": 28693.58542900227
+        },
+        "convergence_history": [
+          {
+            "round_number": 1,
+            "disagreement_entropy": 1.9814675760535323,
+            "entropy_delta": 0.0,
+            "js_divergence": 0.0,
+            "answer_churn": 0.0,
+            "locked_claim_count": 0,
+            "locked_claim_growth": 0.0,
+            "novelty_score": 0.0,
+            "information_gain_delta": 0.0,
+            "unique_answers": 4,
+            "dominant_answer_share": 0.3035714285714286,
+            "answer_distribution": {
+              "aligning technical minds through intelligent deliberation.": 0.3035714285714286,
+              "deliberation-first precision for engineering teams.": 0.26785714285714285,
+              "aligning technical minds through intelligent deliberation": 0.23214285714285718,
+              "precision engineering through ai-powered deliberation.": 0.19642857142857145
+            }
+          },
+          {
+            "round_number": 2,
+            "disagreement_entropy": 1.994081442920788,
+            "entropy_delta": -0.01261386686725574,
+            "js_divergence": 0.5580883971336391,
+            "answer_churn": 0.5714285714285714,
+            "locked_claim_count": 0,
+            "locked_claim_growth": 0.0,
+            "novelty_score": 0.27904419856681956,
+            "information_gain_delta": 0.27904419856681956,
+            "unique_answers": 4,
+            "dominant_answer_share": 0.27950310559006214,
+            "answer_distribution": {
+              "optimizing technical consensus through structured ai deliberation.": 0.27950310559006214,
+              "ai-driven deliberation for rigorous engineering consensus.": 0.2639751552795031,
+              "aligning technical minds through intelligent deliberation": 0.23291925465838512,
+              "precision engineering through ai-powered deliberation.": 0.2236024844720497
+            }
+          }
+        ],
+        "mechanism_trace": [
+          {
+            "mechanism": "debate",
+            "start_round": 1,
+            "end_round": 2,
+            "transcript_hashes": [
+              "dfaaadf9dd6afe1f774172f801dd9596c73203cb0ae8129498fc9e65022c27ad",
+              "08752f258fc4b20eabcbaf23b1a718755e83e42e73fcea8899badb7dbb8a02ec",
+              "bd56e738cb8a8f95b180c2555463db8ee005dc8930f607787cbc22a1e996f468",
+              "53e6b3185203f84bb4d5ec78fc1a779000d21bdb7ed53fe830632a63db577a33",
+              "9fc98af963bec55c71d6662bb60145fe18dbb33c40481319bd7091ca7d660ef4",
+              "7d24e60dedb55800dc4fb43988a290dfa33e08fd3f266be7100a81d4347048a0",
+              "120c4f92ba2efb8596f40088d7255f9b5fcffa921fce7233e5ccb4f32b330ecb",
+              "2b9eb03c40625a4b5f75d439d76db581b1942e9111babfe3854dddeffd2efe4a",
+              "0cc3550208309f29d485d3633b4759b7b644ccd89f65008b6bd3a4616dacfeba",
+              "1011f4c3fa2579ac08254b214c9f74168c2eee610085300bfc400712632ed4ba",
+              "95d0b0b9c311da6641184d792ffbc1c15def5ae818ea6d7fe995c879e27f78f4",
+              "75e11818a1ef776a4375de1ea4680695b18f686b6358b2b076a0b8a312de62ac",
+              "aa3177ede8464bec1b941afbb127c512023bf3d431045a769a8b697396e0166f",
+              "f8104985d76a5aa16be038d41fc35ca5621fd6a67e5d18d7c436472bf61e8295",
+              "cbbb696d2fec210fe44ff5f25a25538ffbd148736752751f20607a8bd9f43752",
+              "3d346b259b711b3a0d468ca3cf3f7b9b6f21b6c5e85a33b64d949ad473b60375",
+              "ab3b80b40be8e669682a9cb395ac26edb064513bb8e8ea45cd2ac65a98dcf29c",
+              "0ad61b8d38c1251ed698c4b3240ae54896cf5c41681c356bad58d74806967ddc"
+            ],
+            "convergence_history": [
+              {
+                "round_number": 1,
+                "disagreement_entropy": 1.9814675760535323,
+                "entropy_delta": 0.0,
+                "js_divergence": 0.0,
+                "answer_churn": 0.0,
+                "locked_claim_count": 0,
+                "locked_claim_growth": 0.0,
+                "novelty_score": 0.0,
+                "information_gain_delta": 0.0,
+                "unique_answers": 4,
+                "dominant_answer_share": 0.3035714285714286,
+                "answer_distribution": {
+                  "aligning technical minds through intelligent deliberation.": 0.3035714285714286,
+                  "deliberation-first precision for engineering teams.": 0.26785714285714285,
+                  "aligning technical minds through intelligent deliberation": 0.23214285714285718,
+                  "precision engineering through ai-powered deliberation.": 0.19642857142857145
+                }
+              },
+              {
+                "round_number": 2,
+                "disagreement_entropy": 1.994081442920788,
+                "entropy_delta": -0.01261386686725574,
+                "js_divergence": 0.5580883971336391,
+                "answer_churn": 0.5714285714285714,
+                "locked_claim_count": 0,
+                "locked_claim_growth": 0.0,
+                "novelty_score": 0.27904419856681956,
+                "information_gain_delta": 0.27904419856681956,
+                "unique_answers": 4,
+                "dominant_answer_share": 0.27950310559006214,
+                "answer_distribution": {
+                  "optimizing technical consensus through structured ai deliberation.": 0.27950310559006214,
+                  "ai-driven deliberation for rigorous engineering consensus.": 0.2639751552795031,
+                  "aligning technical minds through intelligent deliberation": 0.23291925465838512,
+                  "precision engineering through ai-powered deliberation.": 0.2236024844720497
+                }
+              }
+            ],
+            "switch_reason": "No traction after multiple rounds; switching to vote",
+            "switch_reason_hash": "427ed2e8a43975e025a048573977fc3044ce6cfa3f21b853c40e9d31d9a769ac"
+          },
+          {
+            "mechanism": "vote",
+            "start_round": 1,
+            "end_round": 1,
+            "transcript_hashes": [
+              "d86741b6ae9e73013b317df1e32e68c6bca186981a6df71e310a0f18e86dab3e",
+              "affca188be55ac55749faa96be2804726055c146e0ed74d553174db46059ec97",
+              "01b7e57fdbb27dae294f0de6e9ffa5b7e9ef1ad7cda1fe114ee9430711e04868",
+              "4443ff15dffccbf9dd56c3cb7a2077040832001a5a9bf3d575297e08aaa9ae28"
+            ],
+            "convergence_history": [],
+            "switch_reason": null,
+            "switch_reason_hash": null
+          }
+        ],
+        "transcript_hash_count": 23,
+        "execution_mode": "live",
+        "selector_source": "llm_reasoning",
+        "fallback_count": 0,
+        "fallback_events": [],
+        "mechanism_override_source": null,
+        "model_telemetry": {
+          "gemini-3-flash-preview": {
+            "total_tokens": 3269,
+            "input_tokens": 190,
+            "output_tokens": 73,
+            "thinking_tokens": 365,
+            "latency_ms": 32272.3041179961,
+            "estimated_cost_usd": 0.001409,
+            "estimation_mode": "exact"
+          },
+          "moonshotai/kimi-k2-thinking": {
+            "total_tokens": 16098,
+            "input_tokens": 2934,
+            "output_tokens": 5810,
+            "thinking_tokens": 5340,
+            "latency_ms": 341184.8700689989,
+            "estimated_cost_usd": 0.0296354,
+            "estimation_mode": "exact"
+          },
+          "gemini-3.1-flash-lite-preview": {
+            "total_tokens": 2597,
+            "input_tokens": 190,
+            "output_tokens": 84,
+            "thinking_tokens": 260,
+            "latency_ms": 20602.691622996645,
+            "estimated_cost_usd": 0.0001566,
+            "estimation_mode": "exact"
+          },
+          "claude-sonnet-4-6": {
+            "total_tokens": 3253,
+            "input_tokens": 509,
+            "output_tokens": 191,
+            "thinking_tokens": null,
+            "latency_ms": 28693.58542900227,
+            "estimated_cost_usd": 0.029277,
+            "estimation_mode": "approx_total_tokens"
+          }
+        },
+        "input_tokens_used": 3823,
+        "output_tokens_used": 6158,
+        "model_thinking_token_usage": {
+          "moonshotai/kimi-k2-thinking": 5340,
+          "gemini-3-flash-preview": 365,
+          "gemini-3.1-flash-lite-preview": 260
+        },
+        "thinking_tokens_used": 5965,
+        "estimated_cost_usd": 0.060478,
+        "model_estimated_costs_usd": {
+          "gemini-3-flash-preview": 0.001409,
+          "moonshotai/kimi-k2-thinking": 0.0296354,
+          "gemini-3.1-flash-lite-preview": 0.0001566,
+          "claude-sonnet-4-6": 0.029277
+        },
+        "pricing_version": "2026-04-18",
+        "cost_estimated_at": "2026-04-18T00:00:00+00:00",
+        "estimation_mode": "mixed",
+        "pricing_sources": {
+          "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+          "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+          "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+          "claude-sonnet-4-6": "https://claude.com/pricing"
+        },
+        "cost": {
+          "estimated_cost_usd": 0.060478,
+          "model_estimated_costs_usd": {
+            "gemini-3-flash-preview": 0.001409,
+            "moonshotai/kimi-k2-thinking": 0.0296354,
+            "gemini-3.1-flash-lite-preview": 0.0001566,
+            "claude-sonnet-4-6": 0.029277
+          },
+          "pricing_version": "2026-04-18",
+          "estimated_at": "2026-04-18T00:00:00Z",
+          "estimation_mode": "mixed",
+          "pricing_sources": {
+            "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+            "moonshotai/kimi-k2-thinking": "https://openrouter.ai/moonshotai/kimi-k2-thinking",
+            "gemini-3.1-flash-lite-preview": "https://ai.google.dev/pricing",
+            "claude-sonnet-4-6": "https://claude.com/pricing"
+          }
+        }
+      }
+    ],
+    "summary": {
+      "per_mode": {
+        "selector": {
+          "accuracy": 0.8,
+          "avg_tokens": 11846.8,
+          "avg_latency_ms": 179925.38676560074,
+          "avg_rounds": 1.0,
+          "switch_rate": 0.4,
+          "avg_thinking_tokens": 2444.6,
+          "avg_estimated_cost_usd": 0.02886996
+        }
+      },
+      "per_category": {
+        "math": {
+          "selector": {
+            "accuracy": 1.0,
+            "avg_tokens": 2261.0,
+            "avg_latency_ms": 26457.85793500181,
+            "avg_thinking_tokens": 771.0,
+            "avg_estimated_cost_usd": 0.0085944
+          }
+        },
+        "factual": {
+          "selector": {
+            "accuracy": 1.0,
+            "avg_tokens": 1367.0,
+            "avg_latency_ms": 9312.599662996945,
+            "avg_thinking_tokens": 372.0,
+            "avg_estimated_cost_usd": 0.0058236
+          }
+        },
+        "reasoning": {
+          "selector": {
+            "accuracy": 1.0,
+            "avg_tokens": 27928.0,
+            "avg_latency_ms": 410040.55609500944,
+            "avg_thinking_tokens": 4144.0,
+            "avg_estimated_cost_usd": 0.0602918
+          }
+        },
+        "code": {
+          "selector": {
+            "accuracy": 1.0,
+            "avg_tokens": 2461.0,
+            "avg_latency_ms": 31062.46889600152,
+            "avg_thinking_tokens": 971.0,
+            "avg_estimated_cost_usd": 0.009162
+          }
+        },
+        "creative": {
+          "selector": {
+            "accuracy": 0.0,
+            "avg_tokens": 25217.0,
+            "avg_latency_ms": 422753.4512389939,
+            "avg_thinking_tokens": 5965.0,
+            "avg_estimated_cost_usd": 0.060478
+          }
+        }
+      }
+    }
+  },
+  "bandit_stats": {
+    "debate": {
+      "math": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "code": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "reasoning": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "factual": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "creative": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      }
+    },
+    "vote": {
+      "math": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "code": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "reasoning": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "factual": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      },
+      "creative": {
+        "alpha": 1.0,
+        "beta_param": 1.0,
+        "total_pulls": 0,
+        "last_reward": null
+      }
+    }
+  }
+}

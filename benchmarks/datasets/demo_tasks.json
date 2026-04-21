@@ -1,0 +1,22 @@
+[
+  {"category":"demo","task":"Should the benchmark dashboard prioritize live status visibility or dense historical analytics on the first screen?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Is a mechanism switch banner more useful when it is prominent or when it is understated?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Should a replayable benchmark report favor brevity or complete traceability?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"When a benchmark is still running, should the UI optimize for progress feedback or detailed telemetry?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Is it better for a multi-agent system to expose disagreement early or wait until consensus is reached?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Should a product demo emphasize raw performance numbers or the reasoning behind the result?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"For a technical operator, is trust built faster through receipts or through concise summaries?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Should the default benchmark view foreground accuracy or cost efficiency?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"When the system lacks full telemetry, should it show approximations or explicitly mark missing data?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Is a debate-driven decision process more persuasive when it shows intermediate disagreement?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Should the benchmark wizard default to templates or custom questions?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"For onboarding new users, should the UI start with a curated example or a blank slate?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Is a compact summary more effective than a detailed report for first-time benchmark viewers?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Should a benchmark run page focus on the active stream or the final artifact?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Is it better to optimize the interface for one successful path or for broad exploratory use?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"When results vary by model, should the dashboard highlight the best model or the full spread?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Should a live benchmark report privilege certainty or nuance?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Is a visible cost estimate more persuasive than an accuracy estimate for engineering stakeholders?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"Should the demo category use realistic product language or explicit benchmark jargon?","source":"curated_demo_v1","stakes":0.0},
+  {"category":"demo","task":"When a system is partially offline, should the UI stay available with degraded data or block access entirely?","source":"curated_demo_v1","stakes":0.0}
+]

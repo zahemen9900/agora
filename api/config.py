@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_SETTINGS_ENV_FILES = (
+    str(_REPO_ROOT / ".env"),
+    str(_REPO_ROOT / ".env.development"),
+)
 
 
 class Settings(BaseSettings):
     """Environment-driven API settings."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_SETTINGS_ENV_FILES,
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     helius_rpc_url: str = Field(
         default="https://devnet.helius-rpc.com/?api-key=YOUR_KEY",
@@ -42,6 +54,33 @@ class Settings(BaseSettings):
     benchmark_admin_token: str = ""
     stream_ticket_ttl_seconds: int = Field(default=60, ge=5, le=600)
     task_run_lock_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+    task_create_rate_limit_per_minute: int = Field(
+        default=60,
+        ge=0,
+        le=10_000,
+        validation_alias=AliasChoices(
+            "AGORA_TASK_CREATE_RATE_LIMIT_PER_MINUTE",
+            "TASK_CREATE_RATE_LIMIT_PER_MINUTE",
+        ),
+    )
+    task_run_rate_limit_per_minute: int = Field(
+        default=30,
+        ge=0,
+        le=10_000,
+        validation_alias=AliasChoices(
+            "AGORA_TASK_RUN_RATE_LIMIT_PER_MINUTE",
+            "TASK_RUN_RATE_LIMIT_PER_MINUTE",
+        ),
+    )
+    workspace_concurrent_task_runs: int = Field(
+        default=4,
+        ge=0,
+        le=1_000,
+        validation_alias=AliasChoices(
+            "AGORA_WORKSPACE_CONCURRENT_TASK_RUNS",
+            "WORKSPACE_CONCURRENT_TASK_RUNS",
+        ),
+    )
     coordination_backend: str = Field(
         default="memory",
         validation_alias=AliasChoices("AGORA_COORDINATION_BACKEND", "COORDINATION_BACKEND"),
@@ -67,23 +106,27 @@ class Settings(BaseSettings):
     strict_chain_writes: bool = False
     workos_client_id: str = Field(
         default="",
-        validation_alias=AliasChoices("WORKOS_CLIENT_ID", "AGORA_WORKOS_CLIENT_ID"),
+        validation_alias=AliasChoices("AGORA_WORKOS_CLIENT_ID", "WORKOS_CLIENT_ID"),
     )
     workos_authkit_domain: str = Field(
         default="",
-        validation_alias=AliasChoices("WORKOS_AUTHKIT_DOMAIN", "AGORA_WORKOS_AUTHKIT_DOMAIN"),
+        validation_alias=AliasChoices("AGORA_WORKOS_AUTHKIT_DOMAIN", "WORKOS_AUTHKIT_DOMAIN"),
     )
     auth_issuer: str = Field(
         default="",
-        validation_alias=AliasChoices("AUTH_ISSUER", "AGORA_AUTH_ISSUER"),
+        validation_alias=AliasChoices("AGORA_AUTH_ISSUER", "AUTH_ISSUER"),
     )
     auth_audience: str = Field(
         default="",
-        validation_alias=AliasChoices("AUTH_AUDIENCE", "AGORA_AUTH_AUDIENCE"),
+        validation_alias=AliasChoices("AGORA_AUTH_AUDIENCE", "AUTH_AUDIENCE"),
+    )
+    auth_audiences: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_AUTH_AUDIENCES", "AUTH_AUDIENCES"),
     )
     auth_jwks_url: str = Field(
         default="",
-        validation_alias=AliasChoices("AUTH_JWKS_URL", "AGORA_AUTH_JWKS_URL"),
+        validation_alias=AliasChoices("AGORA_AUTH_JWKS_URL", "AUTH_JWKS_URL"),
     )
     api_key_pepper: str = Field(
         default="",

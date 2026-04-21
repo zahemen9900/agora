@@ -37,6 +37,11 @@ MECHANISM_TO_U8: dict[str, int] = {
     "moa": 3,
     "hybrid": 4,
 }
+EXECUTABLE_MECHANISM_TO_U8: dict[str, int] = {
+    "debate": MECHANISM_TO_U8["debate"],
+    "vote": MECHANISM_TO_U8["vote"],
+}
+_EXECUTABLE_MECHANISMS_TEXT = ", ".join(sorted(EXECUTABLE_MECHANISM_TO_U8))
 
 
 @dataclass
@@ -286,14 +291,22 @@ class SolanaBridge:
 
     def _mechanism_u8(self, mechanism: str | int) -> int:
         if isinstance(mechanism, int):
-            if mechanism < 0 or mechanism > MAX_MECHANISM_U8:
-                raise ValueError(f"mechanism value must be in range [0, {MAX_MECHANISM_U8}]")
+            if mechanism not in set(EXECUTABLE_MECHANISM_TO_U8.values()):
+                raise ValueError(
+                    "mechanism is not executable in this phase; "
+                    f"supported mechanisms: {_EXECUTABLE_MECHANISMS_TEXT}"
+                )
             return mechanism
 
         key = mechanism.strip().lower()
         if key not in MECHANISM_TO_U8:
             raise ValueError(f"unsupported mechanism: {mechanism}")
-        return MECHANISM_TO_U8[key]
+        if key not in EXECUTABLE_MECHANISM_TO_U8:
+            raise ValueError(
+                f"mechanism '{key}' is roadmap-only and not executable in this phase; "
+                f"supported mechanisms: {_EXECUTABLE_MECHANISMS_TEXT}"
+            )
+        return EXECUTABLE_MECHANISM_TO_U8[key]
 
     def build_initialize_task_instruction(
         self,
@@ -309,8 +322,8 @@ class SolanaBridge:
     ) -> Instruction:
         if consensus_threshold <= 0 or consensus_threshold > 100:
             raise ValueError("consensus_threshold must be in range [1, 100]")
-        if agent_count <= 0 or agent_count > 10:
-            raise ValueError("agent_count must be in range [1, 10]")
+        if agent_count <= 0 or agent_count > 12:
+            raise ValueError("agent_count must be in range [1, 12]")
         if payment_amount_lamports < 0:
             raise ValueError("payment_amount_lamports must be non-negative")
         if recipient == SYSTEM_PROGRAM_ID:

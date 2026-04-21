@@ -22,12 +22,20 @@ async def invoke_custom_agent(
     user_prompt: str,
     response_model: type[ResponseModelT],
     fallback: ResponseModelT,
-) -> tuple[ResponseModelT, dict[str, float | int]]:
+) -> tuple[ResponseModelT, dict[str, Any]]:
     """Invoke a local agent callable and coerce output into a response model."""
 
     raw_response = await _call_agent(agent, system_prompt=system_prompt, user_prompt=user_prompt)
-    parsed = _coerce_response(raw_response, response_model=response_model, fallback=fallback)
-    return parsed, {"tokens": 0, "latency_ms": 0.0}
+    parsed, fallback_used = _coerce_response(
+        raw_response,
+        response_model=response_model,
+        fallback=fallback,
+    )
+    usage: dict[str, Any] = {"tokens": 0, "latency_ms": 0.0}
+    if fallback_used:
+        usage["fallback_used"] = True
+        usage["fallback_reason"] = "custom_agent_invalid_response"
+    return parsed, usage
 
 
 async def _call_agent(
@@ -81,41 +89,41 @@ def _coerce_response(
     *,
     response_model: type[ResponseModelT],
     fallback: ResponseModelT,
-) -> ResponseModelT:
+) -> tuple[ResponseModelT, bool]:
     """Best-effort conversion from arbitrary agent output to a structured model."""
 
     if isinstance(raw_response, response_model):
-        return raw_response
+        return raw_response, False
 
     if isinstance(raw_response, BaseModel):
         try:
-            return response_model.model_validate(raw_response.model_dump(mode="json"))
+            return response_model.model_validate(raw_response.model_dump(mode="json")), False
         except Exception:
-            return fallback
+            return fallback, True
 
     if isinstance(raw_response, dict):
         try:
-            return response_model.model_validate(raw_response)
+            return response_model.model_validate(raw_response), False
         except Exception:
-            return fallback
+            return fallback, True
 
     if isinstance(raw_response, str):
         stripped = raw_response.strip()
         if stripped:
             try:
-                return response_model.model_validate_json(stripped)
+                return response_model.model_validate_json(stripped), False
             except Exception:
                 merged = fallback.model_dump(mode="json")
                 for field_name in _TEXT_FIELDS:
                     if field_name in merged:
                         merged[field_name] = stripped
                         try:
-                            return response_model.model_validate(merged)
+                            return response_model.model_validate(merged), False
                         except Exception:
                             break
                 try:
-                    return response_model.model_validate(json.loads(stripped))
+                    return response_model.model_validate(json.loads(stripped)), False
                 except Exception:
-                    return fallback
+                    return fallback, True
 
-    return fallback
+    return fallback, True

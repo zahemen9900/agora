@@ -1,5 +1,5 @@
 import { ArrowRight } from 'lucide-react';
-import { useAuth } from '../lib/auth';
+import { useAuth } from '../lib/useAuth';
 import { Button } from '../components/ui/Button';
 import { motion } from 'framer-motion';
 import { HeroDiagram } from '../components/landing/HeroDiagram';
@@ -8,6 +8,7 @@ import { InteractiveCodeBlock } from '../components/landing/InteractiveCodeBlock
 import { MartingaleViz } from '../components/landing/MartingaleViz';
 import { AgoraFixViz } from '../components/landing/AgoraFixViz';
 import { PaperSection, type PaperCardProps } from '../components/landing/PaperCard';
+import { ThemeToggle } from '../components/ui/ThemeToggle';
 
 // Scroll-reveal wrapper — applies to all below-fold sections
 function Reveal({ children, delay = 0, className = '' }: {
@@ -85,12 +86,14 @@ export function LoginPage() {
         {/* NAV */}
         <header className="flex justify-between items-center max-w-[1200px] mx-auto w-full z-20 py-6">
           <div className="wordmark text-2xl tracking-widest">AGORA</div>
-          <button onClick={() => signIn()} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
-            {isLoading ? 'Connecting...' : 'Sign In'}
-          </button>
+          <div className="flex items-center gap-4">
+            <ThemeToggle />
+            <button onClick={() => signIn()} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
+              {isLoading ? 'Connecting...' : 'Sign In'}
+            </button>
+          </div>
         </header>
 
-        {/* HERO CONTENT — 2-col on md+, stacked on mobile */}
         <div className="flex-1 flex items-center max-w-[1200px] mx-auto w-full relative z-10 py-16">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-20 items-center w-full">
 
@@ -192,7 +195,7 @@ export function LoginPage() {
               vizType="selector"
               accentColor="var(--text-muted)"
               title="The AI Decides How to Decide"
-              description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal mechanism — debate, vote, or Delphi consensus."
+              description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal supported mechanism for now: debate or vote."
             />
             <StepCard
               step={2}

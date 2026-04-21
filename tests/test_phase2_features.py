@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
+from agora.sdk.config import CANONICAL_HOSTED_API_URL, resolve_hosted_api_url
 from api.auth import AuthenticatedUser
 from api.main import app
 from api.routes import benchmarks as benchmark_routes
@@ -21,26 +23,57 @@ from benchmarks.runner import BenchmarkRunner
 def test_benchmark_runner_loads_curated_dataset() -> None:
     dataset = BenchmarkRunner.load_dataset("math")
     dataset_by_spec_name = BenchmarkRunner.load_dataset("math_tasks")
+    demo_dataset = BenchmarkRunner.load_dataset("demo")
 
     assert len(dataset) == 20
     assert dataset == dataset_by_spec_name
     assert {item["category"] for item in dataset} == {"math"}
     assert all("task" in item for item in dataset)
     assert all("source" in item for item in dataset)
+    assert len(demo_dataset) == 20
+    assert {item["category"] for item in demo_dataset} == {"demo"}
+    assert all("?" in item["task"] for item in demo_dataset)
 
 
 def test_benchmark_runner_builds_default_phase2_split() -> None:
     training, holdout = BenchmarkRunner.build_phase2_task_split()
 
-    assert len(training) == 30
-    assert len(holdout) == 10
+    assert len(training) == 36
+    assert len(holdout) == 12
     assert {item["category"] for item in training} == {
         "math",
         "factual",
         "reasoning",
         "code",
         "creative",
+        "demo",
     }
+    assert {item["category"] for item in holdout} == {
+        "math",
+        "factual",
+        "reasoning",
+        "code",
+        "creative",
+        "demo",
+    }
+
+def _assert_normalized_selector_summary(
+    payload: dict[str, Any],
+    *,
+    mode_accuracy: float,
+    reasoning_accuracy: float,
+) -> None:
+    summary = payload["summary"]
+
+    assert summary["per_mode"]["selector"]["accuracy"] == pytest.approx(mode_accuracy)
+    assert summary["per_mechanism"]["selector"]["accuracy"] == pytest.approx(mode_accuracy)
+    assert summary["per_mode"]["debate"]["accuracy"] == pytest.approx(0.0)
+    assert summary["per_mode"]["vote"]["accuracy"] == pytest.approx(0.0)
+    assert summary["per_category"]["reasoning"]["selector"]["accuracy"] == pytest.approx(
+        reasoning_accuracy
+    )
+    assert "math" in summary["per_category"]
+    assert "demo" in summary["per_category"]
 
 
 @pytest.mark.asyncio
@@ -68,7 +101,11 @@ async def test_benchmarks_route_reads_store_summary(
             )
 
         assert response.status_code == 200
-        assert response.json() == summary
+        _assert_normalized_selector_summary(
+            response.json(),
+            mode_accuracy=0.8,
+            reasoning_accuracy=0.75,
+        )
     finally:
         task_routes._store = None
 
@@ -125,7 +162,11 @@ async def test_benchmarks_route_allows_human_bearer_without_admin_token(
             )
 
         assert response.status_code == 200
-        assert response.json() == summary
+        _assert_normalized_selector_summary(
+            response.json(),
+            mode_accuracy=0.91,
+            reasoning_accuracy=0.81,
+        )
     finally:
         task_routes._store = None
 
@@ -238,20 +279,288 @@ async def test_benchmarks_route_uses_file_fallback_not_completed_tasks(
 
 
 @pytest.mark.asyncio
+async def test_benchmarks_route_promotes_stage_summary_from_file_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-stage-summary"))
+    original_results_path = benchmark_routes._RESULTS_PATH
+    task_routes._store = store
+    benchmark_routes._RESULTS_PATH = tmp_path / "phase2-validation-stage-summary.json"
+
+    file_payload = {
+        "summary": None,
+        "post_learning": {
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.2}},
+                "per_category": {"math": {"selector": {"accuracy": 0.5}}},
+            }
+        },
+        "metadata": {"source": "stage_summary_file"},
+    }
+    benchmark_routes._RESULTS_PATH.write_text(json.dumps(file_payload), encoding="utf-8")
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["metadata"]["source"] == "stage_summary_file"
+        assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.2)
+        assert payload["summary"]["per_category"]["math"]["selector"]["accuracy"] == pytest.approx(
+            0.5
+        )
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_PATH = original_results_path
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-artifact-heal"))
+    task_routes._store = store
+
+    artifact_payload = {
+        "summary": None,
+        "post_learning": {
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.73}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.61}}},
+            }
+        },
+    }
+    artifact = {
+        "artifact_id": "local-stage-summary",
+        "scope": "global",
+        "source": "local_backfill",
+        "status": "completed",
+        "benchmark_payload": artifact_payload,
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_global_benchmark_artifact("local-stage-summary", artifact)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
+        assert (
+            payload["summary"]["per_category"]["reasoning"]["selector"]["accuracy"]
+            == pytest.approx(0.61)
+        )
+
+        healed_summary = await store.get_benchmark_summary()
+        assert healed_summary is not None
+        assert healed_summary["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_include_demo_keeps_stage_runs_without_synthesized_top_level(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-include-demo-stage-runs"))
+    original_results_dir = benchmark_routes._RESULTS_DIR
+    task_routes._store = store
+    benchmark_routes._RESULTS_DIR = tmp_path
+
+    summary = {
+        "post_learning": {
+            "runs": [
+                {
+                    "task": "Stage run task",
+                    "mode": "debate",
+                    "latency_ms": 12,
+                    "merkle_root": "stage-root",
+                }
+            ],
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.7}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.7}}},
+            },
+        }
+    }
+
+    demo_payload = {
+        "target": "local",
+        "query": "Demo query",
+        "mechanism": "vote",
+        "sdk_flow": {
+            "status_after_run": {
+                "task_id": "demo-task",
+                "task_text": "Demo query",
+                "mechanism": "vote",
+                "merkle_root": "demo-root",
+            },
+            "run_result": {
+                "mechanism": "vote",
+                "latency_ms": 44,
+                "merkle_root": "demo-root",
+            },
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_benchmark_summary(summary)
+        (tmp_path / "phase2_demo_local_2026-04-17.json").write_text(
+            json.dumps(demo_payload),
+            encoding="utf-8",
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks?include_demo=true",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["post_learning"]["runs"][0]["task"] == "Stage run task"
+        assert payload["demo_report"]["artifact"] == "phase2_demo_local_2026-04-17.json"
+        assert "demo" in payload["summary"]["per_category"]
+        assert "vote" in payload["summary"]["per_mechanism"]
+        assert "runs" not in payload
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_DIR = original_results_dir
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-include-demo-synthesized"))
+    original_results_dir = benchmark_routes._RESULTS_DIR
+    task_routes._store = store
+    benchmark_routes._RESULTS_DIR = tmp_path
+
+    summary = {
+        "summary": {
+            "per_mode": {"selector": {"accuracy": 0.51}},
+            "per_category": {"math": {"selector": {"accuracy": 0.49}}},
+        }
+    }
+
+    demo_payload = {
+        "target": "local",
+        "query": "Synthesized run query",
+        "mechanism": "vote",
+        "final_status": "completed",
+        "sdk_flow": {
+            "status_after_run": {
+                "task_id": "demo-task-2",
+                "task_text": "Synthesized run query",
+                "mechanism": "vote",
+                "merkle_root": "demo-root-2",
+                "status": "completed",
+            },
+            "status_after_pay": {
+                "status": "completed",
+            },
+            "run_result": {
+                "mechanism": "vote",
+                "latency_ms": 87,
+                "merkle_root": "demo-root-2",
+                "confidence": 0.91,
+                "final_answer": "AGORA_DEMO_OK",
+            },
+        },
+        "tx_summary": {
+            "receipt_explorer_url": "https://explorer.solana.com/tx/example",
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_benchmark_summary(summary)
+        (tmp_path / "phase2_demo_local_2026-04-17.json").write_text(
+            json.dumps(demo_payload),
+            encoding="utf-8",
+        )
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks?include_demo=true",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["demo_report"]["artifact"] == "phase2_demo_local_2026-04-17.json"
+        assert payload["runs"][0]["task"] == "Synthesized run query"
+        assert payload["runs"][0]["mode"] == "vote"
+        assert payload["runs"][0]["task_id"] == "demo-task-2"
+        assert "demo" in payload["summary"]["per_category"]
+        assert "vote" in payload["summary"]["per_mechanism"]
+    finally:
+        task_routes._store = None
+        benchmark_routes._RESULTS_DIR = original_results_dir
+
+
+@pytest.mark.asyncio
 async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path) -> None:
     async def deterministic_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
         return {
-            "answer": "Option A",
+            "answer": "Constraint-matching answer",
             "confidence": 0.84,
-            "predicted_group_answer": "Option A",
+            "predicted_group_answer": "Constraint-matching answer",
             "reasoning": "Deterministic test agent.",
+            "claim": "The answer follows the explicit benchmark constraint.",
+            "evidence": "The benchmark prompt states the decisive constraint directly.",
+            "defense": "The critique does not break the explicit benchmark constraint.",
+            "final_answer": "Constraint-matching answer",
+            "summary": "The deterministic local agent selected the constraint-matching answer.",
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": "benchmark pro claim",
+                    "flaw": "Needs explicit constraint support.",
+                    "attack_axis": "constraint_fit",
+                    "counterexample": "A candidate satisfying more prompt constraints.",
+                    "failure_mode": "The claim is plausible but insufficiently grounded.",
+                    "question": "Which prompt constraint makes the pro claim decisive?",
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": "benchmark opp claim",
+                    "flaw": "Relies on an unstated assumption.",
+                    "attack_axis": "hidden_assumption",
+                    "counterexample": "A boundary condition where the assumption fails.",
+                    "failure_mode": "The claim wins only if the hidden assumption holds.",
+                    "question": "Which assumption must hold for the opp claim to win?",
+                },
+            ],
         }
 
     training, holdout = BenchmarkRunner.build_phase2_task_split(
         training_per_category=1,
         holdout_per_category=1,
     )
+    training = [task for task in training if task["category"] != "demo"]
+    holdout = [task for task in holdout if task["category"] != "demo"]
     orchestrator = AgoraOrchestrator(agent_count=3)
     runner = BenchmarkRunner(orchestrator, agents=[deterministic_agent] * 3)
 
@@ -264,6 +573,19 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
 
     assert payload["pre_learning"]["runs"]
     assert all(run["merkle_deterministic"] is True for run in payload["pre_learning"]["runs"])
+    sample_run = payload["pre_learning"]["runs"][0]
+    assert "execution_mode" in sample_run
+    assert "selector_source" in sample_run
+    assert "mechanism_override_source" in sample_run
+    assert "convergence_history" in sample_run
+    assert "mechanism_trace" in sample_run
+    assert "transcript_hash_count" in sample_run
+    assert "model_token_usage" in sample_run
+    assert "model_telemetry" in sample_run
+    assert "input_tokens_used" in sample_run
+    assert "output_tokens_used" in sample_run
+    assert "thinking_tokens_used" in sample_run
+    assert "cost" in sample_run
 
 
 @pytest.mark.asyncio
@@ -275,12 +597,37 @@ async def test_phase2_validation_seeded_mode_raises_on_merkle_divergence(
     async def changing_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
         call_counter["value"] += 1
-        answer = f"Option {call_counter['value']}"
+        answer = f"Changing candidate {call_counter['value']}"
         return {
             "answer": answer,
             "confidence": 0.55,
             "predicted_group_answer": answer,
             "reasoning": "Intentional non-deterministic test agent.",
+            "claim": answer,
+            "evidence": "Intentional non-deterministic evidence.",
+            "defense": "Intentional non-deterministic defense.",
+            "final_answer": answer,
+            "summary": "Intentional non-deterministic synthesis.",
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": answer,
+                    "flaw": "Intentional drift.",
+                    "attack_axis": "determinism",
+                    "counterexample": "A repeat run with different content.",
+                    "failure_mode": "Merkle root divergence.",
+                    "question": "Does the repeated run produce the same transcript hash?",
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": answer,
+                    "flaw": "Intentional drift.",
+                    "attack_axis": "determinism",
+                    "counterexample": "A repeat run with different content.",
+                    "failure_mode": "Merkle root divergence.",
+                    "question": "Does the repeated run produce the same transcript hash?",
+                },
+            ],
         }
 
     orchestrator = AgoraOrchestrator(agent_count=3)
@@ -390,7 +737,6 @@ async def test_sdk_verify_receipt_lenient_allows_missing_task_mapping() -> None:
 
 def test_sdk_hosted_mode_keeps_bearer_auth_token_interface() -> None:
     arbitrator = AgoraArbitrator(
-        api_url="https://example.invalid",
         auth_token="agora_test_public.secret",
         strict_verification=False,
     )
@@ -405,7 +751,6 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     arbitrator = AgoraArbitrator(
-        api_url="https://example.invalid",
         auth_token="agora_test_public.secret",
         mechanism="vote",
         agent_count=4,
@@ -436,9 +781,9 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
             "decision_hash": "decision-123",
             "transcript_hashes": ["leaf-1", "leaf-2"],
             "agent_models_used": [
-                "gemini-3.1-pro-preview",
-                "moonshotai/kimi-k2-thinking",
                 "gemini-3-flash-preview",
+                "moonshotai/kimi-k2-thinking",
+                "gemini-3.1-flash-lite-preview",
                 "claude-sonnet-4-6",
             ],
             "convergence_history": [],
@@ -501,6 +846,9 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
         "agent_count": 4,
         "stakes": 0.01,
         "mechanism_override": "vote",
+        "allow_mechanism_switch": True,
+        "allow_offline_fallback": False,
+        "quorum_threshold": 0.6,
     }
     assert seen_calls[2][2]["params"] == {"detailed": "true"}
 
@@ -510,7 +858,6 @@ async def test_sdk_get_task_result_tracks_task_id_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     arbitrator = AgoraArbitrator(
-        api_url="https://example.invalid",
         auth_token="agora_test_public.secret",
         strict_verification=False,
     )
@@ -570,6 +917,107 @@ async def test_sdk_get_task_result_tracks_task_id_mapping(
     assert arbitrator.task_id_for_result(result) == "task-mapped"
 
 
+@pytest.mark.asyncio
+async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(
+        auth_token="agora_test_public.secret",
+        mechanism="vote",
+        agent_count=4,
+        strict_verification=False,
+    )
+    seen_calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def fake_post(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("POST", url, dict(kwargs)))
+        if url == "/tasks/task-stream/run-async":
+            return _FakeResponse(
+                {
+                    "task_id": "task-stream",
+                    "task_text": "Stream this task",
+                    "workspace_id": "user-1",
+                    "created_by": "user-1",
+                    "mechanism": "vote",
+                    "status": "pending",
+                    "selector_reasoning": "Vote is stable.",
+                    "selector_reasoning_hash": "selector-hash",
+                    "selector_confidence": 1.0,
+                    "agent_count": 4,
+                    "reasoning_presets": {
+                        "gemini_pro": "high",
+                        "gemini_flash": "high",
+                        "kimi": "high",
+                        "claude": "high",
+                    },
+                }
+            )
+        if url == "/tasks/task-stream/stream-ticket":
+            return _FakeResponse({"ticket": "ticket-stream"})
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+    class _FakeStreamResponse:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = lines
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+
+    class _FakeStreamContext:
+        def __init__(self, lines: list[str]) -> None:
+            self._response = _FakeStreamResponse(lines)
+
+        async def __aenter__(self) -> _FakeStreamResponse:
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_stream(method: str, url: str, *_args: object, **kwargs: object) -> _FakeStreamContext:
+        seen_calls.append((method, url, dict(kwargs)))
+        assert method == "GET"
+        assert url == "/tasks/task-stream/stream"
+        assert kwargs.get("params") == {"ticket": "ticket-stream"}
+        return _FakeStreamContext(
+            [
+                "event: agent_output_delta",
+                'data: {"payload": {"content": "hello", "role": "proponent"}, "timestamp": "2026-04-20T10:00:00Z"}',
+                "",
+                "event: complete",
+                'data: {"payload": {"task_id": "task-stream", "status": "completed"}, "timestamp": "2026-04-20T10:01:00Z"}',
+                "",
+            ]
+        )
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+    monkeypatch.setattr(arbitrator._client, "stream", fake_stream)
+
+    started = await arbitrator.start_task_run("task-stream")
+    events = [event async for event in arbitrator.stream_task_events("task-stream")]
+    await arbitrator.aclose()
+
+    assert started.status == "pending"
+    assert events == [
+        {
+            "event": "agent_output_delta",
+            "data": {"content": "hello", "role": "proponent"},
+            "timestamp": "2026-04-20T10:00:00Z",
+        },
+        {
+            "event": "complete",
+            "data": {"task_id": "task-stream", "status": "completed"},
+            "timestamp": "2026-04-20T10:01:00Z",
+        },
+    ]
+    assert arbitrator.latest_task_id == "task-stream"
+    assert seen_calls[0][1] == "/tasks/task-stream/run-async"
+    assert seen_calls[1][1] == "/tasks/task-stream/stream-ticket"
+
+
 class _FakeResponse:
     def __init__(self, payload: dict[str, Any]) -> None:
         self._payload = payload
@@ -579,6 +1027,158 @@ class _FakeResponse:
 
     def json(self) -> dict[str, Any]:
         return self._payload
+
+
+@pytest.mark.asyncio
+async def test_sdk_hosted_api_url_defaults_to_canonical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGORA_API_URL", raising=False)
+    monkeypatch.delenv("AGORA_ALLOW_API_URL_OVERRIDE", raising=False)
+
+    arbitrator = AgoraArbitrator(strict_verification=False)
+    node = AgoraNode()
+    try:
+        assert resolve_hosted_api_url() == CANONICAL_HOSTED_API_URL
+        assert arbitrator.config.api_url == CANONICAL_HOSTED_API_URL
+        assert node.arbitrator.config.api_url == CANONICAL_HOSTED_API_URL
+    finally:
+        await arbitrator.aclose()
+        await node.aclose()
+
+
+def test_sdk_hosted_api_url_override_env_is_ignored_without_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGORA_API_URL", "https://example.invalid")
+    monkeypatch.delenv("AGORA_ALLOW_API_URL_OVERRIDE", raising=False)
+
+    assert resolve_hosted_api_url() == CANONICAL_HOSTED_API_URL
+
+
+def test_sdk_hosted_api_url_override_requires_gate() -> None:
+    with pytest.raises(ValueError, match="AGORA_ALLOW_API_URL_OVERRIDE=1"):
+        AgoraArbitrator(
+            api_url="https://example.invalid",
+            strict_verification=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sdk_hosted_api_url_override_can_be_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGORA_ALLOW_API_URL_OVERRIDE", "1")
+    monkeypatch.setenv("AGORA_API_URL", "https://example.invalid")
+
+    arbitrator = AgoraArbitrator(
+        api_url="https://example.invalid",
+        strict_verification=False,
+    )
+    try:
+        assert resolve_hosted_api_url() == "https://example.invalid"
+        assert arbitrator.config.api_url == "https://example.invalid"
+    finally:
+        await arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_arbitrator_default_create_payload_uses_four_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(mechanism="vote", strict_verification=False)
+
+    async def fake_post(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        assert url == "/tasks/"
+        payload = kwargs.get("json")
+        assert isinstance(payload, dict)
+        assert payload["agent_count"] == 4
+        return _FakeResponse({"task_id": "task-default-four", "mechanism": "vote"})
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+
+    try:
+        created = await arbitrator.create_task("default agent count")
+    finally:
+        await arbitrator.aclose()
+
+    assert created.task_id == "task-default-four"
+    assert arbitrator.config.agent_count == 4
+
+
+@pytest.mark.asyncio
+async def test_agora_node_default_uses_four_agents() -> None:
+    node = AgoraNode()
+    try:
+        assert node.arbitrator.config.agent_count == 4
+    finally:
+        await node.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agora_node_aclose_closes_wrapped_client() -> None:
+    node = AgoraNode()
+    await node.aclose()
+
+    assert node.arbitrator._client.is_closed
+
+
+@pytest.mark.asyncio
+async def test_agora_node_async_context_closes_on_exit() -> None:
+    async with AgoraNode() as node:
+        client = node.arbitrator._client
+        assert client.is_closed is False
+
+    assert client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_sdk_get_task_status_parses_chain_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(strict_verification=False)
+
+    async def fake_get(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        assert url == "/tasks/task-chain-status"
+        params = kwargs.get("params")
+        assert params == {"detailed": "true"}
+        return _FakeResponse(
+            {
+                "task_id": "task-chain-status",
+                "task_text": "Check chain status typing",
+                "workspace_id": "ws-test",
+                "created_by": "sdk-test",
+                "mechanism": "debate",
+                "status": "completed",
+                "selector_reasoning": "debate wins",
+                "selector_reasoning_hash": "a" * 64,
+                "selector_confidence": 0.91,
+                "agent_count": 4,
+                "chain_operations": {
+                    "initialize_task": {
+                        "status": "succeeded",
+                        "tx_hash": "sig-123",
+                        "explorer_url": "https://explorer.solana.com/tx/sig-123?cluster=devnet",
+                        "attempts": 2,
+                        "updated_at": "2026-04-18T06:30:00Z",
+                    }
+                },
+                "events": [],
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    try:
+        status = await arbitrator.get_task_status("task-chain-status", detailed=True)
+    finally:
+        await arbitrator.aclose()
+
+    operation = status.chain_operations["initialize_task"]
+    assert operation.status == "succeeded"
+    assert operation.tx_hash == "sig-123"
+    assert operation.attempts == 2
+    assert isinstance(operation.updated_at, datetime)
 
 
 @pytest.mark.asyncio
@@ -628,7 +1228,7 @@ async def test_sdk_verify_receipt_strict_hosted_payload_mismatch_raises(
 
 
 @pytest.mark.asyncio
-async def test_sdk_verify_receipt_strict_hosted_payload_still_requires_chain_proof(
+async def test_sdk_verify_receipt_strict_hosted_payload_requires_rpc_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
@@ -668,9 +1268,84 @@ async def test_sdk_verify_receipt_strict_hosted_payload_still_requires_chain_pro
         return _FakeResponse(payload)
 
     monkeypatch.setattr(arbitrator._client, "get", fake_get)
-    with pytest.raises(ReceiptVerificationError, match="Strict on-chain receipt verification"):
+    with pytest.raises(ReceiptVerificationError, match="requires rpc_url"):
         await arbitrator.verify_receipt(result)
     await arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_verify_receipt_strict_succeeds_with_onchain_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        solana_wallet="wallet-test",
+        rpc_url="http://localhost:8899",
+    )
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    arbitrator._result_task_ids[result.merkle_root] = "task-verify-onchain"
+
+    decision_hash = TranscriptHasher().hash_content(result.final_answer)
+    payload: dict[str, Any] = {
+        "task_id": "task-verify-onchain",
+        "task_text": "Should I buy Solana or BTC?",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": result.mechanism_selection.reasoning,
+        "selector_reasoning_hash": result.mechanism_selection.reasoning_hash,
+        "selector_confidence": result.mechanism_selection.confidence,
+        "merkle_root": result.merkle_root,
+        "decision_hash": decision_hash,
+        "solana_tx_hash": "tx-123",
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "events": [],
+        "result": {
+            "task_id": "task-verify-onchain",
+            "mechanism": "vote",
+            "final_answer": result.final_answer,
+            "confidence": result.confidence,
+            "quorum_reached": result.quorum_reached,
+            "round_count": result.round_count,
+            "mechanism_switches": result.mechanism_switches,
+            "merkle_root": result.merkle_root,
+            "decision_hash": decision_hash,
+            "transcript_hashes": result.transcript_hashes,
+            "convergence_history": [],
+            "locked_claims": [],
+            "total_tokens_used": result.total_tokens_used,
+            "latency_ms": result.total_latency_ms,
+        },
+    }
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(payload)
+
+    async def fake_verify_onchain_receipt(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+    monkeypatch.setattr(arbitrator, "_verify_onchain_receipt", fake_verify_onchain_receipt)
+
+    verification = await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+    assert verification["valid"] is True
+    assert verification["hosted_metadata_match"] is True
+    assert verification["on_chain_match"] is True
 
 
 @pytest.mark.asyncio
@@ -709,6 +1384,35 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
             "final_answer": final_answer,
             "confidence": 0.93,
             "quorum_reached": True,
+            "agent_models_used": ["gemini-3-flash-preview", "claude-sonnet-4-6"],
+            "model_token_usage": {
+                "gemini-3-flash-preview": 12,
+                "claude-sonnet-4-6": 12,
+            },
+            "model_latency_ms": {
+                "gemini-3-flash-preview": 4.0,
+                "claude-sonnet-4-6": 8.0,
+            },
+            "model_telemetry": {
+                "gemini-3-flash-preview": {
+                    "total_tokens": 12,
+                    "input_tokens": 4,
+                    "output_tokens": 5,
+                    "thinking_tokens": 3,
+                    "latency_ms": 4.0,
+                    "estimated_cost_usd": 0.000017,
+                    "estimation_mode": "exact",
+                },
+                "claude-sonnet-4-6": {
+                    "total_tokens": 12,
+                    "input_tokens": 5,
+                    "output_tokens": 4,
+                    "thinking_tokens": 3,
+                    "latency_ms": 8.0,
+                    "estimated_cost_usd": 0.000072,
+                    "estimation_mode": "exact",
+                },
+            },
             "round_count": 1,
             "mechanism_switches": 0,
             "merkle_root": merkle_root,
@@ -717,7 +1421,24 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
             "convergence_history": [],
             "locked_claims": [],
             "total_tokens_used": 24,
+            "input_tokens_used": 9,
+            "output_tokens_used": 9,
+            "thinking_tokens_used": 6,
             "latency_ms": 12.0,
+            "cost": {
+                "estimated_cost_usd": 0.000089,
+                "model_estimated_costs_usd": {
+                    "gemini-3-flash-preview": 0.000017,
+                    "claude-sonnet-4-6": 0.000072,
+                },
+                "pricing_version": "2026-04-18",
+                "estimated_at": "2026-04-18T00:00:00+00:00",
+                "estimation_mode": "exact",
+                "pricing_sources": {
+                    "gemini-3-flash-preview": "https://ai.google.dev/pricing",
+                    "claude-sonnet-4-6": "https://claude.com/pricing",
+                },
+            },
         },
     }
 
@@ -746,6 +1467,27 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
     verification = await arbitrator.verify_receipt(result)
     await arbitrator.aclose()
 
+    assert result.model_token_usage == {
+        "gemini-3-flash-preview": 12,
+        "claude-sonnet-4-6": 12,
+    }
+    assert result.model_input_token_usage == {
+        "gemini-3-flash-preview": 4,
+        "claude-sonnet-4-6": 5,
+    }
+    assert result.model_output_token_usage == {
+        "gemini-3-flash-preview": 5,
+        "claude-sonnet-4-6": 4,
+    }
+    assert result.model_thinking_token_usage == {
+        "gemini-3-flash-preview": 3,
+        "claude-sonnet-4-6": 3,
+    }
+    assert result.input_tokens_used == 9
+    assert result.output_tokens_used == 9
+    assert result.thinking_tokens_used == 6
+    assert result.cost is not None
+    assert result.cost.estimated_cost_usd == pytest.approx(0.000089)
     assert verification["valid"] is True
     assert verification["merkle_match"] is True
     assert verification["hosted_metadata_match"] is True
@@ -763,6 +1505,23 @@ async def test_agora_node_passes_strict_and_wallet_config() -> None:
     try:
         assert node.arbitrator.config.strict_verification is False
         assert node.arbitrator.config.solana_wallet == "wallet-test"
+    finally:
+        await node.arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_agora_node_passes_phase2_control_config() -> None:
+    node = AgoraNode(
+        mechanism="vote",
+        agent_count=3,
+        allow_mechanism_switch=False,
+        allow_offline_fallback=True,
+        quorum_threshold=0.75,
+    )
+    try:
+        assert node.arbitrator.config.allow_mechanism_switch is False
+        assert node.arbitrator.config.allow_offline_fallback is True
+        assert node.arbitrator.config.quorum_threshold == 0.75
     finally:
         await node.arbitrator.aclose()
 

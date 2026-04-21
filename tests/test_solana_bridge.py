@@ -117,7 +117,7 @@ def test_builds_anchor_instruction_payloads_for_all_week1_calls() -> None:
 def test_bridge_rejects_invalid_mechanism_values() -> None:
     bridge = _bridge()
 
-    with pytest.raises(ValueError, match=r"range \[0, 4\]"):
+    with pytest.raises(ValueError, match="not executable in this phase"):
         bridge.build_submit_receipt_instruction(
             task_id=hashlib.sha256(b"task-invalid-mechanism").hexdigest(),
             transcript_merkle_root=hashlib.sha256(b"merkle").hexdigest(),
@@ -125,6 +125,25 @@ def test_bridge_rejects_invalid_mechanism_values() -> None:
             quorum_reached=True,
             final_mechanism=5,
             authority=Keypair().pubkey(),
+        )
+
+
+@pytest.mark.parametrize("mechanism", ["delphi", "moa", "hybrid", 2, 3, 4, 5])
+def test_bridge_rejects_roadmap_mechanisms_from_initialize_paths(
+    mechanism: str | int,
+) -> None:
+    bridge = _bridge()
+
+    with pytest.raises(ValueError, match="not executable in this phase"):
+        bridge.build_initialize_task_instruction(
+            task_id=hashlib.sha256(f"task-{mechanism}".encode()).hexdigest(),
+            mechanism=mechanism,
+            task_hash=hashlib.sha256(b"task-text").hexdigest(),
+            consensus_threshold=60,
+            agent_count=4,
+            payment_amount_lamports=1,
+            payer=Keypair().pubkey(),
+            recipient=Keypair().pubkey(),
         )
 
 

@@ -1,0 +1,11 @@
+contract/.anchor/test-ledger
+contract
+agora-env
+.venv
+.git
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.codex
+.claude
+benchmarks/results

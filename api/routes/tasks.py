@@ -4,31 +4,45 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
+from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
+from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
 from agora.types import (
     SUPPORTED_MECHANISMS,
+    CostEstimate,
     DeliberationResult,
     MechanismSelection,
     MechanismType,
+    ModelTelemetry,
     mechanism_is_supported,
 )
 from api.auth import AuthenticatedUser, get_current_user, require_scope
 from api.config import settings
 from api.coordination import (
+    ConcurrencySlotLease,
+    RunLockLease,
     StreamTicketRecord,
     get_coordination_backend,
     reset_coordination_state_for_tests,
 )
 from api.models import (
+    BenchmarkCostEstimateResponse,
+    ChainOperationRecord,
     DeliberationResultResponse,
+    MechanismName,
+    ModelTelemetryResponse,
+    PaymentStatusName,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskEvent,
@@ -47,7 +61,14 @@ CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
 _SUPPORTED_MECHANISMS_TEXT = ", ".join(
     sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS)
 )
-_STREAM_POLL_INTERVAL_SECONDS = 0.5
+_STREAM_POLL_INTERVAL_SECONDS = 0.15
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_INITIALIZE_TASK_OPERATION = "initialize_task"
+_RECORD_SELECTION_OPERATION = "record_selection"
+_SUBMIT_RECEIPT_OPERATION = "submit_receipt"
+_RELEASE_PAYMENT_OPERATION = "release_payment"
+_SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state"
+_background_task_runs: dict[str, asyncio.Task[None]] = {}
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -81,6 +102,22 @@ def _stream_key(workspace_id: str, task_id: str) -> str:
 
 def _task_run_key(workspace_id: str, task_id: str) -> str:
     return _stream_key(workspace_id, task_id)
+
+
+def _task_payment_key(workspace_id: str, task_id: str) -> str:
+    return f"payment-release:{_stream_key(workspace_id, task_id)}"
+
+
+def _workspace_run_bucket_key(workspace_id: str) -> str:
+    """Namespace concurrent execution slots by workspace."""
+
+    return f"workspace-run:{workspace_id}"
+
+
+def _mechanism_name(mechanism: MechanismType) -> MechanismName:
+    """Convert a supported runtime mechanism enum into the public API literal."""
+
+    return cast(MechanismName, mechanism.value)
 
 
 def _assert_task_owner(raw_task: dict[str, Any], workspace_id: str) -> None:
@@ -129,15 +166,120 @@ async def _consume_stream_ticket(ticket: str, *, task_id: str) -> StreamTicketRe
     return entry
 
 
-async def _acquire_task_run_lock(run_key: str) -> bool:
+def _track_background_task(run_key: str, task: asyncio.Task[None]) -> None:
+    """Register a background run and drop it when the task finishes."""
+
+    _background_task_runs[run_key] = task
+
+    def _cleanup(finished: asyncio.Task[None]) -> None:
+        current = _background_task_runs.get(run_key)
+        if current is finished:
+            _background_task_runs.pop(run_key, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def _launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
+    """Start a task run in the background when one is not already active locally."""
+
+    run_key = _task_run_key(workspace_id, task_id)
+    existing = _background_task_runs.get(run_key)
+    if existing is not None and not existing.done():
+        return
+
+    async def _runner() -> None:
+        try:
+            await _execute_task_run(task_id=task_id, workspace_id=workspace_id)
+        except HTTPException as exc:
+            logger.warning(
+                "background_task_run_rejected",
+                task_id=task_id,
+                workspace_id=workspace_id,
+                status_code=exc.status_code,
+                detail=str(exc.detail),
+            )
+        except Exception:
+            logger.exception(
+                "background_task_run_failed",
+                task_id=task_id,
+                workspace_id=workspace_id,
+            )
+
+    _track_background_task(run_key, asyncio.create_task(_runner()))
+
+
+async def _acquire_task_run_lock(run_key: str) -> RunLockLease | None:
     return await get_coordination_backend().acquire_run_lock(
         run_key,
         ttl_seconds=settings.task_run_lock_ttl_seconds,
     )
 
 
-async def _release_task_run_lock(run_key: str) -> None:
-    await get_coordination_backend().release_run_lock(run_key)
+async def _refresh_task_run_lock(
+    run_key: str,
+    *,
+    lease_id: str,
+) -> RunLockLease | None:
+    return await get_coordination_backend().refresh_run_lock(
+        run_key,
+        lease_id=lease_id,
+        ttl_seconds=settings.task_run_lock_ttl_seconds,
+    )
+
+
+async def _release_task_run_lock(run_key: str, *, lease_id: str) -> bool:
+    return await get_coordination_backend().release_run_lock(run_key, lease_id=lease_id)
+
+
+async def _acquire_workspace_run_slot(
+    workspace_id: str,
+    *,
+    run_key: str,
+    lease_id: str,
+) -> ConcurrencySlotLease | None:
+    limit = settings.workspace_concurrent_task_runs
+    if limit <= 0:
+        return None
+    return await get_coordination_backend().acquire_concurrency_slot(
+        _workspace_run_bucket_key(workspace_id),
+        holder_key=run_key,
+        lease_id=lease_id,
+        limit=limit,
+        ttl_seconds=settings.task_run_lock_ttl_seconds,
+    )
+
+
+async def _refresh_workspace_run_slot(
+    workspace_id: str,
+    *,
+    run_key: str,
+    lease_id: str,
+) -> ConcurrencySlotLease | None:
+    limit = settings.workspace_concurrent_task_runs
+    if limit <= 0:
+        return None
+    return await get_coordination_backend().refresh_concurrency_slot(
+        _workspace_run_bucket_key(workspace_id),
+        holder_key=run_key,
+        lease_id=lease_id,
+        ttl_seconds=settings.task_run_lock_ttl_seconds,
+    )
+
+
+async def _release_workspace_run_slot(
+    workspace_id: str,
+    *,
+    run_key: str,
+    lease_id: str,
+) -> bool:
+    limit = settings.workspace_concurrent_task_runs
+    if limit <= 0:
+        return False
+    return await get_coordination_backend().release_concurrency_slot(
+        _workspace_run_bucket_key(workspace_id),
+        holder_key=run_key,
+        lease_id=lease_id,
+    )
 
 
 async def _reset_coordination_state_for_tests() -> None:
@@ -146,12 +288,153 @@ async def _reset_coordination_state_for_tests() -> None:
     await reset_coordination_state_for_tests()
 
 
-def _result_to_response(task_id: str, result: DeliberationResult) -> DeliberationResultResponse:
+async def _enforce_rate_limit(
+    *,
+    workspace_id: str,
+    key_prefix: str,
+    limit: int,
+    detail: str,
+) -> None:
+    """Apply a fixed-window per-workspace rate limit when configured."""
+
+    if limit <= 0:
+        return
+    state = await get_coordination_backend().hit_rate_limit(
+        f"{key_prefix}:{workspace_id}",
+        limit=limit,
+        window_seconds=_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    if state.count <= state.limit:
+        return
+    raise HTTPException(
+        status_code=429,
+        detail=detail,
+        headers={"Retry-After": str(state.retry_after_seconds)},
+    )
+
+
+async def _enforce_task_create_rate_limit(workspace_id: str) -> None:
+    await _enforce_rate_limit(
+        workspace_id=workspace_id,
+        key_prefix="task-create",
+        limit=settings.task_create_rate_limit_per_minute,
+        detail="Task creation rate limit exceeded",
+    )
+
+
+async def _enforce_task_run_rate_limit(workspace_id: str) -> None:
+    await _enforce_rate_limit(
+        workspace_id=workspace_id,
+        key_prefix="task-run",
+        limit=settings.task_run_rate_limit_per_minute,
+        detail="Task run rate limit exceeded",
+    )
+
+
+def _derive_informational_payouts(
+    *,
+    payment_amount: float,
+    model_token_usage: dict[str, int],
+    agent_models_used: list[str],
+) -> dict[str, float]:
+    """Derive display-only per-model payout allocations for UI telemetry panels."""
+
+    if payment_amount <= 0.0:
+        return {}
+
+    normalized_tokens = {
+        model: max(0, int(tokens)) for model, tokens in model_token_usage.items() if model
+    }
+    token_total = sum(normalized_tokens.values())
+    if token_total > 0:
+        return {
+            model: (payment_amount * tokens) / token_total
+            for model, tokens in normalized_tokens.items()
+        }
+
+    unique_models = [model for model in dict.fromkeys(agent_models_used) if model]
+    if not unique_models:
+        return {}
+
+    even_split = payment_amount / len(unique_models)
+    return {model: even_split for model in unique_models}
+
+
+def _cost_payload_from_model_telemetry(
+    model_telemetry: dict[str, ModelTelemetry],
+) -> BenchmarkCostEstimateResponse | None:
+    payload = estimate_cost_for_models(model_telemetry)
+    if payload.estimation_mode == "unavailable":
+        return None
+    return BenchmarkCostEstimateResponse(
+        estimated_cost_usd=payload.estimated_cost_usd,
+        model_estimated_costs_usd=payload.model_estimated_costs_usd,
+        pricing_version=payload.pricing_version,
+        estimated_at=payload.estimated_at,
+        estimation_mode=payload.estimation_mode,
+        pricing_sources=payload.pricing_sources,
+    )
+
+
+def _cost_payload_from_runtime(cost: CostEstimate | None) -> BenchmarkCostEstimateResponse | None:
+    """Normalize a runtime cost payload into API response shape."""
+
+    if cost is None or cost.estimation_mode == "unavailable":
+        return None
+    return BenchmarkCostEstimateResponse(
+        estimated_cost_usd=cost.estimated_cost_usd,
+        model_estimated_costs_usd=cost.model_estimated_costs_usd,
+        pricing_version=cost.pricing_version,
+        estimated_at=cost.estimated_at,
+        estimation_mode=cost.estimation_mode,
+        pricing_sources=cost.pricing_sources,
+    )
+
+
+def _result_to_response(
+    task_id: str,
+    result: DeliberationResult,
+    *,
+    payment_amount: float = 0.0,
+    payment_status: PaymentStatusName = "none",
+) -> DeliberationResultResponse:
     """Convert runtime result into API response shape."""
+
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return None
+
+    model_token_usage = {model: int(tokens) for model, tokens in result.model_token_usage.items()}
+    model_latency_ms = {model: float(latency) for model, latency in result.model_latency_ms.items()}
+    model_telemetry_raw = (
+        {model: telemetry for model, telemetry in result.model_telemetry.items()}
+        if result.model_telemetry
+        else build_model_telemetry(
+            models=result.agent_models_used,
+            model_token_usage=model_token_usage,
+            model_latency_ms=model_latency_ms,
+            model_input_tokens=getattr(result, "model_input_token_usage", {}),
+            model_output_tokens=getattr(result, "model_output_token_usage", {}),
+            model_thinking_tokens=getattr(result, "model_thinking_token_usage", {}),
+            fallback_total_tokens=result.total_tokens_used,
+        )
+    )
+    cost_payload = _cost_payload_from_runtime(result.cost) or _cost_payload_from_model_telemetry(
+        model_telemetry_raw
+    )
+    informational_model_payouts = _derive_informational_payouts(
+        payment_amount=payment_amount,
+        model_token_usage=model_token_usage,
+        agent_models_used=result.agent_models_used,
+    )
 
     return DeliberationResultResponse(
         task_id=task_id,
-        mechanism=result.mechanism_used.value,
+        mechanism=_mechanism_name(result.mechanism_used),
         final_answer=result.final_answer,
         confidence=result.confidence,
         quorum_reached=result.quorum_reached,
@@ -159,8 +442,22 @@ def _result_to_response(task_id: str, result: DeliberationResult) -> Deliberatio
         decision_hash=_hash_text(result.final_answer),
         agent_count=result.agent_count,
         agent_models_used=result.agent_models_used,
+        model_token_usage=model_token_usage,
+        model_latency_ms=model_latency_ms,
+        model_telemetry={
+            model: ModelTelemetryResponse.model_validate(telemetry.model_dump(mode="json"))
+            for model, telemetry in model_telemetry_raw.items()
+        },
         total_tokens_used=result.total_tokens_used,
+        reasoning_presets=result.reasoning_presets,
+        input_tokens_used=_optional_int(getattr(result, "input_tokens_used", None)),
+        output_tokens_used=_optional_int(getattr(result, "output_tokens_used", None)),
+        thinking_tokens_used=_optional_int(getattr(result, "thinking_tokens_used", None)),
         latency_ms=result.total_latency_ms,
+        cost=cost_payload,
+        payment_amount=max(0.0, payment_amount),
+        payment_status=payment_status,
+        informational_model_payouts=informational_model_payouts,
         round_count=result.round_count,
         mechanism_switches=result.mechanism_switches,
         transcript_hashes=result.transcript_hashes,
@@ -168,15 +465,415 @@ def _result_to_response(task_id: str, result: DeliberationResult) -> Deliberatio
             metric.model_dump(mode="json") for metric in result.convergence_history
         ],
         locked_claims=[claim.model_dump(mode="json") for claim in result.locked_claims],
+        mechanism_trace=[
+            segment.model_dump(mode="json") for segment in result.mechanism_trace
+        ],
+        execution_mode=result.execution_mode,
+        selector_source=result.selector_source,
+        fallback_count=result.fallback_count,
+        fallback_events=[event.model_dump(mode="json") for event in result.fallback_events],
+        mechanism_override_source=result.mechanism_override_source,
     )
+
+
+def _switch_operation_key(switch_index: int) -> str:
+    return f"record_switch:{switch_index}"
+
+
+def _chain_operation(task: TaskStatusResponse, operation_key: str) -> ChainOperationRecord | None:
+    record = task.chain_operations.get(operation_key)
+    if record is None:
+        return None
+    if isinstance(record, ChainOperationRecord):
+        return record
+    return ChainOperationRecord.model_validate(record)
+
+
+def _set_chain_operation(
+    task: TaskStatusResponse,
+    operation_key: str,
+    record: ChainOperationRecord,
+) -> None:
+    task.chain_operations[operation_key] = record
+
+
+def _ensure_chain_operation(
+    task: TaskStatusResponse,
+    operation_key: str,
+) -> ChainOperationRecord:
+    record = _chain_operation(task, operation_key)
+    if record is not None:
+        return record
+    record = ChainOperationRecord(status="pending")
+    _set_chain_operation(task, operation_key, record)
+    return record
+
+
+def _mark_chain_operation_pending(
+    task: TaskStatusResponse,
+    operation_key: str,
+) -> None:
+    current = _ensure_chain_operation(task, operation_key)
+    if current.status == "succeeded":
+        return
+    _set_chain_operation(
+        task,
+        operation_key,
+        ChainOperationRecord(
+            status="pending",
+            tx_hash=current.tx_hash,
+            explorer_url=current.explorer_url,
+            attempts=current.attempts,
+            updated_at=datetime.now(UTC),
+        ),
+    )
+
+
+def _mark_chain_operation_succeeded(
+    task: TaskStatusResponse,
+    operation_key: str,
+    result: dict[str, Any],
+) -> None:
+    current = _ensure_chain_operation(task, operation_key)
+    tx_hash = str(result.get("tx_hash", "")) or current.tx_hash
+    explorer_url = str(result.get("explorer_url", "")) or current.explorer_url
+    _set_chain_operation(
+        task,
+        operation_key,
+        ChainOperationRecord(
+            status="succeeded",
+            tx_hash=tx_hash,
+            explorer_url=explorer_url,
+            attempts=current.attempts + 1,
+            updated_at=datetime.now(UTC),
+        ),
+    )
+
+
+def _mark_chain_operation_failed(
+    task: TaskStatusResponse,
+    operation_key: str,
+    exc: Exception,
+) -> None:
+    current = _ensure_chain_operation(task, operation_key)
+    _set_chain_operation(
+        task,
+        operation_key,
+        ChainOperationRecord(
+            status="failed",
+            tx_hash=current.tx_hash,
+            explorer_url=current.explorer_url,
+            error=str(exc),
+            attempts=current.attempts + 1,
+            updated_at=datetime.now(UTC),
+        ),
+    )
+
+
+def _chain_operation_succeeded(task: TaskStatusResponse, operation_key: str) -> bool:
+    record = _chain_operation(task, operation_key)
+    return record is not None and record.status == "succeeded"
+
+
+def _apply_chain_tx(task: TaskStatusResponse, result: dict[str, Any]) -> None:
+    task.solana_tx_hash = str(result.get("tx_hash", "")) or task.solana_tx_hash
+    task.explorer_url = str(result.get("explorer_url", "")) or task.explorer_url
+
+
+async def _save_task_status(
+    *,
+    store: TaskStore | LocalTaskStore,
+    workspace_id: str,
+    task_id: str,
+    task: TaskStatusResponse,
+) -> None:
+    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+
+
+async def _load_selector_state(
+    store: TaskStore | LocalTaskStore,
+    orchestrator: AgoraOrchestrator,
+) -> None:
+    """Load durable selector bandit state when available."""
+
+    state_payload = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
+    if state_payload is None:
+        return
+    if not hasattr(orchestrator.selector, "bandit"):
+        return
+    orchestrator.selector.bandit.load_state_payload(state_payload)
+
+
+async def _save_selector_state(
+    store: TaskStore | LocalTaskStore,
+    orchestrator: AgoraOrchestrator,
+) -> None:
+    """Persist selector bandit state for future orchestrators."""
+
+    await store.save_runtime_state(
+        _SELECTOR_BANDIT_STATE_KEY,
+        cast(dict[str, Any], orchestrator.selector.bandit.to_state()),
+    )
+
+
+async def _attempt_chain_operation(
+    *,
+    store: TaskStore | LocalTaskStore,
+    workspace_id: str,
+    task_id: str,
+    task: TaskStatusResponse,
+    operation_key: str,
+    call: Callable[[], Awaitable[dict[str, Any]]],
+    strict_failure_detail: str,
+    on_success: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any] | None:
+    """Run one Solana side effect with a persisted write-ahead operation record."""
+
+    if _chain_operation_succeeded(task, operation_key):
+        return None
+
+    _mark_chain_operation_pending(task, operation_key)
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
+
+    try:
+        result = await call()
+    except Exception as exc:
+        _mark_chain_operation_failed(task, operation_key, exc)
+        await _save_task_status(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            task=task,
+        )
+        logger.error(
+            "task_chain_operation_failed",
+            task_id=task_id,
+            operation=operation_key,
+            error=str(exc),
+        )
+        if settings.strict_chain_writes:
+            raise HTTPException(status_code=502, detail=strict_failure_detail) from exc
+        logger.warning(
+            "task_chain_operation_soft_failed",
+            task_id=task_id,
+            operation=operation_key,
+            error=str(exc),
+        )
+        return None
+
+    _mark_chain_operation_succeeded(task, operation_key, result)
+    if on_success is not None:
+        on_success(result)
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
+    return result
+
+
+def _has_chain_setup_operations(task: TaskStatusResponse) -> bool:
+    return (
+        _INITIALIZE_TASK_OPERATION in task.chain_operations
+        or _RECORD_SELECTION_OPERATION in task.chain_operations
+    )
+
+
+def _chain_setup_needs_retry(task: TaskStatusResponse) -> bool:
+    return _has_chain_setup_operations(task) and (
+        not _chain_operation_succeeded(task, _INITIALIZE_TASK_OPERATION)
+        or not _chain_operation_succeeded(task, _RECORD_SELECTION_OPERATION)
+    )
+
+
+def _chain_setup_ready(task: TaskStatusResponse) -> bool:
+    return not _has_chain_setup_operations(task) or (
+        _chain_operation_succeeded(task, _INITIALIZE_TASK_OPERATION)
+        and _chain_operation_succeeded(task, _RECORD_SELECTION_OPERATION)
+    )
+
+
+def _chain_finalization_needs_retry(task: TaskStatusResponse) -> bool:
+    for operation_key, record in task.chain_operations.items():
+        if operation_key != _SUBMIT_RECEIPT_OPERATION and not operation_key.startswith(
+            "record_switch:"
+        ):
+            continue
+        parsed = (
+            record
+            if isinstance(record, ChainOperationRecord)
+            else ChainOperationRecord.model_validate(record)
+        )
+        if parsed.status != "succeeded":
+            return True
+    return False
+
+
+async def _finalize_chain_setup_operations(
+    *,
+    store: TaskStore | LocalTaskStore,
+    workspace_id: str,
+    task_id: str,
+    task: TaskStatusResponse,
+) -> None:
+    if not bridge.is_configured():
+        logger.warning("solana_bridge_not_configured", task_id=task_id)
+        return
+
+    _ensure_chain_operation(task, _INITIALIZE_TASK_OPERATION)
+    _ensure_chain_operation(task, _RECORD_SELECTION_OPERATION)
+
+    payment_amount_lamports = int(task.payment_amount * LAMPORTS_PER_SOL)
+
+    def on_initialize_success(result: dict[str, Any]) -> None:
+        _apply_chain_tx(task, result)
+        if task.payment_amount > 0:
+            task.payment_status = "locked"
+
+    await _attempt_chain_operation(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+        operation_key=_INITIALIZE_TASK_OPERATION,
+        call=lambda: bridge.initialize_task(
+            task_id=task_id,
+            mechanism=task.mechanism,
+            task_hash=_hash_text(task.task_text),
+            consensus_threshold=60,
+            agent_count=task.agent_count,
+            payment_amount_lamports=payment_amount_lamports,
+        ),
+        strict_failure_detail="Failed to initialize task on Solana",
+        on_success=on_initialize_success,
+    )
+
+    if not _chain_operation_succeeded(task, _INITIALIZE_TASK_OPERATION):
+        return
+
+    await _attempt_chain_operation(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+        operation_key=_RECORD_SELECTION_OPERATION,
+        call=lambda: bridge.record_selection(
+            task_id=task_id,
+            selector_reasoning_hash=task.selector_reasoning_hash,
+        ),
+        strict_failure_detail="Failed to record task selection on Solana",
+    )
+
+
+async def _finalize_result_chain_operations(
+    *,
+    store: TaskStore | LocalTaskStore,
+    workspace_id: str,
+    task_id: str,
+    task: TaskStatusResponse,
+    result_response: DeliberationResultResponse,
+    switch_events: list[TaskEvent],
+    ensure_missing: bool,
+) -> None:
+    if not bridge.is_configured():
+        logger.warning("solana_bridge_not_configured", task_id=task_id)
+        return
+    if not _chain_setup_ready(task):
+        logger.warning(
+            "task_chain_finalization_waiting_for_setup",
+            task_id=task_id,
+        )
+        return
+
+    for switch_index, switch_event in enumerate(switch_events):
+        operation_key = _switch_operation_key(switch_index)
+        if ensure_missing:
+            _ensure_chain_operation(task, operation_key)
+        if operation_key not in task.chain_operations:
+            continue
+
+        data = switch_event.data
+        await _attempt_chain_operation(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            task=task,
+            operation_key=operation_key,
+            call=lambda data=data, switch_index=switch_index: bridge.record_mechanism_switch(
+                task_id=task_id,
+                switch_index=switch_index,
+                from_mechanism=str(data.get("from_mechanism", task.mechanism)),
+                to_mechanism=str(data.get("to_mechanism", result_response.mechanism)),
+                reason_hash=_hash_text(str(data.get("reason", "mechanism switch"))),
+                round_number=int(data.get("round_number", result_response.round_count)),
+            ),
+            strict_failure_detail="Failed to record mechanism switch on Solana",
+        )
+
+    if any(
+        not _chain_operation_succeeded(task, _switch_operation_key(switch_index))
+        for switch_index, _switch_event in enumerate(switch_events)
+    ):
+        return
+
+    if ensure_missing:
+        _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
+    if _SUBMIT_RECEIPT_OPERATION in task.chain_operations:
+        await _attempt_chain_operation(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            task=task,
+            operation_key=_SUBMIT_RECEIPT_OPERATION,
+            call=lambda: bridge.submit_receipt(
+                task_id=task_id,
+                merkle_root=result_response.merkle_root or "",
+                decision_hash=result_response.decision_hash or "",
+                quorum_reached=result_response.quorum_reached,
+                final_mechanism=result_response.mechanism,
+            ),
+            strict_failure_detail="Failed to submit receipt on Solana",
+            on_success=lambda result: _apply_chain_tx(task, result),
+        )
 
 
 def _to_status_response(raw_task: dict[str, Any], *, detailed: bool = False) -> TaskStatusResponse:
     """Normalize stored task payload into API response shape."""
 
     normalized = dict(raw_task)
+    mechanism = normalized.get("mechanism")
+    if isinstance(mechanism, str):
+        normalized["mechanism"] = _parse_mechanism(
+            mechanism,
+            status_code=409,
+            source="stored task mechanism",
+        ).value
+
+    mechanism_override = normalized.get("mechanism_override")
+    if mechanism_override is not None:
+        if not isinstance(mechanism_override, str):
+            raise HTTPException(status_code=409, detail="Invalid mechanism override in stored task")
+        normalized["mechanism_override"] = _parse_mechanism(
+            mechanism_override,
+            status_code=409,
+            source="stored task mechanism_override",
+        ).value
+
+    normalized["reasoning_presets"] = resolve_reasoning_presets(
+        normalized.get("reasoning_presets")
+        if isinstance(normalized.get("reasoning_presets"), dict)
+        else None
+    ).model_dump(mode="json")
+
     if not detailed:
         normalized["events"] = []
+        normalized["chain_operations"] = {}
     return TaskStatusResponse.model_validate(normalized)
 
 
@@ -188,6 +885,18 @@ def _event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any
         data=event_data,
         timestamp=datetime.now(UTC),
     ).model_dump(mode="json")
+
+
+def _to_sse_message(event: dict[str, Any]) -> dict[str, Any]:
+    """Normalize stored/live envelopes to SSE messages with explicit timestamps."""
+
+    return {
+        "event": str(event.get("event", "update")),
+        "data": json.dumps({
+            "payload": event.get("data", {}),
+            "timestamp": event.get("timestamp"),
+        }),
+    }
 
 
 def _forced_mechanism() -> MechanismType | None:
@@ -259,6 +968,37 @@ def _request_mechanism_override(request: TaskCreateRequest) -> MechanismType | N
     )
 
 
+def _selector_source(
+    *,
+    selection: MechanismSelection,
+    forced_override: MechanismType | None,
+    requested_override: MechanismType | None,
+) -> str:
+    """Classify how the mechanism selection was produced."""
+
+    if forced_override is not None:
+        return "env_pin"
+    if requested_override is not None:
+        return "forced_override"
+    if "Reasoning model unavailable" in selection.reasoning:
+        return "bandit_fallback"
+    return "llm_reasoning"
+
+
+def _mechanism_override_source(
+    *,
+    forced_override: MechanismType | None,
+    requested_override: MechanismType | None,
+) -> str | None:
+    """Expose the source of a pinned mechanism when present."""
+
+    if forced_override is not None:
+        return "env_pin"
+    if requested_override is not None:
+        return "request"
+    return None
+
+
 async def _pinned_selection(
     *,
     task_text: str,
@@ -317,8 +1057,8 @@ async def persist_and_emit(
     """Persist an event and emit it to live SSE listeners."""
 
     payload = _event_payload(event_type, event_data)
-    await store.append_event(workspace_id, task_id, payload)
     await stream.emit(_stream_key(workspace_id, task_id), payload)
+    await store.append_event(workspace_id, task_id, payload)
 
 
 async def _mark_task_failed(
@@ -334,8 +1074,7 @@ async def _mark_task_failed(
 
     task.status = "failed"
     task.events = [
-        TaskEvent.model_validate(event)
-        for event in await store.get_events(workspace_id, task_id)
+        TaskEvent.model_validate(event) for event in await store.get_events(workspace_id, task_id)
     ]
     await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
     await persist_and_emit(
@@ -349,7 +1088,31 @@ async def _mark_task_failed(
     await stream.close(_stream_key(workspace_id, task_id))
 
 
-@router.post("/", response_model=TaskCreateResponse)
+def _build_orchestrator(
+    *,
+    agent_count: int,
+    allow_offline_fallback: bool,
+    reasoning_presets: Any,
+) -> AgoraOrchestrator:
+    """Build orchestrator while tolerating older test doubles without fallback kwargs."""
+
+    try:
+        return AgoraOrchestrator(
+            agent_count=agent_count,
+            allow_offline_fallback=allow_offline_fallback,
+            reasoning_presets=reasoning_presets,
+        )
+    except TypeError as exc:
+        if "allow_offline_fallback" not in str(exc):
+            raise
+        return AgoraOrchestrator(
+            agent_count=agent_count,
+            reasoning_presets=reasoning_presets,
+        )
+
+
+@router.post("", response_model=TaskCreateResponse)
+@router.post("/", response_model=TaskCreateResponse, include_in_schema=False)
 async def create_task(
     request: TaskCreateRequest,
     user: CurrentUser,
@@ -357,27 +1120,34 @@ async def create_task(
     """Create a task, run selector, and initialize its on-chain metadata."""
 
     require_scope(user, "tasks:write")
+    await _enforce_task_create_rate_limit(user.workspace_id)
     store = get_task_store()
-    task_id = _build_task_id(request.task)
-    task_hash = _hash_text(request.task)
-    payment_amount_lamports = int(request.stakes * LAMPORTS_PER_SOL)
+    original_allow_offline_fallback = request.allow_offline_fallback
+    request_internal = request.model_copy(update={"allow_offline_fallback": True})
+    task_id = _build_task_id(request_internal.task)
 
-    requested_override = _request_mechanism_override(request)
+    requested_override = _request_mechanism_override(request_internal)
     forced_override = _forced_mechanism()
     effective_override = forced_override or requested_override
+    reasoning_presets = resolve_reasoning_presets(request_internal.reasoning_presets)
 
-    orchestrator = AgoraOrchestrator(agent_count=request.agent_count)
+    orchestrator = _build_orchestrator(
+        agent_count=request_internal.agent_count,
+        allow_offline_fallback=request_internal.allow_offline_fallback,
+        reasoning_presets=reasoning_presets,
+    )
+    await _load_selector_state(store, orchestrator)
     if effective_override is None:
         selection = await orchestrator.selector.select(
-            task_text=request.task,
-            agent_count=request.agent_count,
-            stakes=request.stakes,
+            task_text=request_internal.task,
+            agent_count=request_internal.agent_count,
+            stakes=request_internal.stakes,
         )
     else:
         selection = await _pinned_selection(
-            task_text=request.task,
-            agent_count=request.agent_count,
-            stakes=request.stakes,
+            task_text=request_internal.task,
+            agent_count=request_internal.agent_count,
+            stakes=request_internal.stakes,
             mechanism=effective_override,
         )
     _require_supported_mechanism(
@@ -385,59 +1155,68 @@ async def create_task(
         status_code=500,
         source="selector",
     )
-
-    init_tx_hash: str | None = None
-    init_explorer_url: str | None = None
-    if bridge.is_configured():
-        try:
-            init_result = await bridge.initialize_task(
-                task_id=task_id,
-                mechanism=selection.mechanism.value,
-                task_hash=task_hash,
-                consensus_threshold=60,
-                agent_count=request.agent_count,
-                payment_amount_lamports=payment_amount_lamports,
-            )
-            init_tx_hash = str(init_result.get("tx_hash", "")) or None
-            init_explorer_url = str(init_result.get("explorer_url", "")) or None
-
-            await bridge.record_selection(
-                task_id=task_id,
-                selector_reasoning_hash=selection.reasoning_hash,
-            )
-        except Exception as exc:
-            logger.error("task_create_chain_setup_failed", task_id=task_id, error=str(exc))
-            if settings.strict_chain_writes:
-                raise HTTPException(
-                    status_code=502,
-                    detail="Failed to initialize task on Solana",
-                ) from exc
-            logger.warning(
-                "task_create_chain_setup_soft_failed",
-                task_id=task_id,
-                error=str(exc),
-            )
-    else:
-        logger.warning("solana_bridge_not_configured", task_id=task_id)
+    selector_source = _selector_source(
+        selection=selection,
+        forced_override=forced_override,
+        requested_override=requested_override,
+    )
+    mechanism_override_source = _mechanism_override_source(
+        forced_override=forced_override,
+        requested_override=requested_override,
+    )
+    if selector_source == "bandit_fallback" and not request_internal.allow_offline_fallback:
+        raise HTTPException(
+            status_code=503,
+            detail="Selector provider fallback occurred but allow_offline_fallback=false",
+        )
 
     task_status = TaskStatusResponse(
         task_id=task_id,
-        task_text=request.task,
+        task_text=request_internal.task,
         workspace_id=user.workspace_id,
         created_by=user.user_id or f"api_key:{user.api_key_id}",
-        mechanism=selection.mechanism.value,
-        mechanism_override=effective_override.value if effective_override is not None else None,
+        mechanism=_mechanism_name(selection.mechanism),
+        mechanism_override=(
+            _mechanism_name(effective_override) if effective_override is not None else None
+        ),
+        allow_mechanism_switch=request_internal.allow_mechanism_switch,
+        allow_offline_fallback=original_allow_offline_fallback,
+        quorum_threshold=request_internal.quorum_threshold,
+        selector_source=selector_source,
+        mechanism_override_source=mechanism_override_source,
         status="pending",
         selector_reasoning=selection.reasoning,
         selector_reasoning_hash=selection.reasoning_hash,
         selector_confidence=selection.confidence,
-        agent_count=request.agent_count,
-        payment_amount=request.stakes,
-        payment_status="locked" if request.stakes > 0 else "none",
-        solana_tx_hash=init_tx_hash,
-        explorer_url=init_explorer_url,
+        agent_count=request_internal.agent_count,
+        reasoning_presets=reasoning_presets,
+        payment_amount=request_internal.stakes,
+        payment_status="none",
     )
+    if bridge.is_configured():
+        _ensure_chain_operation(task_status, _INITIALIZE_TASK_OPERATION)
+        _ensure_chain_operation(task_status, _RECORD_SELECTION_OPERATION)
+    else:
+        logger.warning("solana_bridge_not_configured", task_id=task_id)
     await store.save_task(user.workspace_id, task_id, task_status.model_dump(mode="json"))
+
+    if bridge.is_configured():
+        try:
+            await _finalize_chain_setup_operations(
+                store=store,
+                workspace_id=user.workspace_id,
+                task_id=task_id,
+                task=task_status,
+            )
+        except HTTPException:
+            task_status.status = "failed"
+            await _save_task_status(
+                store=store,
+                workspace_id=user.workspace_id,
+                task_id=task_id,
+                task=task_status,
+            )
+            raise
 
     await persist_and_emit(
         store=store,
@@ -451,36 +1230,71 @@ async def create_task(
             "mechanism_override": (
                 effective_override.value if effective_override is not None else None
             ),
+            "mechanism_override_source": mechanism_override_source,
             "confidence": selection.confidence,
             "reasoning": selection.reasoning,
             "selector_reasoning_hash": selection.reasoning_hash,
+            "selector_source": selector_source,
         },
     )
 
     return TaskCreateResponse(
         task_id=task_id,
-        mechanism=selection.mechanism.value,
+        mechanism=_mechanism_name(selection.mechanism),
         confidence=selection.confidence,
         reasoning=selection.reasoning,
         selector_reasoning_hash=selection.reasoning_hash,
         status="pending",
+        selector_source=selector_source,
+        mechanism_override_source=mechanism_override_source,
     )
 
 
-@router.post("/{task_id}/run", response_model=DeliberationResultResponse)
-async def run_task(
+async def _execute_task_run(
+    *,
     task_id: str,
-    user: CurrentUser,
+    workspace_id: str,
 ) -> DeliberationResultResponse:
     """Execute the stored mechanism and persist the resulting receipt."""
 
-    require_scope(user, "tasks:write")
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
+    raw_task = await _load_task_for_user(store, workspace_id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
+    run_key = _task_run_key(workspace_id, task_id)
     if task.status in {"completed", "paid"} and task.result is not None:
+        if bridge.is_configured() and (
+            _chain_setup_needs_retry(task) or _chain_finalization_needs_retry(task)
+        ):
+            await _enforce_task_run_rate_limit(workspace_id)
+            retry_lease = await _acquire_task_run_lock(run_key)
+            if retry_lease is None:
+                raise HTTPException(status_code=409, detail="Task is already in progress")
+            try:
+                if _chain_setup_needs_retry(task):
+                    await _finalize_chain_setup_operations(
+                        store=store,
+                        workspace_id=workspace_id,
+                        task_id=task_id,
+                        task=task,
+                    )
+                switch_events = [
+                    TaskEvent.model_validate(event)
+                    for event in await store.get_events(workspace_id, task_id)
+                    if event.get("event") == "mechanism_switch"
+                ]
+                await _finalize_result_chain_operations(
+                    store=store,
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    task=task,
+                    result_response=task.result,
+                    switch_events=switch_events,
+                    ensure_missing=False,
+                )
+            finally:
+                await _release_task_run_lock(run_key, lease_id=retry_lease.lease_id)
         return task.result
     if task.status == "in_progress":
         raise HTTPException(status_code=409, detail="Task is already in progress")
@@ -503,33 +1317,130 @@ async def run_task(
             source="stored task mechanism",
         )
 
-    run_key = _task_run_key(user.workspace_id, task_id)
-    if not await _acquire_task_run_lock(run_key):
+    await _enforce_task_run_rate_limit(workspace_id)
+    lease = await _acquire_task_run_lock(run_key)
+    if lease is None:
         raise HTTPException(status_code=409, detail="Task is already in progress")
 
+    workspace_slot = await _acquire_workspace_run_slot(
+        workspace_id,
+        run_key=run_key,
+        lease_id=lease.lease_id,
+    )
+    if settings.workspace_concurrent_task_runs > 0 and workspace_slot is None:
+        await _release_task_run_lock(run_key, lease_id=lease.lease_id)
+        raise HTTPException(
+            status_code=429,
+            detail="Workspace concurrent task run limit exceeded",
+            headers={"Retry-After": "1"},
+        )
+
     run_lock_released = False
+    workspace_slot_released = False
+    lease_lost = False
+    heartbeat_stop = asyncio.Event()
+    current_lease = lease
+
+    async def _run_lock_heartbeat() -> None:
+        nonlocal current_lease, lease_lost
+        interval_seconds = max(
+            1.0,
+            min(30.0, settings.task_run_lock_ttl_seconds / 3),
+        )
+        while True:
+            try:
+                await asyncio.wait_for(heartbeat_stop.wait(), timeout=interval_seconds)
+                return
+            except TimeoutError:
+                try:
+                    refreshed = await _refresh_task_run_lock(
+                        run_key,
+                        lease_id=current_lease.lease_id,
+                    )
+                except Exception:
+                    lease_lost = True
+                    logger.exception(
+                        "task_run_lock_refresh_failed",
+                        task_id=task_id,
+                        run_key=run_key,
+                    )
+                    heartbeat_stop.set()
+                    return
+                if refreshed is None:
+                    lease_lost = True
+                    logger.error("task_run_lock_lost", task_id=task_id, run_key=run_key)
+                    heartbeat_stop.set()
+                    return
+                if settings.workspace_concurrent_task_runs > 0:
+                    slot = await _refresh_workspace_run_slot(
+                        workspace_id,
+                        run_key=run_key,
+                        lease_id=current_lease.lease_id,
+                    )
+                    if slot is None:
+                        lease_lost = True
+                        logger.error(
+                            "task_run_workspace_slot_lost",
+                            task_id=task_id,
+                            run_key=run_key,
+                            workspace_id=workspace_id,
+                        )
+                        heartbeat_stop.set()
+                        return
+                current_lease = refreshed
+
+    heartbeat_task = asyncio.create_task(_run_lock_heartbeat())
 
     async def _release_run_lock_once() -> None:
-        nonlocal run_lock_released
+        nonlocal run_lock_released, workspace_slot_released
         if run_lock_released:
             return
-        await _release_task_run_lock(run_key)
+        heartbeat_stop.set()
+        with suppress(asyncio.CancelledError, Exception):
+            await heartbeat_task
+        if settings.workspace_concurrent_task_runs > 0 and not workspace_slot_released:
+            await _release_workspace_run_slot(
+                workspace_id,
+                run_key=run_key,
+                lease_id=current_lease.lease_id,
+            )
+            workspace_slot_released = True
+        await _release_task_run_lock(run_key, lease_id=current_lease.lease_id)
         run_lock_released = True
 
     async def runtime_event_sink(event_type: str, data: dict[str, Any]) -> None:
+        if lease_lost:
+            raise RuntimeError("Task execution lease lost")
         await persist_and_emit(
             store=store,
             stream=stream,
-            workspace_id=user.workspace_id,
+            workspace_id=workspace_id,
             task_id=task_id,
             event_type=event_type,
             event_data=data,
         )
 
-    orchestrator = AgoraOrchestrator(agent_count=task.agent_count)
+    orchestrator = _build_orchestrator(
+        agent_count=task.agent_count,
+        allow_offline_fallback=task.allow_offline_fallback,
+        reasoning_presets=task.reasoning_presets,
+    )
+    await _load_selector_state(store, orchestrator)
+    if hasattr(orchestrator, "build_vote_engine"):
+        orchestrator.vote_engine = orchestrator.build_vote_engine(
+            quorum_threshold=task.quorum_threshold,
+        )
     try:
         task.status = "in_progress"
-        await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
+        await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+
+        if bridge.is_configured() and _chain_setup_needs_retry(task):
+            await _finalize_chain_setup_operations(
+                store=store,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                task=task,
+            )
 
         if effective_override is not None:
             result = await orchestrator.run(
@@ -544,7 +1455,7 @@ async def run_task(
                 task=task.task_text,
                 selection=selection,
                 event_sink=runtime_event_sink,
-                allow_switch=True,
+                allow_switch=task.allow_mechanism_switch,
             )
         else:
             result = await orchestrator.run(
@@ -553,12 +1464,41 @@ async def run_task(
                 mechanism_override=task.mechanism,
                 event_sink=runtime_event_sink,
             )
+        if lease_lost:
+            raise RuntimeError("Task execution lease lost")
+        if result.fallback_count > 0 and not task.allow_offline_fallback:
+            raise RuntimeError(
+                "Provider fallback occurred but allow_offline_fallback=false"
+            )
+        result = result.model_copy(
+            update={
+                "selector_source": task.selector_source,
+                "mechanism_override_source": (
+                    "env_pin"
+                    if forced_mechanism is not None
+                    else task.mechanism_override_source
+                ),
+            }
+        )
+    except HTTPException as exc:
+        try:
+            await _mark_task_failed(
+                store=store,
+                stream=stream,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                task=task,
+                message=str(exc.detail),
+            )
+        finally:
+            await _release_run_lock_once()
+        raise
     except Exception as exc:
         try:
             await _mark_task_failed(
                 store=store,
                 stream=stream,
-                workspace_id=user.workspace_id,
+                workspace_id=workspace_id,
                 task_id=task_id,
                 task=task,
                 message=str(exc),
@@ -568,93 +1508,13 @@ async def run_task(
             await _release_run_lock_once()
         raise HTTPException(status_code=500, detail="Task execution failed") from exc
 
-    result_response = _result_to_response(task_id, result)
+    result_response = _result_to_response(
+        task_id,
+        result,
+        payment_amount=task.payment_amount,
+        payment_status=task.payment_status,
+    )
 
-    if bridge.is_configured():
-        try:
-            receipt = await bridge.submit_receipt(
-                task_id=task_id,
-                merkle_root=result_response.merkle_root or "",
-                decision_hash=result_response.decision_hash or "",
-                quorum_reached=result.quorum_reached,
-                final_mechanism=result.mechanism_used.value,
-            )
-            task.solana_tx_hash = str(receipt.get("tx_hash", "")) or task.solana_tx_hash
-            task.explorer_url = str(receipt.get("explorer_url", "")) or task.explorer_url
-        except Exception as exc:
-            logger.error("task_receipt_submission_failed", task_id=task_id, error=str(exc))
-            if settings.strict_chain_writes:
-                try:
-                    await _mark_task_failed(
-                        store=store,
-                        stream=stream,
-                        workspace_id=user.workspace_id,
-                        task_id=task_id,
-                        task=task,
-                        message="Failed to submit receipt on Solana",
-                    )
-                finally:
-                    await _release_run_lock_once()
-                raise HTTPException(
-                    status_code=502,
-                    detail="Failed to submit receipt on Solana",
-                ) from exc
-            logger.warning(
-                "task_receipt_submission_soft_failed",
-                task_id=task_id,
-                error=str(exc),
-            )
-
-        if result.mechanism_switches > 0:
-            refreshed_events = [
-                TaskEvent.model_validate(event)
-                for event in await store.get_events(user.workspace_id, task_id)
-            ]
-            switch_events = [
-                event for event in refreshed_events if event.event == "mechanism_switch"
-            ]
-            for switch_index, switch_event in enumerate(switch_events):
-                data = switch_event.data
-                try:
-                    await bridge.record_mechanism_switch(
-                        task_id=task_id,
-                        switch_index=switch_index,
-                        from_mechanism=str(data.get("from_mechanism", task.mechanism)),
-                        to_mechanism=str(data.get("to_mechanism", result.mechanism_used.value)),
-                        reason_hash=_hash_text(str(data.get("reason", "mechanism switch"))),
-                        round_number=int(data.get("round_number", result.round_count)),
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "task_switch_record_failed",
-                        task_id=task_id,
-                        switch_index=switch_index,
-                        error=str(exc),
-                    )
-                    if settings.strict_chain_writes:
-                        try:
-                            await _mark_task_failed(
-                                store=store,
-                                stream=stream,
-                                workspace_id=user.workspace_id,
-                                task_id=task_id,
-                                task=task,
-                                message="Failed to record mechanism switch on Solana",
-                            )
-                        finally:
-                            await _release_run_lock_once()
-                        raise HTTPException(
-                            status_code=502,
-                            detail="Failed to record mechanism switch on Solana",
-                        ) from exc
-                    logger.warning(
-                        "task_switch_record_soft_failed",
-                        task_id=task_id,
-                        switch_index=switch_index,
-                        error=str(exc),
-                    )
-
-    task.status = "completed"
     task.mechanism = result_response.mechanism
     task.quorum_reached = result_response.quorum_reached
     task.merkle_root = result_response.merkle_root
@@ -662,18 +1522,52 @@ async def run_task(
     task.round_count = result_response.round_count
     task.mechanism_switches = result_response.mechanism_switches
     task.transcript_hashes = result_response.transcript_hashes
-    task.completed_at = datetime.now(UTC)
     task.result = result_response
     task.events = [
         TaskEvent.model_validate(event)
-        for event in await store.get_events(user.workspace_id, task_id)
+        for event in await store.get_events(workspace_id, task_id)
     ]
+    switch_events = [event for event in task.events if event.event == "mechanism_switch"]
+    if bridge.is_configured():
+        for switch_index, _switch_event in enumerate(switch_events):
+            _ensure_chain_operation(task, _switch_operation_key(switch_index))
+        _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
 
-    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
+    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+
+    if bridge.is_configured():
+        try:
+            await _finalize_result_chain_operations(
+                store=store,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                task=task,
+                result_response=result_response,
+                switch_events=switch_events,
+                ensure_missing=False,
+            )
+        except HTTPException as exc:
+            try:
+                await _mark_task_failed(
+                    store=store,
+                    stream=stream,
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    task=task,
+                    message=str(exc.detail),
+                )
+            finally:
+                await _release_run_lock_once()
+            raise
+
+    task.status = "completed"
+    task.completed_at = datetime.now(UTC)
+    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+
     await persist_and_emit(
         store=store,
         stream=stream,
-        workspace_id=user.workspace_id,
+        workspace_id=workspace_id,
         task_id=task_id,
         event_type="quorum_reached",
         event_data={
@@ -684,35 +1578,73 @@ async def run_task(
             "quorum_reached": result_response.quorum_reached,
         },
     )
-    if task.solana_tx_hash:
+    receipt_record = _chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
+    if (
+        receipt_record is not None
+        and receipt_record.status == "succeeded"
+        and receipt_record.tx_hash
+    ):
         await persist_and_emit(
             store=store,
             stream=stream,
-            workspace_id=user.workspace_id,
+            workspace_id=workspace_id,
             task_id=task_id,
             event_type="receipt_committed",
             event_data={
                 "task_id": task_id,
                 "merkle_root": task.merkle_root,
-                "solana_tx_hash": task.solana_tx_hash,
-                "explorer_url": task.explorer_url,
+                "solana_tx_hash": receipt_record.tx_hash,
+                "explorer_url": receipt_record.explorer_url,
             },
         )
 
     await persist_and_emit(
         store=store,
         stream=stream,
-        workspace_id=user.workspace_id,
+        workspace_id=workspace_id,
         task_id=task_id,
         event_type="complete",
         event_data={"task_id": task_id, "status": task.status},
     )
-    await stream.close(_stream_key(user.workspace_id, task_id))
+    await stream.close(_stream_key(workspace_id, task_id))
     await _release_run_lock_once()
     return result_response
 
 
-@router.get("/", response_model=list[TaskStatusResponse])
+@router.post("/{task_id}/run", response_model=DeliberationResultResponse)
+async def run_task(
+    task_id: str,
+    user: CurrentUser,
+) -> DeliberationResultResponse:
+    """Execute the stored mechanism synchronously and return the final receipt."""
+
+    require_scope(user, "tasks:write")
+    return await _execute_task_run(task_id=task_id, workspace_id=user.workspace_id)
+
+
+@router.post("/{task_id}/run-async", response_model=TaskStatusResponse)
+async def start_task_run(
+    task_id: str,
+    user: CurrentUser,
+) -> TaskStatusResponse:
+    """Start task execution in the background and return the current persisted status."""
+
+    require_scope(user, "tasks:write")
+    store = get_task_store()
+    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
+    task = _to_status_response(raw_task, detailed=True)
+
+    if task.status not in {"pending", "in_progress", "completed", "paid"}:
+        raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
+    if task.status == "pending":
+        _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
+
+    refreshed = await _load_task_for_user(store, user.workspace_id, task_id)
+    return _to_status_response(refreshed, detailed=True)
+
+
+@router.get("", response_model=list[TaskStatusResponse])
+@router.get("/", response_model=list[TaskStatusResponse], include_in_schema=False)
 async def list_tasks(
     user: CurrentUser,
 ) -> list[TaskStatusResponse]:
@@ -725,14 +1657,14 @@ async def list_tasks(
     for row in rows:
         try:
             _assert_task_owner(row, user.workspace_id)
+            visible_rows.append(_to_status_response(row, detailed=False))
         except HTTPException:
             logger.warning(
-                "task_list_filtered_foreign_owner",
+                "task_list_filtered_invalid_or_foreign_owner",
                 workspace_id=user.workspace_id,
                 task_id=row.get("task_id"),
             )
             continue
-        visible_rows.append(_to_status_response(row, detailed=False))
     return visible_rows
 
 
@@ -779,13 +1711,9 @@ async def stream_task(
     async def event_generator() -> Any:
         events = await store.get_events(workspace_id, task_id)
         for event in events:
-            yield {
-                "event": event.get("event", "update"),
-                "data": event.get("data", {}),
-                "timestamp": event.get("timestamp"),
-            }
+            yield _to_sse_message(event)
 
-        if any(event.get("event") == "complete" for event in events):
+        if any(event.get("event") in {"complete", "error"} for event in events):
             return
 
         stream_id = _stream_key(workspace_id, task_id)
@@ -805,11 +1733,7 @@ async def stream_task(
                         continue
 
                     for event in latest[next_event_index:]:
-                        payload = {
-                            "event": event.get("event", "update"),
-                            "data": event.get("data", {}),
-                            "timestamp": event.get("timestamp"),
-                        }
+                        payload = _to_sse_message(event)
                         next_event_index += 1
                         yield payload
                         if payload["event"] in {"complete", "error"}:
@@ -818,9 +1742,10 @@ async def stream_task(
 
                 if item is None:
                     break
-                yield item
+                payload = _to_sse_message(item)
+                yield payload
                 next_event_index += 1
-                if item.get("event") in {"complete", "error"}:
+                if payload["event"] in {"complete", "error"}:
                     break
         finally:
             stream.unsubscribe(stream_id, queue)
@@ -838,44 +1763,76 @@ async def release_payment(
     require_scope(user, "tasks:write")
     store = get_task_store()
     stream = get_stream_manager()
-    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
-
-    task = _to_status_response(raw_task, detailed=True)
-    if task.status not in {"completed", "paid"}:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Task status is {task.status}; expected completed",
-        )
-    if task.status == "paid" or task.payment_status == "released":
-        raise HTTPException(status_code=409, detail="Payment already released")
-    if not task.quorum_reached:
-        raise HTTPException(status_code=409, detail="Quorum not reached")
-    if not bridge.is_configured():
-        raise HTTPException(status_code=503, detail="Solana bridge is not configured")
+    payment_key = _task_payment_key(user.workspace_id, task_id)
+    lease = await _acquire_task_run_lock(payment_key)
+    if lease is None:
+        raise HTTPException(status_code=409, detail="Payment release already in progress")
 
     try:
-        payment_tx = await bridge.release_payment(task_id=task_id)
-    except Exception as exc:
-        logger.error("task_payment_release_failed", task_id=task_id, error=str(exc))
-        raise HTTPException(status_code=502, detail="Failed to record payment on Solana") from exc
+        raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
 
-    task.status = "paid"
-    task.payment_status = "released"
-    task.solana_tx_hash = str(payment_tx.get("tx_hash", "")) or task.solana_tx_hash
-    task.explorer_url = str(payment_tx.get("explorer_url", "")) or task.explorer_url
+        task = _to_status_response(raw_task, detailed=True)
+        if task.status not in {"completed", "paid"}:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task status is {task.status}; expected completed",
+            )
+        if task.status == "paid" or task.payment_status == "released":
+            raise HTTPException(status_code=409, detail="Payment already released")
+        if not task.quorum_reached:
+            raise HTTPException(status_code=409, detail="Quorum not reached")
+        if not bridge.is_configured():
+            raise HTTPException(status_code=503, detail="Solana bridge is not configured")
 
-    await store.save_task(user.workspace_id, task_id, task.model_dump(mode="json"))
-    await persist_and_emit(
-        store=store,
-        stream=stream,
-        workspace_id=user.workspace_id,
-        task_id=task_id,
-        event_type="payment_released",
-        event_data={
-            "task_id": task_id,
-            "tx_hash": task.solana_tx_hash,
-            "explorer_url": task.explorer_url,
-        },
-    )
+        _ensure_chain_operation(task, _RELEASE_PAYMENT_OPERATION)
 
-    return {"released": True, "tx_hash": task.solana_tx_hash or ""}
+        def on_payment_success(result: dict[str, Any]) -> None:
+            task.status = "paid"
+            task.payment_status = "released"
+            _apply_chain_tx(task, result)
+
+        if not _chain_operation_succeeded(task, _RELEASE_PAYMENT_OPERATION):
+            await _attempt_chain_operation(
+                store=store,
+                workspace_id=user.workspace_id,
+                task_id=task_id,
+                task=task,
+                operation_key=_RELEASE_PAYMENT_OPERATION,
+                call=lambda: bridge.release_payment(task_id=task_id),
+                strict_failure_detail="Failed to record payment on Solana",
+                on_success=on_payment_success,
+            )
+        else:
+            payment_record = _chain_operation(task, _RELEASE_PAYMENT_OPERATION)
+            if payment_record is not None:
+                task.solana_tx_hash = payment_record.tx_hash or task.solana_tx_hash
+                task.explorer_url = payment_record.explorer_url or task.explorer_url
+            task.status = "paid"
+            task.payment_status = "released"
+            await _save_task_status(
+                store=store,
+                workspace_id=user.workspace_id,
+                task_id=task_id,
+                task=task,
+            )
+
+        payment_record = _chain_operation(task, _RELEASE_PAYMENT_OPERATION)
+        if payment_record is None or payment_record.status != "succeeded":
+            return {"released": False, "tx_hash": ""}
+
+        await persist_and_emit(
+            store=store,
+            stream=stream,
+            workspace_id=user.workspace_id,
+            task_id=task_id,
+            event_type="payment_released",
+            event_data={
+                "task_id": task_id,
+                "tx_hash": payment_record.tx_hash or task.solana_tx_hash,
+                "explorer_url": payment_record.explorer_url or task.explorer_url,
+            },
+        )
+
+        return {"released": True, "tx_hash": payment_record.tx_hash or task.solana_tx_hash or ""}
+    finally:
+        await _release_task_run_lock(payment_key, lease_id=lease.lease_id)

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 
+from agora.agent import pro_caller
 from agora.engines.debate import DebateEngine
 from agora.engines.vote import VoteEngine
+from agora.runtime.costing import build_result_costing
 from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.monitor import StateMonitor
 from agora.selector.features import extract_features
 from agora.selector.selector import AgoraSelector
@@ -18,12 +22,17 @@ from agora.types import (
     SUPPORTED_MECHANISMS,
     DeliberationResult,
     MechanismSelection,
+    MechanismTraceSegment,
     MechanismType,
+    ReasoningPresetOverrides,
+    ReasoningPresets,
     mechanism_is_supported,
 )
 
 logger = structlog.get_logger(__name__)
-_SUPPORTED_MECHANISMS_TEXT = ", ".join(sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS))
+_SUPPORTED_MECHANISMS_TEXT = ", ".join(
+    sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS)
+)
 
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
@@ -36,6 +45,11 @@ class AgoraOrchestrator:
         agent_count: int = 3,
         bandit_state_path: str | None = None,
         default_stakes: float = 0.5,
+        allow_offline_fallback: bool = False,
+        reasoning_presets: ReasoningPresets
+        | ReasoningPresetOverrides
+        | dict[str, Any]
+        | None = None,
     ) -> None:
         """Initialize orchestrator dependencies.
 
@@ -47,19 +61,45 @@ class AgoraOrchestrator:
 
         self.agent_count = max(1, agent_count)
         self.default_stakes = max(0.0, min(1.0, default_stakes))
+        self.allow_offline_fallback = allow_offline_fallback
+        self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
 
-        self.selector = AgoraSelector(bandit_state_path=bandit_state_path)
+        self.selector = AgoraSelector(
+            bandit_state_path=bandit_state_path,
+            reasoning_caller=pro_caller(thinking_level=self.reasoning_presets.gemini_pro),
+        )
         self.hasher = TranscriptHasher()
         self.monitor = StateMonitor()
-        self.debate_engine = DebateEngine(
+        self.debate_engine = self.build_debate_engine()
+        self.vote_engine = self.build_vote_engine(quorum_threshold=0.6)
+
+    def build_debate_engine(self, **overrides: Any) -> DebateEngine:
+        """Build a debate engine that inherits the orchestrator's runtime policy."""
+
+        engine_kwargs = {
+            "allow_offline_fallback": self.allow_offline_fallback,
+            **overrides,
+        }
+        return DebateEngine(
             agent_count=self.agent_count,
             monitor=self.monitor,
             hasher=self.hasher,
+            reasoning_presets=self.reasoning_presets,
+            **engine_kwargs,
         )
-        self.vote_engine = VoteEngine(
+
+    def build_vote_engine(self, **overrides: Any) -> VoteEngine:
+        """Build a vote engine that inherits the orchestrator's runtime policy."""
+
+        engine_kwargs = {
+            "allow_offline_fallback": self.allow_offline_fallback,
+            **overrides,
+        }
+        return VoteEngine(
             agent_count=self.agent_count,
-            quorum_threshold=0.6,
             hasher=self.hasher,
+            reasoning_presets=self.reasoning_presets,
+            **engine_kwargs,
         )
 
     async def run(
@@ -103,7 +143,11 @@ class AgoraOrchestrator:
             reasoning_hash=selection.reasoning_hash,
             bandit_recommendation=selection.bandit_recommendation.value,
             bandit_confidence=selection.bandit_confidence,
-            forced_mechanism=forced_mechanism.value if forced_mechanism else None,
+            forced_mechanism=(
+                mechanism_override.value
+                if isinstance(mechanism_override, MechanismType)
+                else mechanism_override
+            ),
         )
 
         result = await self.execute_selection(
@@ -287,10 +331,28 @@ class AgoraOrchestrator:
                 if agents is not None:
                     vote_run_kwargs["custom_agents"] = agents
                 vote_outcome = await self.vote_engine.run(**vote_run_kwargs)
-                switched = vote_outcome.result.model_copy(
-                    update={"mechanism_switches": vote_outcome.result.mechanism_switches + 1}
+                return self._combine_switched_result(
+                    first_state_hashes=debate_outcome.state.transcript_hashes,
+                    first_convergence_history=debate_outcome.state.convergence_history,
+                    first_mechanism=MechanismType.DEBATE,
+                    first_start_round=1,
+                    first_end_round=max(1, debate_outcome.state.round),
+                    first_agent_models_used=debate_outcome.agent_models_used,
+                    first_model_token_usage=debate_outcome.model_token_usage,
+                    first_model_latency_ms=debate_outcome.model_latency_ms,
+                    first_model_input_token_usage=debate_outcome.model_input_token_usage,
+                    first_model_output_token_usage=debate_outcome.model_output_token_usage,
+                    first_model_thinking_token_usage=debate_outcome.model_thinking_token_usage,
+                    first_fallback_events=debate_outcome.fallback_events,
+                    first_total_tokens_used=debate_outcome.total_tokens_used,
+                    first_input_tokens_used=debate_outcome.input_tokens_used,
+                    first_output_tokens_used=debate_outcome.output_tokens_used,
+                    first_thinking_tokens_used=debate_outcome.thinking_tokens_used,
+                    first_total_latency_ms=debate_outcome.total_latency_ms,
+                    second_result=vote_outcome.result,
+                    switch_reason=debate_outcome.reason,
+                    switch_round=debate_outcome.state.round,
                 )
-                return switched
             if debate_outcome.result is not None:
                 return debate_outcome.result
             raise RuntimeError("Debate engine produced no result")
@@ -320,19 +382,199 @@ class AgoraOrchestrator:
                     debate_run_kwargs["custom_agents"] = agents
                 debate_outcome = await self.debate_engine.run(**debate_run_kwargs)
                 if debate_outcome.result is not None:
-                    switched = debate_outcome.result.model_copy(
-                        update={
-                            "mechanism_switches": debate_outcome.result.mechanism_switches + 1,
-                            "timestamp": datetime.now(UTC),
-                        }
+                    return self._combine_switched_result(
+                        first_state_hashes=vote_outcome.state.transcript_hashes,
+                        first_convergence_history=[],
+                        first_mechanism=MechanismType.VOTE,
+                        first_start_round=1,
+                        first_end_round=1,
+                        first_agent_models_used=vote_outcome.agent_models_used,
+                        first_model_token_usage=vote_outcome.model_token_usage,
+                        first_model_latency_ms=vote_outcome.model_latency_ms,
+                        first_model_input_token_usage=vote_outcome.model_input_token_usage,
+                        first_model_output_token_usage=vote_outcome.model_output_token_usage,
+                        first_model_thinking_token_usage=vote_outcome.model_thinking_token_usage,
+                        first_fallback_events=vote_outcome.fallback_events,
+                        first_total_tokens_used=vote_outcome.total_tokens_used,
+                        first_input_tokens_used=vote_outcome.input_tokens_used,
+                        first_output_tokens_used=vote_outcome.output_tokens_used,
+                        first_thinking_tokens_used=vote_outcome.thinking_tokens_used,
+                        first_total_latency_ms=vote_outcome.total_latency_ms,
+                        second_result=debate_outcome.result,
+                        switch_reason=vote_outcome.reason,
+                        switch_round=1,
                     )
-                    return switched
             return vote_outcome.result
 
         raise ValueError(
             f"Mechanism '{selection.mechanism.value}' is not currently supported. "
             f"Supported mechanisms: {_SUPPORTED_MECHANISMS_TEXT}."
         )
+
+    def _combine_switched_result(
+        self,
+        *,
+        first_state_hashes: list[str],
+        first_convergence_history: list[Any],
+        first_mechanism: MechanismType,
+        first_start_round: int,
+        first_end_round: int,
+        first_agent_models_used: list[str],
+        first_model_token_usage: dict[str, int],
+        first_model_latency_ms: dict[str, float],
+        first_model_input_token_usage: dict[str, int],
+        first_model_output_token_usage: dict[str, int],
+        first_model_thinking_token_usage: dict[str, int],
+        first_fallback_events: list[Any],
+        first_total_tokens_used: int,
+        first_input_tokens_used: int | None,
+        first_output_tokens_used: int | None,
+        first_thinking_tokens_used: int | None,
+        first_total_latency_ms: float,
+        second_result: DeliberationResult,
+        switch_reason: str,
+        switch_round: int,
+    ) -> DeliberationResult:
+        """Combine pre-switch, switch event, and post-switch artifacts into one receipt."""
+
+        switch_payload = {
+            "event": "mechanism_switch",
+            "from_mechanism": first_mechanism.value,
+            "to_mechanism": second_result.mechanism_used.value,
+            "reason": switch_reason,
+            "round_number": switch_round,
+        }
+        switch_serialized = json.dumps(
+            switch_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        switch_reason_hash = self.hasher.hash_content(switch_reason)
+        switch_event_hash = self.hasher.hash_content(switch_serialized)
+        second_hashes = second_result.transcript_hashes
+        combined_hashes = [*first_state_hashes, switch_event_hash, *second_hashes]
+
+        first_trace = MechanismTraceSegment(
+            mechanism=first_mechanism,
+            start_round=first_start_round,
+            end_round=first_end_round,
+            transcript_hashes=first_state_hashes,
+            convergence_history=first_convergence_history,
+            switch_reason=switch_reason,
+            switch_reason_hash=switch_reason_hash,
+        )
+        combined_trace = [first_trace, *second_result.mechanism_trace]
+        combined_fallback_events = [
+            *first_fallback_events,
+            *second_result.fallback_events,
+        ]
+        combined_convergence = [
+            *first_convergence_history,
+            *second_result.convergence_history,
+        ]
+        combined_model_tokens = self._merge_numeric_maps(
+            first_model_token_usage,
+            second_result.model_token_usage,
+        )
+        combined_model_latency = self._merge_float_maps(
+            first_model_latency_ms,
+            second_result.model_latency_ms,
+        )
+        combined_model_input_tokens = self._merge_numeric_maps(
+            first_model_input_token_usage,
+            second_result.model_input_token_usage,
+        )
+        combined_model_output_tokens = self._merge_numeric_maps(
+            first_model_output_token_usage,
+            second_result.model_output_token_usage,
+        )
+        combined_model_thinking_tokens = self._merge_numeric_maps(
+            first_model_thinking_token_usage,
+            second_result.model_thinking_token_usage,
+        )
+        combined_agent_models = list(
+            dict.fromkeys([*first_agent_models_used, *second_result.agent_models_used])
+        )
+        total_tokens = first_total_tokens_used + second_result.total_tokens_used
+        total_latency_ms = first_total_latency_ms + second_result.total_latency_ms
+        input_tokens_used = self._merge_optional_totals(
+            first_input_tokens_used,
+            second_result.input_tokens_used,
+        )
+        output_tokens_used = self._merge_optional_totals(
+            first_output_tokens_used,
+            second_result.output_tokens_used,
+        )
+        thinking_tokens_used = self._merge_optional_totals(
+            first_thinking_tokens_used,
+            second_result.thinking_tokens_used,
+        )
+        model_telemetry, cost = build_result_costing(
+            models=combined_agent_models,
+            model_token_usage=combined_model_tokens,
+            model_latency_ms=combined_model_latency,
+            model_input_tokens=combined_model_input_tokens,
+            model_output_tokens=combined_model_output_tokens,
+            model_thinking_tokens=combined_model_thinking_tokens,
+            fallback_total_tokens=total_tokens,
+        )
+
+        return second_result.model_copy(
+            update={
+                "mechanism_switches": second_result.mechanism_switches + 1,
+                "merkle_root": self.hasher.build_merkle_tree(combined_hashes),
+                "transcript_hashes": combined_hashes,
+                "mechanism_trace": combined_trace,
+                "convergence_history": combined_convergence,
+                "fallback_events": combined_fallback_events,
+                "fallback_count": len(combined_fallback_events),
+                "execution_mode": (
+                    "live"
+                    if not combined_fallback_events
+                    else "fallback" if total_tokens == 0 else "mixed"
+                ),
+                "agent_models_used": combined_agent_models,
+                "model_token_usage": combined_model_tokens,
+                "model_latency_ms": combined_model_latency,
+                "model_input_token_usage": combined_model_input_tokens,
+                "model_output_token_usage": combined_model_output_tokens,
+                "model_thinking_token_usage": combined_model_thinking_tokens,
+                "model_telemetry": model_telemetry,
+                "total_tokens_used": total_tokens,
+                "input_tokens_used": input_tokens_used,
+                "output_tokens_used": output_tokens_used,
+                "thinking_tokens_used": thinking_tokens_used,
+                "total_latency_ms": total_latency_ms,
+                "cost": cost,
+                "timestamp": datetime.now(UTC),
+            }
+        )
+
+    @staticmethod
+    def _merge_numeric_maps(left: dict[str, int], right: dict[str, int]) -> dict[str, int]:
+        """Merge token usage maps."""
+
+        merged = dict(left)
+        for key, value in right.items():
+            merged[key] = merged.get(key, 0) + value
+        return merged
+
+    @staticmethod
+    def _merge_float_maps(left: dict[str, float], right: dict[str, float]) -> dict[str, float]:
+        """Merge latency usage maps."""
+
+        merged = dict(left)
+        for key, value in right.items():
+            merged[key] = merged.get(key, 0.0) + value
+        return merged
+
+    @staticmethod
+    def _merge_optional_totals(left: int | None, right: int | None) -> int | None:
+        """Merge nullable aggregate token counters."""
+
+        if left is None and right is None:
+            return None
+        return max(0, int(left or 0) + int(right or 0))
 
     @staticmethod
     async def _emit_event(

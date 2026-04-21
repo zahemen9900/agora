@@ -77,6 +77,17 @@ class _SuccessfulVoteCaller:
         ), {"input_tokens": 6, "output_tokens": 4, "latency_ms": 10.0}
 
 
+class _RawTextCaller:
+    def __init__(self, model: str, response: str) -> None:
+        self.model = model
+        self.response = response
+        self.calls: list[dict[str, object]] = []
+
+    async def call(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response, {"input_tokens": 6, "output_tokens": 4, "latency_ms": 15.0}
+
+
 def test_isp_aggregation_all_agents_agree() -> None:
     """When all agents agree, the single answer should dominate normalized weight."""
 
@@ -123,15 +134,61 @@ def test_confidence_calibration_softens_extremes() -> None:
     assert 0.01 < low < 0.5
 
 
+def test_vote_response_coerces_scalar_text_fields() -> None:
+    """Structured vote payloads should tolerate scalar text-like JSON values."""
+
+    response = _VoteResponse.model_validate(
+        {
+            "answer": 323,
+            "confidence": 0.7,
+            "predicted_group_answer": 1,
+            "reasoning": 42,
+        }
+    )
+
+    assert response.answer == "323"
+    assert response.predicted_group_answer == "1"
+    assert response.reasoning == "42"
+
+
 def test_four_agent_vote_routes_kimi_as_active_diversity_tier() -> None:
-    """Four-agent voting should include Kimi as an active tier, not only fallback."""
+    """Four-agent voting should follow the canonical balanced provider cycle."""
 
     engine = VoteEngine(agent_count=4)
 
     assert [engine._tier_for_agent(agent_idx) for agent_idx in range(4)] == [
         "pro",
-        "kimi",
         "flash",
+        "kimi",
+        "claude",
+    ]
+
+
+def test_vote_provider_cycle_repeats_evenly_for_eight_and_twelve_agents() -> None:
+    """Balanced vote ensembles should repeat the base four-model cycle deterministically."""
+
+    assert [VoteEngine(agent_count=8)._tier_for_agent(index) for index in range(8)] == [
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+    ]
+    assert [VoteEngine(agent_count=12)._tier_for_agent(index) for index in range(12)] == [
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+        "pro",
+        "flash",
+        "kimi",
+        "claude",
+        "pro",
+        "flash",
+        "kimi",
         "claude",
     ]
 
@@ -161,7 +218,36 @@ async def test_call_structured_kimi_coerces_raw_vote() -> None:
     assert response.predicted_group_answer == "Kimi raw answer"
     assert usage["tokens"] == 13
     assert usage["latency_ms"] == pytest.approx(15.0)
-    assert "response_format" not in kimi.calls[0]
+    assert kimi.calls[0]["response_format"] is _VoteResponse
+
+
+@pytest.mark.asyncio
+async def test_call_structured_flash_raw_text_falls_back_to_kimi() -> None:
+    """Non-Kimi providers that return raw text should still fall through to live Kimi."""
+
+    flash = _RawTextCaller("gemini-3.1-flash-lite-preview", "flash raw text")
+    kimi = _RawTextCaller("moonshotai/kimi-k2-thinking", "Kimi fallback answer")
+    engine = VoteEngine(agent_count=4, flash_agent=flash, kimi_agent=kimi)
+    fallback = _VoteResponse(
+        answer="deterministic fallback",
+        confidence=0.2,
+        predicted_group_answer="deterministic fallback",
+        reasoning="offline fallback",
+    )
+
+    response, usage = await engine._call_structured(
+        tier="flash",
+        system_prompt="Return JSON.",
+        user_prompt="Vote on the best option",
+        response_model=_VoteResponse,
+        fallback=fallback,
+    )
+
+    assert response.answer == "Kimi fallback answer"
+    assert response.predicted_group_answer == "Kimi fallback answer"
+    assert usage["model"] == "moonshotai/kimi-k2-thinking"
+    assert len(flash.calls) == 1
+    assert len(kimi.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -171,8 +257,8 @@ async def test_quorum_check_threshold_works() -> None:
     engine = VoteEngine(
         agent_count=3,
         quorum_threshold=0.6,
-        flash_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
-        pro_agent=_SuccessfulVoteCaller("gemini-3.1-pro-preview"),
+        flash_agent=_SuccessfulVoteCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
         claude_agent=_SuccessfulVoteCaller("claude-sonnet-4-6"),
         kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
     )
@@ -200,13 +286,13 @@ async def test_quorum_check_threshold_works() -> None:
 
 @pytest.mark.asyncio
 async def test_four_agent_vote_records_all_provider_models() -> None:
-    """The 4-agent vote path should expose the ordered provider ensemble."""
+    """The 4-agent vote path should expose the balanced ordered provider ensemble."""
 
     engine = VoteEngine(
         agent_count=4,
         quorum_threshold=0.6,
-        flash_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
-        pro_agent=_SuccessfulVoteCaller("gemini-3.1-pro-preview"),
+        flash_agent=_SuccessfulVoteCaller("gemini-3.1-flash-lite-preview"),
+        pro_agent=_SuccessfulVoteCaller("gemini-3-flash-preview"),
         claude_agent=_SuccessfulVoteCaller("claude-sonnet-4-6"),
         kimi_agent=_SuccessfulVoteCaller("moonshotai/kimi-k2-thinking"),
     )
@@ -215,9 +301,9 @@ async def test_four_agent_vote_records_all_provider_models() -> None:
     outcome = await engine.run("Answer in one word: Paris or Lyon?", selection)
 
     assert outcome.result.agent_models_used == [
-        "gemini-3.1-pro-preview",
-        "moonshotai/kimi-k2-thinking",
         "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "moonshotai/kimi-k2-thinking",
         "claude-sonnet-4-6",
     ]
 
@@ -256,7 +342,7 @@ async def test_custom_agents_short_circuit_all_provider_tiers(
     assert outcome.result.final_answer == "Paris"
     assert outcome.result.agent_models_used == ["custom-agent"]
     assert len(captured_prompts) == 4
-    assert all("Answer the task" in system for system, _user in captured_prompts)
+    assert all("Your role is vote participant" in system for system, _user in captured_prompts)
 
 
 @pytest.mark.asyncio
@@ -297,6 +383,7 @@ async def test_call_structured_falls_back_when_claude_and_kimi_fail() -> None:
         agent_count=3,
         claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
         kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        allow_offline_fallback=True,
     )
     fallback = _VoteResponse(
         answer="deterministic fallback",
@@ -319,6 +406,58 @@ async def test_call_structured_falls_back_when_claude_and_kimi_fail() -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_structured_strict_mode_blocks_deterministic_fallback() -> None:
+    """Production default should fail before materializing offline vote artifacts."""
+
+    engine = VoteEngine(
+        agent_count=3,
+        claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
+        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+    )
+    fallback = _VoteResponse(
+        answer="deterministic fallback",
+        confidence=0.2,
+        predicted_group_answer="deterministic fallback",
+        reasoning="offline fallback",
+    )
+
+    with pytest.raises(AgentCallError, match="Provider fallback disabled"):
+        await engine._call_structured(
+            tier="claude",
+            system_prompt="Return JSON.",
+            user_prompt="Vote on the best option",
+            response_model=_VoteResponse,
+            fallback=fallback,
+        )
+
+
+@pytest.mark.asyncio
+async def test_offline_vote_fallback_is_task_grounded_not_option_placeholder() -> None:
+    """Explicit offline fallback should not emit option A/B placeholders."""
+
+    engine = VoteEngine(
+        agent_count=3,
+        flash_agent=_FailingCaller(model="gemini-3.1-flash-lite-preview"),
+        pro_agent=_FailingCaller(model="gemini-3-flash-preview"),
+        claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
+        kimi_agent=_FailingCaller(model="moonshotai/kimi-k2-thinking"),
+        allow_offline_fallback=True,
+    )
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+
+    outcome = await engine.run(
+        "Pick the safest migration plan for a high-traffic SQL system.",
+        selection,
+    )
+    transcript = "\n".join(output.content for output in outcome.state.agent_outputs).lower()
+
+    assert outcome.result.fallback_count == 3
+    assert "option a" not in transcript
+    assert "option b" not in transcript
+    assert "lowest-risk answer satisfying" in transcript
+
+
+@pytest.mark.asyncio
 @pytest.mark.paid_integration
 @pytest.mark.skipif(
     not _PAID_INTEGRATION_ENABLED or not _OPENROUTER_KEY_PRESENT,
@@ -329,8 +468,8 @@ async def test_vote_paid_integration_hits_kimi_path() -> None:
 
     engine = VoteEngine(
         agent_count=3,
-        flash_agent=_FailingCaller(model="gemini-3-flash-preview"),
-        pro_agent=_FailingCaller(model="gemini-3.1-pro-preview"),
+        flash_agent=_FailingCaller(model="gemini-3.1-flash-lite-preview"),
+        pro_agent=_FailingCaller(model="gemini-3-flash-preview"),
         claude_agent=_FailingCaller(model="claude-sonnet-4-6"),
     )
     selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")

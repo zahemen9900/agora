@@ -6,7 +6,7 @@ const nodes = [
   { id: 'task', label: 'User Task', type: 'input', x: 50, y: 250, icon: FileText, color: 'text-text-secondary' },
   { id: 'orchestrator', label: 'Orchestrator', type: 'core', x: 280, y: 250, icon: Brain, color: 'text-accent' },
   { id: 'debate', label: 'Debate', type: 'mechanism', x: 550, y: 120, icon: Swords, color: 'text-proponent' },
-  { id: 'delphi', label: 'Delphi', type: 'mechanism', x: 550, y: 250, icon: Database, color: 'text-opponent' },
+  { id: 'vote-alt', label: 'Vote', type: 'mechanism', x: 550, y: 250, icon: Database, color: 'text-opponent' },
   { id: 'vote', label: 'Vote', type: 'mechanism', x: 550, y: 380, icon: Users, color: 'text-devil-advocate' },
   { id: 'solana', label: 'Verified Proof', type: 'output', x: 820, y: 250, icon: Cpu, color: 'text-accent' },
 ];
@@ -20,10 +20,10 @@ const createPath = (x1: number, y1: number, x2: number, y2: number) => {
 const paths = [
   { id: 't-o', d: createPath(180, 250, 280, 250), delay: 0 },
   { id: 'o-d', d: createPath(410, 250, 550, 120), delay: 1 },
-  { id: 'o-dl', d: createPath(410, 250, 550, 250), delay: 1.2 },
+  { id: 'o-va', d: createPath(410, 250, 550, 250), delay: 1.2 },
   { id: 'o-v', d: createPath(410, 250, 550, 380), delay: 1.4 },
   { id: 'd-s', d: createPath(680, 120, 820, 250), delay: 2 },
-  { id: 'dl-s', d: createPath(680, 250, 820, 250), delay: 2.2 },
+  { id: 'va-s', d: createPath(680, 250, 820, 250), delay: 2.2 },
   { id: 'v-s', d: createPath(680, 380, 820, 250), delay: 2.4 },
 ];
 
