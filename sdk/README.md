@@ -201,5 +201,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a1`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a2`.
 - This cycle keeps PyPI publish manual while documenting the next-cycle automation plan.

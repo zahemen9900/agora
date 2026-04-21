@@ -9,7 +9,7 @@
 
 ## SDK Release Runbook (Manual, Current Cycle)
 
-Target package: `agora-arbitrator-sdk==0.1.0a1`
+Target package: `agora-arbitrator-sdk==0.1.0a2`
 
 ### Prerequisites
 
@@ -45,7 +45,7 @@ without requiring a new setup pass.
 python -m venv /tmp/agora-arbitrator-sdk-verify
 source /tmp/agora-arbitrator-sdk-verify/bin/activate
 python -m pip install --upgrade pip
-python -m pip install agora-arbitrator-sdk==0.1.0a1
+python -m pip install agora-arbitrator-sdk==0.1.0a2
 python - <<'PY'
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 print("sdk-import-ok")
