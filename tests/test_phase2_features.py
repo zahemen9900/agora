@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1016,6 +1016,350 @@ async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
     assert arbitrator.latest_task_id == "task-stream"
     assert seen_calls[0][1] == "/tasks/task-stream/run-async"
     assert seen_calls[1][1] == "/tasks/task-stream/stream-ticket"
+
+
+@pytest.mark.asyncio
+async def test_sdk_benchmark_helpers_cover_run_wait_detail_and_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedBenchmarkRunRequest
+
+    arbitrator = AgoraArbitrator(
+        auth_token="human-bearer-token",
+        strict_verification=False,
+    )
+    seen_calls: list[tuple[str, str, dict[str, Any]]] = []
+    status_payloads = [
+        {
+            "run_id": "run-sdk",
+            "status": "running",
+            "created_at": "2026-04-21T04:00:00Z",
+            "updated_at": "2026-04-21T04:00:01Z",
+        },
+        {
+            "run_id": "run-sdk",
+            "status": "completed",
+            "created_at": "2026-04-21T04:00:00Z",
+            "updated_at": "2026-04-21T04:00:02Z",
+            "artifact_id": "artifact-sdk",
+            "latest_mechanism": "selector",
+            "agent_count": 2,
+            "total_tokens": 48,
+        },
+    ]
+    status_index = {"value": 0}
+
+    async def fake_post(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("POST", url, dict(kwargs)))
+        if url == "/benchmarks/run":
+            return _FakeResponse(
+                {
+                    "run_id": "run-sdk",
+                    "status": "queued",
+                    "created_at": "2026-04-21T04:00:00Z",
+                }
+            )
+        if url == "/benchmarks/runs/run-sdk/stream-ticket":
+            return _FakeResponse({"ticket": "ticket-benchmark"})
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+    async def fake_get(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("GET", url, dict(kwargs)))
+        if url == "/benchmarks/runs/run-sdk":
+            payload = status_payloads[min(status_index["value"], len(status_payloads) - 1)]
+            status_index["value"] += 1
+            return _FakeResponse(payload)
+        if url == "/benchmarks/run-sdk":
+            return _FakeResponse(
+                {
+                    "benchmark_id": "run-sdk",
+                    "artifact_id": "artifact-sdk",
+                    "run_id": "run-sdk",
+                    "scope": "user",
+                    "source": "user_test",
+                    "status": "completed",
+                    "created_at": "2026-04-21T04:00:00Z",
+                    "updated_at": "2026-04-21T04:00:02Z",
+                    "run_count": 1,
+                    "latest_mechanism": "selector",
+                    "agent_count": 2,
+                    "total_tokens": 48,
+                    "thinking_tokens": 0,
+                    "total_latency_ms": 15.0,
+                    "models": ["gemini-3-flash-preview"],
+                    "model_telemetry": {
+                        "gemini-3-flash-preview": {
+                            "total_tokens": 48,
+                            "input_tokens": 20,
+                            "output_tokens": 28,
+                            "thinking_tokens": 0,
+                            "latency_ms": 15.0,
+                        }
+                    },
+                    "events": [],
+                    "summary": {"accuracy": 1.0},
+                    "benchmark_payload": {"benchmark_config": {"agent_count": 2}},
+                }
+            )
+        raise AssertionError(f"Unexpected GET url: {url}")
+
+    class _FakeStreamResponse:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = lines
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+
+    class _FakeStreamContext:
+        def __init__(self, lines: list[str]) -> None:
+            self._response = _FakeStreamResponse(lines)
+
+        async def __aenter__(self) -> _FakeStreamResponse:
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_stream(method: str, url: str, *_args: object, **kwargs: object) -> _FakeStreamContext:
+        seen_calls.append((method, url, dict(kwargs)))
+        assert method == "GET"
+        assert url == "/benchmarks/runs/run-sdk/stream"
+        assert kwargs.get("params") == {"ticket": "ticket-benchmark"}
+        return _FakeStreamContext(
+            [
+                "event: running",
+                'data: {"payload": {"run_id": "run-sdk", "status": "running"}, "timestamp": "2026-04-21T04:00:01Z"}',
+                "",
+                "event: complete",
+                'data: {"payload": {"run_id": "run-sdk", "status": "completed", "artifact_id": "artifact-sdk"}, "timestamp": "2026-04-21T04:00:02Z"}',
+                "",
+            ]
+        )
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+    monkeypatch.setattr(arbitrator._client, "stream", fake_stream)
+
+    started = await arbitrator.run_benchmark(
+        HostedBenchmarkRunRequest(
+            agent_count=2,
+            live_agents=False,
+            domain_prompts={
+                "math": {
+                    "template_id": "math-stepwise",
+                    "question": "What is 2 + 2?",
+                    "source": "custom",
+                }
+            },
+        )
+    )
+    completed = await arbitrator.wait_for_benchmark_run(
+        started.run_id,
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.01,
+    )
+    detail = await arbitrator.get_benchmark_detail(started.run_id)
+    events = [event async for event in arbitrator.stream_benchmark_run_events(started.run_id)]
+    await arbitrator.aclose()
+
+    assert started.status == "queued"
+    assert completed.status == "completed"
+    assert completed.artifact_id == "artifact-sdk"
+    assert detail.benchmark_id == "run-sdk"
+    assert detail.summary["accuracy"] == 1.0
+    assert events[-1]["event"] == "complete"
+    assert seen_calls[0][2]["json"] == {
+        "training_per_category": 1,
+        "holdout_per_category": 1,
+        "agent_count": 2,
+        "live_agents": False,
+        "seed": 42,
+        "domain_prompts": {
+            "math": {
+                "template_id": "math-stepwise",
+                "prompt": "What is 2 + 2?",
+                "source": "custom",
+            }
+        },
+        "reasoning_presets": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_sdk_wait_for_benchmark_run_raises_structured_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedBenchmarkRunExecutionError
+
+    arbitrator = AgoraArbitrator(auth_token="human-bearer-token", strict_verification=False)
+
+    async def fake_get(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        assert url == "/benchmarks/runs/run-failed"
+        return _FakeResponse(
+            {
+                "run_id": "run-failed",
+                "status": "failed",
+                "created_at": "2026-04-21T04:00:00Z",
+                "updated_at": "2026-04-21T04:00:03Z",
+                "error": "benchmark providers unavailable",
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    with pytest.raises(HostedBenchmarkRunExecutionError) as exc_info:
+        await arbitrator.wait_for_benchmark_run("run-failed", poll_interval_seconds=0.01)
+
+    await arbitrator.aclose()
+
+    assert exc_info.value.run_id == "run-failed"
+    assert exc_info.value.status == "failed"
+    assert exc_info.value.error == "benchmark providers unavailable"
+
+
+@pytest.mark.asyncio
+async def test_sdk_benchmark_flow_e2e_against_local_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedBenchmarkRunRequest
+
+    store = LocalTaskStore(data_dir=str(tmp_path / "sdk-benchmark-e2e"))
+    task_routes._store = store
+
+    async def fake_human_user(_credentials: object | None = None) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            auth_method="jwt",
+            workspace_id="workspace-sdk",
+            user_id="user-sdk",
+            email="sdk@example.com",
+            display_name="SDK User",
+            scopes=["tasks:read", "tasks:write"],
+        )
+
+    async def fake_execute_benchmark_run(
+        *,
+        workspace_id: str,
+        run_id: str,
+        request: Any,
+    ) -> None:
+        stream = benchmark_routes.get_stream_manager()
+        started_at = datetime.now(UTC)
+        await store.save_user_test_result(
+            workspace_id,
+            run_id,
+            {
+                "run_id": run_id,
+                "workspace_id": workspace_id,
+                "kind": "benchmark",
+                "status": "running",
+                "created_at": started_at.isoformat(),
+                "updated_at": started_at.isoformat(),
+                "request": request.model_dump(mode="json"),
+                "label": "User-triggered benchmark",
+            },
+        )
+        await benchmark_routes._persist_and_emit_benchmark_event(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            event_type="running",
+            event_data={"run_id": run_id, "status": "running"},
+        )
+
+        completed_at = datetime.now(UTC)
+        await store.save_user_test_result(
+            workspace_id,
+            run_id,
+            {
+                "run_id": run_id,
+                "workspace_id": workspace_id,
+                "kind": "benchmark",
+                "status": "completed",
+                "created_at": started_at.isoformat(),
+                "updated_at": completed_at.isoformat(),
+                "artifact_id": "artifact-sdk-e2e",
+                "request": request.model_dump(mode="json"),
+                "latest_mechanism": "selector",
+                "agent_count": request.agent_count,
+                "total_tokens": 64,
+                "thinking_tokens": 8,
+                "total_latency_ms": 12.5,
+                "model_telemetry": {
+                    "gemini-3-flash-preview": {
+                        "total_tokens": 64,
+                        "input_tokens": 32,
+                        "output_tokens": 24,
+                        "thinking_tokens": 8,
+                        "latency_ms": 12.5,
+                    }
+                },
+                "cost": {
+                    "estimated_cost_usd": 0.0012,
+                    "model_estimated_costs_usd": {"gemini-3-flash-preview": 0.0012},
+                    "pricing_version": "2026-04-21",
+                    "estimation_mode": "exact",
+                    "pricing_sources": {"gemini-3-flash-preview": "test"},
+                },
+                "summary": {"accuracy": 1.0},
+                "benchmark_payload": {"benchmark_config": {"agent_count": request.agent_count}},
+                "events": [],
+                "source": "user_test",
+                "run_count": 1,
+                "model_counts": {"gemini-3-flash-preview": 1},
+                "mechanism_counts": {"selector": 1},
+                "models": ["gemini-3-flash-preview"],
+            },
+        )
+        await benchmark_routes._persist_and_emit_benchmark_event(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            event_type="complete",
+            event_data={
+                "run_id": run_id,
+                "status": "completed",
+                "artifact_id": "artifact-sdk-e2e",
+            },
+        )
+
+    app.dependency_overrides[benchmark_routes.get_current_user] = fake_human_user
+    monkeypatch.setattr(benchmark_routes, "_execute_benchmark_run", fake_execute_benchmark_run)
+
+    try:
+        arbitrator = AgoraArbitrator(auth_token="human-bearer-token", strict_verification=False)
+        await arbitrator._client.aclose()
+        arbitrator._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        )
+
+        started = await arbitrator.run_benchmark(
+            HostedBenchmarkRunRequest(agent_count=2, live_agents=False)
+        )
+        completed = await arbitrator.wait_for_benchmark_run(
+            started.run_id,
+            timeout_seconds=2.0,
+            poll_interval_seconds=0.01,
+        )
+        detail = await arbitrator.get_benchmark_detail(started.run_id)
+        await arbitrator.aclose()
+
+        assert started.status == "queued"
+        assert completed.status == "completed"
+        assert detail.benchmark_id == started.run_id
+        assert detail.agent_count == 2
+        assert detail.request is not None
+        assert detail.request["agent_count"] == 2
+    finally:
+        app.dependency_overrides.clear()
+        task_routes._store = None
 
 
 class _FakeResponse:

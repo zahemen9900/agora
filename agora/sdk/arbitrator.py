@@ -13,7 +13,7 @@ from time import monotonic
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
 
@@ -42,6 +42,9 @@ from agora.types import (
 MechanismName = Literal["debate", "vote"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
+BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
+BenchmarkDomainName = Literal["math", "factual", "reasoning", "code", "creative", "demo"]
+BenchmarkPromptSourceName = Literal["template", "custom"]
 DEFAULT_PROGRAM_ID = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
 
@@ -222,13 +225,43 @@ class HostedModelTelemetry(BaseModel):
     estimation_mode: str | None = None
 
 
+class HostedBenchmarkDomainPrompt(BaseModel):
+    """Prompt configuration for one benchmark domain."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    template_id: str | None = None
+    question: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("question", "prompt"),
+        serialization_alias="prompt",
+    )
+    source: BenchmarkPromptSourceName = "template"
+
+
+class HostedBenchmarkRunRequest(BaseModel):
+    """Typed request payload for benchmark execution."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    training_per_category: int = Field(default=1, ge=1, le=20)
+    holdout_per_category: int = Field(default=1, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=12)
+    live_agents: bool = True
+    seed: int = 42
+    domain_prompts: dict[BenchmarkDomainName, HostedBenchmarkDomainPrompt] = Field(
+        default_factory=dict
+    )
+    reasoning_presets: ReasoningPresetOverrides | None = None
+
+
 class HostedBenchmarkRunResponse(BaseModel):
     """Benchmark run trigger acknowledgement."""
 
     model_config = ConfigDict(extra="ignore")
 
     run_id: str
-    status: str
+    status: BenchmarkRunStatusName
     created_at: datetime | None = None
 
 
@@ -238,7 +271,7 @@ class HostedBenchmarkRunStatus(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     run_id: str
-    status: str
+    status: BenchmarkRunStatusName
     created_at: datetime | None = None
     updated_at: datetime | None = None
     error: str | None = None
@@ -281,6 +314,27 @@ class HostedBenchmarkDetail(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     benchmark_payload: dict[str, Any] = Field(default_factory=dict)
     cost: HostedCostEstimate | None = None
+
+
+class HostedBenchmarkRunError(RuntimeError):
+    """Base class for structured hosted benchmark lifecycle failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: str,
+        status: BenchmarkRunStatusName,
+        error: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.status = status
+        self.error = error
+
+
+class HostedBenchmarkRunExecutionError(HostedBenchmarkRunError):
+    """Raised when a hosted benchmark run reaches a failed terminal state."""
 
 
 class HostedPaymentReleaseResponse(BaseModel):
@@ -528,12 +582,27 @@ class AgoraArbitrator:
                 )
             await asyncio.sleep(interval)
 
-    async def run_benchmark(self, **payload: Any) -> HostedBenchmarkRunResponse:
-        """Trigger a hosted benchmark run."""
+    async def run_benchmark(
+        self,
+        request: HostedBenchmarkRunRequest | None = None,
+        **payload: Any,
+    ) -> HostedBenchmarkRunResponse:
+        """Trigger a hosted benchmark run.
+
+        Benchmarks require a human bearer token, not an Agora API key.
+        """
+
+        if request is not None and payload:
+            raise ValueError("Pass either request=... or keyword payload fields, not both")
+        request_payload = (
+            request
+            if request is not None
+            else HostedBenchmarkRunRequest.model_validate(payload or {})
+        )
 
         response = await self._client.post(
             "/benchmarks/run",
-            json=payload,
+            json=request_payload.model_dump(mode="json", by_alias=True),
             headers=self._headers(),
         )
         response.raise_for_status()
@@ -548,6 +617,36 @@ class AgoraArbitrator:
         )
         response.raise_for_status()
         return HostedBenchmarkRunStatus.model_validate(response.json())
+
+    async def wait_for_benchmark_run(
+        self,
+        run_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        poll_interval_seconds: float = 1.0,
+    ) -> HostedBenchmarkRunStatus:
+        """Poll a hosted benchmark run until terminal success, failure, or timeout."""
+
+        deadline = None if timeout_seconds is None else monotonic() + max(0.0, timeout_seconds)
+        interval = max(0.05, poll_interval_seconds)
+
+        while True:
+            status = await self.get_benchmark_run_status(run_id)
+            if status.status == "completed":
+                return status
+            if status.status == "failed":
+                raise HostedBenchmarkRunExecutionError(
+                    status.error or f"Hosted benchmark run {run_id} failed",
+                    run_id=run_id,
+                    status=status.status,
+                    error=status.error,
+                )
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for hosted benchmark run {run_id} to complete "
+                    f"(last status={status.status})"
+                )
+            await asyncio.sleep(interval)
 
     async def get_benchmark_detail(self, benchmark_id: str) -> HostedBenchmarkDetail:
         """Fetch a hosted benchmark detail payload by run_id or artifact_id."""
