@@ -22,7 +22,7 @@ The smoke script is intentionally install-first:
 
 1. create a fresh venv
 2. install `agora-sdk` from `./sdk`
-3. source `/home/zahemen/projects/dl-lib/agora/.env`
+3. source `../../.env` if present
 4. require `AGORA_API_KEY`
 5. run a simple hosted task
 6. print the structured result JSON to the terminal

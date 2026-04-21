@@ -32,7 +32,16 @@ interface NormalizedMetric {
 
 interface NormalizedSummary {
   per_mode: Record<string, NormalizedMetric>;
+  per_mechanism: Record<string, NormalizedMetric>;
   per_category: Record<string, Record<string, NormalizedMetric>>;
+}
+
+interface BenchmarkTimelineDescriptor {
+  label: string;
+  title: string;
+  summary: string;
+  detailsLabel: string;
+  tone: string;
 }
 
 const DEFAULT_METRIC: NormalizedMetric = {
@@ -53,9 +62,11 @@ export function BenchmarkDetail() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [timeline, setTimeline] = useState<TaskEvent[]>([]);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [now, setNow] = useState(() => Date.now());
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const followTimelineRef = useRef(true);
+  const copyTimeoutRef = useRef<number | null>(null);
 
   const loadDetail = useCallback(async () => {
     if (!benchmarkId) {
@@ -91,6 +102,18 @@ export function BenchmarkDetail() {
     void loadDetail();
   }, [authStatus, loadDetail]);
 
+  const detailRunId = detail?.run_id ?? benchmarkId;
+  const detailStatus = detail?.status;
+
+  useEffect(() => {
+    if (detailStatus !== "queued" && detailStatus !== "running") {
+      return;
+    }
+
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [detailStatus]);
+
   useEffect(() => {
     if (!detail?.artifact_id || !detail.run_id || !benchmarkId) {
       return;
@@ -103,9 +126,6 @@ export function BenchmarkDetail() {
     }
     navigate(`/benchmarks/${detail.artifact_id}`, { replace: true });
   }, [benchmarkId, detail?.artifact_id, detail?.run_id, detail?.status, navigate]);
-
-  const detailRunId = detail?.run_id ?? benchmarkId;
-  const detailStatus = detail?.status;
 
   useEffect(() => {
     if (authStatus !== "authenticated" || !detailRunId) {
@@ -141,9 +161,18 @@ export function BenchmarkDetail() {
               return current;
             }
             const eventFailed = event.event === "failed" || event.event === "error";
+            const nextStatus = eventFailed
+              ? "failed"
+              : event.event === "complete"
+                ? "completed"
+                : event.event === "started"
+                  ? "running"
+                  : event.event === "queued"
+                    ? "queued"
+                    : current.status;
             return {
               ...current,
-              status: eventFailed ? "failed" : current.status,
+              status: nextStatus,
               latest_mechanism:
                 typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
               agent_count: isPositiveInteger(telemetry.agent_count) ? telemetry.agent_count : current.agent_count,
@@ -154,6 +183,23 @@ export function BenchmarkDetail() {
                 typeof telemetry.total_latency_ms === "number" ? telemetry.total_latency_ms : current.total_latency_ms,
               model_telemetry: (telemetry.model_telemetry as typeof current.model_telemetry) ?? current.model_telemetry,
               cost: (telemetry.cost as typeof current.cost) ?? current.cost,
+            };
+          });
+        } else if (event.event === "queued" || event.event === "started" || event.event === "complete" || event.event === "failed" || event.event === "error") {
+          setDetail((current) => {
+            if (!current) {
+              return current;
+            }
+            return {
+              ...current,
+              status:
+                event.event === "queued"
+                  ? "queued"
+                  : event.event === "started"
+                    ? "running"
+                    : event.event === "complete"
+                      ? "completed"
+                      : "failed",
             };
           });
         }
@@ -183,10 +229,13 @@ export function BenchmarkDetail() {
     return normalizeSummary(detail?.summary, detail?.benchmark_payload);
   }, [detail]);
 
+  const mechanismSource =
+    Object.keys(summary.per_mechanism).length > 0 ? summary.per_mechanism : summary.per_mode;
+
   const modeRows = useMemo(() => {
-    const keys = Object.keys(summary.per_mode);
+    const keys = Object.keys(mechanismSource);
     return keys.map((mechanism) => {
-      const metric = summary.per_mode[mechanism] ?? DEFAULT_METRIC;
+      const metric = mechanismSource[mechanism] ?? DEFAULT_METRIC;
       return {
         mechanism: titleCase(mechanism),
         accuracy: Number((metric.accuracy * 100).toFixed(2)),
@@ -196,7 +245,7 @@ export function BenchmarkDetail() {
         avgCostUsd: Number(metric.avg_estimated_cost_usd.toFixed(6)),
       };
     });
-  }, [summary]);
+  }, [mechanismSource]);
 
   const categoryRows = useMemo(() => {
     const categories = Object.keys(summary.per_category);
@@ -252,10 +301,24 @@ export function BenchmarkDetail() {
     : [];
 
   const timelineJson = useMemo(() => prettyJson(timeline), [timeline]);
+  const lastTimelineEvent = timeline.length > 0 ? timeline[timeline.length - 1] : null;
+  const streamState = useMemo(
+    () => deriveBenchmarkStreamState(detail?.status, lastTimelineEvent, now),
+    [detail?.status, lastTimelineEvent, now],
+  );
 
   useEffect(() => {
     followTimelineRef.current = true;
   }, [detailRunId]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current !== null) {
+        window.clearTimeout(copyTimeoutRef.current);
+        copyTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!followTimelineRef.current || timeline.length === 0) {
@@ -285,7 +348,10 @@ export function BenchmarkDetail() {
     try {
       await navigator.clipboard.writeText(timelineJson);
       setCopyState("copied");
-      window.setTimeout(() => setCopyState("idle"), 1500);
+      if (copyTimeoutRef.current !== null) {
+        window.clearTimeout(copyTimeoutRef.current);
+      }
+      copyTimeoutRef.current = window.setTimeout(() => setCopyState("idle"), 1500);
     } catch (error) {
       console.error(error);
     }
@@ -369,15 +435,21 @@ export function BenchmarkDetail() {
                 <div className="text-lg text-text-primary">{titleCase(detail.status)}</div>
               </div>
             </div>
-            <div className="mono text-xs text-text-secondary">
-              {detail.run_id ?? detail.benchmark_id}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className={`mono text-[11px] px-2 py-1 rounded-full border ${streamState.tone}`}>
+                {streamState.label}
+              </div>
+              <div className="mono text-xs text-text-secondary">
+                {detail.run_id ?? detail.benchmark_id}
+              </div>
             </div>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm text-text-secondary">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm text-text-secondary">
             <div>Tokens {formatMaybeRuntimeInt(detail.total_tokens, detail.status)}</div>
             <div>Thinking {formatMaybeRuntimeInt(detail.thinking_tokens, detail.status)}</div>
             <div>Latency {formatMaybeRuntimeLatency(detail.total_latency_ms ?? null, detail.status)}</div>
             <div>Cost {formatUsd(detail.cost?.estimated_cost_usd ?? null)}</div>
+            <div>Last event {lastTimelineEvent ? relativeTimeFrom(lastTimelineEvent.timestamp, now) : "waiting..."}</div>
           </div>
         </div>
       ) : null}
@@ -411,37 +483,58 @@ export function BenchmarkDetail() {
 
       {timeline.length > 0 ? (
         <div className="card p-4 sm:p-6 mb-8">
-          <div className="flex items-center justify-between gap-3 mb-3">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
             <h3 className="text-lg font-semibold">Run Timeline</h3>
-            <button
-              type="button"
-              className="btn-secondary inline-flex items-center gap-2"
-              onClick={() => void handleCopyTimeline()}
-            >
-              {copyState === "copied" ? <Check size={14} /> : <Clipboard size={14} />}
-              {copyState === "copied" ? "Copied" : "Copy JSON"}
-            </button>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                className="btn-secondary inline-flex items-center gap-2"
+                onClick={() => void handleCopyTimeline()}
+              >
+                {copyState === "copied" ? <Check size={14} /> : <Clipboard size={14} />}
+                {copyState === "copied" ? "Copied" : "Copy JSON"}
+              </button>
+              <div className="flex items-center gap-3 rounded-md border border-border-subtle bg-void px-3 py-2 mono text-xs text-text-secondary">
+                <span>Events {formatInt(timeline.length)}</span>
+                <span className="text-text-muted">•</span>
+                <span>Runs {formatInt(detail.run_count)}</span>
+              </div>
+            </div>
           </div>
           <div
             ref={timelineContainerRef}
             onScroll={handleTimelineScroll}
             className="space-y-3 max-h-96 overflow-y-auto pr-1"
           >
-            {timeline.map((event, index) => (
-              <div
-                key={`${event.event}-${event.timestamp ?? index}`}
-                ref={index === timeline.length - 1 ? latestTimelineEntryRef : undefined}
-                className="border border-border-subtle rounded-md p-3 bg-void"
-              >
-                <div className="flex items-center justify-between gap-3 mb-1">
-                  <div className="mono text-xs text-text-primary">{event.event.replace(/_/g, " ")}</div>
-                  <div className="mono text-[10px] text-text-muted">{formatDateTime(event.timestamp)}</div>
+            {timeline.map((event, index) => {
+              const descriptor = describeBenchmarkEvent(event);
+              return (
+                <div
+                  key={`${event.event}-${event.timestamp ?? index}`}
+                  ref={index === timeline.length - 1 ? latestTimelineEntryRef : undefined}
+                  className={`border rounded-md p-3 ${descriptor.tone}`}
+                >
+                  <div className="flex items-center justify-between gap-3 mb-1">
+                    <div>
+                      <div className="mono text-[10px] text-text-muted mb-1">{descriptor.label}</div>
+                      <div className="text-sm text-text-primary">{descriptor.title}</div>
+                    </div>
+                    <div className="mono text-[10px] text-text-muted">{formatDateTime(event.timestamp)}</div>
+                  </div>
+                  <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word mb-2">
+                    {descriptor.summary}
+                  </p>
+                  <details className="group">
+                    <summary className="mono text-[10px] text-text-muted cursor-pointer select-none">
+                      {descriptor.detailsLabel}
+                    </summary>
+                    <pre className="mt-2 text-[11px] text-text-secondary whitespace-pre-wrap wrap-break-word">
+                      {prettyJson(event.data)}
+                    </pre>
+                  </details>
                 </div>
-                <pre className="text-[11px] text-text-secondary whitespace-pre-wrap break-words">
-                  {prettyJson(event.data)}
-                </pre>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       ) : null}
@@ -466,7 +559,7 @@ export function BenchmarkDetail() {
                 tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
               />
               <Tooltip />
-              <Bar dataKey="accuracy" name="Accuracy (%)" fill="var(--color-accent)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="accuracy" name="Accuracy (%)" fill="var(--color-accent)" radius={[4, 4, 0, 0]} minPointSize={4} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -597,7 +690,7 @@ export function BenchmarkDetail() {
                     <div className="mono text-[10px] text-text-muted mb-2">
                       {String(question.template_title ?? question.template_id ?? "Custom Question")}
                     </div>
-                    <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
+                    <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word">
                       {String(question.question ?? question.prompt ?? "")}
                     </p>
                   </div>
@@ -650,13 +743,14 @@ function normalizeSummary(summaryCandidate: unknown, benchmarkPayloadCandidate: 
 
   return {
     per_mode: {},
+    per_mechanism: {},
     per_category: {},
   };
 }
 
 function parseSummaryObject(candidate: unknown): NormalizedSummary {
   if (!isRecord(candidate)) {
-    return { per_mode: {}, per_category: {} };
+    return { per_mode: {}, per_mechanism: {}, per_category: {} };
   }
 
   const perMode: Record<string, NormalizedMetric> = {};
@@ -664,6 +758,14 @@ function parseSummaryObject(candidate: unknown): NormalizedSummary {
   if (isRecord(perModeSource)) {
     for (const [mechanism, value] of Object.entries(perModeSource)) {
       perMode[mechanism] = parseMetric(value);
+    }
+  }
+
+  const perMechanism: Record<string, NormalizedMetric> = {};
+  const perMechanismSource = candidate.per_mechanism;
+  if (isRecord(perMechanismSource)) {
+    for (const [mechanism, value] of Object.entries(perMechanismSource)) {
+      perMechanism[mechanism] = parseMetric(value);
     }
   }
 
@@ -683,6 +785,7 @@ function parseSummaryObject(candidate: unknown): NormalizedSummary {
 
   return {
     per_mode: perMode,
+    per_mechanism: perMechanism,
     per_category: perCategory,
   };
 }
@@ -722,7 +825,11 @@ function extractSummaryFromBenchmarkPayload(candidate: unknown): unknown {
 }
 
 function hasSummaryData(summary: NormalizedSummary): boolean {
-  return Object.keys(summary.per_mode).length > 0 || Object.keys(summary.per_category).length > 0;
+  return (
+    Object.keys(summary.per_mode).length > 0
+    || Object.keys(summary.per_mechanism).length > 0
+    || Object.keys(summary.per_category).length > 0
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -813,4 +920,174 @@ function prettyJson(value: unknown): string {
   } catch {
     return "Unable to serialize payload";
   }
+}
+
+function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
+  const data = isRecord(event.data) ? event.data : {};
+  const eventLabel = titleCase(event.event);
+
+  if (event.event === "queued") {
+    return {
+      label: "QUEUE",
+      title: "Benchmark queued",
+      summary: `Run ${String(data.run_id ?? "unknown")} is waiting for execution.`,
+      detailsLabel: "queue payload",
+      tone: "border-border-subtle bg-void",
+    };
+  }
+
+  if (event.event === "started") {
+    return {
+      label: "RUN STARTED",
+      title: "Benchmark execution started",
+      summary: `Run ${String(data.run_id ?? "unknown")} is actively executing now.`,
+      detailsLabel: "start payload",
+      tone: "border-accent/40 bg-accent/5",
+    };
+  }
+
+  if (event.event === "domain_progress") {
+    const latestRun = isRecord(data.latest_run) ? data.latest_run : {};
+    const phase = titleCase(String(data.phase ?? "progress"));
+    const mechanism = titleCase(
+      String(data.latest_mechanism ?? latestRun.mechanism_used ?? latestRun.mode ?? "selector"),
+    );
+    const category = titleCase(String(latestRun.category ?? "unknown"));
+    const question = truncateText(
+      String(latestRun.question ?? latestRun.task ?? latestRun.source_task ?? "Benchmark task"),
+      160,
+    );
+    const progressBits = [
+      typeof data.completed === "number" && typeof data.total === "number"
+        ? `${Math.round(data.completed)}/${Math.round(data.total)} complete`
+        : null,
+      mechanism !== "Selector" ? `${mechanism} run finished` : "Selector run finished",
+      category !== "Unknown" ? `${category} domain` : null,
+    ].filter(Boolean);
+
+    return {
+      label: phase.toUpperCase(),
+      title: progressBits.join(" · "),
+      summary: question,
+      detailsLabel: "progress telemetry",
+      tone: "border-accent/30 bg-accent/5",
+    };
+  }
+
+  if (event.event === "provider_retrying") {
+    return {
+      label: "RETRYING",
+      title: "Provider retry in progress",
+      summary: String(data.message ?? data.reason ?? "A provider call hit a transient failure and is retrying."),
+      detailsLabel: "retry diagnostics",
+      tone: "border-amber-400/40 bg-amber-400/10",
+    };
+  }
+
+  if (event.event === "artifact_created") {
+    return {
+      label: "ARTIFACT",
+      title: "Benchmark artifact persisted",
+      summary: `Artifact ${String(data.artifact_id ?? "unknown")} is available for detail views and catalog listing.`,
+      detailsLabel: "artifact payload",
+      tone: "border-emerald-400/40 bg-emerald-400/10",
+    };
+  }
+
+  if (event.event === "complete") {
+    return {
+      label: "COMPLETE",
+      title: "Benchmark run completed",
+      summary: `Run ${String(data.run_id ?? "unknown")} finished successfully.`,
+      detailsLabel: "completion payload",
+      tone: "border-emerald-400/40 bg-emerald-400/10",
+    };
+  }
+
+  if (event.event === "failed" || event.event === "error") {
+    return {
+      label: "ERROR",
+      title: "Benchmark run failed",
+      summary: String(data.message ?? "The run stopped before completion."),
+      detailsLabel: "error diagnostics",
+      tone: "border-red-400/40 bg-red-400/10",
+    };
+  }
+
+  return {
+    label: eventLabel.toUpperCase(),
+    title: eventLabel,
+    summary: truncateText(prettyJson(event.data), 180),
+    detailsLabel: "event payload",
+    tone: "border-border-subtle bg-void",
+  };
+}
+
+function deriveBenchmarkStreamState(
+  status: BenchmarkDetailPayload["status"] | null | undefined,
+  event: TaskEvent | null,
+  now: number,
+): { label: string; tone: string } {
+  if (status === "failed") {
+    return {
+      label: "failed",
+      tone: "border-red-400/40 text-red-500 bg-red-400/10",
+    };
+  }
+  if (status === "completed") {
+    return {
+      label: "completed",
+      tone: "border-emerald-400/40 text-emerald-500 bg-emerald-400/10",
+    };
+  }
+  if (event?.event === "provider_retrying") {
+    return {
+      label: "retrying",
+      tone: "border-amber-400/40 text-amber-500 bg-amber-400/10",
+    };
+  }
+  if (status === "queued" || status === "running") {
+    const ageMs = event?.timestamp ? now - new Date(event.timestamp).getTime() : Number.POSITIVE_INFINITY;
+    if (Number.isFinite(ageMs) && ageMs <= 5000) {
+      return {
+        label: "connected",
+        tone: "border-accent/40 text-accent bg-accent/10",
+      };
+    }
+    return {
+      label: "idle",
+      tone: "border-border-subtle text-text-secondary bg-void",
+    };
+  }
+  return {
+    label: "idle",
+    tone: "border-border-subtle text-text-secondary bg-void",
+  };
+}
+
+function relativeTimeFrom(value: string | null | undefined, now: number): string {
+  if (!value) {
+    return "waiting...";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  const deltaSeconds = Math.max(0, Math.round((now - parsed.getTime()) / 1000));
+  if (deltaSeconds < 2) {
+    return "just now";
+  }
+  if (deltaSeconds < 60) {
+    return `${deltaSeconds}s ago`;
+  }
+  const deltaMinutes = Math.round(deltaSeconds / 60);
+  return `${deltaMinutes}m ago`;
+}
+
+function truncateText(value: string, limit: number): string {
+  const normalized = value.trim();
+  if (normalized.length <= limit) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
 }

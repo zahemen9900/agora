@@ -203,6 +203,7 @@ class BenchmarkRunner:
         output_path: str | None = None,
         seed: int | None = None,
         progress_callback: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         """Run training/learning cycle and export a dashboard-ready artifact."""
 
@@ -219,10 +220,34 @@ class BenchmarkRunner:
             question = self._task_question(task_item)
 
             _seed_rng(base_seed_offset)
-            first = await self.orchestrator.run(question, agents=self.agents)
+            first = await self.orchestrator.run(
+                question,
+                agents=self.agents,
+                event_sink=self._benchmark_event_sink(
+                    event_sink=event_sink,
+                    phase="pre_learning",
+                    run_kind="selector_initial",
+                    task_index=task_index,
+                    total_tasks=len(training_tasks) * 2 + len(holdout_tasks),
+                    task_item=task_item,
+                    question=question,
+                ),
+            )
 
             _seed_rng(base_seed_offset)
-            second = await self.orchestrator.run(question, agents=self.agents)
+            second = await self.orchestrator.run(
+                question,
+                agents=self.agents,
+                event_sink=self._benchmark_event_sink(
+                    event_sink=event_sink,
+                    phase="pre_learning",
+                    run_kind="selector_rerun",
+                    task_index=task_index,
+                    total_tasks=len(training_tasks) * 2 + len(holdout_tasks),
+                    task_item=task_item,
+                    question=question,
+                ),
+            )
 
             record = self._build_run_record(task_index, "selector", task_item, first)
             record["merkle_root_rerun"] = second.merkle_root
@@ -250,6 +275,15 @@ class BenchmarkRunner:
                 question,
                 ground_truth=task_item.get("ground_truth"),
                 agents=self.agents,
+                event_sink=self._benchmark_event_sink(
+                    event_sink=event_sink,
+                    phase="learning_updates",
+                    run_kind="selector_learn",
+                    task_index=task_index,
+                    total_tasks=len(training_tasks) * 2 + len(holdout_tasks),
+                    task_item=task_item,
+                    question=question,
+                ),
             )
             learned_record = self._build_run_record(
                 task_index,
@@ -273,7 +307,19 @@ class BenchmarkRunner:
         for task_index, task_item in enumerate(holdout_tasks):
             question = self._task_question(task_item)
             _seed_rng(len(training_tasks) * 3 + task_index)
-            holdout = await self.orchestrator.run(question, agents=self.agents)
+            holdout = await self.orchestrator.run(
+                question,
+                agents=self.agents,
+                event_sink=self._benchmark_event_sink(
+                    event_sink=event_sink,
+                    phase="post_learning",
+                    run_kind="selector_holdout",
+                    task_index=task_index,
+                    total_tasks=len(training_tasks) * 2 + len(holdout_tasks),
+                    task_item=task_item,
+                    question=question,
+                ),
+            )
             holdout_record = self._build_run_record(task_index, "selector", task_item, holdout)
             holdout_runs.append(holdout_record)
             if progress_callback is not None:
@@ -313,6 +359,60 @@ class BenchmarkRunner:
             output_path or str(_RESULTS_DIR / "phase2_validation.json"),
         )
         return payload
+
+    @staticmethod
+    def _benchmark_context(
+        *,
+        phase: str,
+        run_kind: str,
+        task_index: int,
+        total_tasks: int,
+        task_item: dict[str, Any],
+        question: str,
+    ) -> dict[str, Any]:
+        return {
+            "phase": phase,
+            "run_kind": run_kind,
+            "task_index": task_index,
+            "total_tasks": total_tasks,
+            "category": str(task_item.get("category") or "unknown"),
+            "question": question,
+            "source_task": str(task_item.get("task") or question),
+        }
+
+    def _benchmark_event_sink(
+        self,
+        *,
+        event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None,
+        phase: str,
+        run_kind: str,
+        task_index: int,
+        total_tasks: int,
+        task_item: dict[str, Any],
+        question: str,
+    ) -> Callable[[str, dict[str, Any]], Awaitable[None]] | None:
+        if event_sink is None:
+            return None
+
+        benchmark_context = self._benchmark_context(
+            phase=phase,
+            run_kind=run_kind,
+            task_index=task_index,
+            total_tasks=total_tasks,
+            task_item=task_item,
+            question=question,
+        )
+
+        async def _emit(event_type: str, payload: dict[str, Any]) -> None:
+            await event_sink(
+                event_type,
+                {
+                    **payload,
+                    "benchmark_context": benchmark_context,
+                },
+            )
+
+        return _emit
 
     @staticmethod
     def _progress_payload(

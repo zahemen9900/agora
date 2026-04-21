@@ -1,4 +1,5 @@
 import { ArrowRight } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/useAuth';
 import { Button } from '../components/ui/Button';
 import { motion } from 'framer-motion';
@@ -71,9 +72,18 @@ const PAPERS: PaperCardProps[] = [
 
 export function LoginPage() {
   const { signIn, signUp, isLoading } = useAuth();
+  const [searchParams] = useSearchParams();
+  const wasRedirected = searchParams.get('redirect') === '1';
 
   return (
     <div className="flex flex-col relative">
+
+      {/* Redirect notice — outside the padded section so it spans edge-to-edge */}
+      {wasRedirected && (
+        <div className="w-full z-50 bg-accent/10 border-b border-accent/20 text-center py-2.5 text-sm text-accent sticky top-0">
+          Sign in to continue to your destination.
+        </div>
+      )}
 
       {/* ── HERO SECTION ──────────────────────────────────────── */}
       <section className="relative min-h-screen flex flex-col px-6 md:px-10 overflow-hidden">

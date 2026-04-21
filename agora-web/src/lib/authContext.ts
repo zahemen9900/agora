@@ -7,6 +7,8 @@ import type {
   WorkspaceResponse,
 } from "./api";
 
+export type AuthIssue = "session_expired" | "access_denied" | "workspace_missing";
+
 export type AuthStatus = "loading" | "authenticated" | "unauthenticated";
 
 export interface AuthContextType {
@@ -16,6 +18,7 @@ export interface AuthContextType {
   principal: PrincipalResponse | null;
   workspace: WorkspaceResponse | null;
   featureFlags: FeatureFlagsResponse | null;
+  authIssue: AuthIssue | null;
   signIn: () => void;
   signUp: () => void;
   signOut: () => void;

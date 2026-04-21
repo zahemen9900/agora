@@ -18,6 +18,8 @@ from api.routes import benchmarks as benchmark_routes
 from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
 from benchmarks.runner import BenchmarkRunner
+from agora.types import DeliberationResult, MechanismType
+from tests.helpers import make_selection
 
 
 def test_benchmark_runner_loads_curated_dataset() -> None:
@@ -651,6 +653,104 @@ async def test_phase2_validation_seeded_mode_raises_on_merkle_divergence(
             output_path=str(tmp_path / "phase2_validation_failure.json"),
             seed=11,
         )
+
+
+@pytest.mark.asyncio
+async def test_phase2_validation_forwards_live_orchestrator_events_with_benchmark_context(
+    tmp_path: Path,
+) -> None:
+    class _FakeBandit:
+        @staticmethod
+        def get_stats() -> dict[str, object]:
+            return {"debate": {"alpha": 1.0, "beta": 1.0}}
+
+    class _FakeSelector:
+        bandit = _FakeBandit()
+
+    def _result(task: str) -> DeliberationResult:
+        return DeliberationResult(
+            task=task,
+            mechanism_used=MechanismType.DEBATE,
+            mechanism_selection=make_selection(
+                mechanism=MechanismType.DEBATE,
+                topic_category="reasoning",
+            ),
+            final_answer="Hybrid answer",
+            confidence=0.82,
+            quorum_reached=True,
+            round_count=2,
+            agent_count=4,
+            mechanism_switches=0,
+            merkle_root="benchmark-root",
+            transcript_hashes=["h1", "h2"],
+            agent_models_used=["gemini-3-flash-preview", "claude-sonnet-4-6"],
+            model_token_usage={"gemini-3-flash-preview": 11, "claude-sonnet-4-6": 9},
+            model_input_token_usage={"gemini-3-flash-preview": 5, "claude-sonnet-4-6": 4},
+            model_output_token_usage={"gemini-3-flash-preview": 6, "claude-sonnet-4-6": 5},
+            total_tokens_used=20,
+            total_latency_ms=25.0,
+            timestamp=datetime.now(UTC),
+        )
+
+    class _FakeOrchestrator:
+        selector = _FakeSelector()
+
+        async def run(self, task: str, **kwargs: object) -> DeliberationResult:
+            event_sink = kwargs.get("event_sink")
+            if callable(event_sink):
+                await event_sink(
+                    "agent_output_delta",
+                    {
+                        "agent_id": "agent-1",
+                        "agent_model": "gemini-3-flash-preview",
+                        "role": "voter",
+                        "content_delta": "live chunk",
+                    },
+                )
+                await event_sink(
+                    "usage_delta",
+                    {
+                        "agent_id": "agent-1",
+                        "agent_model": "gemini-3-flash-preview",
+                        "total_tokens": 11,
+                    },
+                )
+            return _result(task)
+
+        async def run_and_learn(self, task: str, **kwargs: object) -> DeliberationResult:
+            return await self.run(task, **kwargs)
+
+    runner = BenchmarkRunner(_FakeOrchestrator(), agents=None)
+    captured_events: list[tuple[str, dict[str, object]]] = []
+
+    async def event_sink(event_type: str, payload: dict[str, object]) -> None:
+        captured_events.append((event_type, payload))
+
+    await runner.run_phase2_validation(
+        training_tasks=[
+            {
+                "task": "Should we deliberate or vote?",
+                "category": "reasoning",
+                "ground_truth": "Hybrid answer",
+            }
+        ],
+        holdout_tasks=[],
+        output_path=str(tmp_path / "phase2_validation_live_events.json"),
+        seed=None,
+        event_sink=event_sink,
+    )
+
+    forwarded = [event for event in captured_events if event[0] in {"agent_output_delta", "usage_delta"}]
+    assert forwarded
+    event_type, payload = forwarded[0]
+    assert event_type == "agent_output_delta"
+    assert payload["agent_id"] == "agent-1"
+    benchmark_context = payload["benchmark_context"]
+    assert isinstance(benchmark_context, dict)
+    assert benchmark_context["phase"] == "pre_learning"
+    assert benchmark_context["category"] == "reasoning"
+    assert benchmark_context["task_index"] == 0
+    assert benchmark_context["run_kind"] == "selector_initial"
 
 
 @pytest.mark.asyncio

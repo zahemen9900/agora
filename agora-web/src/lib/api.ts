@@ -36,6 +36,7 @@ interface StreamTicketResponse {
 
 export interface BenchmarkSummary {
   per_mode: Record<string, Record<string, number>>;
+  per_mechanism: Record<string, Record<string, number>>;
   per_category: Record<string, Record<string, Record<string, number>>>;
 }
 

@@ -1,7 +1,8 @@
-import { Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./lib/auth";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { AuthProvider, storeReturnTo } from "./lib/AuthProvider";
 import { useAuth } from "./lib/useAuth";
 import { ThemeProvider } from "./hooks/ThemeProvider";
+import { SessionRecoveryPage } from "./pages/SessionRecovery";
 
 // Page components
 import { DashboardLayout } from "./layouts/DashboardLayout";
@@ -16,8 +17,14 @@ import { Benchmarks } from "./pages/Benchmarks";
 import { BenchmarksAll } from "./pages/BenchmarksAll";
 import { BenchmarkDetail } from "./pages/BenchmarkDetail";
 
+function RedirectToAuth() {
+  const location = useLocation();
+  storeReturnTo(`${location.pathname}${location.search}${location.hash}`);
+  return <Navigate to="/auth?redirect=1" replace />;
+}
+
 function AppRoutes() {
-  const { isLoading, authStatus, featureFlags } = useAuth();
+  const { isLoading, authStatus, authIssue, featureFlags } = useAuth();
 
   if (isLoading) {
     return (
@@ -25,6 +32,10 @@ function AppRoutes() {
         <h1 className="wordmark" style={{ animation: 'shimmer 2s infinite ease-in-out', color: 'var(--text-muted)' }}>AGORA</h1>
       </div>
     );
+  }
+
+  if (authIssue) {
+    return <SessionRecoveryPage issue={authIssue} />;
   }
 
   const isAuthenticated = authStatus === "authenticated";
@@ -38,10 +49,13 @@ function AppRoutes() {
       <Route path="/login" element={isAuthenticated ? <Navigate to="/tasks" replace /> : <LoginRoute />} />
       <Route path="/callback" element={<Callback />} />
 
-      {/* Unauthenticated: show LoginPage at the current URL so rememberReturnTo() captures the
-          original path when the user clicks Sign In (deep link recovery). */}
+      {/* Unauthenticated: landing page lives at /, /auth is also an alias.
+          Any other path is a protected deep link — store it and redirect to /auth. */}
       {!isAuthenticated && (
-        <Route path="*" element={<LoginPage />} />
+        <>
+          <Route path="/" element={<LoginPage />} />
+          <Route path="*" element={<RedirectToAuth />} />
+        </>
       )}
 
       {/* Protected routes - only accessible when authenticated */}

@@ -35,6 +35,7 @@ from api.models import (
     ModelTelemetryResponse,
     TaskEvent,
 )
+from api.live_journal import BufferedEventJournal, BufferedStateWriter
 from api.routes.tasks import get_task_store
 from api.security import validate_storage_id
 from api.streaming import DeliberationStream, get_stream_manager
@@ -201,6 +202,10 @@ _background_benchmark_runs: dict[str, asyncio.Task[None]] = {}
 _legacy_backfill_complete = False
 _legacy_backfill_lock: asyncio.Lock | None = None
 _STREAM_POLL_INTERVAL_SECONDS = 0.15
+_STREAM_BUFFER_FLUSH_INTERVAL_SECONDS = 0.1
+_STREAM_BUFFER_MAX_EVENTS = 8
+_BUFFERED_BENCHMARK_EVENT_TYPES = {"domain_progress"}
+_TERMINAL_BENCHMARK_EVENT_TYPES = {"complete", "failed", "error"}
 
 
 def _get_legacy_backfill_lock() -> asyncio.Lock:
@@ -1459,8 +1464,15 @@ async def _persist_and_emit_benchmark_event(
     run_id: str,
     event_type: str,
     event_data: dict[str, Any],
+    journal: BufferedEventJournal | None = None,
 ) -> None:
     payload = _benchmark_event_payload(event_type, event_data)
+    if journal is not None:
+        await journal.publish(
+            payload,
+            buffered=event_type in _BUFFERED_BENCHMARK_EVENT_TYPES,
+        )
+        return
     await store.append_user_test_event(workspace_id, run_id, payload)
     await stream.emit(_benchmark_stream_key(workspace_id, run_id), payload)
 
@@ -1584,6 +1596,19 @@ async def _execute_benchmark_run(
         event_data={"run_id": run_id, "status": "running"},
     )
 
+    event_journal = BufferedEventJournal(
+        emit=lambda payload: stream.emit(_benchmark_stream_key(workspace_id, run_id), payload),
+        append_many=lambda payloads: store.append_user_test_events(workspace_id, run_id, payloads),
+        flush_interval_seconds=_STREAM_BUFFER_FLUSH_INTERVAL_SECONDS,
+        max_buffered_events=_STREAM_BUFFER_MAX_EVENTS,
+    )
+    running_record_state = running_record
+    state_writer = BufferedStateWriter(
+        save=lambda snapshot: store.save_user_test_result(workspace_id, run_id, snapshot),
+        snapshot=lambda: dict(running_record_state),
+        flush_interval_seconds=_STREAM_BUFFER_FLUSH_INTERVAL_SECONDS,
+    )
+
     try:
         reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
         training_tasks, holdout_tasks = BenchmarkRunner.build_phase2_task_split(
@@ -1608,8 +1633,7 @@ async def _execute_benchmark_run(
         runner = BenchmarkRunner(orchestrator, agents=agents)
 
         async def emit_progress(event_type: str, event_data: dict[str, Any]) -> None:
-            current = await store.get_user_test_result(workspace_id, run_id) or {}
-            current.update(
+            running_record_state.update(
                 {
                     "run_id": run_id,
                     "workspace_id": workspace_id,
@@ -1620,26 +1644,31 @@ async def _execute_benchmark_run(
             )
             telemetry = event_data.get("telemetry")
             if isinstance(telemetry, dict):
-                current["latest_mechanism"] = event_data.get("latest_mechanism")
-                current["agent_count"] = _first_positive_int(
+                running_record_state["latest_mechanism"] = event_data.get("latest_mechanism")
+                running_record_state["agent_count"] = _first_positive_int(
                     telemetry.get("agent_count"),
                     request.agent_count,
                 )
-                current["total_tokens"] = telemetry.get("total_tokens")
-                current["thinking_tokens"] = telemetry.get("thinking_tokens")
-                current["total_latency_ms"] = telemetry.get("total_latency_ms")
-                current["model_token_usage"] = telemetry.get("model_token_usage", {})
-                current["model_telemetry"] = telemetry.get("model_telemetry", {})
-                current["estimated_cost_usd"] = telemetry.get("cost", {}).get("estimated_cost_usd")
-                current["model_estimated_costs_usd"] = telemetry.get("cost", {}).get(
+                running_record_state["total_tokens"] = telemetry.get("total_tokens")
+                running_record_state["thinking_tokens"] = telemetry.get("thinking_tokens")
+                running_record_state["total_latency_ms"] = telemetry.get("total_latency_ms")
+                running_record_state["model_token_usage"] = telemetry.get("model_token_usage", {})
+                running_record_state["model_telemetry"] = telemetry.get("model_telemetry", {})
+                running_record_state["estimated_cost_usd"] = telemetry.get("cost", {}).get(
+                    "estimated_cost_usd"
+                )
+                running_record_state["model_estimated_costs_usd"] = telemetry.get("cost", {}).get(
                     "model_estimated_costs_usd",
                     {},
                 )
-                current["pricing_version"] = telemetry.get("cost", {}).get("pricing_version")
-                current["cost_estimated_at"] = telemetry.get("cost", {}).get("estimated_at")
-                current["estimation_mode"] = telemetry.get("cost", {}).get("estimation_mode")
-                current["pricing_sources"] = telemetry.get("cost", {}).get("pricing_sources", {})
-            await store.save_user_test_result(workspace_id, run_id, current)
+                running_record_state["pricing_version"] = telemetry.get("cost", {}).get("pricing_version")
+                running_record_state["cost_estimated_at"] = telemetry.get("cost", {}).get("estimated_at")
+                running_record_state["estimation_mode"] = telemetry.get("cost", {}).get("estimation_mode")
+                running_record_state["pricing_sources"] = telemetry.get("cost", {}).get(
+                    "pricing_sources",
+                    {},
+                )
+            await state_writer.mark_dirty()
             await _persist_and_emit_benchmark_event(
                 store=store,
                 stream=stream,
@@ -1647,6 +1676,7 @@ async def _execute_benchmark_run(
                 run_id=run_id,
                 event_type=event_type,
                 event_data=event_data,
+                journal=event_journal,
             )
 
         output_path = _RESULTS_DIR / f"user_benchmark_{run_id}.json"
@@ -1661,6 +1691,8 @@ async def _execute_benchmark_run(
             _SELECTOR_BANDIT_STATE_KEY,
             orchestrator.selector.bandit.to_state(),
         )
+        await event_journal.flush()
+        await state_writer.flush()
         payload = _with_complete_summary(payload)
         await store.save_benchmark_summary(payload)
         payload["benchmark_config"] = {
@@ -1715,7 +1747,7 @@ async def _execute_benchmark_run(
         await store.save_user_benchmark_artifact(workspace_id, run_id, user_artifact_document)
 
         completed_at = datetime.now(UTC).isoformat()
-        completed_record = await store.get_user_test_result(workspace_id, run_id) or {}
+        completed_record = running_record_state
         completed_record.update(
             {
                 "run_id": run_id,
@@ -1768,6 +1800,7 @@ async def _execute_benchmark_run(
             run_id=run_id,
             event_type="artifact_created",
             event_data={"run_id": run_id, "artifact_id": run_id, "telemetry": completed_record},
+            journal=event_journal,
         )
         await _persist_and_emit_benchmark_event(
             store=store,
@@ -1776,11 +1809,16 @@ async def _execute_benchmark_run(
             run_id=run_id,
             event_type="complete",
             event_data={"run_id": run_id, "artifact_id": run_id, "status": "completed"},
+            journal=event_journal,
         )
+        await event_journal.close()
+        await state_writer.close()
         await stream.close(_benchmark_stream_key(workspace_id, run_id))
     except Exception as exc:
         failed_at = datetime.now(UTC).isoformat()
-        failed_record = await store.get_user_test_result(workspace_id, run_id) or {}
+        await event_journal.close()
+        await state_writer.close()
+        failed_record = running_record_state
         failed_record.update(
             {
                 "run_id": run_id,
@@ -2167,7 +2205,7 @@ async def stream_benchmark_run(
         for event in events:
             yield _benchmark_sse_message(event)
 
-        if any(event.get("event") in {"complete", "failed", "error"} for event in events):
+        if any(event.get("event") in _TERMINAL_BENCHMARK_EVENT_TYPES for event in events):
             return
 
         stream_id = _benchmark_stream_key(workspace_id, run_id)
@@ -2189,7 +2227,7 @@ async def stream_benchmark_run(
                         payload = _benchmark_sse_message(event)
                         next_event_index += 1
                         yield payload
-                        if payload["event"] in {"complete", "failed", "error"}:
+                        if payload["event"] in _TERMINAL_BENCHMARK_EVENT_TYPES:
                             return
                     continue
 
@@ -2198,9 +2236,16 @@ async def stream_benchmark_run(
                 payload = _benchmark_sse_message(item)
                 yield payload
                 next_event_index += 1
-                if payload["event"] in {"complete", "failed", "error"}:
+                if payload["event"] in _TERMINAL_BENCHMARK_EVENT_TYPES:
                     break
         finally:
             stream.unsubscribe(stream_id, queue)
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        ping=10,
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
