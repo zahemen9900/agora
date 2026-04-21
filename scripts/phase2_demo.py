@@ -1346,12 +1346,12 @@ def _sdk_runner_script(path: Path) -> None:
                     created.task_id,
                     detailed=True,
                 )
-                run_result = await arbitrator.run_task(created.task_id)
+                await arbitrator.start_task_run(created.task_id)
+                result = await arbitrator.wait_for_task_result(created.task_id)
                 status_after_run = await arbitrator.get_task_status(
                     created.task_id,
                     detailed=True,
                 )
-                result = await arbitrator.get_task_result(created.task_id)
                 verification = await arbitrator.verify_receipt(result, strict=False)
                 payment = await arbitrator.release_payment(created.task_id)
                 status_after_pay = await arbitrator.get_task_status(
@@ -1360,7 +1360,7 @@ def _sdk_runner_script(path: Path) -> None:
                 )
                 payload = {
                     "created": created.model_dump(mode="json"),
-                    "run_result": run_result.model_dump(mode="json"),
+                    "run_result": result.model_dump(mode="json"),
                     "status_after_create": status_after_create.model_dump(mode="json"),
                     "status_after_run": status_after_run.model_dump(mode="json"),
                     "status_after_pay": status_after_pay.model_dump(mode="json"),

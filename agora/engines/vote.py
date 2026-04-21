@@ -26,6 +26,7 @@ from agora.config import get_config
 from agora.runtime.costing import build_result_costing
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.local_models import build_local_model_caller
 from agora.runtime.model_policy import (
     balanced_participant_tiers,
     resolve_reasoning_presets,
@@ -35,6 +36,8 @@ from agora.types import (
     AgentOutput,
     DeliberationResult,
     FallbackEvent,
+    LocalModelSpec,
+    LocalProviderKeys,
     MechanismSelection,
     MechanismTraceSegment,
     MechanismType,
@@ -110,6 +113,8 @@ class VoteEngine:
         | ReasoningPresetOverrides
         | dict[str, Any]
         | None = None,
+        participant_models: Sequence[LocalModelSpec] | None = None,
+        provider_keys: LocalProviderKeys | None = None,
     ) -> None:
         """Initialize vote engine.
 
@@ -132,7 +137,12 @@ class VoteEngine:
         self.aggregation_mode = aggregation_mode
         self.allow_offline_fallback = allow_offline_fallback
         self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
+        self._participant_models = list(participant_models) if participant_models is not None else None
+        self._local_provider_keys = provider_keys
         self._participant_tiers = balanced_participant_tiers(self.agent_count)
+        if self._participant_models is not None and len(self._participant_models) != self.agent_count:
+            raise ValueError("participant_models must contain exactly agent_count items")
+        self._participant_callers: dict[int, AgentCaller] = {}
         self._claude_run_semaphore = asyncio.Semaphore(
             get_config().anthropic_concurrent_requests_per_run
         )
@@ -414,6 +424,7 @@ class VoteEngine:
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
             agent_id = f"agent-{agent_idx + 1}"
             tier = self._participant_tiers[agent_idx]
+            explicit_model = self._participant_model(agent_idx)
             prompt = vote_participant_prompt(task=task)
             fallback = self._fallback_vote(task=task, agent_idx=agent_idx)
             custom_agent = custom_agents[agent_idx] if custom_agents is not None else None
@@ -422,31 +433,49 @@ class VoteEngine:
                 event_type="agent_output_delta",
                 base_payload={
                     "agent_id": agent_id,
-                    "agent_model": "custom-agent"
-                    if custom_agent is not None
-                    else self._model_name(tier),
+                    "agent_model": self._display_model_name(
+                        tier=tier,
+                        explicit_model=explicit_model,
+                        custom_agent=custom_agent,
+                    ),
                     "role": "voter",
                     "faction": "vote",
                     "round_number": 1,
                     "stage": "vote",
                 },
             )
-            response, usage = await self._call_structured(
-                tier=tier,
-                system_prompt=prompt.system,
-                user_prompt=prompt.user,
-                response_model=_VoteResponse,
-                fallback=fallback,
-                custom_agent=custom_agent,
-                stream=event_sink is not None and custom_agent is None,
-                stream_callback=stream_callback,
-            )
+            if explicit_model is not None and custom_agent is None:
+                response, usage = await self._call_structured_explicit_model(
+                    agent_idx=agent_idx,
+                    model_spec=explicit_model,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_VoteResponse,
+                    fallback=fallback,
+                    stream=event_sink is not None,
+                    stream_callback=stream_callback,
+                )
+            else:
+                response, usage = await self._call_structured(
+                    tier=tier,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_VoteResponse,
+                    fallback=fallback,
+                    custom_agent=custom_agent,
+                    stream=event_sink is not None and custom_agent is None,
+                    stream_callback=stream_callback,
+                )
             assert isinstance(response, _VoteResponse)
 
             content = response.answer
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model="custom-agent" if custom_agent is not None else self._model_name(tier),
+                agent_model=self._display_model_name(
+                    tier=tier,
+                    explicit_model=explicit_model,
+                    custom_agent=custom_agent,
+                ),
                 role="voter",
                 round_number=1,
                 content=content,
@@ -583,6 +612,109 @@ class VoteEngine:
             return "", 0.0
         answer, score = max(weights.items(), key=lambda item: item[1])
         return answer, score
+
+    def _participant_model(self, agent_idx: int) -> LocalModelSpec | None:
+        """Return explicit local model spec for one participant when configured."""
+
+        if self._participant_models is None:
+            return None
+        return self._participant_models[agent_idx]
+
+    def _explicit_caller(self, agent_idx: int, model_spec: LocalModelSpec) -> AgentCaller:
+        """Build or reuse an explicit local caller for one participant."""
+
+        caller = self._participant_callers.get(agent_idx)
+        if caller is None:
+            caller = build_local_model_caller(
+                spec=model_spec,
+                provider_keys=self._local_provider_keys,
+            )
+            self._participant_callers[agent_idx] = caller
+        return caller
+
+    def _display_model_name(
+        self,
+        *,
+        tier: ProviderTierName,
+        explicit_model: LocalModelSpec | None,
+        custom_agent: CustomAgentCallable | None,
+    ) -> str:
+        """Resolve model label exposed in runtime outputs and events."""
+
+        if custom_agent is not None:
+            return "custom-agent"
+        if explicit_model is not None:
+            return explicit_model.model
+        return self._model_name(tier)
+
+    async def _call_structured_explicit_model(
+        self,
+        *,
+        agent_idx: int,
+        model_spec: LocalModelSpec,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[BaseModel],
+        fallback: BaseModel,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        """Call one explicit local model without provider substitution."""
+
+        caller = self._explicit_caller(agent_idx, model_spec)
+        try:
+            response, usage = await caller.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_format=response_model,
+                stream=stream,
+                stream_callback=stream_callback,
+            )
+            if not isinstance(response, response_model):
+                raise AgentCallError(
+                    "Provider returned unsupported response type for "
+                    f"vote.{response_model.__name__}: explicit_local_model_returned_unsupported_response_type"
+                )
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            thinking_tokens = usage.get("thinking_tokens", usage.get("reasoning_tokens"))
+            total_tokens = int(
+                usage.get("tokens")
+                or usage.get("total_tokens")
+                or (int(input_tokens or 0) + int(output_tokens or 0) + int(thinking_tokens or 0))
+            )
+            model_name = model_spec.model
+            return response, {
+                "tokens": total_tokens,
+                "total_tokens": total_tokens,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "thinking_tokens": thinking_tokens,
+                "reasoning_tokens": usage.get("reasoning_tokens"),
+                "model_tokens": {model_name: total_tokens},
+                "model_input_tokens": (
+                    {model_name: int(input_tokens)} if input_tokens is not None else {}
+                ),
+                "model_output_tokens": (
+                    {model_name: int(output_tokens)} if output_tokens is not None else {}
+                ),
+                "model_thinking_tokens": (
+                    {model_name: int(thinking_tokens)} if thinking_tokens is not None else {}
+                ),
+                "latency_ms": float(usage.get("latency_ms", 0.0)),
+                "model": model_name,
+                "provider": model_spec.provider,
+                "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
+                "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
+            }
+        except AgentCallError:
+            return self._offline_structured_fallback(
+                fallback=fallback,
+                component=f"vote.{response_model.__name__}",
+                reason=f"provider_{model_spec.provider}_unavailable_or_invalid",
+                model=model_spec.model,
+                provider=model_spec.provider,
+            )
 
     async def _call_structured(
         self,

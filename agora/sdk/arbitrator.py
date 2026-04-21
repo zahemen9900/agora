@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic
 from typing import Any, Literal
 
 import httpx
@@ -25,6 +27,9 @@ from agora.types import (
     CostEstimate,
     DeliberationResult,
     FallbackEvent,
+    LocalDebateConfig,
+    LocalModelSpec,
+    LocalProviderKeys,
     MechanismSelection,
     MechanismTraceSegment,
     MechanismType,
@@ -76,6 +81,9 @@ class ArbitratorConfig(BaseModel):
     allow_offline_fallback: bool = False
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     auth_token: str | None = None
+    local_models: list[LocalModelSpec] | None = None
+    local_provider_keys: LocalProviderKeys | None = None
+    local_debate_config: LocalDebateConfig | None = None
     strict_verification: bool = True
     rpc_url: str = ""
     program_id: str = DEFAULT_PROGRAM_ID
@@ -181,6 +189,8 @@ class HostedTaskStatus(BaseModel):
     chain_operations: dict[str, HostedChainOperationRecord] = Field(default_factory=dict)
     created_at: str | None = None
     completed_at: str | None = None
+    failure_reason: str | None = None
+    latest_error_event: dict[str, Any] | None = None
     result: HostedDeliberationResult | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -282,6 +292,37 @@ class HostedPaymentReleaseResponse(BaseModel):
     tx_hash: str
 
 
+class HostedTaskError(RuntimeError):
+    """Base class for structured hosted task lifecycle failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        task_id: str,
+        status: TaskStatusName,
+        failure_reason: str | None = None,
+        latest_error_event: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.task_id = task_id
+        self.status = status
+        self.failure_reason = failure_reason
+        self.latest_error_event = latest_error_event
+
+
+class HostedTaskExecutionError(HostedTaskError):
+    """Raised when a hosted task reaches a failed terminal state."""
+
+
+class HostedTaskNotCompleteError(HostedTaskError):
+    """Raised when a hosted task result is requested before terminal success."""
+
+
+class HostedTaskProtocolError(HostedTaskError):
+    """Raised when the hosted API returns an invalid terminal task payload."""
+
+
 class ReceiptVerificationError(RuntimeError):
     """Raised when strict receipt verification fails."""
 
@@ -300,22 +341,36 @@ class AgoraArbitrator:
         allow_offline_fallback: bool = False,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
+        local_models: list[LocalModelSpec] | None = None,
+        local_provider_keys: LocalProviderKeys | None = None,
+        local_debate_config: LocalDebateConfig | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
         program_id: str = DEFAULT_PROGRAM_ID,
         http_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> None:
+        if auth_token is not None and local_models is not None:
+            raise ValueError("auth_token cannot be combined with explicit local_models execution")
+        normalized_agent_count = agent_count
+        if local_models is not None and agent_count == 4 and len(local_models) != 4:
+            normalized_agent_count = len(local_models)
+        if local_models is not None and normalized_agent_count != len(local_models):
+            raise ValueError("agent_count must match len(local_models) for explicit local roster execution")
+
         resolved_api_url = resolve_hosted_api_url(api_url)
         self.config = ArbitratorConfig(
             api_url=resolved_api_url,
             solana_wallet=solana_wallet,
             mechanism=mechanism,
-            agent_count=agent_count,
+            agent_count=normalized_agent_count,
             reasoning_presets=reasoning_presets,
             allow_mechanism_switch=allow_mechanism_switch,
             allow_offline_fallback=allow_offline_fallback,
             quorum_threshold=quorum_threshold,
             auth_token=auth_token,
+            local_models=local_models,
+            local_provider_keys=local_provider_keys,
+            local_debate_config=local_debate_config,
             strict_verification=strict_verification,
             rpc_url=rpc_url,
             program_id=program_id,
@@ -441,9 +496,37 @@ class AgoraArbitrator:
         """Fetch and convert a hosted task into the core deliberation result type."""
 
         status = await self.get_task_status(task_id, detailed=True)
+        self._raise_for_non_successful_result_status(status)
         result = await self._status_to_result(status)
         self._result_task_ids[result.merkle_root] = task_id
         return result
+
+    async def wait_for_task_result(
+        self,
+        task_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        poll_interval_seconds: float = 1.0,
+    ) -> DeliberationResult:
+        """Poll task status until success, failure, or timeout."""
+
+        deadline = None if timeout_seconds is None else monotonic() + max(0.0, timeout_seconds)
+        interval = max(0.05, poll_interval_seconds)
+
+        while True:
+            status = await self.get_task_status(task_id, detailed=True)
+            if status.status in {"completed", "paid"}:
+                result = await self._status_to_result(status)
+                self._result_task_ids[result.merkle_root] = task_id
+                return result
+            if status.status == "failed":
+                raise self._execution_error_from_status(status)
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for hosted task {task_id} to complete "
+                    f"(last status={status.status})"
+                )
+            await asyncio.sleep(interval)
 
     async def run_benchmark(self, **payload: Any) -> HostedBenchmarkRunResponse:
         """Trigger a hosted benchmark run."""
@@ -528,7 +611,10 @@ class AgoraArbitrator:
     ) -> DeliberationResult:
         """Run arbitration remotely through the API or locally with custom agents."""
 
-        if agents is not None:
+        if agents is not None and self.config.local_models is not None:
+            raise ValueError("agents cannot be combined with explicit local_models execution")
+
+        if agents is not None or self.config.local_models is not None:
             local_agent_count = len(agents) if agents else self.config.agent_count
             orchestrator = AgoraOrchestrator(
                 agent_count=local_agent_count,
@@ -538,6 +624,9 @@ class AgoraArbitrator:
                     else allow_offline_fallback
                 ),
                 reasoning_presets=self.config.reasoning_presets,
+                local_models=self.config.local_models,
+                local_provider_keys=self.config.local_provider_keys,
+                local_debate_config=self.config.local_debate_config,
             )
             orchestrator.vote_engine = orchestrator.build_vote_engine(
                 quorum_threshold=(
@@ -598,8 +687,8 @@ class AgoraArbitrator:
             allow_offline_fallback=allow_offline_fallback,
             quorum_threshold=quorum_threshold,
         )
-        await self.run_task(created.task_id)
-        return await self.get_task_result(created.task_id)
+        await self.start_task_run(created.task_id)
+        return await self.wait_for_task_result(created.task_id)
 
     async def verify_receipt(
         self,
@@ -1018,6 +1107,34 @@ class AgoraArbitrator:
 
         await self._client.aclose()
 
+    @staticmethod
+    def _execution_error_from_status(status: HostedTaskStatus) -> HostedTaskExecutionError:
+        """Build a structured execution error from hosted task status."""
+
+        message = status.failure_reason or "Hosted task failed without an error message"
+        return HostedTaskExecutionError(
+            message,
+            task_id=status.task_id,
+            status=status.status,
+            failure_reason=status.failure_reason,
+            latest_error_event=status.latest_error_event,
+        )
+
+    @staticmethod
+    def _raise_for_non_successful_result_status(status: HostedTaskStatus) -> None:
+        """Raise structured SDK errors for non-success task result requests."""
+
+        if status.status == "failed":
+            raise AgoraArbitrator._execution_error_from_status(status)
+        if status.status in {"pending", "in_progress"}:
+            raise HostedTaskNotCompleteError(
+                f"Hosted task {status.task_id} is not complete yet (status={status.status})",
+                task_id=status.task_id,
+                status=status.status,
+                failure_reason=status.failure_reason,
+                latest_error_event=status.latest_error_event,
+            )
+
     async def _status_to_result(
         self,
         status_payload: HostedTaskStatus | dict[str, Any],
@@ -1030,7 +1147,13 @@ class AgoraArbitrator:
             status = HostedTaskStatus.model_validate(status_payload)
 
         if status.result is None:
-            raise ValueError("Task status did not include a result payload")
+            raise HostedTaskProtocolError(
+                "Task status did not include a result payload",
+                task_id=status.task_id,
+                status=status.status,
+                failure_reason=status.failure_reason,
+                latest_error_event=status.latest_error_event,
+            )
 
         mechanism = MechanismType(str(status.mechanism).lower())
         features = await extract_features(
@@ -1182,6 +1305,9 @@ class AgoraNode:
         allow_offline_fallback: bool = False,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
+        local_models: list[LocalModelSpec] | None = None,
+        local_provider_keys: LocalProviderKeys | None = None,
+        local_debate_config: LocalDebateConfig | None = None,
         strict_verification: bool = True,
         rpc_url: str = "",
         program_id: str = DEFAULT_PROGRAM_ID,
@@ -1196,6 +1322,9 @@ class AgoraNode:
             allow_offline_fallback=allow_offline_fallback,
             quorum_threshold=quorum_threshold,
             auth_token=auth_token,
+            local_models=local_models,
+            local_provider_keys=local_provider_keys,
+            local_debate_config=local_debate_config,
             strict_verification=strict_verification,
             rpc_url=rpc_url,
             program_id=program_id,

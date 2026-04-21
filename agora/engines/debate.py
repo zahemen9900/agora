@@ -34,6 +34,7 @@ from agora.config import get_config
 from agora.runtime.costing import build_result_costing
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
+from agora.runtime.local_models import build_local_model_caller
 from agora.runtime.model_policy import (
     balanced_participant_tiers,
     resolve_reasoning_presets,
@@ -51,6 +52,8 @@ from agora.types import (
     DebateState,
     DeliberationResult,
     FallbackEvent,
+    LocalModelSpec,
+    LocalProviderKeys,
     MechanismSelection,
     MechanismTraceSegment,
     MechanismType,
@@ -212,6 +215,9 @@ class DebateEngine:
         | ReasoningPresetOverrides
         | dict[str, Any]
         | None = None,
+        participant_models: Sequence[LocalModelSpec] | None = None,
+        provider_keys: LocalProviderKeys | None = None,
+        devils_advocate_model: LocalModelSpec | None = None,
     ) -> None:
         """Initialize debate engine dependencies.
 
@@ -237,7 +243,14 @@ class DebateEngine:
         self.enable_adaptive_termination = enable_adaptive_termination
         self.allow_offline_fallback = allow_offline_fallback
         self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
+        self._participant_models = list(participant_models) if participant_models is not None else None
+        self._local_provider_keys = provider_keys
+        self._devils_advocate_model = devils_advocate_model
         self._participant_tiers = balanced_participant_tiers(self.agent_count)
+        if self._participant_models is not None and len(self._participant_models) != self.agent_count:
+            raise ValueError("participant_models must contain exactly agent_count items")
+        self._participant_callers: dict[int, AgentCaller] = {}
+        self._devils_advocate_caller: AgentCaller | None = None
         self._claude_run_semaphore = asyncio.Semaphore(
             get_config().anthropic_concurrent_requests_per_run
         )
@@ -614,6 +627,64 @@ class DebateEngine:
         graph_state["result"] = None
         return graph_state
 
+    def _participant_model(self, agent_idx: int) -> LocalModelSpec | None:
+        """Return explicit participant model spec when local roster mode is active."""
+
+        if self._participant_models is None:
+            return None
+        return self._participant_models[agent_idx]
+
+    def _participant_caller(self, agent_idx: int, model_spec: LocalModelSpec) -> AgentCaller:
+        """Build or reuse the caller for one explicit local participant."""
+
+        caller = self._participant_callers.get(agent_idx)
+        if caller is None:
+            caller = build_local_model_caller(
+                spec=model_spec,
+                provider_keys=self._local_provider_keys,
+            )
+            self._participant_callers[agent_idx] = caller
+        return caller
+
+    def _synthesis_model(self) -> LocalModelSpec | None:
+        """Return the explicit synthesis model for local roster mode."""
+
+        if not self._participant_models:
+            return None
+        return self._participant_models[0]
+
+    def _resolved_devils_advocate_model(self) -> LocalModelSpec | None:
+        """Return explicit devil's-advocate model when configured."""
+
+        if self._devils_advocate_model is not None:
+            return self._devils_advocate_model
+        return self._synthesis_model()
+
+    def _devils_advocate_caller_for(self, model_spec: LocalModelSpec) -> AgentCaller:
+        """Build or reuse the explicit devil's-advocate caller."""
+
+        if self._devils_advocate_caller is None or self._devils_advocate_caller.model != model_spec.model:
+            self._devils_advocate_caller = build_local_model_caller(
+                spec=model_spec,
+                provider_keys=self._local_provider_keys,
+            )
+        return self._devils_advocate_caller
+
+    def _display_model_name(
+        self,
+        *,
+        tier: ProviderTierName,
+        explicit_model: LocalModelSpec | None,
+        custom_agent: CustomAgentCallable | None,
+    ) -> str:
+        """Resolve model label exposed in events and result payloads."""
+
+        if custom_agent is not None:
+            return "custom-agent"
+        if explicit_model is not None:
+            return explicit_model.model
+        return self._model_name(tier)
+
     def _graph_accumulate_usage(
         self,
         graph_state: dict[str, Any],
@@ -682,6 +753,7 @@ class DebateEngine:
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
             agent_id = f"agent-{agent_idx + 1}"
             tier = self._participant_tiers[agent_idx]
+            explicit_model = self._participant_model(agent_idx)
             prompt = debate_initial_prompt(task=task)
             fallback = _InitialAnswerResponse(
                 answer=self._fallback_initial_answer(task=task, agent_idx=agent_idx),
@@ -694,32 +766,48 @@ class DebateEngine:
                 event_type="agent_output_delta",
                 base_payload={
                     "agent_id": agent_id,
-                    "agent_model": "custom-agent"
-                    if custom_agent is not None
-                    else self._model_name(tier),
+                    "agent_model": self._display_model_name(
+                        tier=tier,
+                        explicit_model=explicit_model,
+                        custom_agent=custom_agent,
+                    ),
                     "role": "initial",
                     "faction": "proponent" if agent_idx % 2 == 0 else "opponent",
                     "round_number": 0,
                     "stage": "initial",
                 },
             )
-            response, usage = await self._call_structured(
-                tier=tier,
-                system_prompt=prompt.system,
-                user_prompt=prompt.user,
-                response_model=_InitialAnswerResponse,
-                fallback=fallback,
-                custom_agent=custom_agent,
-                stream=event_sink is not None and custom_agent is None,
-                stream_callback=stream_callback,
-            )
+            if explicit_model is not None and custom_agent is None:
+                response, usage = await self._call_structured_explicit_model(
+                    agent_idx=agent_idx,
+                    model_spec=explicit_model,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_InitialAnswerResponse,
+                    fallback=fallback,
+                    stream=event_sink is not None,
+                    stream_callback=stream_callback,
+                )
+            else:
+                response, usage = await self._call_structured(
+                    tier=tier,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_InitialAnswerResponse,
+                    fallback=fallback,
+                    custom_agent=custom_agent,
+                    stream=event_sink is not None and custom_agent is None,
+                    stream_callback=stream_callback,
+                )
             assert isinstance(response, _InitialAnswerResponse)
             timestamp = datetime.now(UTC)
             content = response.answer
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=(
-                    "custom-agent" if custom_agent is not None else self._model_name(tier)
+                agent_model=self._display_model_name(
+                    tier=tier,
+                    explicit_model=explicit_model,
+                    custom_agent=custom_agent,
                 ),
                 role="initial",
                 round_number=0,
@@ -803,7 +891,9 @@ class DebateEngine:
 
         async def one_call(agent_id: str, side: str) -> tuple[AgentOutput, dict[str, Any]]:
             faction_answer = pro_answer if side == "pro" else opp_answer
+            agent_idx = self._agent_index(agent_id)
             tier = self._tier_for_agent_id(agent_id)
+            explicit_model = self._participant_model(agent_idx)
             prompt = debate_opening_prompt(task=task, faction_answer=faction_answer)
             fallback = _OpeningResponse(
                 claim=faction_answer,
@@ -821,25 +911,39 @@ class DebateEngine:
                 event_type="agent_output_delta",
                 base_payload={
                     "agent_id": agent_id,
-                    "agent_model": "custom-agent"
-                    if custom_agent is not None
-                    else self._model_name(tier),
+                    "agent_model": self._display_model_name(
+                        tier=tier,
+                        explicit_model=explicit_model,
+                        custom_agent=custom_agent,
+                    ),
                     "role": "proponent" if side == "pro" else "opponent",
                     "faction": side,
                     "round_number": 1,
                     "stage": "opening",
                 },
             )
-            response, usage = await self._call_structured(
-                tier=tier,
-                system_prompt=prompt.system,
-                user_prompt=prompt.user,
-                response_model=_OpeningResponse,
-                fallback=fallback,
-                custom_agent=custom_agent,
-                stream=event_sink is not None and custom_agent is None,
-                stream_callback=stream_callback,
-            )
+            if explicit_model is not None and custom_agent is None:
+                response, usage = await self._call_structured_explicit_model(
+                    agent_idx=agent_idx,
+                    model_spec=explicit_model,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_OpeningResponse,
+                    fallback=fallback,
+                    stream=event_sink is not None,
+                    stream_callback=stream_callback,
+                )
+            else:
+                response, usage = await self._call_structured(
+                    tier=tier,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_OpeningResponse,
+                    fallback=fallback,
+                    custom_agent=custom_agent,
+                    stream=event_sink is not None and custom_agent is None,
+                    stream_callback=stream_callback,
+                )
             assert isinstance(response, _OpeningResponse)
             content = json.dumps(
                 {
@@ -858,8 +962,10 @@ class DebateEngine:
             timestamp = datetime.now(UTC)
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=(
-                    "custom-agent" if custom_agent is not None else self._model_name(tier)
+                agent_model=self._display_model_name(
+                    tier=tier,
+                    explicit_model=explicit_model,
+                    custom_agent=custom_agent,
                 ),
                 role=role,
                 round_number=1,
@@ -908,6 +1014,7 @@ class DebateEngine:
         )
 
         custom_agent = self._coordinator_custom_agent(custom_agents)
+        explicit_model = self._resolved_devils_advocate_model() if custom_agent is None else None
         stream_callback = self._make_stream_delta_callback(
             event_sink,
             event_type="cross_examination_delta",
@@ -915,7 +1022,9 @@ class DebateEngine:
                 "agent_id": devil_advocate_id,
                 "agent_model": "custom-agent"
                 if custom_agent is not None
-                else self._model_name("kimi"),
+                else (
+                    explicit_model.model if explicit_model is not None else self._model_name("kimi")
+                ),
                 "role": "devil_advocate",
                 "round_number": round_number,
                 "stage": "cross_examination",
@@ -934,6 +1043,16 @@ class DebateEngine:
                 stream_callback=stream_callback,
             )
             assert isinstance(response, _CrossExamResponse)
+        elif explicit_model is not None:
+            response, usage = await self._call_cross_exam_explicit_model(
+                model_spec=explicit_model,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
+                fallback=fallback,
+                temperature=0.2,
+                stream=event_sink is not None,
+                stream_callback=stream_callback,
+            )
         else:
             response, usage = await self._call_cross_exam(
                 system_prompt=prompt.system,
@@ -947,7 +1066,13 @@ class DebateEngine:
 
         output = AgentOutput(
             agent_id=devil_advocate_id,
-            agent_model=("custom-agent" if custom_agent is not None else self._model_name("kimi")),
+            agent_model=(
+                "custom-agent"
+                if custom_agent is not None
+                else (
+                    explicit_model.model if explicit_model is not None else self._model_name("kimi")
+                )
+            ),
             role="devil_advocate",
             round_number=round_number,
             content=content,
@@ -978,7 +1103,9 @@ class DebateEngine:
         async def one_call(agent_id: str, side: str) -> tuple[AgentOutput, dict[str, Any]]:
             faction_answer = pro_answer if side == "pro" else opp_answer
             targeted_prompt = self._extract_targeted_question(cross_exam_output.content, side)
+            agent_idx = self._agent_index(agent_id)
             tier = self._tier_for_agent_id(agent_id)
+            explicit_model = self._participant_model(agent_idx)
             prompt = debate_rebuttal_prompt(
                 task=task,
                 faction_answer=faction_answer,
@@ -998,26 +1125,41 @@ class DebateEngine:
                 event_type="agent_output_delta",
                 base_payload={
                     "agent_id": agent_id,
-                    "agent_model": "custom-agent"
-                    if custom_agent is not None
-                    else self._model_name(tier),
+                    "agent_model": self._display_model_name(
+                        tier=tier,
+                        explicit_model=explicit_model,
+                        custom_agent=custom_agent,
+                    ),
                     "role": "pro_rebuttal" if side == "pro" else "opp_rebuttal",
                     "faction": side,
                     "round_number": round_number,
                     "stage": "rebuttal",
                 },
             )
-            response, usage = await self._call_structured(
-                tier=tier,
-                system_prompt=prompt.system,
-                user_prompt=prompt.user,
-                response_model=_RebuttalResponse,
-                fallback=fallback,
-                temperature=0.4,
-                custom_agent=custom_agent,
-                stream=event_sink is not None and custom_agent is None,
-                stream_callback=stream_callback,
-            )
+            if explicit_model is not None and custom_agent is None:
+                response, usage = await self._call_structured_explicit_model(
+                    agent_idx=agent_idx,
+                    model_spec=explicit_model,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_RebuttalResponse,
+                    fallback=fallback,
+                    temperature=0.4,
+                    stream=event_sink is not None,
+                    stream_callback=stream_callback,
+                )
+            else:
+                response, usage = await self._call_structured(
+                    tier=tier,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    response_model=_RebuttalResponse,
+                    fallback=fallback,
+                    temperature=0.4,
+                    custom_agent=custom_agent,
+                    stream=event_sink is not None and custom_agent is None,
+                    stream_callback=stream_callback,
+                )
             assert isinstance(response, _RebuttalResponse)
             content = json.dumps(
                 {
@@ -1034,8 +1176,10 @@ class DebateEngine:
             role = "pro_rebuttal" if side == "pro" else "opp_rebuttal"
             output = AgentOutput(
                 agent_id=agent_id,
-                agent_model=(
-                    "custom-agent" if custom_agent is not None else self._model_name(tier)
+                agent_model=self._display_model_name(
+                    tier=tier,
+                    explicit_model=explicit_model,
+                    custom_agent=custom_agent,
                 ),
                 role=role,
                 round_number=round_number,
@@ -1113,6 +1257,7 @@ class DebateEngine:
         )
 
         custom_agent = self._coordinator_custom_agent(custom_agents)
+        explicit_model = self._synthesis_model() if custom_agent is None else None
         stream_callback = self._make_stream_delta_callback(
             event_sink,
             event_type="agent_output_delta",
@@ -1120,24 +1265,37 @@ class DebateEngine:
                 "agent_id": "synthesis",
                 "agent_model": "custom-agent"
                 if custom_agent is not None
-                else self._model_name("pro"),
+                else (explicit_model.model if explicit_model is not None else self._model_name("pro")),
                 "role": "synthesis",
                 "faction": winning_side,
                 "round_number": max(1, state.round),
                 "stage": "final_synthesis",
             },
         )
-        response, usage = await self._call_structured(
-            tier="pro",
-            system_prompt=prompt.system,
-            user_prompt=prompt.user,
-            response_model=_SynthesisResponse,
-            fallback=fallback,
-            temperature=0.2,
-            custom_agent=custom_agent,
-            stream=event_sink is not None and custom_agent is None,
-            stream_callback=stream_callback,
-        )
+        if explicit_model is not None and custom_agent is None:
+            response, usage = await self._call_structured_explicit_model(
+                agent_idx=0,
+                model_spec=explicit_model,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
+                response_model=_SynthesisResponse,
+                fallback=fallback,
+                temperature=0.2,
+                stream=event_sink is not None,
+                stream_callback=stream_callback,
+            )
+        else:
+            response, usage = await self._call_structured(
+                tier="pro",
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
+                response_model=_SynthesisResponse,
+                fallback=fallback,
+                temperature=0.2,
+                custom_agent=custom_agent,
+                stream=event_sink is not None and custom_agent is None,
+                stream_callback=stream_callback,
+            )
         assert isinstance(response, _SynthesisResponse)
 
         state.final_answer = response.final_answer
@@ -1254,7 +1412,13 @@ class DebateEngine:
             event_sink,
             AgentOutput(
                 agent_id="synthesis",
-                agent_model="custom-agent" if custom_agent is not None else self._model_name("pro"),
+                agent_model=(
+                    "custom-agent"
+                    if custom_agent is not None
+                    else (
+                        explicit_model.model if explicit_model is not None else self._model_name("pro")
+                    )
+                ),
                 role="synthesis",
                 round_number=max(1, state.round),
                 content=response.final_answer,
@@ -1266,6 +1430,164 @@ class DebateEngine:
             usage,
         )
         return result, usage
+
+    async def _call_structured_explicit_model(
+        self,
+        *,
+        agent_idx: int,
+        model_spec: LocalModelSpec,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[BaseModel],
+        fallback: BaseModel,
+        temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        """Call one explicit local model without provider substitution."""
+
+        caller = self._participant_caller(agent_idx, model_spec)
+        try:
+            response, usage = await caller.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_format=response_model,
+                temperature=temperature,
+                stream=stream,
+                stream_callback=stream_callback,
+            )
+            if not isinstance(response, response_model):
+                if model_spec.provider == "openrouter":
+                    response, fallback_used = self._coerce_debate_response(
+                        response_model=response_model,
+                        response_text=str(response),
+                        fallback=fallback,
+                    )
+                    if fallback_used and not self.allow_offline_fallback:
+                        raise AgentCallError(
+                            "Provider fallback disabled for "
+                            f"debate.{response_model.__name__}: provider_kimi_empty_response"
+                        )
+                else:
+                    raise AgentCallError(
+                        "Provider returned unsupported response type for "
+                        f"debate.{response_model.__name__}: explicit_local_model_returned_unsupported_response_type"
+                    )
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            thinking_tokens = usage.get("thinking_tokens", usage.get("reasoning_tokens"))
+            total_tokens = int(
+                usage.get("tokens")
+                or usage.get("total_tokens")
+                or (int(input_tokens or 0) + int(output_tokens or 0) + int(thinking_tokens or 0))
+            )
+            model_name = model_spec.model
+            return response, {
+                "tokens": total_tokens,
+                "total_tokens": total_tokens,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "thinking_tokens": thinking_tokens,
+                "reasoning_tokens": usage.get("reasoning_tokens"),
+                "model_tokens": {model_name: total_tokens},
+                "model_input_tokens": (
+                    {model_name: int(input_tokens)} if input_tokens is not None else {}
+                ),
+                "model_output_tokens": (
+                    {model_name: int(output_tokens)} if output_tokens is not None else {}
+                ),
+                "model_thinking_tokens": (
+                    {model_name: int(thinking_tokens)} if thinking_tokens is not None else {}
+                ),
+                "latency_ms": float(usage.get("latency_ms", 0.0)),
+                "model": model_name,
+                "provider": model_spec.provider,
+                "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
+                "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
+            }
+        except AgentCallError:
+            return self._offline_structured_fallback(
+                fallback=fallback,
+                component=f"debate.{response_model.__name__}",
+                reason=f"provider_{model_spec.provider}_unavailable_or_invalid",
+                model=model_spec.model,
+                provider=model_spec.provider,
+            )
+
+    async def _call_cross_exam_explicit_model(
+        self,
+        *,
+        model_spec: LocalModelSpec,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: _CrossExamResponse,
+        temperature: float | None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[_CrossExamResponse, dict[str, Any]]:
+        """Call one explicit local model for the devil's-advocate step."""
+
+        caller = self._devils_advocate_caller_for(model_spec)
+        try:
+            response, usage = await caller.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_format=_CrossExamResponse,
+                temperature=temperature,
+                stream=stream,
+                stream_callback=stream_callback,
+            )
+            if isinstance(response, _CrossExamResponse):
+                parsed = response
+            else:
+                parsed, fallback_used = self._coerce_cross_exam_response(str(response), fallback)
+                if fallback_used and not self.allow_offline_fallback:
+                    raise AgentCallError(
+                        "Provider fallback disabled for debate.cross_examination: "
+                        "explicit_local_model_empty_response"
+                    )
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            thinking_tokens = usage.get("thinking_tokens", usage.get("reasoning_tokens"))
+            total_tokens = int(
+                usage.get("tokens")
+                or usage.get("total_tokens")
+                or (int(input_tokens or 0) + int(output_tokens or 0) + int(thinking_tokens or 0))
+            )
+            model_name = model_spec.model
+            return parsed, {
+                "tokens": total_tokens,
+                "total_tokens": total_tokens,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "thinking_tokens": thinking_tokens,
+                "reasoning_tokens": usage.get("reasoning_tokens"),
+                "model_tokens": {model_name: total_tokens},
+                "model_input_tokens": (
+                    {model_name: int(input_tokens)} if input_tokens is not None else {}
+                ),
+                "model_output_tokens": (
+                    {model_name: int(output_tokens)} if output_tokens is not None else {}
+                ),
+                "model_thinking_tokens": (
+                    {model_name: int(thinking_tokens)} if thinking_tokens is not None else {}
+                ),
+                "latency_ms": float(usage.get("latency_ms", 0.0)),
+                "model": model_name,
+                "provider": model_spec.provider,
+                "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
+                "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
+            }
+        except AgentCallError:
+            response, usage = self._offline_structured_fallback(
+                fallback=fallback,
+                component="debate.cross_examination",
+                reason=f"provider_{model_spec.provider}_unavailable_or_invalid",
+                model=model_spec.model,
+                provider=model_spec.provider,
+            )
+            assert isinstance(response, _CrossExamResponse)
+            return response, usage
 
     async def _call_structured(
         self,

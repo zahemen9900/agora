@@ -158,6 +158,9 @@ class AgentCaller:
         temperature: float = 0.7,
         project: str | None = None,
         location: str | None = None,
+        gemini_api_key: str | None = None,
+        anthropic_api_key: str | None = None,
+        openrouter_api_key: str | None = None,
         enable_streaming: bool | None = None,
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
@@ -186,7 +189,8 @@ class AgentCaller:
         self.project = project or os.getenv("GOOGLE_CLOUD_PROJECT") or config.google_cloud_project
         self.location = location or config.google_cloud_location
         self.gemini_api_key = (
-            os.getenv("AGORA_GEMINI_API_KEY")
+            gemini_api_key
+            or os.getenv("AGORA_GEMINI_API_KEY")
             or os.getenv("GEMINI_API_KEY")
             or os.getenv("AGORA_GOOGLE_API_KEY")
             or os.getenv("GOOGLE_API_KEY")
@@ -202,9 +206,12 @@ class AgentCaller:
             config.gemini_thinking_budget if thinking_budget is None else thinking_budget
         )
         self.thinking_level = thinking_level
-        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or config.anthropic_api_key
+        self.anthropic_api_key = (
+            anthropic_api_key or os.getenv("ANTHROPIC_API_KEY") or config.anthropic_api_key
+        )
         self.openrouter_api_key = (
-            os.getenv("AGORA_OPENROUTER_API_KEY")
+            openrouter_api_key
+            or os.getenv("AGORA_OPENROUTER_API_KEY")
             or os.getenv("OPENROUTER_API_KEY")
             or config.openrouter_api_key
         )

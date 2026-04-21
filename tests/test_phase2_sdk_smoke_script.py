@@ -165,8 +165,19 @@ def test_sdk_smoke_runner_streams_before_final_json() -> None:
     assert "agora-arbitrator-sdk" in script
     assert "stream_task_events" in script
     assert "start_task_run" in script
+    assert "wait_for_task_result" in script
     assert "final json payload" in script
     assert "--api-url" not in script
+
+
+def test_sdk_readme_notebook_examples_avoid_top_level_async_context_manager() -> None:
+    readme = (ROOT / "sdk" / "README.md").read_text(encoding="utf-8")
+    notebook_section = readme.split("### Hosted API mode (notebook / Colab)", 1)[1]
+    notebook_section = notebook_section.split("### Hosted API mode (plain Python script)", 1)[0]
+
+    assert "async with AgoraArbitrator(" not in notebook_section
+    assert "await arbitrator.wait_for_task_result(" in notebook_section
+    assert "await arbitrator.aclose()" in notebook_section
 
 
 @pytest.mark.paid_integration

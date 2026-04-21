@@ -191,9 +191,6 @@ def _format_stream_event(event: dict[str, Any]) -> str:
 async def _consume_task_stream(arbitrator: AgoraArbitrator, task_id: str) -> None:
     async for event in arbitrator.stream_task_events(task_id):
         print(_format_stream_event(event))
-        if event.get("event") == "error":
-            error_payload = json.dumps(event.get("data", {}), sort_keys=True)
-            raise RuntimeError(f"Hosted task failed: {error_payload}")
         if event.get("event") == "complete":
             return
 
@@ -217,17 +214,17 @@ async def _run(config: SmokeConfig) -> dict[str, Any]:
             quorum_threshold=config.quorum_threshold,
         )
         print(f"[sdk] created task_id: {created.task_id}")
+        await arbitrator.start_task_run(created.task_id)
         stream_task = asyncio.create_task(_consume_task_stream(arbitrator, created.task_id))
         try:
-            await arbitrator.start_task_run(created.task_id)
-            await stream_task
+            result = await arbitrator.wait_for_task_result(created.task_id)
         finally:
             if not stream_task.done():
                 stream_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await stream_task
-
-        result = await arbitrator.get_task_result(created.task_id)
+            else:
+                await stream_task
         verification = await arbitrator.verify_receipt(
             result,
             strict=False,

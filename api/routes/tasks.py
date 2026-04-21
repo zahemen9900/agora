@@ -48,6 +48,7 @@ from api.models import (
     TaskEvent,
     TaskStatusResponse,
 )
+from api.live_journal import BufferedEventJournal
 from api.solana_bridge import LAMPORTS_PER_SOL, bridge
 from api.store import TaskStore, get_store
 from api.store_local import LocalTaskStore
@@ -62,6 +63,8 @@ _SUPPORTED_MECHANISMS_TEXT = ", ".join(
     sorted(mechanism.value for mechanism in SUPPORTED_MECHANISMS)
 )
 _STREAM_POLL_INTERVAL_SECONDS = 0.15
+_STREAM_BUFFER_FLUSH_INTERVAL_SECONDS = 0.1
+_STREAM_BUFFER_MAX_EVENTS = 8
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _INITIALIZE_TASK_OPERATION = "initialize_task"
 _RECORD_SELECTION_OPERATION = "record_selection"
@@ -69,6 +72,13 @@ _SUBMIT_RECEIPT_OPERATION = "submit_receipt"
 _RELEASE_PAYMENT_OPERATION = "release_payment"
 _SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state"
 _background_task_runs: dict[str, asyncio.Task[None]] = {}
+_BUFFERED_TASK_EVENT_TYPES = {
+    "agent_output_delta",
+    "thinking_delta",
+    "usage_delta",
+    "cross_examination_delta",
+}
+_TERMINAL_TASK_EVENT_TYPES = {"complete", "error"}
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -1053,10 +1063,18 @@ async def persist_and_emit(
     task_id: str,
     event_type: str,
     event_data: dict[str, Any],
+    journal: BufferedEventJournal | None = None,
 ) -> None:
     """Persist an event and emit it to live SSE listeners."""
 
     payload = _event_payload(event_type, event_data)
+    if journal is not None:
+        await journal.publish(
+            payload,
+            buffered=event_type in _BUFFERED_TASK_EVENT_TYPES,
+        )
+        return
+
     await stream.emit(_stream_key(workspace_id, task_id), payload)
     await store.append_event(workspace_id, task_id, payload)
 
@@ -1073,17 +1091,24 @@ async def _mark_task_failed(
     """Persist failed task state while preserving events emitted before failure."""
 
     task.status = "failed"
+    task.failure_reason = message
     task.events = [
         TaskEvent.model_validate(event) for event in await store.get_events(workspace_id, task_id)
     ]
+    error_event = TaskEvent(
+        event="error",
+        data={"message": message},
+        timestamp=datetime.now(UTC),
+    )
+    task.latest_error_event = error_event
     await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
     await persist_and_emit(
         store=store,
         stream=stream,
         workspace_id=workspace_id,
         task_id=task_id,
-        event_type="error",
-        event_data={"message": message},
+        event_type=error_event.event,
+        event_data=error_event.data,
     )
     await stream.close(_stream_key(workspace_id, task_id))
 
@@ -1418,7 +1443,15 @@ async def _execute_task_run(
             task_id=task_id,
             event_type=event_type,
             event_data=data,
+            journal=journal,
         )
+
+    journal = BufferedEventJournal(
+        emit=lambda payload: stream.emit(_stream_key(workspace_id, task_id), payload),
+        append_many=lambda payloads: store.append_events(workspace_id, task_id, payloads),
+        flush_interval_seconds=_STREAM_BUFFER_FLUSH_INTERVAL_SECONDS,
+        max_buffered_events=_STREAM_BUFFER_MAX_EVENTS,
+    )
 
     orchestrator = _build_orchestrator(
         agent_count=task.agent_count,
@@ -1482,6 +1515,7 @@ async def _execute_task_run(
         )
     except HTTPException as exc:
         try:
+            await journal.close()
             await _mark_task_failed(
                 store=store,
                 stream=stream,
@@ -1495,6 +1529,7 @@ async def _execute_task_run(
         raise
     except Exception as exc:
         try:
+            await journal.close()
             await _mark_task_failed(
                 store=store,
                 stream=stream,
@@ -1508,6 +1543,7 @@ async def _execute_task_run(
             await _release_run_lock_once()
         raise HTTPException(status_code=500, detail="Task execution failed") from exc
 
+    await journal.flush()
     result_response = _result_to_response(
         task_id,
         result,
@@ -1577,6 +1613,7 @@ async def _execute_task_run(
             "mechanism": result_response.mechanism,
             "quorum_reached": result_response.quorum_reached,
         },
+        journal=journal,
     )
     receipt_record = _chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
     if (
@@ -1596,6 +1633,7 @@ async def _execute_task_run(
                 "solana_tx_hash": receipt_record.tx_hash,
                 "explorer_url": receipt_record.explorer_url,
             },
+            journal=journal,
         )
 
     await persist_and_emit(
@@ -1605,7 +1643,9 @@ async def _execute_task_run(
         task_id=task_id,
         event_type="complete",
         event_data={"task_id": task_id, "status": task.status},
+        journal=journal,
     )
+    await journal.close()
     await stream.close(_stream_key(workspace_id, task_id))
     await _release_run_lock_once()
     return result_response
@@ -1713,7 +1753,7 @@ async def stream_task(
         for event in events:
             yield _to_sse_message(event)
 
-        if any(event.get("event") in {"complete", "error"} for event in events):
+        if any(event.get("event") in _TERMINAL_TASK_EVENT_TYPES for event in events):
             return
 
         stream_id = _stream_key(workspace_id, task_id)
@@ -1736,7 +1776,7 @@ async def stream_task(
                         payload = _to_sse_message(event)
                         next_event_index += 1
                         yield payload
-                        if payload["event"] in {"complete", "error"}:
+                        if payload["event"] in _TERMINAL_TASK_EVENT_TYPES:
                             return
                     continue
 
@@ -1745,12 +1785,19 @@ async def stream_task(
                 payload = _to_sse_message(item)
                 yield payload
                 next_event_index += 1
-                if payload["event"] in {"complete", "error"}:
+                if payload["event"] in _TERMINAL_TASK_EVENT_TYPES:
                     break
         finally:
             stream.unsubscribe(stream_id, queue)
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        ping=10,
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/{task_id}/pay")

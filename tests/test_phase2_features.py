@@ -1030,6 +1030,299 @@ class _FakeResponse:
 
 
 @pytest.mark.asyncio
+async def test_sdk_get_task_result_raises_structured_failure_for_failed_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedTaskExecutionError
+
+    arbitrator = AgoraArbitrator(strict_verification=False)
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(
+            {
+                "task_id": "task-failed",
+                "task_text": "This task failed.",
+                "workspace_id": "ws-test",
+                "created_by": "sdk-test",
+                "mechanism": "vote",
+                "status": "failed",
+                "selector_reasoning": "vote",
+                "selector_reasoning_hash": "b" * 64,
+                "selector_confidence": 1.0,
+                "agent_count": 3,
+                "reasoning_presets": {
+                    "gemini_pro": "high",
+                    "gemini_flash": "medium",
+                    "kimi": "low",
+                    "claude": "medium",
+                },
+                "failure_reason": "Provider fallback disabled for vote._VoteResponse",
+                "latest_error_event": {
+                    "event": "error",
+                    "data": {
+                        "message": "Provider fallback disabled for vote._VoteResponse"
+                    },
+                },
+                "events": [
+                    {
+                        "event": "error",
+                        "data": {
+                            "message": "Provider fallback disabled for vote._VoteResponse"
+                        },
+                        "timestamp": "2026-04-21T03:10:00Z",
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    try:
+        with pytest.raises(HostedTaskExecutionError) as exc_info:
+            await arbitrator.get_task_result("task-failed")
+    finally:
+        await arbitrator.aclose()
+
+    assert exc_info.value.task_id == "task-failed"
+    assert exc_info.value.status == "failed"
+    assert exc_info.value.failure_reason == "Provider fallback disabled for vote._VoteResponse"
+    assert exc_info.value.latest_error_event == {
+        "event": "error",
+        "data": {"message": "Provider fallback disabled for vote._VoteResponse"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_sdk_get_task_result_raises_when_task_not_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedTaskNotCompleteError
+
+    arbitrator = AgoraArbitrator(strict_verification=False)
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(
+            {
+                "task_id": "task-in-progress",
+                "task_text": "Pending task",
+                "workspace_id": "ws-test",
+                "created_by": "sdk-test",
+                "mechanism": "vote",
+                "status": "in_progress",
+                "selector_reasoning": "vote",
+                "selector_reasoning_hash": "c" * 64,
+                "selector_confidence": 1.0,
+                "agent_count": 3,
+                "reasoning_presets": {
+                    "gemini_pro": "high",
+                    "gemini_flash": "medium",
+                    "kimi": "low",
+                    "claude": "medium",
+                },
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    try:
+        with pytest.raises(HostedTaskNotCompleteError) as exc_info:
+            await arbitrator.get_task_result("task-in-progress")
+    finally:
+        await arbitrator.aclose()
+
+    assert exc_info.value.task_id == "task-in-progress"
+    assert exc_info.value.status == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_sdk_get_task_result_raises_protocol_error_for_missing_terminal_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedTaskProtocolError
+
+    arbitrator = AgoraArbitrator(strict_verification=False)
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(
+            {
+                "task_id": "task-bad-terminal",
+                "task_text": "Malformed completion",
+                "workspace_id": "ws-test",
+                "created_by": "sdk-test",
+                "mechanism": "vote",
+                "status": "completed",
+                "selector_reasoning": "vote",
+                "selector_reasoning_hash": "d" * 64,
+                "selector_confidence": 1.0,
+                "agent_count": 3,
+                "reasoning_presets": {
+                    "gemini_pro": "high",
+                    "gemini_flash": "medium",
+                    "kimi": "low",
+                    "claude": "medium",
+                },
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    try:
+        with pytest.raises(HostedTaskProtocolError, match="did not include a result payload"):
+            await arbitrator.get_task_result("task-bad-terminal")
+    finally:
+        await arbitrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sdk_wait_for_task_result_polls_until_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(
+        auth_token="agora_test_public.secret",
+        mechanism="vote",
+        strict_verification=False,
+    )
+    seen_posts: list[str] = []
+    get_calls = {"count": 0}
+
+    async def fake_post(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        seen_posts.append(url)
+        if url == "/tasks/":
+            return _FakeResponse(
+                {
+                    "task_id": "task-polled",
+                    "mechanism": "vote",
+                    "confidence": 1.0,
+                    "reasoning": "forced",
+                    "selector_reasoning_hash": "e" * 64,
+                    "status": "pending",
+                    "selector_source": "forced_override",
+                    "mechanism_override_source": "request",
+                }
+            )
+        if url == "/tasks/task-polled/run-async":
+            return _FakeResponse(
+                {
+                    "task_id": "task-polled",
+                    "task_text": "Should we use microservices or a monolith?",
+                    "workspace_id": "ws-test",
+                    "created_by": "sdk-test",
+                    "mechanism": "vote",
+                    "status": "pending",
+                    "selector_reasoning": "forced",
+                    "selector_reasoning_hash": "e" * 64,
+                    "selector_confidence": 1.0,
+                    "agent_count": 4,
+                    "reasoning_presets": {
+                        "gemini_pro": "high",
+                        "gemini_flash": "medium",
+                        "kimi": "low",
+                        "claude": "medium",
+                    },
+                }
+            )
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+    async def fake_get(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        assert url == "/tasks/task-polled"
+        get_calls["count"] += 1
+        if get_calls["count"] == 1:
+            return _FakeResponse(
+                {
+                    "task_id": "task-polled",
+                    "task_text": "Should we use microservices or a monolith?",
+                    "workspace_id": "ws-test",
+                    "created_by": "sdk-test",
+                    "mechanism": "vote",
+                    "status": "in_progress",
+                    "selector_reasoning": "forced",
+                    "selector_reasoning_hash": "e" * 64,
+                    "selector_confidence": 1.0,
+                    "agent_count": 4,
+                    "reasoning_presets": {
+                        "gemini_pro": "high",
+                        "gemini_flash": "medium",
+                        "kimi": "low",
+                        "claude": "medium",
+                    },
+                }
+            )
+        return _FakeResponse(
+            {
+                "task_id": "task-polled",
+                "task_text": "Should we use microservices or a monolith?",
+                "workspace_id": "ws-test",
+                "created_by": "sdk-test",
+                "mechanism": "vote",
+                "status": "completed",
+                "selector_reasoning": "forced",
+                "selector_reasoning_hash": "e" * 64,
+                "selector_confidence": 1.0,
+                "agent_count": 4,
+                "reasoning_presets": {
+                    "gemini_pro": "high",
+                    "gemini_flash": "medium",
+                    "kimi": "low",
+                    "claude": "medium",
+                },
+                "result": {
+                    "task_id": "task-polled",
+                    "mechanism": "vote",
+                    "final_answer": "Monolith",
+                    "confidence": 0.92,
+                    "quorum_reached": True,
+                    "merkle_root": "root-polled",
+                    "decision_hash": "decision-polled",
+                    "agent_count": 4,
+                    "agent_models_used": [
+                        "gemini-3-flash-preview",
+                        "gemini-3.1-flash-lite-preview",
+                    ],
+                    "model_token_usage": {
+                        "gemini-3-flash-preview": 10,
+                        "gemini-3.1-flash-lite-preview": 12,
+                    },
+                    "model_latency_ms": {
+                        "gemini-3-flash-preview": 100.0,
+                        "gemini-3.1-flash-lite-preview": 120.0,
+                    },
+                    "model_telemetry": {},
+                    "total_tokens_used": 22,
+                    "input_tokens_used": 10,
+                    "output_tokens_used": 12,
+                    "thinking_tokens_used": 0,
+                    "latency_ms": 220.0,
+                    "cost": None,
+                    "round_count": 1,
+                    "mechanism_switches": 0,
+                    "transcript_hashes": ["hash-1", "hash-2"],
+                    "convergence_history": [],
+                    "locked_claims": [],
+                    "mechanism_trace": [],
+                    "execution_mode": "live",
+                    "selector_source": "forced_override",
+                    "fallback_count": 0,
+                    "fallback_events": [],
+                    "mechanism_override_source": "request",
+                },
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    try:
+        result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
+    finally:
+        await arbitrator.aclose()
+
+    assert "/tasks/task-polled/run-async" in seen_posts
+    assert get_calls["count"] >= 2
+    assert result.final_answer == "Monolith"
+    assert result.mechanism_used.value == "vote"
+
+
+@pytest.mark.asyncio
 async def test_sdk_hosted_api_url_defaults_to_canonical(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1524,6 +1817,187 @@ async def test_agora_node_passes_phase2_control_config() -> None:
         assert node.arbitrator.config.quorum_threshold == 0.75
     finally:
         await node.arbitrator.aclose()
+
+
+def test_sdk_rejects_mixing_hosted_auth_with_explicit_local_models() -> None:
+    from agora.sdk import LocalModelSpec, LocalProviderKeys
+
+    with pytest.raises(ValueError, match="auth_token"):
+        AgoraArbitrator(
+            auth_token="agora_live_public.secret",
+            local_models=[
+                LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+            ],
+            local_provider_keys=LocalProviderKeys(gemini_api_key="test-key"),
+            strict_verification=False,
+        )
+
+
+def test_sdk_rejects_agent_count_mismatch_for_local_models() -> None:
+    from agora.sdk import LocalModelSpec, LocalProviderKeys
+
+    with pytest.raises(ValueError, match="agent_count"):
+        AgoraArbitrator(
+            mechanism="vote",
+            agent_count=5,
+            local_models=[
+                LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+                LocalModelSpec(provider="openrouter", model="moonshotai/kimi-k2-thinking"),
+                LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+            ],
+            local_provider_keys=LocalProviderKeys(
+                gemini_api_key="gem-key",
+                openrouter_api_key="or-key",
+                anthropic_api_key="anth-key",
+            ),
+            strict_verification=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_sdk_local_models_fail_fast_when_provider_key_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import LocalModelSpec, LocalProviderKeys
+    from agora.config import get_config
+
+    monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_OPENROUTER_SECRET_NAME", raising=False)
+    monkeypatch.delenv("AGORA_OPENROUTER_SECRET_PROJECT", raising=False)
+    monkeypatch.delenv("AGORA_OPENROUTER_SECRET_VERSION", raising=False)
+    get_config.cache_clear()
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        local_models=[
+            LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+            LocalModelSpec(provider="openrouter", model="moonshotai/kimi-k2-thinking"),
+            LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+            LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        ],
+        local_provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            anthropic_api_key="anth-key",
+        ),
+        strict_verification=False,
+    )
+
+    try:
+        with pytest.raises(ValueError, match="OpenRouter"):
+            await arbitrator.arbitrate("Should we use microservices or a monolith?")
+    finally:
+        await arbitrator.aclose()
+        get_config.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_sdk_local_model_roster_is_forwarded_to_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
+
+    captured: dict[str, Any] = {}
+
+    class _FakeLocalRosterOrchestrator:
+        def __init__(
+            self,
+            agent_count: int,
+            bandit_state_path: str | None = None,
+            default_stakes: float = 0.5,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+            local_models=None,
+            local_provider_keys=None,
+            local_debate_config=None,
+        ) -> None:
+            del bandit_state_path, default_stakes
+            captured["agent_count"] = agent_count
+            captured["allow_offline_fallback"] = allow_offline_fallback
+            captured["reasoning_presets"] = reasoning_presets
+            captured["local_models"] = local_models
+            captured["local_provider_keys"] = local_provider_keys
+            captured["local_debate_config"] = local_debate_config
+
+        def build_vote_engine(self, **_overrides: object) -> object:
+            return object()
+
+        async def run(self, task: str, **_kwargs: object) -> Any:
+            return {
+                "task": task,
+            }
+
+    async def fake_run(self, task: str, **_kwargs: object):
+        from agora.types import DeliberationResult, MechanismType
+        from tests.helpers import make_selection
+
+        return DeliberationResult(
+            task=task,
+            mechanism_used=MechanismType.VOTE,
+            mechanism_selection=make_selection(
+                mechanism=MechanismType.VOTE,
+                topic_category="reasoning",
+            ),
+            final_answer="Monolith",
+            confidence=0.88,
+            quorum_reached=True,
+            round_count=1,
+            agent_count=4,
+            mechanism_switches=0,
+            merkle_root="local-model-root",
+            transcript_hashes=["h1", "h2", "h3", "h4"],
+            agent_models_used=[
+                "gemini-3-flash-preview",
+                "gemini-3.1-flash-lite-preview",
+                "moonshotai/kimi-k2-thinking",
+                "claude-sonnet-4-6",
+            ],
+            convergence_history=[],
+            locked_claims=[],
+            total_tokens_used=44,
+            total_latency_ms=12.0,
+            timestamp=datetime.now(),
+        )
+
+    monkeypatch.setattr(_FakeLocalRosterOrchestrator, "run", fake_run)
+    monkeypatch.setattr("agora.sdk.arbitrator.AgoraOrchestrator", _FakeLocalRosterOrchestrator)
+
+    local_models = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="openrouter", model="moonshotai/kimi-k2-thinking"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+    provider_keys = LocalProviderKeys(
+        gemini_api_key="gem-key",
+        openrouter_api_key="or-key",
+        anthropic_api_key="anth-key",
+    )
+    debate_config = LocalDebateConfig(
+        devils_advocate_model=LocalModelSpec(
+            provider="openrouter",
+            model="moonshotai/kimi-k2-thinking",
+        )
+    )
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        local_models=local_models,
+        local_provider_keys=provider_keys,
+        local_debate_config=debate_config,
+        strict_verification=False,
+    )
+
+    try:
+        result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
+    finally:
+        await arbitrator.aclose()
+
+    assert result.final_answer == "Monolith"
+    assert captured["agent_count"] == 4
+    assert captured["local_models"] == local_models
+    assert captured["local_provider_keys"] == provider_keys
+    assert captured["local_debate_config"] == debate_config
 
 
 @pytest.mark.asyncio

@@ -9,7 +9,7 @@ import pytest
 from agora.agent import AgentCallError
 from agora.config import get_config
 from agora.engines.vote import VoteEngine, _VoteResponse
-from agora.types import MechanismType, VoteState
+from agora.types import LocalModelSpec, LocalProviderKeys, MechanismType, VoteState
 from tests.helpers import make_agent_output, make_features, make_selection
 
 _PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in {
@@ -306,6 +306,38 @@ async def test_four_agent_vote_records_all_provider_models() -> None:
         "moonshotai/kimi-k2-thinking",
         "claude-sonnet-4-6",
     ]
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_vote_roster_preserves_selected_model_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specs = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="openrouter", model="moonshotai/kimi-k2-thinking"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+
+    def fake_build_local_model_caller(*, spec: LocalModelSpec, provider_keys: LocalProviderKeys | None):
+        assert provider_keys is not None
+        return _SuccessfulVoteCaller(spec.model)
+
+    monkeypatch.setattr("agora.engines.vote.build_local_model_caller", fake_build_local_model_caller)
+    engine = VoteEngine(
+        agent_count=4,
+        participant_models=specs,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            openrouter_api_key="or-key",
+            anthropic_api_key="anth-key",
+        ),
+    )
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
+
+    outcome = await engine.run("Answer in one word: Paris or Lyon?", selection)
+
+    assert outcome.result.agent_models_used == [spec.model for spec in specs]
 
 
 @pytest.mark.asyncio

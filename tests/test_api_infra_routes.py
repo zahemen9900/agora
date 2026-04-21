@@ -1455,6 +1455,10 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
             detailed=True,
         )
         assert failed_status.status == "failed"
+        assert failed_status.failure_reason == "Failed to submit receipt on Solana"
+        assert failed_status.latest_error_event is not None
+        assert failed_status.latest_error_event.event == "error"
+        assert failed_status.latest_error_event.data["message"] == "Failed to submit receipt on Solana"
         assert failed_status.chain_operations["submit_receipt"].status == "failed"
         assert any(event.event == "error" for event in failed_status.events)
     finally:
@@ -1960,7 +1964,8 @@ async def test_stream_task_replays_timestamped_event_envelopes(
     }
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     task_routes._store = store
@@ -2046,7 +2051,8 @@ async def test_stream_task_error_replay_is_terminal(
     }
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     class _FailingStream:
@@ -2124,7 +2130,8 @@ async def test_stream_ticket_is_one_use_and_namespaced(
     }
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     task_routes._store = store
@@ -2182,7 +2189,8 @@ async def test_stream_ticket_expiry_is_rejected(
     }
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     task_routes._store = store
@@ -3451,7 +3459,8 @@ async def test_benchmark_stream_replays_events_and_terminal_state(
     )
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     monkeypatch.setattr(benchmark_routes, "EventSourceResponse", _CapturedEventSourceResponse)
@@ -3512,7 +3521,8 @@ async def test_benchmark_stream_error_replay_is_terminal(
     )
 
     class _CapturedEventSourceResponse:
-        def __init__(self, content):
+        def __init__(self, content, *args, **kwargs):
+            del args, kwargs
             self.content = content
 
     class _FailingStream:

@@ -10,12 +10,17 @@ from agora.sdk.arbitrator import (
     HostedChainOperationRecord,
     HostedCostEstimate,
     HostedDeliberationResult,
+    HostedTaskError,
+    HostedTaskExecutionError,
+    HostedTaskNotCompleteError,
+    HostedTaskProtocolError,
     HostedModelTelemetry,
     HostedPaymentReleaseResponse,
     HostedTaskCreateResponse,
     HostedTaskStatus,
     ReceiptVerificationError,
 )
+from agora.types import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
 
 __all__ = [
     "AgoraArbitrator",
@@ -27,9 +32,16 @@ __all__ = [
     "HostedChainOperationRecord",
     "HostedCostEstimate",
     "HostedDeliberationResult",
+    "HostedTaskError",
+    "HostedTaskExecutionError",
+    "HostedTaskNotCompleteError",
+    "HostedTaskProtocolError",
     "HostedModelTelemetry",
     "HostedPaymentReleaseResponse",
     "HostedTaskCreateResponse",
     "HostedTaskStatus",
+    "LocalDebateConfig",
+    "LocalModelSpec",
+    "LocalProviderKeys",
     "ReceiptVerificationError",
 ]
