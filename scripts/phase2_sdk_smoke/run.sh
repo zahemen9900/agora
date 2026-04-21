@@ -30,7 +30,7 @@ echo "[install] creating fresh virtualenv: $VENV_DIR"
 echo "[install] upgrading packaging tools"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel
 
-echo "[install] installing agora-sdk from $ROOT_DIR/sdk"
+echo "[install] installing agora-arbitrator-sdk from $ROOT_DIR/sdk"
 "$VENV_DIR/bin/python" -m pip install "$ROOT_DIR/sdk"
 
 if [[ -f "$ROOT_DIR/.env" ]]; then

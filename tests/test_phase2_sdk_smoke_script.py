@@ -162,6 +162,7 @@ def test_sdk_smoke_wrapper_installs_before_run() -> None:
 def test_sdk_smoke_runner_streams_before_final_json() -> None:
     script = (SCRIPT_DIR / "run_phase2_sdk_smoke.py").read_text(encoding="utf-8")
 
+    assert "agora-arbitrator-sdk" in script
     assert "stream_task_events" in script
     assert "start_task_run" in script
     assert "final json payload" in script

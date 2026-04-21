@@ -4,7 +4,7 @@ import { Copy, RotateCcw, Check } from 'lucide-react';
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 const CODE_LINES = [
-  '$ pip install agora-sdk',
+  '$ pip install agora-arbitrator-sdk',
   '>>> from agora.sdk import AgoraArbitrator',
   '>>> result = await AgoraArbitrator().arbitrate(',
   '...     "Should we use microservices or a monolith?"',
@@ -176,7 +176,7 @@ export function InteractiveCodeBlock() {
             ))}
           </div>
           <span className="mono text-text-muted" style={{ fontSize: '10px', letterSpacing: '0.08em' }}>
-            agora-sdk demo
+            agora-arbitrator-sdk demo
           </span>
           <div className="flex gap-3 items-center">
             <button
@@ -208,7 +208,7 @@ export function InteractiveCodeBlock() {
             <div style={{ animation: 'phase-fade-in 0.2s ease forwards' }}>
               <span style={{ color: 'var(--accent)' }}>$ </span>
               <TypingLine
-                text="pip install agora-sdk"
+                text="pip install agora-arbitrator-sdk"
                 done={installDone}
                 speed={22}
                 color="var(--text-primary)"
@@ -219,7 +219,7 @@ export function InteractiveCodeBlock() {
           {/* Install success output */}
           {installDone && (
             <div className="text-text-muted mb-3" style={{ fontSize: '11px', animation: 'phase-fade-in 0.3s ease forwards' }}>
-              Successfully installed agora-sdk-0.1.0
+              Successfully installed agora-arbitrator-sdk-0.1.0
             </div>
           )}
 

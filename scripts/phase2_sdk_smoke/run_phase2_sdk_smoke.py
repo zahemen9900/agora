@@ -14,6 +14,7 @@ from typing import Any
 
 from agora.sdk import AgoraArbitrator
 
+PACKAGE_NAME = "agora-arbitrator-sdk"
 DEFAULT_PROMPT = (
     "Should we use a monolith or microservices for a small internal tool?"
 )
@@ -88,7 +89,7 @@ def _build_config(args: argparse.Namespace) -> SmokeConfig:
 def _parse_args(argv: list[str] | None = None) -> SmokeConfig:
     parser = argparse.ArgumentParser(
         description=(
-            "Install agora-sdk, run a simple hosted arbitration prompt, "
+            "Install agora-arbitrator-sdk, run a simple hosted arbitration prompt, "
             "and print the result."
         )
     )
@@ -124,7 +125,7 @@ def _parse_args(argv: list[str] | None = None) -> SmokeConfig:
 
 def _installed_sdk_version() -> str:
     try:
-        return importlib.metadata.version("agora-sdk")
+        return importlib.metadata.version(PACKAGE_NAME)
     except importlib.metadata.PackageNotFoundError:
         return "uninstalled"
 
@@ -240,7 +241,7 @@ async def _run(config: SmokeConfig) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     config = _parse_args(argv)
 
-    print(f"[sdk] agora-sdk version: {_installed_sdk_version()}")
+    print(f"[sdk] {PACKAGE_NAME} version: {_installed_sdk_version()}")
     print(f"[sdk] python: {sys.executable}")
     print(f"[sdk] prompt: {config.prompt}")
 

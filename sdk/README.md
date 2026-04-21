@@ -1,4 +1,4 @@
-# agora-sdk
+# agora-arbitrator-sdk
 
 On-chain multi-agent arbitration for LangGraph, CrewAI, and Python agent systems.
 
@@ -9,7 +9,7 @@ Hosted and local results both expose the same Phase 2 telemetry contract: per-mo
 ## Quickstart
 
 ```bash
-pip install agora-sdk
+pip install agora-arbitrator-sdk
 ```
 
 ### Hosted API mode
@@ -140,5 +140,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-sdk==0.1.0a1`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a1`.
 - This cycle keeps PyPI publish manual while documenting the next-cycle automation plan.
