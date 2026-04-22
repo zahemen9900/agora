@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import jwt
@@ -1066,14 +1067,108 @@ async def test_run_rejects_task_already_in_progress(
         assert task is not None
         task["status"] = "in_progress"
         await store.save_task("user-1", create.task_id, task)
+        run_key = task_routes._task_run_key("user-1", create.task_id)
+        acquired = await task_routes._acquire_task_run_lock(run_key)
+        assert acquired is not None
 
         with pytest.raises(HTTPException) as exc_info:
             await task_routes.run_task(create.task_id, _override_user())
+        await task_routes._release_task_run_lock(run_key, lease_id=acquired.lease_id)
     finally:
         task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "Task is already in progress"
+
+
+@pytest.mark.asyncio
+async def test_run_recovers_stale_in_progress_task_without_live_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "stale-in-progress-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="recover stale run",
+        mechanism_used=MechanismType.DEBATE,
+        mechanism_selection=selection,
+        final_answer="Recovered successfully.",
+        confidence=0.88,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=3,
+        mechanism_switches=0,
+        merkle_root="receipt-root-stale-recovery",
+        transcript_hashes=["leaf-1", "leaf-2"],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=42,
+        total_latency_ms=12.5,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _FakeRunOrchestrator:
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+        ):
+            self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+            self.allow_offline_fallback = allow_offline_fallback
+
+        async def execute_selection(
+            self,
+            task: str,
+            selection: MechanismSelection,
+            event_sink=None,
+            agents=None,
+            allow_switch: bool = True,
+        ) -> DeliberationResult:
+            del selection, agents, allow_switch
+            if event_sink is not None:
+                await event_sink(
+                    "complete",
+                    {"task": task, "mechanism": completed_result.mechanism_used.value},
+                )
+            return completed_result.model_copy(update={"task": task})
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeRunOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="recover stale run", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "in_progress"
+        await store.save_task("user-1", create.task_id, task)
+
+        response = await task_routes.run_task(create.task_id, _override_user())
+
+        recovered = await store.get_task("user-1", create.task_id)
+        recovered_events = await store.get_events("user-1", create.task_id)
+        assert recovered is not None
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert response.final_answer == "Recovered successfully."
+    assert recovered["status"] == "completed"
+    assert any(event["event"] == "task_recovered" for event in recovered_events)
 
 
 @pytest.mark.asyncio
@@ -1802,6 +1897,241 @@ async def test_run_task_retries_pending_receipt_for_completed_task(
     assert failed_status.chain_operations["submit_receipt"].status == "failed"
     assert retried_status.chain_operations["submit_receipt"].status == "succeeded"
     assert retried_status.solana_tx_hash == "receipt_retry_tx"
+
+
+@pytest.mark.asyncio
+async def test_run_task_reconciles_initialized_task_without_replaying_init_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "init-reconcile-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="init reconcile",
+        mechanism_used=MechanismType.DEBATE,
+        mechanism_selection=selection,
+        final_answer="Recovered after init reconciliation.",
+        confidence=0.9,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=3,
+        mechanism_switches=0,
+        merkle_root=hashlib.sha256(b"init-reconcile-root").hexdigest(),
+        transcript_hashes=[hashlib.sha256(b"init-reconcile-leaf").hexdigest()],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=11,
+        total_latency_ms=3.0,
+        timestamp=datetime.now(UTC),
+    )
+    init_attempts = 0
+    selection_attempts = 0
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _ExecuteSelectionOrchestrator:
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+        ):
+            self.agent_count = agent_count
+            self.allow_offline_fallback = allow_offline_fallback
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def execute_selection(
+            self,
+            task: str,
+            selection: MechanismSelection,
+            event_sink=None,
+            agents=None,
+            allow_switch: bool = True,
+        ) -> DeliberationResult:
+            del selection, event_sink, agents, allow_switch
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_fail(**_kwargs: object) -> dict[str, str]:
+        nonlocal init_attempts
+        init_attempts += 1
+        raise RuntimeError("init persistence lost")
+
+    async def init_unexpected(**_kwargs: object) -> dict[str, str]:
+        raise AssertionError("initialize_task should not be replayed after reconciliation")
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        nonlocal selection_attempts
+        selection_attempts += 1
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_fail)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _ExecuteSelectionOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="init reconcile", agent_count=3, stakes=0.1),
+            _override_user(),
+        )
+        created_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+        assert created_status.chain_operations["initialize_task"].status == "failed"
+
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_unexpected)
+        monkeypatch.setattr(task_routes.bridge, "task_account_exists", AsyncMock(return_value=True))
+
+        run_result = await task_routes.run_task(create.task_id, _override_user())
+        final_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+    finally:
+        task_routes._store = None
+
+    assert run_result.final_answer == "Recovered after init reconciliation."
+    assert init_attempts == 1
+    assert selection_attempts == 1
+    assert final_status.chain_operations["initialize_task"].status == "succeeded"
+    assert final_status.chain_operations["record_selection"].status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_completed_task_reconciles_switch_pda_before_retrying_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "switch-reconcile-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="switch reconcile",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="Switch reconciliation unblocks receipt retry.",
+        confidence=0.87,
+        quorum_reached=True,
+        round_count=3,
+        agent_count=4,
+        mechanism_switches=1,
+        merkle_root=hashlib.sha256(b"switch-reconcile-root").hexdigest(),
+        transcript_hashes=[hashlib.sha256(b"switch-reconcile-leaf").hexdigest()],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=19,
+        total_latency_ms=5.0,
+        timestamp=datetime.now(UTC),
+    )
+    switch_calls = 0
+    receipt_calls = 0
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _SwitchingOrchestrator:
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+        ):
+            self.agent_count = agent_count
+            self.allow_offline_fallback = allow_offline_fallback
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def execute_selection(
+            self,
+            task: str,
+            selection: MechanismSelection,
+            event_sink=None,
+            agents=None,
+            allow_switch: bool = True,
+        ) -> DeliberationResult:
+            del task, selection, agents, allow_switch
+            if event_sink is not None:
+                await event_sink(
+                    "mechanism_switch",
+                    {
+                        "from_mechanism": "debate",
+                        "to_mechanism": "vote",
+                        "reason": "entropy rising",
+                        "round_number": 2,
+                    },
+                )
+            return completed_result
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def switch_fail(**_kwargs: object) -> dict[str, str]:
+        nonlocal switch_calls
+        switch_calls += 1
+        raise RuntimeError("switch persistence lost")
+
+    async def switch_unexpected(**_kwargs: object) -> dict[str, str]:
+        raise AssertionError("record_mechanism_switch should not replay after reconciliation")
+
+    async def receipt_ok(**_kwargs: object) -> dict[str, str]:
+        nonlocal receipt_calls
+        receipt_calls += 1
+        return {"tx_hash": "receipt_tx", "explorer_url": "https://explorer/receipt_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_mechanism_switch", switch_fail)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _SwitchingOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="switch reconcile", agent_count=4, stakes=0.0),
+            _override_user(),
+        )
+        first = await task_routes.run_task(create.task_id, _override_user())
+        failed_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+        assert first.final_answer == "Switch reconciliation unblocks receipt retry."
+        assert failed_status.chain_operations["record_switch:0"].status == "failed"
+
+        monkeypatch.setattr(task_routes.bridge, "record_mechanism_switch", switch_unexpected)
+        monkeypatch.setattr(task_routes.bridge, "switch_account_exists", AsyncMock(return_value=True))
+
+        retried = await task_routes.run_task(create.task_id, _override_user())
+        final_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+    finally:
+        task_routes._store = None
+
+    assert retried.final_answer == "Switch reconciliation unblocks receipt retry."
+    assert switch_calls == 1
+    assert receipt_calls == 1
+    assert final_status.chain_operations["record_switch:0"].status == "succeeded"
+    assert final_status.chain_operations["submit_receipt"].status == "succeeded"
+    assert final_status.solana_tx_hash == "receipt_tx"
 
 
 @pytest.mark.asyncio

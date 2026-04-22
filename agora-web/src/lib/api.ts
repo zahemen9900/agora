@@ -4,7 +4,19 @@ import type {
   ApiKeyCreateResponse,
   ApiKeyMetadataResponse,
   AuthMeResponse,
+  BenchmarkCatalogEntry as GeneratedBenchmarkCatalogEntry,
+  BenchmarkCatalogResponse as GeneratedBenchmarkCatalogResponse,
+  BenchmarkCostEstimateResponse as GeneratedBenchmarkCostEstimateResponse,
+  BenchmarkDetailResponse as GeneratedBenchmarkDetailResponse,
+  BenchmarkDomainPrompt as GeneratedBenchmarkDomainPrompt,
+  BenchmarkItemEventsResponse as GeneratedBenchmarkItemEventsResponse,
+  BenchmarkItemResponse as GeneratedBenchmarkItemResponse,
+  BenchmarkPromptTemplate as GeneratedBenchmarkPromptTemplate,
+  BenchmarkPromptTemplatesResponse as GeneratedBenchmarkPromptTemplatesResponse,
+  BenchmarkRunResponse as GeneratedBenchmarkRunResponse,
+  BenchmarkRunStatusResponse as GeneratedBenchmarkRunStatusResponse,
   DeliberationResultResponse,
+  ModelTelemetryResponse as GeneratedModelTelemetryResponse,
   TaskCreateResponse,
   TaskEvent,
   TaskStatusResponse,
@@ -43,31 +55,13 @@ export interface BenchmarkSummary {
 export type BenchmarkDomainName = "math" | "factual" | "reasoning" | "code" | "creative" | "demo";
 export type BenchmarkPromptSourceName = "template" | "custom";
 
-export interface BenchmarkDomainPromptPayload {
-  template_id?: string | null;
-  question?: string | null;
+export type BenchmarkDomainPromptPayload = Partial<GeneratedBenchmarkDomainPrompt> & {
   prompt?: string | null;
   source?: BenchmarkPromptSourceName | null;
-}
+};
 
-export interface BenchmarkCostEstimatePayload {
-  estimated_cost_usd?: number | null;
-  model_estimated_costs_usd?: Record<string, number>;
-  pricing_version?: string | null;
-  estimated_at?: string | null;
-  estimation_mode?: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
-  pricing_sources?: Record<string, string>;
-}
-
-export interface ModelTelemetryPayload {
-  total_tokens?: number;
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  thinking_tokens?: number | null;
-  latency_ms?: number;
-  estimated_cost_usd?: number | null;
-  estimation_mode?: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
-}
+export type BenchmarkCostEstimatePayload = GeneratedBenchmarkCostEstimateResponse;
+export type ModelTelemetryPayload = GeneratedModelTelemetryResponse;
 
 export interface BenchmarkStagePayload {
   runs?: Array<Record<string, unknown>>;
@@ -113,59 +107,9 @@ export interface AuthConfigPayload {
 
 export type BenchmarkRunStatusName = "queued" | "running" | "completed" | "failed";
 
-export interface BenchmarkRunStatusPayload {
-  run_id: string;
-  status: BenchmarkRunStatusName;
-  created_at: string;
-  updated_at: string;
-  error?: string | null;
-  artifact_id?: string | null;
-  request?: Record<string, unknown> | null;
-  reasoning_presets?: Partial<ReasoningPresetState> | null;
-  latest_mechanism?: string | null;
-  agent_count?: number | null;
-  total_tokens?: number | null;
-  thinking_tokens?: number | null;
-  total_latency_ms?: number | null;
-  model_telemetry?: Record<string, ModelTelemetryPayload>;
-  cost?: BenchmarkCostEstimatePayload | null;
-  completed_item_count?: number;
-  failed_item_count?: number;
-  degraded_item_count?: number;
-  failure_counts_by_category?: Record<string, number>;
-  failure_counts_by_reason?: Record<string, number>;
-  failure_counts_by_stage?: Record<string, number>;
-}
-
-export interface BenchmarkCatalogEntry {
-  artifact_id: string;
-  scope: "global" | "user";
-  owner_user_id?: string | null;
-  source: string;
-  created_at: string;
-  run_count: number;
-  mechanism_counts: Record<string, number>;
-  model_counts: Record<string, number>;
-  frequency_score: number;
-  status?: string | null;
-  latest_mechanism?: string | null;
-  agent_count?: number | null;
-  total_tokens?: number;
-  thinking_tokens?: number;
-  total_latency_ms?: number;
-  models?: string[];
-  model_telemetry?: Record<string, ModelTelemetryPayload>;
-  cost?: BenchmarkCostEstimatePayload | null;
-}
-
-export interface BenchmarkCatalogPayload {
-  global_recent: BenchmarkCatalogEntry[];
-  global_frequency: BenchmarkCatalogEntry[];
-  user_recent: BenchmarkCatalogEntry[];
-  user_frequency: BenchmarkCatalogEntry[];
-  user_tests_recent: BenchmarkRunStatusPayload[];
-  user_tests_frequency: BenchmarkRunStatusPayload[];
-}
+export type BenchmarkRunStatusPayload = GeneratedBenchmarkRunStatusResponse;
+export type BenchmarkCatalogEntry = GeneratedBenchmarkCatalogEntry;
+export type BenchmarkCatalogPayload = GeneratedBenchmarkCatalogResponse;
 
 export interface BenchmarkRunRequestPayload {
   training_per_category?: number;
@@ -177,91 +121,14 @@ export interface BenchmarkRunRequestPayload {
   reasoning_presets?: Partial<ReasoningPresetState>;
 }
 
-export interface BenchmarkRunResponsePayload {
-  run_id: string;
-  status: BenchmarkRunStatusName;
-  created_at: string;
-}
-
-export interface BenchmarkPromptTemplatePayload {
-  id: string;
-  title: string;
-  question: string;
-}
-
-export interface BenchmarkPromptTemplatesPayload {
-  domains: Record<BenchmarkDomainName, BenchmarkPromptTemplatePayload[]>;
-}
-
-export interface BenchmarkDetailPayload {
-  benchmark_id: string;
-  artifact_id?: string | null;
-  run_id?: string | null;
-  scope: "global" | "user";
-  source: string;
-  status?: string | null;
-  owner_user_id?: string | null;
-  created_at: string;
-  updated_at: string;
-  run_count: number;
-  mechanism_counts: Record<string, number>;
-  model_counts: Record<string, number>;
-  frequency_score: number;
-  latest_mechanism?: string | null;
-  agent_count?: number | null;
-  total_tokens: number;
-  thinking_tokens: number;
-  total_latency_ms?: number;
-  models: string[];
-  request?: Record<string, unknown> | null;
-  reasoning_presets?: Partial<ReasoningPresetState> | null;
-  model_telemetry?: Record<string, ModelTelemetryPayload>;
-  events?: TaskEvent[];
-  summary: Record<string, unknown>;
-  benchmark_payload: Record<string, unknown>;
-  cost?: BenchmarkCostEstimatePayload | null;
-  benchmark_items?: BenchmarkItemPayload[];
-  active_item_id?: string | null;
-  active_item?: BenchmarkItemPayload | null;
-  completed_item_count?: number;
-  failed_item_count?: number;
-  degraded_item_count?: number;
-  failure_counts_by_category?: Record<string, number>;
-  failure_counts_by_reason?: Record<string, number>;
-  failure_counts_by_stage?: Record<string, number>;
-}
-
-export interface BenchmarkItemPayload {
-  item_id: string;
-  item_index: number;
-  task_index: number;
-  phase?: string | null;
-  run_kind?: string | null;
-  category: string;
-  question: string;
-  source_task?: string | null;
-  status: "queued" | "running" | "completed" | "failed" | "degraded";
-  mechanism?: string | null;
-  selector_source?: string | null;
-  selector_fallback_path?: string[];
-  failure_reason?: string | null;
-  latest_error_event?: TaskEvent | null;
-  fallback_events?: Array<Record<string, unknown>>;
-  total_tokens?: number;
-  thinking_tokens?: number;
-  total_latency_ms?: number;
-  model_telemetry?: Record<string, ModelTelemetryPayload>;
-  summary?: Record<string, unknown>;
-  started_at?: string | null;
-  completed_at?: string | null;
-  events?: TaskEvent[];
-}
-
-export interface BenchmarkItemEventsPayload {
-  benchmark_id: string;
-  item_id: string;
-  events: TaskEvent[];
-}
+export type BenchmarkRunResponsePayload = GeneratedBenchmarkRunResponse;
+export type BenchmarkPromptTemplatePayload = GeneratedBenchmarkPromptTemplate;
+export type BenchmarkPromptTemplatesPayload = GeneratedBenchmarkPromptTemplatesResponse & {
+  domains: Record<BenchmarkDomainName, GeneratedBenchmarkPromptTemplate[]>;
+};
+export type BenchmarkDetailPayload = GeneratedBenchmarkDetailResponse;
+export type BenchmarkItemPayload = GeneratedBenchmarkItemResponse;
+export type BenchmarkItemEventsPayload = GeneratedBenchmarkItemEventsResponse;
 
 export interface StreamHandle {
   close: () => void;

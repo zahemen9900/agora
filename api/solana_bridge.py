@@ -491,6 +491,33 @@ class SolanaBridge:
             "Failed to fetch blockhash from all configured RPC endpoints"
         ) from last_error
 
+    async def account_exists(self, address: Pubkey) -> bool:
+        """Return whether an on-chain account currently exists."""
+
+        last_error: Exception | None = None
+        for rpc_url in self._rpc_candidates():
+            try:
+                async with AsyncClient(rpc_url, timeout=10) as client:
+                    response = await client.get_account_info(address, commitment="confirmed")
+                    return response.value is not None
+            except Exception as exc:  # pragma: no cover - network dependent
+                logger.warning("solana_rpc_candidate_failed", rpc_url=rpc_url, error=str(exc))
+                last_error = exc
+
+        raise RuntimeError(
+            f"Failed to fetch account info for {address} from all configured RPC endpoints"
+        ) from last_error
+
+    async def task_account_exists(self, task_id: str) -> bool:
+        """Return whether the task PDA already exists on chain."""
+
+        return await self.account_exists(self.derive_task_pda(task_id))
+
+    async def switch_account_exists(self, task_id: str, switch_index: int) -> bool:
+        """Return whether the switch PDA already exists on chain."""
+
+        return await self.account_exists(self.derive_switch_pda(task_id, switch_index))
+
     async def _send_instruction(
         self,
         *,
