@@ -27,6 +27,8 @@ from api.models import (
     BenchmarkCostEstimateResponse,
     BenchmarkDetailResponse,
     BenchmarkDomainName,
+    BenchmarkItemEventsResponse,
+    BenchmarkItemResponse,
     BenchmarkPromptTemplate,
     BenchmarkPromptTemplatesResponse,
     BenchmarkRunRequest,
@@ -204,7 +206,13 @@ _legacy_backfill_lock: asyncio.Lock | None = None
 _STREAM_POLL_INTERVAL_SECONDS = 0.15
 _STREAM_BUFFER_FLUSH_INTERVAL_SECONDS = 0.1
 _STREAM_BUFFER_MAX_EVENTS = 8
-_BUFFERED_BENCHMARK_EVENT_TYPES = {"domain_progress"}
+_BUFFERED_BENCHMARK_EVENT_TYPES = {
+    "domain_progress",
+    "agent_output_delta",
+    "thinking_delta",
+    "usage_delta",
+    "cross_examination_delta",
+}
 _TERMINAL_BENCHMARK_EVENT_TYPES = {"complete", "failed", "error"}
 
 
@@ -236,9 +244,69 @@ async def _consume_benchmark_stream_ticket(ticket: str, *, run_id: str) -> Strea
 
 
 def _benchmark_event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any]:
+    payload_data = dict(event_data)
+    latest_run = _as_dict(payload_data.get("latest_run"))
+    if event_type == "domain_progress" and latest_run:
+        for source_key, target_key in (
+            ("phase", "phase"),
+            ("run_kind", "run_kind"),
+            ("task_index", "task_index"),
+            ("item_index", "item_index"),
+            ("category", "category"),
+            ("question", "question"),
+            ("source_task", "source_task"),
+            ("item_status", "item_status"),
+        ):
+            if target_key not in payload_data and latest_run.get(source_key) is not None:
+                payload_data[target_key] = latest_run.get(source_key)
+    benchmark_context = _as_dict(payload_data.get("benchmark_context"))
+    phase = str(
+        payload_data.get("phase")
+        or benchmark_context.get("phase")
+        or ""
+    ).strip()
+    run_kind = str(
+        payload_data.get("run_kind")
+        or benchmark_context.get("run_kind")
+        or ""
+    ).strip()
+    task_index = _safe_int(
+        payload_data.get("task_index", benchmark_context.get("task_index")),
+        default=-1,
+    )
+    if "item_id" not in payload_data:
+        item_id = (
+            str(payload_data.get("item_id") or benchmark_context.get("item_id") or "").strip()
+            or _compose_benchmark_item_id(
+                phase=phase or None,
+                run_kind=run_kind or None,
+                task_index=task_index if task_index >= 0 else None,
+            )
+        )
+        if item_id:
+            payload_data["item_id"] = item_id
+    if "item_index" not in payload_data and benchmark_context.get("item_index") is not None:
+        payload_data["item_index"] = _safe_int(benchmark_context.get("item_index"))
+    if phase and "phase" not in payload_data:
+        payload_data["phase"] = phase
+    if run_kind and "run_kind" not in payload_data:
+        payload_data["run_kind"] = run_kind
+    if task_index >= 0 and "task_index" not in payload_data:
+        payload_data["task_index"] = task_index
+    for source_key, target_key in (
+        ("category", "category"),
+        ("question", "question"),
+        ("source_task", "source_task"),
+    ):
+        if target_key not in payload_data and benchmark_context.get(source_key) is not None:
+            payload_data[target_key] = benchmark_context.get(source_key)
+    if "item_status" not in payload_data:
+        inferred_status = _infer_benchmark_item_status_from_event(event_type, payload_data)
+        if inferred_status is not None:
+            payload_data["item_status"] = inferred_status
     return TaskEvent(
         event=event_type,
-        data=event_data,
+        data=payload_data,
         timestamp=datetime.now(UTC),
     ).model_dump(mode="json")
 
@@ -664,6 +732,7 @@ def _extract_model_usage_from_runs(runs: list[dict[str, Any]]) -> dict[str, int]
 
 def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
     runs = _extract_runs(payload)
+    summary = _resolve_summary_block(payload)
     mechanism_counts, model_counts, frequency_score = _frequency_from_runs(runs)
     total_tokens = sum(
         _safe_int(run.get("tokens_used") or run.get("total_tokens_used")) for run in runs
@@ -745,10 +814,77 @@ def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
             if isinstance(run, dict)
         ),
     )
+    completed_item_count = _safe_int(
+        summary.get("completed_run_count"),
+        default=sum(
+            1
+            for run in runs
+            if str(run.get("item_status") or "completed").strip().lower() != "failed"
+        ),
+    )
+    failed_item_count = _safe_int(
+        summary.get("failed_run_count"),
+        default=sum(
+            1
+            for run in runs
+            if str(run.get("item_status") or "").strip().lower() == "failed"
+        ),
+    )
+    failure_counts_by_category = (
+        {
+            str(category): _safe_int(count)
+            for category, count in summary.get("failure_counts_by_category", {}).items()
+            if str(category).strip() and _safe_int(count) > 0
+        }
+        if isinstance(summary.get("failure_counts_by_category"), dict)
+        else {}
+    )
+    failure_counts_by_reason = (
+        {
+            str(reason): _safe_int(count)
+            for reason, count in summary.get("failure_counts_by_reason", {}).items()
+            if str(reason).strip() and _safe_int(count) > 0
+        }
+        if isinstance(summary.get("failure_counts_by_reason"), dict)
+        else {}
+    )
+    degraded_item_count = _safe_int(
+        summary.get("degraded_run_count"),
+        default=sum(
+            1
+            for run in runs
+            if _infer_benchmark_item_status_from_run(run) == "degraded"
+        ),
+    )
+    failure_counts_by_stage = (
+        {
+            str(stage): _safe_int(count)
+            for stage, count in summary.get("failure_counts_by_stage", {}).items()
+            if str(stage).strip() and _safe_int(count) > 0
+        }
+        if isinstance(summary.get("failure_counts_by_stage"), dict)
+        else {}
+    )
+    if not failure_counts_by_stage:
+        derived_failure_counts_by_stage: dict[str, int] = {}
+        for run in runs:
+            if _infer_benchmark_item_status_from_run(run) != "failed":
+                continue
+            stage = str(run.get("run_kind") or run.get("phase") or "unknown").strip() or "unknown"
+            derived_failure_counts_by_stage[stage] = (
+                derived_failure_counts_by_stage.get(stage, 0) + 1
+            )
+        failure_counts_by_stage = derived_failure_counts_by_stage
 
     return {
         "runs": runs,
         "run_count": len(runs),
+        "completed_item_count": completed_item_count,
+        "failed_item_count": failed_item_count,
+        "degraded_item_count": degraded_item_count,
+        "failure_counts_by_category": failure_counts_by_category,
+        "failure_counts_by_reason": failure_counts_by_reason,
+        "failure_counts_by_stage": failure_counts_by_stage,
         "mechanism_counts": mechanism_counts,
         "model_counts": model_counts,
         "frequency_score": frequency_score,
@@ -827,6 +963,8 @@ async def _resolve_benchmark_summary_payload() -> dict[str, Any] | None:
         if not isinstance(artifact, dict):
             continue
         payload = _artifact_payload(artifact)
+        if not _is_current_runtime_benchmark_payload(payload):
+            continue
         if not _is_summary_block(_resolve_summary_block(payload)):
             continue
         normalized = _with_complete_summary(payload)
@@ -956,6 +1094,15 @@ def _build_benchmark_detail_response(
         owner_user_id = artifact.get("owner_user_id")
 
     summary = _as_dict(payload.get("summary")) if payload else {}
+    benchmark_items, active_item_id, failure_counts_by_stage = _benchmark_items_from_payload(
+        benchmark_id=benchmark_id,
+        payload=payload,
+        run_record=run_record,
+    )
+    active_item = next(
+        (item for item in benchmark_items if item.item_id == active_item_id),
+        None,
+    )
 
     return BenchmarkDetailResponse(
         benchmark_id=benchmark_id,
@@ -996,6 +1143,17 @@ def _build_benchmark_detail_response(
         summary=summary,
         benchmark_payload=payload,
         cost=telemetry["cost"],
+        benchmark_items=benchmark_items,
+        active_item_id=active_item_id,
+        active_item=active_item,
+        completed_item_count=_safe_int(telemetry.get("completed_item_count")),
+        failed_item_count=_safe_int(telemetry.get("failed_item_count")),
+        degraded_item_count=_safe_int(telemetry.get("degraded_item_count")),
+        failure_counts_by_category=telemetry.get("failure_counts_by_category", {}),
+        failure_counts_by_reason=telemetry.get("failure_counts_by_reason", {}),
+        failure_counts_by_stage=(
+            telemetry.get("failure_counts_by_stage", {}) or failure_counts_by_stage
+        ),
     )
 
 
@@ -1074,6 +1232,487 @@ def _parse_timestamp(value: Any) -> datetime:
         except ValueError:
             pass
     return datetime.now(UTC)
+
+
+def _compose_benchmark_item_id(
+    *,
+    phase: str | None,
+    run_kind: str | None,
+    task_index: int | None,
+) -> str | None:
+    normalized_phase = str(phase or "").strip()
+    normalized_run_kind = str(run_kind or "").strip()
+    if task_index is None or task_index < 0:
+        return None
+    if not normalized_phase or not normalized_run_kind:
+        return None
+    return f"{normalized_phase}:{normalized_run_kind}:{task_index}"
+
+
+def _infer_benchmark_item_status_from_run(run: dict[str, Any]) -> str:
+    raw_status = str(run.get("item_status") or "").strip().lower()
+    if raw_status in {"queued", "running", "completed", "failed", "degraded"}:
+        return raw_status
+    if run.get("failure_reason") or run.get("latest_error_event"):
+        return "failed"
+    fallback_events = run.get("fallback_events")
+    if isinstance(fallback_events, list) and fallback_events:
+        return "degraded"
+    return "completed"
+
+
+def _infer_benchmark_item_status_from_event(
+    event_type: str,
+    event_data: dict[str, Any],
+) -> str | None:
+    explicit = str(event_data.get("item_status") or "").strip().lower()
+    if explicit in {"queued", "running", "completed", "failed", "degraded"}:
+        return explicit
+
+    if event_type in {"agent_output_delta", "agent_output", "usage_delta", "thinking_delta", "cross_examination", "cross_examination_delta", "convergence_update", "mechanism_selected", "mechanism_switch", "provider_retrying"}:
+        return "running"
+
+    if event_type == "domain_progress":
+        latest_run = _as_dict(event_data.get("latest_run"))
+        return _infer_benchmark_item_status_from_run(latest_run)
+
+    if event_type in {"failed", "error"} and event_data.get("item_id"):
+        return "failed"
+
+    return None
+
+
+def _event_item_identity(event: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+    data = _as_dict(event.get("data"))
+    benchmark_context = _as_dict(data.get("benchmark_context"))
+    latest_run = _as_dict(data.get("latest_run"))
+    phase = str(
+        data.get("phase")
+        or benchmark_context.get("phase")
+        or latest_run.get("phase")
+        or ""
+    ).strip() or None
+    run_kind = (
+        str(
+            data.get("run_kind")
+            or benchmark_context.get("run_kind")
+            or latest_run.get("run_kind")
+            or ""
+        ).strip() or None
+    )
+    task_index_raw = data.get(
+        "task_index",
+        benchmark_context.get("task_index", latest_run.get("task_index")),
+    )
+    task_index = _safe_int(task_index_raw, default=-1)
+    item_id = (
+        str(data.get("item_id") or benchmark_context.get("item_id") or "").strip()
+        or _compose_benchmark_item_id(
+            phase=phase,
+            run_kind=run_kind,
+            task_index=task_index if task_index >= 0 else None,
+        )
+    )
+    return (item_id or None), {
+        "phase": phase,
+        "run_kind": run_kind,
+        "task_index": task_index if task_index >= 0 else None,
+        "category": str(
+            data.get("category")
+            or benchmark_context.get("category")
+            or latest_run.get("category")
+            or ""
+        ).strip()
+        or "unknown",
+        "question": str(
+            data.get("question")
+            or benchmark_context.get("question")
+            or latest_run.get("question")
+            or latest_run.get("task")
+            or ""
+        ).strip()
+        or "Benchmark question",
+        "source_task": str(
+            data.get("source_task")
+            or benchmark_context.get("source_task")
+            or latest_run.get("source_task")
+            or latest_run.get("task")
+            or ""
+        ).strip()
+        or None,
+        "item_index": _safe_int(
+            data.get(
+                "item_index",
+                benchmark_context.get("item_index", latest_run.get("item_index")),
+            ),
+            default=-1,
+        ),
+    }
+
+
+def _expected_benchmark_items_from_request(
+    *,
+    benchmark_id: str,
+    run_record: dict[str, Any] | None,
+) -> list[BenchmarkItemResponse]:
+    if not isinstance(run_record, dict):
+        return []
+
+    request_payload = _as_dict(run_record.get("request"))
+    if not request_payload:
+        return []
+
+    try:
+        request = BenchmarkRunRequest.model_validate(request_payload)
+    except Exception:
+        return []
+
+    resolved_prompts_raw = request_payload.get("resolved_domain_prompts")
+    resolved_prompts = (
+        resolved_prompts_raw
+        if isinstance(resolved_prompts_raw, dict)
+        else _resolved_domain_prompts(request)
+    )
+
+    try:
+        training_tasks, holdout_tasks = BenchmarkRunner.build_phase2_task_split(
+            training_per_category=request.training_per_category,
+            holdout_per_category=request.holdout_per_category,
+        )
+    except Exception:
+        return []
+
+    training_tasks = _apply_domain_prompts(training_tasks, resolved_prompts)
+    holdout_tasks = _apply_domain_prompts(holdout_tasks, resolved_prompts)
+
+    expected: list[BenchmarkItemResponse] = []
+    item_index = 0
+
+    def _append_item(
+        *,
+        phase: str,
+        run_kind: str,
+        task_index: int,
+        task_item: dict[str, Any],
+    ) -> None:
+        nonlocal item_index
+        question = str(task_item.get("question") or task_item.get("task") or "").strip() or "Benchmark question"
+        source_task = str(task_item.get("task") or question).strip() or question
+        expected.append(
+            BenchmarkItemResponse(
+                item_id=(
+                    _compose_benchmark_item_id(
+                        phase=phase,
+                        run_kind=run_kind,
+                        task_index=task_index,
+                    )
+                    or f"{benchmark_id}:{phase}:{run_kind}:{task_index}"
+                ),
+                item_index=item_index,
+                task_index=task_index,
+                phase=phase,
+                run_kind=run_kind,
+                category=str(task_item.get("category") or "unknown").strip() or "unknown",
+                question=question,
+                source_task=source_task,
+                status="queued",
+                mechanism=None,
+                selector_source=None,
+                selector_fallback_path=[],
+                failure_reason=None,
+                latest_error_event=None,
+                fallback_events=[],
+                total_tokens=0,
+                thinking_tokens=0,
+                total_latency_ms=0.0,
+                model_telemetry={},
+                summary={},
+                started_at=None,
+                completed_at=None,
+                events=[],
+            )
+        )
+        item_index += 1
+
+    for task_index, task_item in enumerate(training_tasks):
+        _append_item(
+            phase="pre_learning",
+            run_kind="selector_initial",
+            task_index=task_index,
+            task_item=task_item,
+        )
+        _append_item(
+            phase="learning_updates",
+            run_kind="selector_learn",
+            task_index=task_index,
+            task_item=task_item,
+        )
+
+    for task_index, task_item in enumerate(holdout_tasks):
+        _append_item(
+            phase="post_learning",
+            run_kind="selector_holdout",
+            task_index=task_index,
+            task_item=task_item,
+        )
+
+    record_status = str(run_record.get("status") or "").strip().lower()
+    run_error = str(run_record.get("error") or "").strip() or None
+    completed_count = _safe_int(run_record.get("completed_item_count"))
+
+    for index, item in enumerate(expected):
+        if index < completed_count:
+            expected[index] = item.model_copy(update={"status": "completed"})
+
+    if expected:
+        if record_status == "running":
+            active_index = min(completed_count, len(expected) - 1)
+            expected[active_index] = expected[active_index].model_copy(update={"status": "running"})
+        elif record_status == "failed":
+            failed_index = min(completed_count, len(expected) - 1)
+            expected[failed_index] = expected[failed_index].model_copy(
+                update={
+                    "status": "failed",
+                    "failure_reason": run_error,
+                    "latest_error_event": (
+                        TaskEvent(
+                            event="error",
+                            data={"message": run_error},
+                            timestamp=datetime.now(UTC),
+                        )
+                        if run_error
+                        else None
+                    ),
+                }
+            )
+
+    return expected
+
+
+def _run_item_identity(run: dict[str, Any], *, fallback_index: int) -> tuple[str, dict[str, Any]]:
+    phase = str(run.get("phase") or "").strip() or None
+    run_kind = str(run.get("run_kind") or "").strip() or None
+    task_index = _safe_int(run.get("task_index"), default=fallback_index)
+    item_id = (
+        str(run.get("item_id") or "").strip()
+        or _compose_benchmark_item_id(
+            phase=phase,
+            run_kind=run_kind,
+            task_index=task_index,
+        )
+        or f"item:{fallback_index}"
+    )
+    return item_id, {
+        "phase": phase,
+        "run_kind": run_kind,
+        "task_index": task_index,
+        "category": str(run.get("category") or "unknown").strip() or "unknown",
+        "question": str(run.get("question") or run.get("task") or "Benchmark question").strip()
+        or "Benchmark question",
+        "source_task": (
+            str(run.get("source_task") or run.get("task") or "").strip() or None
+        ),
+        "item_index": _safe_int(run.get("item_index"), default=fallback_index),
+    }
+
+
+def _benchmark_items_from_payload(
+    *,
+    benchmark_id: str,
+    payload: dict[str, Any],
+    run_record: dict[str, Any] | None,
+) -> tuple[list[BenchmarkItemResponse], str | None, dict[str, int]]:
+    runs = _extract_runs(payload) if payload else []
+    raw_events = run_record.get("events", []) if isinstance(run_record, dict) else []
+    stored_items = (
+        run_record.get("benchmark_items", [])
+        if isinstance(run_record, dict) and isinstance(run_record.get("benchmark_items"), list)
+        else []
+    )
+    event_models = [
+        TaskEvent.model_validate(event)
+        for event in raw_events
+        if isinstance(event, dict)
+    ]
+    events_by_item: dict[str, list[TaskEvent]] = {}
+    item_meta_from_events: dict[str, dict[str, Any]] = {}
+    active_item_id: str | None = None
+    failure_counts_by_stage: dict[str, int] = {}
+
+    for event in event_models:
+        event_dump = event.model_dump(mode="json")
+        item_id, event_meta = _event_item_identity(event_dump)
+        if item_id is None:
+            continue
+        events_by_item.setdefault(item_id, []).append(event)
+        item_meta_from_events.setdefault(item_id, event_meta)
+        active_item_id = item_id
+        if event.event in {"failed", "error"}:
+            stage_key = (
+                str(event.data.get("stage") or event_meta.get("run_kind") or "unknown").strip()
+                or "unknown"
+            )
+            failure_counts_by_stage[stage_key] = failure_counts_by_stage.get(stage_key, 0) + 1
+
+    item_records: dict[str, BenchmarkItemResponse] = {
+        item.item_id: item
+        for item in (
+            BenchmarkItemResponse.model_validate(item)
+            for item in stored_items
+            if isinstance(item, dict)
+        )
+    }
+    for fallback_index, run in enumerate(runs):
+        item_id, run_meta = _run_item_identity(run, fallback_index=fallback_index)
+        item_events = events_by_item.get(item_id, [])
+        model_telemetry = _model_telemetry_from_record(run)
+        latest_error_event = run.get("latest_error_event")
+        item_records[item_id] = BenchmarkItemResponse(
+            item_id=item_id,
+            item_index=max(0, run_meta["item_index"]),
+            task_index=max(0, run_meta["task_index"]),
+            phase=run_meta["phase"],
+            run_kind=run_meta["run_kind"],
+            category=run_meta["category"],
+            question=run_meta["question"],
+            source_task=run_meta["source_task"],
+            status=_infer_benchmark_item_status_from_run(run),
+            mechanism=(
+                str(run.get("mechanism_used") or run.get("mechanism") or run.get("mode") or "").strip()
+                or None
+            ),
+            selector_source=(
+                str(run.get("selector_source") or "").strip() or None
+            ),
+            selector_fallback_path=[
+                str(step)
+                for step in run.get("selector_fallback_path", [])
+                if str(step).strip()
+            ]
+            if isinstance(run.get("selector_fallback_path"), list)
+            else [],
+            failure_reason=(
+                str(run.get("failure_reason")).strip() if run.get("failure_reason") else None
+            ),
+            latest_error_event=(
+                TaskEvent.model_validate(latest_error_event)
+                if isinstance(latest_error_event, dict)
+                else None
+            ),
+            fallback_events=[
+                event
+                if isinstance(event, dict)
+                else event.model_dump(mode="json")
+                for event in run.get("fallback_events", [])
+                if isinstance(event, dict) or hasattr(event, "model_dump")
+            ]
+            if isinstance(run.get("fallback_events"), list)
+            else [],
+            total_tokens=_safe_int(run.get("tokens_used") or run.get("total_tokens_used")),
+            thinking_tokens=_safe_int(run.get("thinking_tokens_used")),
+            total_latency_ms=_safe_float(run.get("latency_ms")),
+            model_telemetry=model_telemetry,
+            summary={
+                "confidence": _safe_float(run.get("confidence")),
+                "correct": bool(run.get("correct")),
+                "quorum_reached": bool(run.get("quorum_reached")),
+                "final_answer": str(run.get("final_answer") or "").strip() or None,
+            },
+            started_at=(item_events[0].timestamp if item_events else None),
+            completed_at=(item_events[-1].timestamp if item_events else None),
+            events=item_events,
+        )
+
+    for item_id, item_events in events_by_item.items():
+        if item_id in item_records:
+            continue
+        meta = item_meta_from_events[item_id]
+        latest_event = item_events[-1]
+        latest_data = _as_dict(latest_event.data)
+        inferred_status = _infer_benchmark_item_status_from_event(latest_event.event, latest_data) or "running"
+        item_records[item_id] = BenchmarkItemResponse(
+            item_id=item_id,
+            item_index=max(0, meta["item_index"]) if meta["item_index"] >= 0 else len(item_records),
+            task_index=max(0, meta["task_index"]) if meta["task_index"] is not None else len(item_records),
+            phase=meta["phase"],
+            run_kind=meta["run_kind"],
+            category=meta["category"],
+            question=meta["question"],
+            source_task=meta["source_task"],
+            status=inferred_status,  # type: ignore[arg-type]
+            mechanism=(
+                str(latest_data.get("mechanism") or latest_data.get("latest_mechanism") or "").strip()
+                or None
+            ),
+            selector_source=(
+                str(latest_data.get("selector_source") or "").strip() or None
+            ),
+            selector_fallback_path=[
+                str(step)
+                for step in latest_data.get("selector_fallback_path", [])
+                if str(step).strip()
+            ]
+            if isinstance(latest_data.get("selector_fallback_path"), list)
+            else [],
+            failure_reason=(
+                str(latest_data.get("message")).strip() if latest_event.event in {"failed", "error"} else None
+            ),
+            latest_error_event=latest_event if latest_event.event in {"failed", "error"} else None,
+            fallback_events=[],
+            total_tokens=_safe_int(latest_data.get("total_tokens")),
+            thinking_tokens=_safe_int(latest_data.get("thinking_tokens")),
+            total_latency_ms=_safe_float(latest_data.get("total_latency_ms") or latest_data.get("latency_ms")),
+            model_telemetry={},
+            summary={},
+            started_at=item_events[0].timestamp,
+            completed_at=item_events[-1].timestamp,
+            events=item_events,
+        )
+
+    expected_items = _expected_benchmark_items_from_request(
+        benchmark_id=benchmark_id,
+        run_record=run_record,
+    )
+    for expected in expected_items:
+        existing = item_records.get(expected.item_id)
+        if existing is None:
+            item_records[expected.item_id] = expected
+            continue
+        item_records[expected.item_id] = existing.model_copy(
+            update={
+                "item_index": existing.item_index if existing.item_index >= 0 else expected.item_index,
+                "task_index": existing.task_index if existing.task_index >= 0 else expected.task_index,
+                "phase": existing.phase or expected.phase,
+                "run_kind": existing.run_kind or expected.run_kind,
+                "category": (
+                    existing.category
+                    if existing.category and existing.category != "unknown"
+                    else expected.category
+                ),
+                "question": (
+                    existing.question
+                    if existing.question and existing.question != "Benchmark question"
+                    else expected.question
+                ),
+                "source_task": existing.source_task or expected.source_task,
+            }
+        )
+
+    benchmark_items = sorted(
+        item_records.values(),
+        key=lambda item: (item.item_index, item.task_index, item.item_id),
+    )
+    if active_item_id is None and benchmark_items:
+        prioritized = next(
+            (
+                item
+                for item in benchmark_items
+                if item.status in {"running", "failed", "degraded"}
+            ),
+            benchmark_items[0],
+        )
+        active_item_id = prioritized.item_id
+    return benchmark_items, active_item_id, failure_counts_by_stage
 
 
 def _extract_runs(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1200,6 +1839,18 @@ def _artifact_payload(artifact: dict[str, Any]) -> dict[str, Any]:
 
     # Legacy artifacts may be raw benchmark payloads without wrappers.
     return artifact
+
+
+def _is_current_runtime_benchmark_payload(payload: dict[str, Any]) -> bool:
+    version = str(payload.get("artifact_version") or "").strip()
+    if version == "benchmark-tasklike-v2":
+        return True
+    benchmark_config = _as_dict(payload.get("benchmark_config"))
+    return bool(benchmark_config and payload.get("generated_at"))
+
+
+def _is_catalog_eligible_artifact(artifact: dict[str, Any]) -> bool:
+    return _is_current_runtime_benchmark_payload(_artifact_payload(artifact))
 
 
 def _artifact_identifier_candidates(artifact: dict[str, Any]) -> list[str]:
@@ -1358,6 +2009,36 @@ def _to_run_status(
         total_latency_ms=(_safe_float(record.get("total_latency_ms")) or None),
         model_telemetry=_model_telemetry_from_record(record),
         cost=cost,
+        completed_item_count=_safe_int(record.get("completed_item_count")),
+        failed_item_count=_safe_int(record.get("failed_item_count")),
+        degraded_item_count=_safe_int(record.get("degraded_item_count")),
+        failure_counts_by_category=(
+            {
+                str(category): _safe_int(count)
+                for category, count in record.get("failure_counts_by_category", {}).items()
+                if str(category).strip() and _safe_int(count) > 0
+            }
+            if isinstance(record.get("failure_counts_by_category"), dict)
+            else {}
+        ),
+        failure_counts_by_reason=(
+            {
+                str(reason): _safe_int(count)
+                for reason, count in record.get("failure_counts_by_reason", {}).items()
+                if str(reason).strip() and _safe_int(count) > 0
+            }
+            if isinstance(record.get("failure_counts_by_reason"), dict)
+            else {}
+        ),
+        failure_counts_by_stage=(
+            {
+                str(stage): _safe_int(count)
+                for stage, count in record.get("failure_counts_by_stage", {}).items()
+                if str(stage).strip() and _safe_int(count) > 0
+            }
+            if isinstance(record.get("failure_counts_by_stage"), dict)
+            else {}
+        ),
     )
 
 
@@ -1405,7 +2086,11 @@ def _legacy_artifact_document(
     return {
         "artifact_id": artifact_id,
         "scope": "global",
-        "source": "local_backfill",
+        "source": (
+            "local_backfill"
+            if _is_current_runtime_benchmark_payload(payload)
+            else "legacy_backfill"
+        ),
         "status": "completed",
         "created_at": created_at,
         "benchmark_payload": payload,
@@ -1575,6 +2260,8 @@ async def _execute_benchmark_run(
     store = get_task_store()
     stream = get_stream_manager()
     updated_at = datetime.now(UTC).isoformat()
+    reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
+    resolved_domain_prompts = _resolved_domain_prompts(request)
 
     running_record = await store.get_user_test_result(workspace_id, run_id) or {}
     running_record.update(
@@ -1583,6 +2270,11 @@ async def _execute_benchmark_run(
             "workspace_id": workspace_id,
             "kind": "benchmark",
             "status": "running",
+            "request": {
+                **request.model_dump(mode="json"),
+                "reasoning_presets": reasoning_presets.model_dump(mode="json"),
+                "resolved_domain_prompts": resolved_domain_prompts,
+            },
             "updated_at": updated_at,
         }
     )
@@ -1610,13 +2302,10 @@ async def _execute_benchmark_run(
     )
 
     try:
-        reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
         training_tasks, holdout_tasks = BenchmarkRunner.build_phase2_task_split(
             training_per_category=request.training_per_category,
             holdout_per_category=request.holdout_per_category,
         )
-
-        resolved_domain_prompts = _resolved_domain_prompts(request)
         training_tasks = _apply_domain_prompts(training_tasks, resolved_domain_prompts)
         holdout_tasks = _apply_domain_prompts(holdout_tasks, resolved_domain_prompts)
 
@@ -1679,6 +2368,17 @@ async def _execute_benchmark_run(
                 journal=event_journal,
             )
 
+        async def emit_live_event(event_type: str, event_data: dict[str, Any]) -> None:
+            await _persist_and_emit_benchmark_event(
+                store=store,
+                stream=stream,
+                workspace_id=workspace_id,
+                run_id=run_id,
+                event_type=event_type,
+                event_data=event_data,
+                journal=event_journal,
+            )
+
         output_path = _RESULTS_DIR / f"user_benchmark_{run_id}.json"
         payload = await runner.run_phase2_validation(
             training_tasks=training_tasks,
@@ -1686,6 +2386,7 @@ async def _execute_benchmark_run(
             output_path=str(output_path),
             seed=seed,
             progress_callback=emit_progress,
+            event_sink=emit_live_event,
         )
         await store.save_runtime_state(
             _SELECTOR_BANDIT_STATE_KEY,
@@ -1717,6 +2418,12 @@ async def _execute_benchmark_run(
         payload["benchmark_config"] = benchmark_config
 
         benchmark_agent_count = _first_positive_int(telemetry.get("agent_count"), request.agent_count)
+        persisted_record = await store.get_user_test_result(workspace_id, run_id) or running_record_state
+        benchmark_items, active_item_id, failure_counts_by_stage = _benchmark_items_from_payload(
+            benchmark_id=run_id,
+            payload=payload,
+            run_record=persisted_record,
+        )
 
         created_at = datetime.now(UTC).isoformat()
         artifact_document = {
@@ -1727,6 +2434,12 @@ async def _execute_benchmark_run(
             "owner_user_id": workspace_id,
             "created_at": created_at,
             "benchmark_payload": payload,
+            "completed_item_count": telemetry["completed_item_count"],
+            "failed_item_count": telemetry["failed_item_count"],
+            "degraded_item_count": telemetry["degraded_item_count"],
+            "failure_counts_by_category": telemetry["failure_counts_by_category"],
+            "failure_counts_by_reason": telemetry["failure_counts_by_reason"],
+            "failure_counts_by_stage": failure_counts_by_stage,
             "latest_mechanism": telemetry["latest_mechanism"],
             "agent_count": benchmark_agent_count,
             "total_tokens": telemetry["total_tokens"],
@@ -1738,6 +2451,8 @@ async def _execute_benchmark_run(
                 for model, data in telemetry["model_telemetry"].items()
             },
             "cost": telemetry["cost"].model_dump(mode="json") if telemetry["cost"] else None,
+            "benchmark_items": [item.model_dump(mode="json") for item in benchmark_items],
+            "active_item_id": active_item_id,
         }
 
         user_artifact_document = dict(artifact_document)
@@ -1763,6 +2478,12 @@ async def _execute_benchmark_run(
                 "mechanism_counts": telemetry["mechanism_counts"],
                 "model_counts": telemetry["model_counts"],
                 "frequency_score": telemetry["frequency_score"],
+                "completed_item_count": telemetry["completed_item_count"],
+                "failed_item_count": telemetry["failed_item_count"],
+                "degraded_item_count": telemetry["degraded_item_count"],
+                "failure_counts_by_category": telemetry["failure_counts_by_category"],
+                "failure_counts_by_reason": telemetry["failure_counts_by_reason"],
+                "failure_counts_by_stage": failure_counts_by_stage,
                 "latest_mechanism": telemetry["latest_mechanism"],
                 "agent_count": benchmark_agent_count,
                 "total_tokens": telemetry["total_tokens"],
@@ -1789,6 +2510,11 @@ async def _execute_benchmark_run(
                 "pricing_sources": (
                     telemetry["cost"].pricing_sources if telemetry["cost"] else {}
                 ),
+                "benchmark_items": [
+                    item.model_dump(mode="json")
+                    for item in benchmark_items
+                ],
+                "active_item_id": active_item_id,
                 "updated_at": completed_at,
             }
         )
@@ -1819,6 +2545,12 @@ async def _execute_benchmark_run(
         await event_journal.close()
         await state_writer.close()
         failed_record = running_record_state
+        persisted_record = await store.get_user_test_result(workspace_id, run_id) or failed_record
+        benchmark_items, active_item_id, failure_counts_by_stage = _benchmark_items_from_payload(
+            benchmark_id=run_id,
+            payload={},
+            run_record=persisted_record,
+        )
         failed_record.update(
             {
                 "run_id": run_id,
@@ -1826,6 +2558,11 @@ async def _execute_benchmark_run(
                 "kind": "benchmark",
                 "status": "failed",
                 "error": str(exc)[:1000],
+                "failed_item_count": max(1, len([item for item in benchmark_items if item.status == "failed"])),
+                "degraded_item_count": len([item for item in benchmark_items if item.status == "degraded"]),
+                "failure_counts_by_stage": failure_counts_by_stage,
+                "benchmark_items": [item.model_dump(mode="json") for item in benchmark_items],
+                "active_item_id": active_item_id,
                 "updated_at": failed_at,
             }
         )
@@ -1836,7 +2573,13 @@ async def _execute_benchmark_run(
             workspace_id=workspace_id,
             run_id=run_id,
             event_type="failed",
-            event_data={"run_id": run_id, "message": str(exc)[:1000]},
+            event_data={
+                "run_id": run_id,
+                "message": str(exc)[:1000],
+                "item_id": active_item_id,
+                "item_status": "failed",
+                "stage": next(iter(failure_counts_by_stage.keys()), None),
+            },
         )
         await stream.close(_benchmark_stream_key(workspace_id, run_id))
 
@@ -1922,7 +2665,7 @@ async def get_benchmark_catalog(
     global_entries = [
         entry
         for artifact in global_artifacts
-        if isinstance(artifact, dict)
+        if isinstance(artifact, dict) and _is_catalog_eligible_artifact(artifact)
         for entry in [_to_catalog_entry(artifact, default_scope="global")]
         if entry is not None
     ]
@@ -1937,7 +2680,7 @@ async def get_benchmark_catalog(
         user_entries = [
             entry
             for artifact in user_artifacts
-            if isinstance(artifact, dict)
+            if isinstance(artifact, dict) and _is_catalog_eligible_artifact(artifact)
             for entry in [_to_catalog_entry(artifact, default_scope="user")]
             if entry is not None
         ]
@@ -2006,13 +2749,11 @@ async def get_benchmark_prompt_templates(
     return _domain_prompt_templates_response()
 
 
-@router.get("/benchmarks/{benchmark_id}", response_model=BenchmarkDetailResponse)
-async def get_benchmark_detail(
+async def _resolve_benchmark_detail(
+    *,
     benchmark_id: str,
-    user: CurrentUser,
+    user: AuthenticatedUser,
 ) -> BenchmarkDetailResponse:
-    """Return a dedicated benchmark detail payload by artifact_id or run_id fallback."""
-
     try:
         validate_storage_id(benchmark_id, field_name="benchmark_id")
     except ValueError as exc:
@@ -2025,6 +2766,17 @@ async def get_benchmark_detail(
         require_human_user(user)
 
     run_record = await store.get_user_test_result(user.workspace_id, benchmark_id)
+    if run_record is None:
+        user_test_records = await store.list_user_test_results(user.workspace_id, limit=500)
+        run_record = next(
+            (
+                record
+                for record in user_test_records
+                if isinstance(record, dict)
+                and str(record.get("artifact_id") or "").strip() == benchmark_id
+            ),
+            None,
+        )
     run_record_artifact_id = (
         str(run_record.get("artifact_id")).strip()
         if isinstance(run_record, dict) and isinstance(run_record.get("artifact_id"), str)
@@ -2090,6 +2842,53 @@ async def get_benchmark_detail(
         )
 
     raise HTTPException(status_code=404, detail="Benchmark not found")
+
+
+@router.get("/benchmarks/{benchmark_id}/items/{item_id}", response_model=BenchmarkItemResponse)
+async def get_benchmark_item(
+    benchmark_id: str,
+    item_id: str,
+    user: CurrentUser,
+) -> BenchmarkItemResponse:
+    """Return one item-scoped slice of a benchmark run."""
+
+    detail = await _resolve_benchmark_detail(benchmark_id=benchmark_id, user=user)
+    for item in detail.benchmark_items:
+        if item.item_id == item_id:
+            return item
+    raise HTTPException(status_code=404, detail="Benchmark item not found")
+
+
+@router.get(
+    "/benchmarks/{benchmark_id}/items/{item_id}/events",
+    response_model=BenchmarkItemEventsResponse,
+)
+async def get_benchmark_item_events(
+    benchmark_id: str,
+    item_id: str,
+    user: CurrentUser,
+) -> BenchmarkItemEventsResponse:
+    """Replay persisted events for one benchmark item."""
+
+    detail = await _resolve_benchmark_detail(benchmark_id=benchmark_id, user=user)
+    for item in detail.benchmark_items:
+        if item.item_id == item_id:
+            return BenchmarkItemEventsResponse(
+                benchmark_id=detail.benchmark_id,
+                item_id=item_id,
+                events=item.events,
+            )
+    raise HTTPException(status_code=404, detail="Benchmark item not found")
+
+
+@router.get("/benchmarks/{benchmark_id}", response_model=BenchmarkDetailResponse)
+async def get_benchmark_detail(
+    benchmark_id: str,
+    user: CurrentUser,
+) -> BenchmarkDetailResponse:
+    """Return a dedicated benchmark detail payload by artifact_id or run_id fallback."""
+
+    return await _resolve_benchmark_detail(benchmark_id=benchmark_id, user=user)
 
 
 @router.post("/benchmarks/run", response_model=BenchmarkRunResponse)

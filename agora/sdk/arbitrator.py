@@ -81,7 +81,7 @@ class ArbitratorConfig(BaseModel):
     agent_count: int = 4
     reasoning_presets: ReasoningPresetOverrides | None = None
     allow_mechanism_switch: bool = True
-    allow_offline_fallback: bool = False
+    allow_offline_fallback: bool = True
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     auth_token: str | None = None
     local_models: list[LocalModelSpec] | None = None
@@ -105,6 +105,7 @@ class HostedTaskCreateResponse(BaseModel):
     selector_reasoning_hash: str = ""
     status: TaskStatusName = "pending"
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
 
 
@@ -139,6 +140,7 @@ class HostedDeliberationResult(BaseModel):
     mechanism_trace: list[MechanismTraceSegment] = Field(default_factory=list)
     execution_mode: str = "live"
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     fallback_count: int = 0
     fallback_events: list[FallbackEvent] = Field(default_factory=list)
     mechanism_override_source: str | None = None
@@ -169,9 +171,10 @@ class HostedTaskStatus(BaseModel):
     mechanism: MechanismName = "debate"
     mechanism_override: MechanismName | None = None
     allow_mechanism_switch: bool = True
-    allow_offline_fallback: bool = False
+    allow_offline_fallback: bool = True
     quorum_threshold: float = 0.6
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
     status: TaskStatusName = "pending"
     selector_reasoning: str = ""
@@ -284,6 +287,52 @@ class HostedBenchmarkRunStatus(BaseModel):
     total_latency_ms: float | None = None
     model_telemetry: dict[str, HostedModelTelemetry] = Field(default_factory=dict)
     cost: HostedCostEstimate | None = None
+    completed_item_count: int = 0
+    failed_item_count: int = 0
+    degraded_item_count: int = 0
+    failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
+
+
+class HostedBenchmarkItem(BaseModel):
+    """One task-like benchmark item with replayable event state."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    item_id: str
+    item_index: int = 0
+    task_index: int = 0
+    phase: str | None = None
+    run_kind: str | None = None
+    category: str
+    question: str
+    source_task: str | None = None
+    status: str
+    mechanism: str | None = None
+    selector_source: str | None = None
+    selector_fallback_path: list[str] = Field(default_factory=list)
+    failure_reason: str | None = None
+    latest_error_event: dict[str, Any] | None = None
+    fallback_events: list[dict[str, Any]] = Field(default_factory=list)
+    total_tokens: int = 0
+    thinking_tokens: int = 0
+    total_latency_ms: float = 0.0
+    model_telemetry: dict[str, HostedModelTelemetry] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class HostedBenchmarkItemEvents(BaseModel):
+    """Replay payload for one benchmark item."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    benchmark_id: str
+    item_id: str
+    events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class HostedBenchmarkDetail(BaseModel):
@@ -314,6 +363,15 @@ class HostedBenchmarkDetail(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     benchmark_payload: dict[str, Any] = Field(default_factory=dict)
     cost: HostedCostEstimate | None = None
+    benchmark_items: list[HostedBenchmarkItem] = Field(default_factory=list)
+    active_item_id: str | None = None
+    active_item: HostedBenchmarkItem | None = None
+    completed_item_count: int = 0
+    failed_item_count: int = 0
+    degraded_item_count: int = 0
+    failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
 
 
 class HostedBenchmarkRunError(RuntimeError):
@@ -392,7 +450,7 @@ class AgoraArbitrator:
         agent_count: int = 4,
         reasoning_presets: ReasoningPresetOverrides | None = None,
         allow_mechanism_switch: bool = True,
-        allow_offline_fallback: bool = False,
+        allow_offline_fallback: bool = True,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
         local_models: list[LocalModelSpec] | None = None,
@@ -658,6 +716,34 @@ class AgoraArbitrator:
         response.raise_for_status()
         return HostedBenchmarkDetail.model_validate(response.json())
 
+    async def get_benchmark_item(
+        self,
+        benchmark_id: str,
+        item_id: str,
+    ) -> HostedBenchmarkItem:
+        """Fetch one item-scoped benchmark payload."""
+
+        response = await self._client.get(
+            f"/benchmarks/{benchmark_id}/items/{item_id}",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return HostedBenchmarkItem.model_validate(response.json())
+
+    async def get_benchmark_item_events(
+        self,
+        benchmark_id: str,
+        item_id: str,
+    ) -> HostedBenchmarkItemEvents:
+        """Fetch replayable events for one benchmark item."""
+
+        response = await self._client.get(
+            f"/benchmarks/{benchmark_id}/items/{item_id}/events",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return HostedBenchmarkItemEvents.model_validate(response.json())
+
     async def stream_benchmark_run_events(
         self,
         run_id: str,
@@ -765,14 +851,13 @@ class AgoraArbitrator:
                 )
             ):
                 raise RuntimeError("Local fallback occurred but allow_offline_fallback=false")
-            selector_source = "llm_reasoning"
-            if self.config.mechanism is not None:
-                selector_source = "forced_override"
-            elif "Reasoning model unavailable" in result.mechanism_selection.reasoning:
-                selector_source = "bandit_fallback"
             return result.model_copy(
                 update={
-                    "selector_source": selector_source,
+                    "selector_source": (
+                        "forced_override"
+                        if self.config.mechanism is not None
+                        else result.selector_source
+                    ),
                     "mechanism_override_source": (
                         "sdk" if self.config.mechanism is not None else None
                     ),
@@ -1234,6 +1319,39 @@ class AgoraArbitrator:
                 latest_error_event=status.latest_error_event,
             )
 
+    def _validate_completed_result_shape(
+        self,
+        status: HostedTaskStatus,
+    ) -> None:
+        """Reject fake-complete hosted payloads when strict verification is enabled."""
+
+        if not self.config.strict_verification:
+            return
+        if status.status != "completed":
+            return
+        if status.result is None:
+            return
+
+        required_completed_fields = (
+            "convergence_history",
+            "mechanism_trace",
+            "fallback_events",
+            "fallback_count",
+        )
+        missing = [
+            field_name
+            for field_name in required_completed_fields
+            if field_name not in status.result.model_fields_set
+        ]
+        if missing:
+            raise HostedTaskProtocolError(
+                "Task status missing completed result fields: " + ", ".join(missing),
+                task_id=status.task_id,
+                status=status.status,
+                failure_reason=status.failure_reason,
+                latest_error_event=status.latest_error_event,
+            )
+
     async def _status_to_result(
         self,
         status_payload: HostedTaskStatus | dict[str, Any],
@@ -1253,6 +1371,7 @@ class AgoraArbitrator:
                 failure_reason=status.failure_reason,
                 latest_error_event=status.latest_error_event,
             )
+        self._validate_completed_result_shape(status)
 
         mechanism = MechanismType(str(status.mechanism).lower())
         features = await extract_features(
@@ -1401,7 +1520,7 @@ class AgoraNode:
         mechanism: MechanismName | None = None,
         agent_count: int = 4,
         allow_mechanism_switch: bool = True,
-        allow_offline_fallback: bool = False,
+        allow_offline_fallback: bool = True,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
         local_models: list[LocalModelSpec] | None = None,

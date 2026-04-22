@@ -148,3 +148,25 @@ def test_compute_metrics_clamps_answer_churn_to_unit_interval(monkeypatch) -> No
     metrics = monitor.compute_metrics(outputs)
 
     assert metrics.answer_churn == 1.0
+
+
+def test_seeded_baseline_drives_first_round_information_gain() -> None:
+    """Round-one novelty should compare against initial independent answers, not null state."""
+
+    monitor = StateMonitor()
+    initial_outputs = [
+        make_agent_output("agent-1", '{"current_answer":"Option A"}', role="proponent"),
+        make_agent_output("agent-2", '{"current_answer":"Option B"}', role="opponent"),
+    ]
+    first_round_outputs = [
+        make_agent_output("agent-1", '{"current_answer":"Option A"}', role="pro_rebuttal"),
+        make_agent_output("agent-2", '{"current_answer":"Option A"}', role="opp_rebuttal"),
+    ]
+
+    monitor.seed_baseline(initial_outputs)
+    first_round = monitor.compute_metrics(first_round_outputs)
+
+    assert first_round.round_number >= 0
+    assert first_round.answer_churn > 0.0
+    assert first_round.js_divergence > 0.0
+    assert first_round.information_gain_delta > 0.0

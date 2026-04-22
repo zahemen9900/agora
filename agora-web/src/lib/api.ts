@@ -339,6 +339,7 @@ export async function submitTask(
       task: taskText,
       agent_count: agentCount,
       stakes,
+      allow_offline_fallback: true,
       reasoning_presets: reasoningPresets,
     }),
   });

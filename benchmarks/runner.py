@@ -13,8 +13,13 @@ from typing import Any
 import numpy as np
 
 from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
+from agora.runtime.task_execution import (
+    TaskLikeExecutionOutcome,
+    build_pinned_selection,
+    execute_task_like_run,
+    resolve_task_like_selection,
+)
 from agora.runtime.orchestrator import AgoraOrchestrator
-from agora.selector.features import extract_features
 from agora.types import DeliberationResult, MechanismSelection, MechanismType
 
 _DATASET_DIR = Path(__file__).resolve().parent / "datasets"
@@ -129,13 +134,19 @@ class BenchmarkRunner:
             question = self._task_question(task_item)
             for mechanism in mechanisms:
                 override = None if mechanism == "selector" else mechanism
-                result = await self.orchestrator.run(
-                    task=question,
-                    stakes=float(task_item.get("stakes", 0.0)),
+                execution = await self._run_task_like_execution(
+                    task_item=task_item,
+                    question=question,
                     mechanism_override=override,
-                    agents=self.agents,
                 )
-                runs.append(self._build_run_record(task_index, mechanism, task_item, result))
+                runs.append(
+                    self._build_execution_record(
+                        task_index=task_index,
+                        mode=mechanism,
+                        task_item=task_item,
+                        execution=execution,
+                    )
+                )
 
         return {
             "runs": runs,
@@ -220,9 +231,9 @@ class BenchmarkRunner:
             question = self._task_question(task_item)
 
             _seed_rng(base_seed_offset)
-            first = await self.orchestrator.run(
-                question,
-                agents=self.agents,
+            first = await self._run_task_like_execution(
+                task_item=task_item,
+                question=question,
                 event_sink=self._benchmark_event_sink(
                     event_sink=event_sink,
                     phase="pre_learning",
@@ -235,9 +246,9 @@ class BenchmarkRunner:
             )
 
             _seed_rng(base_seed_offset)
-            second = await self.orchestrator.run(
-                question,
-                agents=self.agents,
+            second = await self._run_task_like_execution(
+                task_item=task_item,
+                question=question,
                 event_sink=self._benchmark_event_sink(
                     event_sink=event_sink,
                     phase="pre_learning",
@@ -249,10 +260,24 @@ class BenchmarkRunner:
                 ),
             )
 
-            record = self._build_run_record(task_index, "selector", task_item, first)
-            record["merkle_root_rerun"] = second.merkle_root
-            record["merkle_deterministic"] = first.merkle_root == second.merkle_root
-            if seed is not None and not record["merkle_deterministic"]:
+            record = self._build_execution_record(
+                task_index=task_index,
+                mode="selector",
+                task_item=task_item,
+                execution=first,
+            )
+            record["merkle_root_rerun"] = second.result.merkle_root if second.result is not None else None
+            record["merkle_deterministic"] = (
+                first.result is not None
+                and second.result is not None
+                and first.result.merkle_root == second.result.merkle_root
+            )
+            if (
+                seed is not None
+                and first.status == "completed"
+                and second.status == "completed"
+                and not record["merkle_deterministic"]
+            ):
                 raise RuntimeError(
                     "Determinism check failed for training task "
                     f"index={task_index} category={task_item.get('category', 'unknown')}"
@@ -271,10 +296,9 @@ class BenchmarkRunner:
                 )
 
             _seed_rng(base_seed_offset + 1)
-            learned = await self.orchestrator.run_and_learn(
-                question,
-                ground_truth=task_item.get("ground_truth"),
-                agents=self.agents,
+            learned = await self._run_task_like_execution(
+                task_item=task_item,
+                question=question,
                 event_sink=self._benchmark_event_sink(
                     event_sink=event_sink,
                     phase="learning_updates",
@@ -284,12 +308,13 @@ class BenchmarkRunner:
                     task_item=task_item,
                     question=question,
                 ),
+                learn=True,
             )
-            learned_record = self._build_run_record(
-                task_index,
-                "selector_learn",
-                task_item,
-                learned,
+            learned_record = self._build_execution_record(
+                task_index=task_index,
+                mode="selector_learn",
+                task_item=task_item,
+                execution=learned,
             )
             learning_updates.append(learned_record)
             if progress_callback is not None:
@@ -307,9 +332,9 @@ class BenchmarkRunner:
         for task_index, task_item in enumerate(holdout_tasks):
             question = self._task_question(task_item)
             _seed_rng(len(training_tasks) * 3 + task_index)
-            holdout = await self.orchestrator.run(
-                question,
-                agents=self.agents,
+            holdout = await self._run_task_like_execution(
+                task_item=task_item,
+                question=question,
                 event_sink=self._benchmark_event_sink(
                     event_sink=event_sink,
                     phase="post_learning",
@@ -320,7 +345,12 @@ class BenchmarkRunner:
                     question=question,
                 ),
             )
-            holdout_record = self._build_run_record(task_index, "selector", task_item, holdout)
+            holdout_record = self._build_execution_record(
+                task_index=task_index,
+                mode="selector",
+                task_item=task_item,
+                execution=holdout,
+            )
             holdout_runs.append(holdout_record)
             if progress_callback is not None:
                 await progress_callback(
@@ -340,6 +370,7 @@ class BenchmarkRunner:
 
         payload = {
             "generated_at": datetime.now(UTC).isoformat(),
+            "artifact_version": "benchmark-tasklike-v2",
             "pre_learning": {
                 "runs": pre_learning_runs,
                 "summary": self._summarize_runs(pre_learning_runs),
@@ -359,6 +390,49 @@ class BenchmarkRunner:
             output_path or str(_RESULTS_DIR / "phase2_validation.json"),
         )
         return payload
+
+    async def _run_task_like_execution(
+        self,
+        *,
+        task_item: dict[str, Any],
+        question: str,
+        mechanism_override: str | None = None,
+        event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+        learn: bool = False,
+    ) -> TaskLikeExecutionOutcome:
+        stakes = float(task_item.get("stakes", self.orchestrator.default_stakes) or 0.0)
+        requested_override = (
+            MechanismType(mechanism_override)
+            if isinstance(mechanism_override, str) and mechanism_override
+            else None
+        )
+        selection, selector_source, selector_fallback_path, mechanism_override_source = (
+            await resolve_task_like_selection(
+                orchestrator=self.orchestrator,
+                task_text=question,
+                agent_count=self.orchestrator.agent_count,
+                stakes=stakes,
+                requested_override=requested_override,
+            )
+        )
+        execution = await execute_task_like_run(
+            orchestrator=self.orchestrator,
+            task_text=question,
+            selection=selection,
+            selector_source=selector_source,
+            selector_fallback_path=selector_fallback_path,
+            mechanism_override_source=mechanism_override_source,
+            event_sink=event_sink,
+            agents=self.agents,
+            allow_switch=requested_override is None,
+        )
+        if learn and execution.status == "completed" and execution.result is not None:
+            self.orchestrator.selector.update_with_mechanism(
+                execution.result.mechanism_selection,
+                self._reward_for_task(task_item, execution.result),
+                mechanism=execution.result.mechanism_used,
+            )
+        return execution
 
     @staticmethod
     def _benchmark_context(
@@ -591,22 +665,94 @@ class BenchmarkRunner:
         mechanism: MechanismType,
     ) -> MechanismSelection:
         """Build a deterministic forced selection for direct engine evaluation."""
-
-        features = await extract_features(
+        return await build_pinned_selection(
             task_text=task,
             agent_count=self.orchestrator.agent_count,
             stakes=self.orchestrator.default_stakes,
-        )
-        reasoning = f"Forced benchmark mechanism: {mechanism.value}"
-        return MechanismSelection(
             mechanism=mechanism,
-            confidence=1.0,
-            reasoning=reasoning,
-            reasoning_hash=self.orchestrator.hasher.hash_content(reasoning),
-            bandit_recommendation=mechanism,
-            bandit_confidence=1.0,
-            task_features=features,
+            reasoning_hash=self.orchestrator.hasher.hash_content,
+            selector_source="forced_override",
+            mechanism_override_source="benchmark",
         )
+
+    def _build_execution_record(
+        self,
+        *,
+        task_index: int,
+        mode: str,
+        task_item: dict[str, Any],
+        execution: TaskLikeExecutionOutcome,
+    ) -> dict[str, Any]:
+        if execution.status == "completed" and execution.result is not None:
+            return self._build_run_record(task_index, mode, task_item, execution.result)
+        return self._build_failed_run_record(
+            task_index=task_index,
+            mode=mode,
+            task_item=task_item,
+            execution=execution,
+        )
+
+    def _build_failed_run_record(
+        self,
+        *,
+        task_index: int,
+        mode: str,
+        task_item: dict[str, Any],
+        execution: TaskLikeExecutionOutcome,
+    ) -> dict[str, Any]:
+        selection = execution.selection
+        category = str(task_item.get("category") or "unknown")
+        failure_reason = execution.failure_reason or "benchmark_item_failed"
+        return {
+            "task_index": task_index,
+            "task": task_item["task"],
+            "question": self._task_question(task_item),
+            "source_task": task_item["task"],
+            "category": category,
+            "mode": mode,
+            "item_status": "failed",
+            "mechanism_used": selection.mechanism.value,
+            "correct": False,
+            "confidence": 0.0,
+            "tokens_used": 0,
+            "latency_ms": 0.0,
+            "rounds": 0,
+            "switches": 0,
+            "quorum_reached": False,
+            "merkle_root": None,
+            "final_answer": "",
+            "selector_reasoning": selection.reasoning,
+            "selector_reasoning_hash": selection.reasoning_hash,
+            "selector_source": execution.selector_source,
+            "selector_fallback_path": list(execution.selector_fallback_path),
+            "failure_reason": failure_reason,
+            "latest_error_event": execution.latest_error_event,
+            "fallback_events": [],
+            "fallback_count": 0,
+            "agent_count": self.orchestrator.agent_count,
+            "agent_models_used": [],
+            "model_token_usage": {},
+            "model_input_token_usage": {},
+            "model_output_token_usage": {},
+            "model_latency_ms": {},
+            "convergence_history": [],
+            "mechanism_trace": [],
+            "transcript_hash_count": 0,
+            "execution_mode": "failed",
+            "mechanism_override_source": execution.mechanism_override_source,
+            "model_telemetry": {},
+            "input_tokens_used": None,
+            "output_tokens_used": None,
+            "model_thinking_token_usage": {},
+            "thinking_tokens_used": 0,
+            "estimated_cost_usd": None,
+            "model_estimated_costs_usd": {},
+            "pricing_version": None,
+            "cost_estimated_at": None,
+            "estimation_mode": "unavailable",
+            "pricing_sources": {},
+            "cost": None,
+        }
 
     def _build_run_record(
         self,
@@ -657,6 +803,7 @@ class BenchmarkRunner:
             "source_task": task_item["task"],
             "category": task_item.get("category", "reasoning"),
             "mode": mode,
+            "item_status": "completed",
             "mechanism_used": result.mechanism_used.value,
             "correct": self._score_result(task_item, result),
             "confidence": result.confidence,
@@ -698,6 +845,7 @@ class BenchmarkRunner:
                 else result.execution_mode
             ),
             "selector_source": result.selector_source,
+            "selector_fallback_path": list(result.mechanism_selection.selector_fallback_path),
             "fallback_count": result.fallback_count,
             "fallback_events": [
                 event.model_dump(mode="json") for event in result.fallback_events
@@ -798,6 +946,12 @@ class BenchmarkRunner:
             "pricing_sources": pricing_sources,
         }
 
+    def _reward_for_task(self, task_item: dict[str, Any], result: DeliberationResult) -> float:
+        ground_truth = task_item.get("ground_truth")
+        if ground_truth is not None:
+            return 1.0 if self._score_result(task_item, result) else 0.0
+        return result.confidence * (1.0 if result.quorum_reached else 0.5)
+
     def _score_result(self, task_item: dict[str, Any], result: DeliberationResult) -> bool:
         """Score a result against task metadata or proxy heuristic."""
 
@@ -832,14 +986,50 @@ class BenchmarkRunner:
         """Aggregate benchmark records by stage, actual mechanism, and category."""
 
         if not runs:
-            return {"per_mode": {}, "per_mechanism": {}, "per_category": {}}
+            return {
+                "per_mode": {},
+                "per_mechanism": {},
+                "per_category": {},
+                "completed_run_count": 0,
+                "failed_run_count": 0,
+                "failure_counts_by_category": {},
+                "failure_counts_by_reason": {},
+            }
+
+        completed_runs = [
+            run for run in runs if str(run.get("item_status") or "completed").lower() != "failed"
+        ]
+        failed_runs = [
+            run for run in runs if str(run.get("item_status") or "").lower() == "failed"
+        ]
+
+        failure_counts_by_category: dict[str, int] = {}
+        failure_counts_by_reason: dict[str, int] = {}
+        for run in failed_runs:
+            category_key = str(run.get("category") or "unknown").strip().lower() or "unknown"
+            reason_key = str(run.get("failure_reason") or "unknown").strip() or "unknown"
+            failure_counts_by_category[category_key] = (
+                failure_counts_by_category.get(category_key, 0) + 1
+            )
+            failure_counts_by_reason[reason_key] = failure_counts_by_reason.get(reason_key, 0) + 1
+
+        if not completed_runs:
+            return {
+                "per_mode": {},
+                "per_mechanism": {},
+                "per_category": {},
+                "completed_run_count": 0,
+                "failed_run_count": len(failed_runs),
+                "failure_counts_by_category": failure_counts_by_category,
+                "failure_counts_by_reason": failure_counts_by_reason,
+            }
 
         per_mode: dict[str, list[dict[str, Any]]] = defaultdict(list)
         per_mechanism: dict[str, list[dict[str, Any]]] = defaultdict(list)
         per_category: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
             lambda: defaultdict(list)
         )
-        for run in runs:
+        for run in completed_runs:
             stage_key = str(
                 run.get("mode")
                 or run.get("stage")
@@ -926,4 +1116,8 @@ class BenchmarkRunner:
             "per_mode": mode_summary,
             "per_mechanism": mechanism_summary,
             "per_category": category_summary,
+            "completed_run_count": len(completed_runs),
+            "failed_run_count": len(failed_runs),
+            "failure_counts_by_category": failure_counts_by_category,
+            "failure_counts_by_reason": failure_counts_by_reason,
         }

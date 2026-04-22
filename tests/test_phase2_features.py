@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 
+from agora.agent import AgentCallError
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
@@ -20,6 +21,17 @@ from api.store_local import LocalTaskStore
 from benchmarks.runner import BenchmarkRunner
 from agora.types import DeliberationResult, MechanismType
 from tests.helpers import make_selection
+
+
+def _override_user() -> AuthenticatedUser:
+    return AuthenticatedUser(
+        auth_method="jwt",
+        workspace_id="user-1",
+        user_id="user-1",
+        email="user1@example.com",
+        display_name="User One",
+        scopes=["tasks:read", "tasks:write"],
+    )
 
 
 def test_benchmark_runner_loads_curated_dataset() -> None:
@@ -332,6 +344,13 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
     task_routes._store = store
 
     artifact_payload = {
+        "generated_at": "2026-04-21T00:00:00+00:00",
+        "artifact_version": "benchmark-tasklike-v2",
+        "benchmark_config": {
+            "agent_count": 4,
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+        },
         "summary": None,
         "post_learning": {
             "summary": {
@@ -343,7 +362,7 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
     artifact = {
         "artifact_id": "local-stage-summary",
         "scope": "global",
-        "source": "local_backfill",
+        "source": "user_triggered",
         "status": "completed",
         "benchmark_payload": artifact_payload,
     }
@@ -371,6 +390,134 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
         assert healed_summary is not None
         assert healed_summary["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
     finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_heal_skips_legacy_global_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-artifact-heal-skip-legacy"))
+    task_routes._store = store
+
+    legacy_artifact = {
+        "artifact_id": "legacy-phase2-validation",
+        "scope": "global",
+        "source": "legacy_backfill",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-17T00:00:00+00:00",
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.11}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.22}}},
+            },
+        },
+    }
+    current_artifact = {
+        "artifact_id": "current-tasklike-benchmark",
+        "scope": "global",
+        "source": "user_triggered",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-21T00:00:00+00:00",
+            "artifact_version": "benchmark-tasklike-v2",
+            "benchmark_config": {
+                "agent_count": 4,
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+            },
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.73}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.61}}},
+            },
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_global_benchmark_artifact("legacy-phase2-validation", legacy_artifact)
+        await store.save_global_benchmark_artifact("current-tasklike-benchmark", current_artifact)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
+        assert (
+            payload["summary"]["per_category"]["reasoning"]["selector"]["accuracy"]
+            == pytest.approx(0.61)
+        )
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmark_catalog_hides_legacy_backfill_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmark-catalog-hides-legacy"))
+    task_routes._store = store
+
+    legacy_artifact = {
+        "artifact_id": "legacy-phase2-validation",
+        "scope": "global",
+        "source": "legacy_backfill",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-17T00:00:00+00:00",
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.11}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.22}}},
+            },
+        },
+    }
+    current_artifact = {
+        "artifact_id": "current-tasklike-benchmark",
+        "scope": "global",
+        "source": "user_triggered",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-21T00:00:00+00:00",
+            "artifact_version": "benchmark-tasklike-v2",
+            "benchmark_config": {
+                "agent_count": 4,
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+            },
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.73}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.61}}},
+            },
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "")
+        app.dependency_overrides[benchmark_routes.get_current_user] = _override_user
+        await store.save_global_benchmark_artifact("legacy-phase2-validation", legacy_artifact)
+        await store.save_global_benchmark_artifact("current-tasklike-benchmark", current_artifact)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks/catalog",
+                headers={"Authorization": "Bearer dummy"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        artifact_ids = [entry["artifact_id"] for entry in payload["global_recent"]]
+        assert "current-tasklike-benchmark" in artifact_ids
+        assert "legacy-phase2-validation" not in artifact_ids
+    finally:
+        app.dependency_overrides.pop(benchmark_routes.get_current_user, None)
         task_routes._store = None
 
 
@@ -523,6 +670,11 @@ async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_miss
 
 @pytest.mark.asyncio
 async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path) -> None:
+    class _FailingSelectorCaller:
+        async def call(self, *args: object, **kwargs: object) -> tuple[object, dict[str, object]]:
+            del args, kwargs
+            raise AgentCallError("selector provider unavailable")
+
     async def deterministic_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
         return {
@@ -564,6 +716,7 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
     training = [task for task in training if task["category"] != "demo"]
     holdout = [task for task in holdout if task["category"] != "demo"]
     orchestrator = AgoraOrchestrator(agent_count=3)
+    orchestrator.selector.reasoning._caller = _FailingSelectorCaller()
     runner = BenchmarkRunner(orchestrator, agents=[deterministic_agent] * 3)
 
     payload = await runner.run_phase2_validation(
@@ -588,6 +741,94 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
     assert "output_tokens_used" in sample_run
     assert "thinking_tokens_used" in sample_run
     assert "cost" in sample_run
+
+
+@pytest.mark.asyncio
+async def test_phase2_validation_continues_after_failed_item(tmp_path: Path) -> None:
+    class _FailingSelectorCaller:
+        async def call(self, *args: object, **kwargs: object) -> tuple[object, dict[str, object]]:
+            del args, kwargs
+            raise AgentCallError("selector provider unavailable")
+
+    async def mixed_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt
+        if "FAIL BENCHMARK ITEM" in user_prompt:
+            raise RuntimeError("provider_kimi_unavailable_or_invalid")
+        return {
+            "answer": "Constraint-matching answer",
+            "confidence": 0.81,
+            "predicted_group_answer": "Constraint-matching answer",
+            "reasoning": "Deterministic success agent.",
+            "claim": "The answer follows the prompt directly.",
+            "evidence": "The prompt states the deciding condition clearly.",
+            "defense": "The critique does not invalidate the direct answer.",
+            "final_answer": "Constraint-matching answer",
+            "summary": "The deterministic local agent selected the direct answer.",
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": "pro claim",
+                    "flaw": "Needs explicit constraint support.",
+                    "attack_axis": "constraint_fit",
+                    "counterexample": "A stronger answer satisfying more constraints.",
+                    "failure_mode": "The claim is plausible but under-grounded.",
+                    "question": "Which prompt constraint makes the claim decisive?",
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": "opp claim",
+                    "flaw": "Relies on an unstated assumption.",
+                    "attack_axis": "hidden_assumption",
+                    "counterexample": "A boundary case where the assumption breaks.",
+                    "failure_mode": "The claim fails when its hidden assumption is false.",
+                    "question": "Which assumption must hold for the claim to win?",
+                },
+            ],
+        }
+
+    orchestrator = AgoraOrchestrator(agent_count=3, allow_offline_fallback=True)
+    orchestrator.selector.reasoning._caller = _FailingSelectorCaller()
+    runner = BenchmarkRunner(orchestrator, agents=[mixed_agent] * 3)
+
+    payload = await runner.run_phase2_validation(
+        training_tasks=[
+            {
+                "task": "FAIL BENCHMARK ITEM",
+                "category": "reasoning",
+                "ground_truth": "Constraint-matching answer",
+                "stakes": 0.0,
+            },
+            {
+                "task": "Safe benchmark item",
+                "category": "math",
+                "ground_truth": "Constraint-matching answer",
+                "stakes": 0.0,
+            },
+        ],
+        holdout_tasks=[
+            {
+                "task": "Safe holdout benchmark item",
+                "category": "factual",
+                "ground_truth": "Constraint-matching answer",
+                "stakes": 0.0,
+            }
+        ],
+        output_path=str(tmp_path / "phase2_validation_partial.json"),
+    )
+
+    pre_learning_runs = payload["pre_learning"]["runs"]
+    learning_runs = payload["learning_updates"]["runs"]
+    post_learning_runs = payload["post_learning"]["runs"]
+
+    assert any(run["item_status"] == "failed" for run in pre_learning_runs)
+    assert any(run["item_status"] == "completed" for run in pre_learning_runs + learning_runs + post_learning_runs)
+    assert payload["pre_learning"]["summary"]["failed_run_count"] >= 1
+    assert payload["post_learning"]["summary"]["completed_run_count"] >= 1
+    assert payload["pre_learning"]["summary"]["failure_counts_by_reason"]
+    assert all(
+        "selector_source" in run and "selector_fallback_path" in run
+        for run in pre_learning_runs + learning_runs + post_learning_runs
+    )
 
 
 @pytest.mark.asyncio
