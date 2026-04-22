@@ -91,6 +91,25 @@ class _FakeSelectionOnlyOrchestrator:
         return make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
 
 
+class _FakeBanditFallbackOrchestrator:
+    def __init__(self, agent_count: int, reasoning_presets=None, allow_offline_fallback: bool = False):
+        self.agent_count = agent_count
+        self.reasoning_presets = reasoning_presets
+        self.allow_offline_fallback = allow_offline_fallback
+        self.selector = self
+
+    async def select(self, task_text: str, agent_count: int, stakes: float):
+        del task_text, agent_count, stakes
+        selection = make_selection(mechanism=MechanismType.VOTE, topic_category="math")
+        return selection.model_copy(
+            update={
+                "selector_source": "bandit_fallback",
+                "selector_fallback_path": ["reasoning", "heuristic", "bandit"],
+                "reasoning": "Reasoning model unavailable; defaulting to Thompson Sampling recommendation to preserve availability.",
+            }
+        )
+
+
 def _signed_webhook_headers(
     secret: str,
     body: bytes,
@@ -685,6 +704,35 @@ async def test_create_task_preserves_requested_offline_fallback_flag(
         task_routes._store = None
 
     assert fetched.allow_offline_fallback is False
+
+
+@pytest.mark.asyncio
+async def test_create_task_rejects_selector_fallback_when_strict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "strict-selector-data"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeBanditFallbackOrchestrator)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.create_task(
+                TaskCreateRequest(
+                    task="Keep selector strict",
+                    agent_count=3,
+                    stakes=0.0,
+                    allow_offline_fallback=False,
+                ),
+                _override_user(),
+            )
+    finally:
+        task_routes._store = None
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == (
+        "Selector provider fallback occurred but allow_offline_fallback=false"
+    )
 
 
 @pytest.mark.asyncio
@@ -3225,6 +3273,291 @@ async def test_benchmark_detail_endpoint_coerces_legacy_zero_agent_count(
     payload = response.json()
     assert payload["artifact_id"] == artifact_id
     assert payload["agent_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_benchmark_detail_exposes_item_scoped_state_and_replay(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    artifact_id = "bench-item-artifact"
+    item_id = "pre_learning:selector_initial:0"
+    await store.save_user_benchmark_artifact(
+        "user-1",
+        artifact_id,
+        {
+            "artifact_id": artifact_id,
+            "scope": "user",
+            "owner_user_id": "user-1",
+            "source": "user_triggered",
+            "status": "completed",
+            "created_at": "2026-04-22T18:00:00+00:00",
+            "benchmark_payload": {
+                "generated_at": "2026-04-22T18:00:00+00:00",
+                "artifact_version": "benchmark-tasklike-v2",
+                "benchmark_config": {"agent_count": 4},
+                "runs": [
+                    {
+                        "task_index": 0,
+                        "phase": "pre_learning",
+                        "run_kind": "selector_initial",
+                        "task": "What is 2 + 2?",
+                        "question": "What is 2 + 2?",
+                        "source_task": "What is 2 + 2?",
+                        "category": "math",
+                        "mode": "selector",
+                        "item_status": "completed",
+                        "mechanism_used": "vote",
+                        "correct": True,
+                        "confidence": 0.9,
+                        "tokens_used": 144,
+                        "thinking_tokens_used": 12,
+                        "latency_ms": 91.0,
+                        "selector_source": "heuristic_fallback",
+                        "selector_fallback_path": ["reasoning", "heuristic"],
+                        "fallback_events": [
+                            {
+                                "component": "vote._VoteResponse",
+                                "reason": "provider_kimi_empty_response",
+                                "fallback_type": "schema_coercion",
+                            }
+                        ],
+                    }
+                ],
+                "summary": {
+                    "per_mode": {"selector": {"accuracy": 1.0}},
+                    "per_category": {"math": {"selector": {"accuracy": 1.0}}},
+                },
+            },
+        },
+    )
+
+    await store.save_user_test_result(
+        "user-1",
+        "bench-item-run",
+        {
+            "run_id": "bench-item-run",
+            "status": "running",
+            "artifact_id": artifact_id,
+            "created_at": "2026-04-22T18:00:00+00:00",
+            "updated_at": "2026-04-22T18:01:00+00:00",
+            "request": {"agent_count": 4},
+            "events": [
+                {
+                    "event": "agent_output_delta",
+                    "data": {
+                        "agent_id": "agent-1",
+                        "content_delta": "Option A",
+                        "benchmark_context": {
+                            "phase": "pre_learning",
+                            "run_kind": "selector_initial",
+                            "task_index": 0,
+                            "category": "math",
+                            "question": "What is 2 + 2?",
+                            "source_task": "What is 2 + 2?",
+                            "item_id": item_id,
+                            "item_index": 0,
+                        },
+                    },
+                    "timestamp": "2026-04-22T18:00:05+00:00",
+                },
+                {
+                    "event": "usage_delta",
+                    "data": {
+                        "total_tokens": 144,
+                        "benchmark_context": {
+                            "phase": "pre_learning",
+                            "run_kind": "selector_initial",
+                            "task_index": 0,
+                            "category": "math",
+                            "question": "What is 2 + 2?",
+                            "source_task": "What is 2 + 2?",
+                            "item_id": item_id,
+                            "item_index": 0,
+                        },
+                    },
+                    "timestamp": "2026-04-22T18:00:10+00:00",
+                },
+                {
+                    "event": "failed",
+                    "data": {
+                        "run_id": "bench-item-run",
+                        "message": "provider unavailable",
+                    },
+                    "timestamp": "2026-04-22T18:01:00+00:00",
+                },
+            ],
+        },
+    )
+
+    detail = await client.get(f"/benchmarks/{artifact_id}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["active_item_id"] == item_id
+    assert len(payload["benchmark_items"]) >= 1
+    first_item = next(item for item in payload["benchmark_items"] if item["item_id"] == item_id)
+    assert first_item["question"] == "What is 2 + 2?"
+    assert first_item["selector_source"] == "heuristic_fallback"
+    assert first_item["selector_fallback_path"] == ["reasoning", "heuristic"]
+    assert first_item["events"][0]["event"] == "agent_output_delta"
+
+    item = await client.get(f"/benchmarks/{artifact_id}/items/{item_id}")
+    assert item.status_code == 200
+    item_payload = item.json()
+    assert item_payload["item_id"] == item_id
+    assert item_payload["events"][0]["event"] == "agent_output_delta"
+
+    item_events = await client.get(f"/benchmarks/{artifact_id}/items/{item_id}/events")
+    assert item_events.status_code == 200
+    replay_payload = item_events.json()
+    assert replay_payload["item_id"] == item_id
+    assert [event["event"] for event in replay_payload["events"]] == [
+        "agent_output_delta",
+        "usage_delta",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_benchmark_detail_derives_item_from_domain_progress_event(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    run_id = "bench-progress-derived"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "failed",
+            "created_at": "2026-04-22T19:00:00+00:00",
+            "updated_at": "2026-04-22T19:01:00+00:00",
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {},
+            },
+            "events": [
+                {
+                    "event": "domain_progress",
+                    "data": {
+                        "phase": "pre_learning",
+                        "completed": 1,
+                        "total": 18,
+                        "latest_run": {
+                            "task_index": 0,
+                            "phase": "pre_learning",
+                            "run_kind": "selector_initial",
+                            "task": "What is 2 + 2?",
+                            "question": "What is 2 + 2?",
+                            "source_task": "What is 2 + 2?",
+                            "category": "math",
+                            "item_status": "failed",
+                            "mechanism_used": "vote",
+                            "selector_source": "llm_reasoning",
+                            "selector_fallback_path": ["reasoning"],
+                        },
+                    },
+                    "timestamp": "2026-04-22T19:00:30+00:00",
+                },
+                {
+                    "event": "failed",
+                    "data": {
+                        "run_id": run_id,
+                        "message": "provider unavailable",
+                    },
+                    "timestamp": "2026-04-22T19:01:00+00:00",
+                },
+            ],
+            "error": "provider unavailable",
+        },
+    )
+
+    detail = await client.get(f"/benchmarks/{run_id}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["benchmark_items"]
+    assert payload["benchmark_items"][0]["item_id"] == "pre_learning:selector_initial:0"
+    assert payload["benchmark_items"][0]["question"] == "What is 2 + 2?"
+    assert payload["benchmark_items"][0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_detail_synthesizes_items_from_saved_request_on_failed_runs(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    run_id = "bench-request-synth"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "failed",
+            "created_at": "2026-04-22T20:00:00+00:00",
+            "updated_at": "2026-04-22T20:01:00+00:00",
+            "completed_item_count": 0,
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {
+                    "math": {
+                        "template_id": "custom",
+                        "question": "What is the exact value of 11/12 + 7/18?",
+                        "source": "custom",
+                    }
+                },
+                "resolved_domain_prompts": {
+                    "math": {
+                        "template_id": "custom",
+                        "template_title": "Custom Question",
+                        "source": "custom",
+                        "question": "What is the exact value of 11/12 + 7/18?",
+                    }
+                },
+            },
+            "events": [],
+            "error": "provider_claude_and_kimi_unavailable_or_invalid",
+        },
+    )
+
+    detail = await client.get(f"/benchmarks/{run_id}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert len(payload["benchmark_items"]) == 18
+    math_items = [item for item in payload["benchmark_items"] if item["category"] == "math"]
+    assert math_items
+    assert math_items[0]["question"] == "What is the exact value of 11/12 + 7/18?"
+    assert payload["active_item_id"] is not None
+    active_item = next(
+        item for item in payload["benchmark_items"] if item["item_id"] == payload["active_item_id"]
+    )
+    assert active_item["status"] == "failed"
+    assert active_item["failure_reason"] == "provider_claude_and_kimi_unavailable_or_invalid"
 
 
 @pytest.mark.asyncio

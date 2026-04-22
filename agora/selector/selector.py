@@ -6,9 +6,10 @@ from pathlib import Path
 
 import structlog
 
-from agora.agent import AgentCaller
+from agora.agent import AgentCallError, AgentCaller
 from agora.selector.bandit import ThompsonSamplingSelector
 from agora.selector.features import extract_features
+from agora.selector.heuristic import HeuristicSelector
 from agora.selector.reasoning import ReasoningSelector
 from agora.types import MechanismSelection, MechanismType
 
@@ -33,6 +34,7 @@ class AgoraSelector:
         self.bandit = ThompsonSamplingSelector(
             mechanisms=[MechanismType.DEBATE, MechanismType.VOTE]
         )
+        self.heuristic = HeuristicSelector()
         self.reasoning = ReasoningSelector(caller=reasoning_caller)
 
         if bandit_state_path is not None:
@@ -61,13 +63,46 @@ class AgoraSelector:
             task_text=task_text, agent_count=agent_count, stakes=stakes
         )
         bandit_rec = self.bandit.select(features)
-        selection = await self.reasoning.select(
-            task_text=task_text,
-            features=features,
-            bandit_recommendation=bandit_rec,
-            historical_performance=self.bandit.get_stats(),
-        )
-        return selection
+        try:
+            return await self.reasoning.select(
+                task_text=task_text,
+                features=features,
+                bandit_recommendation=bandit_rec,
+                historical_performance=self.bandit.get_stats(),
+            )
+        except AgentCallError as exc:
+            logger.warning(
+                "reasoning_selector_failed",
+                error=str(exc),
+                fallback="heuristic",
+            )
+        try:
+            return self.heuristic.select(
+                features=features,
+                bandit_recommendation=bandit_rec,
+            )
+        except Exception as exc:
+            logger.warning(
+                "heuristic_selector_failed",
+                error=str(exc),
+                fallback="bandit",
+            )
+            bandit_mechanism, bandit_confidence = bandit_rec
+            rationale = (
+                "Reasoning selector and heuristic selector were unavailable; defaulting to "
+                "Thompson Sampling as the final selector fallback."
+            )
+            return MechanismSelection(
+                mechanism=bandit_mechanism,
+                confidence=bandit_confidence,
+                reasoning=rationale,
+                reasoning_hash=self._hash_reasoning(rationale),
+                bandit_recommendation=bandit_mechanism,
+                bandit_confidence=bandit_confidence,
+                task_features=features,
+                selector_source="bandit_fallback",
+                selector_fallback_path=["reasoning", "heuristic", "bandit"],
+            )
 
     def update(self, selection: MechanismSelection, reward: float) -> None:
         """Update bandit based on execution outcome.
@@ -104,3 +139,9 @@ class AgoraSelector:
             category=category,
             reward=max(0.0, min(1.0, reward)),
         )
+
+    @staticmethod
+    def _hash_reasoning(reasoning: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(reasoning.encode("utf-8")).hexdigest()

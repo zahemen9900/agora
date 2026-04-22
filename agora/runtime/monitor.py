@@ -30,6 +30,25 @@ class StateMonitor:
         self._last_distribution = None
         self._last_locked_claim_count = None
 
+    def seed_baseline(
+        self,
+        agent_outputs: list[AgentOutput],
+        locked_claim_count: int | None = None,
+    ) -> None:
+        """Seed the comparison baseline from initial independent answers.
+
+        Debate round-one novelty should measure movement from the initial independent
+        answers, not from an implicit null baseline.
+        """
+
+        entropy, distribution = self._distribution_stats(agent_outputs)
+        normalized_locked_claim_count = (
+            max(0, int(locked_claim_count)) if locked_claim_count is not None else 0
+        )
+        self._last_entropy = entropy
+        self._last_distribution = distribution
+        self._last_locked_claim_count = normalized_locked_claim_count
+
     def compute_metrics(
         self,
         agent_outputs: list[AgentOutput],
@@ -51,18 +70,8 @@ class StateMonitor:
         if not agent_outputs:
             raise ValueError("compute_metrics requires at least one agent output")
 
-        weighted_counts: Counter[str] = Counter()
-        for output in agent_outputs:
-            normalized_answer = self.extract_answer_signal(output)
-            weight = min(1.0, max(0.0, output.confidence))
-            weighted_counts[normalized_answer] += weight if weight > 0.0 else 1e-9
-        total_weight = math.fsum(weighted_counts.values())
-        distribution = {
-            answer: weight / total_weight for answer, weight in weighted_counts.items()
-        }
-
+        entropy, distribution = self._distribution_stats(agent_outputs)
         probabilities = list(distribution.values())
-        entropy = max(0.0, -math.fsum(p * math.log2(p) for p in probabilities if p > 0.0))
         dominant_share = self._clamp_unit_interval(max(probabilities))
 
         if self._last_entropy is None:
@@ -109,6 +118,28 @@ class StateMonitor:
             dominant_answer_share=dominant_share,
             answer_distribution=distribution,
         )
+
+    def _distribution_stats(
+        self,
+        agent_outputs: list[AgentOutput],
+    ) -> tuple[float, dict[str, float]]:
+        """Return entropy and normalized answer distribution for one output set."""
+
+        if not agent_outputs:
+            raise ValueError("_distribution_stats requires at least one agent output")
+
+        weighted_counts: Counter[str] = Counter()
+        for output in agent_outputs:
+            normalized_answer = self.extract_answer_signal(output)
+            weight = min(1.0, max(0.0, output.confidence))
+            weighted_counts[normalized_answer] += weight if weight > 0.0 else 1e-9
+        total_weight = math.fsum(weighted_counts.values())
+        distribution = {
+            answer: weight / total_weight for answer, weight in weighted_counts.items()
+        }
+        probabilities = list(distribution.values())
+        entropy = max(0.0, -math.fsum(p * math.log2(p) for p in probabilities if p > 0.0))
+        return entropy, distribution
 
     @staticmethod
     def _jensen_shannon_divergence(

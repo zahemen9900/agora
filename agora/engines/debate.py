@@ -72,6 +72,8 @@ _ARITHMETIC_CLAIM_RE = re.compile(
 
 _STREAM_EVENT_PREFIX = "\u001eAGORA_STREAM_EVENT\u001e"
 _STREAM_EVENT_SEPARATOR = "\u001f"
+_SCHEMA_COERCION_REASON = "schema_incomplete_live_response"
+_SCHEMA_COERCION_CONFIDENCE = 0.5
 
 
 class _InitialAnswerResponse(BaseModel):
@@ -403,6 +405,7 @@ class DebateEngine:
             event_sink=event_sink,
         )
         self._graph_accumulate_usage(graph_state, usage)
+        self.monitor.seed_baseline(initial_outputs)
 
         for output in initial_outputs:
             execution.transcript_hashes.append(self.hasher.hash_agent_output(output))
@@ -1776,16 +1779,17 @@ class DebateEngine:
                                 kimi_usage.get("thinking_trace_chars", 0) or 0
                             ),
                         }
-                    kimi_response, fallback_used = self._coerce_debate_response(
+                    kimi_response, coercion_provenance = self._coerce_debate_response(
                         response_model=response_model,
                         response_text=str(kimi_response),
                         fallback=fallback,
                     )
-                    if fallback_used and not self.allow_offline_fallback:
+                    if coercion_provenance is not None and not self.allow_offline_fallback:
                         logger.warning(
-                            "debate_kimi_response_empty_retrying",
+                            "debate_kimi_response_retrying",
                             from_tier=tier,
                             response_model=response_model.__name__,
+                            provenance=coercion_provenance,
                         )
                         kimi_response, kimi_usage = await self._call_provider(
                             tier="kimi",
@@ -1794,12 +1798,12 @@ class DebateEngine:
                             response_format=None,
                             temperature=temperature,
                         )
-                        kimi_response, fallback_used = self._coerce_debate_response(
+                        kimi_response, coercion_provenance = self._coerce_debate_response(
                             response_model=response_model,
                             response_text=str(kimi_response),
                             fallback=fallback,
                         )
-                        if fallback_used and not self.allow_offline_fallback:
+                        if coercion_provenance is not None and not self.allow_offline_fallback:
                             raise AgentCallError(
                                 "Provider fallback disabled for "
                                 f"debate.{response_model.__name__}: "
@@ -1862,6 +1866,10 @@ class DebateEngine:
                         "thinking_trace_chars": int(
                             kimi_usage.get("thinking_trace_chars", 0) or 0
                         ),
+                        **self._coercion_usage(
+                            component=f"debate.{response_model.__name__}",
+                            provenance=coercion_provenance,
+                        ),
                     }
                 except AgentCallError as kimi_exc:
                     logger.warning(
@@ -1889,16 +1897,17 @@ class DebateEngine:
                     stream_callback=stream_callback,
                 )
                 if not isinstance(kimi_response, response_model):
-                    kimi_response, fallback_used = self._coerce_debate_response(
+                    kimi_response, coercion_provenance = self._coerce_debate_response(
                         response_model=response_model,
                         response_text=str(kimi_response),
                         fallback=fallback,
                     )
-                    if fallback_used and not self.allow_offline_fallback:
+                    if coercion_provenance is not None and not self.allow_offline_fallback:
                         logger.warning(
-                            "debate_kimi_response_empty_retrying",
+                            "debate_kimi_response_retrying",
                             from_tier=tier,
                             response_model=response_model.__name__,
+                            provenance=coercion_provenance,
                         )
                         kimi_response, kimi_usage = await self._call_provider(
                             tier="kimi",
@@ -1909,12 +1918,12 @@ class DebateEngine:
                             stream=stream,
                             stream_callback=stream_callback,
                         )
-                        kimi_response, fallback_used = self._coerce_debate_response(
+                        kimi_response, coercion_provenance = self._coerce_debate_response(
                             response_model=response_model,
                             response_text=str(kimi_response),
                             fallback=fallback,
                         )
-                        if fallback_used and not self.allow_offline_fallback:
+                        if coercion_provenance is not None and not self.allow_offline_fallback:
                             raise AgentCallError(
                                 "Provider fallback disabled for "
                                 f"debate.{response_model.__name__}: "
@@ -1977,6 +1986,10 @@ class DebateEngine:
                     "thinking_trace_chars": int(
                         kimi_usage.get("thinking_trace_chars", 0) or 0
                     ),
+                    **self._coercion_usage(
+                        component=f"debate.{response_model.__name__}",
+                        provenance=coercion_provenance,
+                    ),
                 }
             except AgentCallError as exc:
                 logger.warning(
@@ -2007,63 +2020,83 @@ class DebateEngine:
         response_model: type[BaseModel],
         response_text: str,
         fallback: BaseModel,
-    ) -> tuple[BaseModel, bool]:
+    ) -> tuple[BaseModel, str | None]:
         """Coerce live Kimi text into one of the debate response schemas."""
 
         cleaned = response_text.strip()
         if not cleaned:
-            return fallback, True
+            return fallback, "offline_fallback"
 
         try:
             parsed = json.loads(AgentCaller._extract_json_payload(cleaned))
             if isinstance(parsed, dict):
                 if response_model is _InitialAnswerResponse:
                     parsed.setdefault("answer", parsed.get("final_answer", cleaned))
-                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
-                    return _InitialAnswerResponse.model_validate(parsed), False
+                    parsed.setdefault("confidence", _SCHEMA_COERCION_CONFIDENCE)
+                    return _InitialAnswerResponse.model_validate(parsed), "schema_coercion"
                 if response_model is _OpeningResponse:
                     parsed.setdefault("claim", parsed.get("answer", cleaned))
                     parsed.setdefault("evidence", parsed.get("reasoning", cleaned))
-                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
-                    return _OpeningResponse.model_validate(parsed), False
+                    parsed.setdefault("confidence", _SCHEMA_COERCION_CONFIDENCE)
+                    return _OpeningResponse.model_validate(parsed), "schema_coercion"
                 if response_model is _RebuttalResponse:
                     parsed.setdefault("answer", parsed.get("final_answer", cleaned))
                     parsed.setdefault("defense", parsed.get("reasoning", cleaned))
-                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
-                    return _RebuttalResponse.model_validate(parsed), False
+                    parsed.setdefault("confidence", _SCHEMA_COERCION_CONFIDENCE)
+                    return _RebuttalResponse.model_validate(parsed), "schema_coercion"
                 if response_model is _SynthesisResponse:
                     parsed.setdefault("final_answer", parsed.get("answer", cleaned))
                     parsed.setdefault("summary", parsed.get("reasoning", cleaned))
-                    parsed.setdefault("confidence", getattr(fallback, "confidence", 0.55))
-                    return _SynthesisResponse.model_validate(parsed), False
+                    parsed.setdefault("confidence", _SCHEMA_COERCION_CONFIDENCE)
+                    return _SynthesisResponse.model_validate(parsed), "schema_coercion"
         except (json.JSONDecodeError, ValidationError):
             pass
 
         if response_model is _InitialAnswerResponse:
             return _InitialAnswerResponse(
                 answer=cleaned,
-                confidence=getattr(fallback, "confidence", 0.55),
-            ), False
+                confidence=_SCHEMA_COERCION_CONFIDENCE,
+            ), "schema_coercion"
         if response_model is _OpeningResponse:
             return _OpeningResponse(
                 claim=cleaned,
                 evidence=cleaned,
-                confidence=getattr(fallback, "confidence", 0.55),
-            ), False
+                confidence=_SCHEMA_COERCION_CONFIDENCE,
+            ), "schema_coercion"
         if response_model is _RebuttalResponse:
             return _RebuttalResponse(
                 answer=cleaned,
                 defense=cleaned,
-                confidence=getattr(fallback, "confidence", 0.55),
-            ), False
+                confidence=_SCHEMA_COERCION_CONFIDENCE,
+            ), "schema_coercion"
         if response_model is _SynthesisResponse:
             return _SynthesisResponse(
                 final_answer=cleaned,
                 summary=cleaned,
-                confidence=getattr(fallback, "confidence", 0.55),
-            ), False
+                confidence=_SCHEMA_COERCION_CONFIDENCE,
+            ), "schema_coercion"
 
-        return fallback, True
+        return fallback, "offline_fallback"
+
+    @staticmethod
+    def _coercion_usage(
+        *,
+        component: str,
+        provenance: str | None,
+    ) -> dict[str, Any]:
+        """Attach schema-coercion provenance to stage usage without faking offline fallback."""
+
+        if provenance != "schema_coercion":
+            return {}
+        return {
+            "fallback_events": [
+                FallbackEvent(
+                    component=component,
+                    reason=_SCHEMA_COERCION_REASON,
+                    fallback_type="schema_coercion",
+                )
+            ]
+        }
 
     def _offline_structured_fallback(
         self,

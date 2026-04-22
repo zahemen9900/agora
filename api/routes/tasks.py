@@ -15,6 +15,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
+from agora.runtime.task_execution import (
+    build_pinned_selection,
+    execute_task_like_run,
+    resolve_task_like_selection,
+)
 from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
@@ -480,6 +485,7 @@ def _result_to_response(
         ],
         execution_mode=result.execution_mode,
         selector_source=result.selector_source,
+        selector_fallback_path=list(result.mechanism_selection.selector_fallback_path),
         fallback_count=result.fallback_count,
         fallback_events=[event.model_dump(mode="json") for event in result.fallback_events],
         mechanism_override_source=result.mechanism_override_source,
@@ -990,9 +996,7 @@ def _selector_source(
         return "env_pin"
     if requested_override is not None:
         return "forced_override"
-    if "Reasoning model unavailable" in selection.reasoning:
-        return "bandit_fallback"
-    return "llm_reasoning"
+    return selection.selector_source
 
 
 def _mechanism_override_source(
@@ -1017,21 +1021,14 @@ async def _pinned_selection(
     mechanism: MechanismType,
 ) -> MechanismSelection:
     """Build deterministic selector metadata for an explicit mechanism override."""
-
-    reasoning = f"Mechanism override applied at task creation: forced {mechanism.value} execution."
-    features = await extract_features(
+    return await build_pinned_selection(
         task_text=task_text,
         agent_count=agent_count,
         stakes=stakes,
-    )
-    return MechanismSelection(
         mechanism=mechanism,
-        confidence=1.0,
-        reasoning=reasoning,
-        reasoning_hash=_hash_text(reasoning),
-        bandit_recommendation=mechanism,
-        bandit_confidence=1.0,
-        task_features=features,
+        reasoning_hash=_hash_text,
+        selector_source="forced_override",
+        mechanism_override_source="request",
     )
 
 
@@ -1052,6 +1049,8 @@ async def _stored_selection(task: TaskStatusResponse) -> MechanismSelection:
         bandit_recommendation=mechanism,
         bandit_confidence=task.selector_confidence,
         task_features=features,
+        selector_source=cast(str, task.selector_source),
+        selector_fallback_path=list(task.selector_fallback_path),
     )
 
 
@@ -1147,49 +1146,35 @@ async def create_task(
     require_scope(user, "tasks:write")
     await _enforce_task_create_rate_limit(user.workspace_id)
     store = get_task_store()
-    original_allow_offline_fallback = request.allow_offline_fallback
-    request_internal = request.model_copy(update={"allow_offline_fallback": True})
-    task_id = _build_task_id(request_internal.task)
+    task_id = _build_task_id(request.task)
 
-    requested_override = _request_mechanism_override(request_internal)
+    requested_override = _request_mechanism_override(request)
     forced_override = _forced_mechanism()
     effective_override = forced_override or requested_override
-    reasoning_presets = resolve_reasoning_presets(request_internal.reasoning_presets)
+    reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
 
     orchestrator = _build_orchestrator(
-        agent_count=request_internal.agent_count,
-        allow_offline_fallback=request_internal.allow_offline_fallback,
+        agent_count=request.agent_count,
+        allow_offline_fallback=request.allow_offline_fallback,
         reasoning_presets=reasoning_presets,
     )
     await _load_selector_state(store, orchestrator)
-    if effective_override is None:
-        selection = await orchestrator.selector.select(
-            task_text=request_internal.task,
-            agent_count=request_internal.agent_count,
-            stakes=request_internal.stakes,
+    selection, selector_source, selector_fallback_path, mechanism_override_source = (
+        await resolve_task_like_selection(
+            orchestrator=orchestrator,
+            task_text=request.task,
+            agent_count=request.agent_count,
+            stakes=request.stakes,
+            forced_override=forced_override,
+            requested_override=requested_override,
         )
-    else:
-        selection = await _pinned_selection(
-            task_text=request_internal.task,
-            agent_count=request_internal.agent_count,
-            stakes=request_internal.stakes,
-            mechanism=effective_override,
-        )
+    )
     _require_supported_mechanism(
         selection.mechanism,
         status_code=500,
         source="selector",
     )
-    selector_source = _selector_source(
-        selection=selection,
-        forced_override=forced_override,
-        requested_override=requested_override,
-    )
-    mechanism_override_source = _mechanism_override_source(
-        forced_override=forced_override,
-        requested_override=requested_override,
-    )
-    if selector_source == "bandit_fallback" and not request_internal.allow_offline_fallback:
+    if selector_source in {"heuristic_fallback", "bandit_fallback"} and not request.allow_offline_fallback:
         raise HTTPException(
             status_code=503,
             detail="Selector provider fallback occurred but allow_offline_fallback=false",
@@ -1197,25 +1182,26 @@ async def create_task(
 
     task_status = TaskStatusResponse(
         task_id=task_id,
-        task_text=request_internal.task,
+        task_text=request.task,
         workspace_id=user.workspace_id,
         created_by=user.user_id or f"api_key:{user.api_key_id}",
         mechanism=_mechanism_name(selection.mechanism),
         mechanism_override=(
             _mechanism_name(effective_override) if effective_override is not None else None
         ),
-        allow_mechanism_switch=request_internal.allow_mechanism_switch,
-        allow_offline_fallback=original_allow_offline_fallback,
-        quorum_threshold=request_internal.quorum_threshold,
+        allow_mechanism_switch=request.allow_mechanism_switch,
+        allow_offline_fallback=request.allow_offline_fallback,
+        quorum_threshold=request.quorum_threshold,
         selector_source=selector_source,
+        selector_fallback_path=selector_fallback_path,
         mechanism_override_source=mechanism_override_source,
         status="pending",
         selector_reasoning=selection.reasoning,
         selector_reasoning_hash=selection.reasoning_hash,
         selector_confidence=selection.confidence,
-        agent_count=request_internal.agent_count,
+        agent_count=request.agent_count,
         reasoning_presets=reasoning_presets,
-        payment_amount=request_internal.stakes,
+        payment_amount=request.stakes,
         payment_status="none",
     )
     if bridge.is_configured():
@@ -1260,6 +1246,7 @@ async def create_task(
             "reasoning": selection.reasoning,
             "selector_reasoning_hash": selection.reasoning_hash,
             "selector_source": selector_source,
+            "selector_fallback_path": selector_fallback_path,
         },
     )
 
@@ -1271,6 +1258,7 @@ async def create_task(
         selector_reasoning_hash=selection.reasoning_hash,
         status="pending",
         selector_source=selector_source,
+        selector_fallback_path=selector_fallback_path,
         mechanism_override_source=mechanism_override_source,
     )
 
@@ -1476,43 +1464,35 @@ async def _execute_task_run(
             )
 
         if effective_override is not None:
-            result = await orchestrator.run(
-                task=task.task_text,
+            selection = await build_pinned_selection(
+                task_text=task.task_text,
+                agent_count=task.agent_count,
                 stakes=task.payment_amount,
-                mechanism_override=effective_override,
-                event_sink=runtime_event_sink,
-            )
-        elif hasattr(orchestrator, "execute_selection"):
-            selection = await _stored_selection(task)
-            result = await orchestrator.execute_selection(
-                task=task.task_text,
-                selection=selection,
-                event_sink=runtime_event_sink,
-                allow_switch=task.allow_mechanism_switch,
+                mechanism=effective_override,
+                reasoning_hash=_hash_text,
+                selector_source="env_pin" if forced_mechanism is not None else "forced_override",
+                mechanism_override_source=(
+                    "env_pin" if forced_mechanism is not None else "request"
+                ),
             )
         else:
-            result = await orchestrator.run(
-                task=task.task_text,
-                stakes=task.payment_amount,
-                mechanism_override=task.mechanism,
-                event_sink=runtime_event_sink,
-            )
+            selection = await _stored_selection(task)
+
+        execution = await execute_task_like_run(
+            orchestrator=orchestrator,
+            task_text=task.task_text,
+            selection=selection,
+            selector_source=cast(Any, task.selector_source),
+            selector_fallback_path=list(task.selector_fallback_path),
+            mechanism_override_source=cast(Any, "env_pin" if forced_mechanism is not None else task.mechanism_override_source),
+            event_sink=runtime_event_sink,
+            allow_switch=task.allow_mechanism_switch if effective_override is None else False,
+        )
         if lease_lost:
             raise RuntimeError("Task execution lease lost")
-        if result.fallback_count > 0 and not task.allow_offline_fallback:
-            raise RuntimeError(
-                "Provider fallback occurred but allow_offline_fallback=false"
-            )
-        result = result.model_copy(
-            update={
-                "selector_source": task.selector_source,
-                "mechanism_override_source": (
-                    "env_pin"
-                    if forced_mechanism is not None
-                    else task.mechanism_override_source
-                ),
-            }
-        )
+        if execution.status != "completed" or execution.result is None:
+            raise RuntimeError(execution.failure_reason or "Task execution failed")
+        result = execution.result
     except HTTPException as exc:
         try:
             await journal.close()

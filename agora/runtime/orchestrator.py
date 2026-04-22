@@ -49,7 +49,7 @@ class AgoraOrchestrator:
         agent_count: int = 3,
         bandit_state_path: str | None = None,
         default_stakes: float = 0.5,
-        allow_offline_fallback: bool = False,
+        allow_offline_fallback: bool = True,
         reasoning_presets: ReasoningPresets
         | ReasoningPresetOverrides
         | dict[str, Any]
@@ -318,6 +318,8 @@ class AgoraOrchestrator:
             bandit_recommendation=override,
             bandit_confidence=1.0,
             task_features=features,
+            selector_source="forced_override",
+            selector_fallback_path=["forced_override"],
         )
 
     async def _execute_mechanism(

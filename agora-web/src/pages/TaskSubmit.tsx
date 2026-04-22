@@ -32,7 +32,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     mechanism: "debate",
     mechanism_override: null,
     allow_mechanism_switch: true,
-    allow_offline_fallback: false,
+    allow_offline_fallback: true,
     quorum_threshold: 0.6,
     selector_source: "llm_reasoning",
     mechanism_override_source: null,
