@@ -45,6 +45,12 @@ interface BenchmarkTimelineDescriptor {
   tone: string;
 }
 
+interface AggregatedBenchmarkTimelineEvent extends BenchmarkTimelineDescriptor {
+  key: string;
+  timestamp: string | null;
+  details: Record<string, unknown>;
+}
+
 interface BenchmarkReliabilitySummary {
   retryCount: number;
   terminalErrorCount: number;
@@ -59,6 +65,13 @@ const DEFAULT_METRIC: NormalizedMetric = {
   avg_latency_ms: 0,
   avg_estimated_cost_usd: 0,
 };
+
+const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
+  "agent_output_delta",
+  "cross_examination_delta",
+  "thinking_delta",
+  "usage_delta",
+]);
 
 export function BenchmarkDetail() {
   const navigate = useNavigate();
@@ -368,6 +381,10 @@ export function BenchmarkDetail() {
     }
     return selectedItem.events ?? [];
   }, [selectedItem, timelineByItem]);
+  const aggregatedSelectedItemTimeline = useMemo(
+    () => aggregateBenchmarkTimeline(selectedItemTimeline),
+    [selectedItemTimeline],
+  );
   const availablePhases = useMemo(() => {
     const phases = new Set<string>();
     for (const event of timeline) {
@@ -383,6 +400,10 @@ export function BenchmarkDetail() {
       ? timeline
       : timeline.filter((event) => benchmarkPhaseForEvent(event) === phaseFilter)
   ), [phaseFilter, timeline]);
+  const aggregatedFilteredTimeline = useMemo(
+    () => aggregateBenchmarkTimeline(filteredTimeline),
+    [filteredTimeline],
+  );
   useEffect(() => {
     if (!selectedItemId && benchmarkItems.length > 0) {
       setSelectedItemId(detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null);
@@ -502,9 +523,9 @@ export function BenchmarkDetail() {
       if (typeof rawPrompts !== "object" || rawPrompts === null) {
         return [];
       }
-      return Object.entries(rawPrompts as Record<string, Record<string, unknown>>);
+      return Object.entries(rawPrompts as unknown as Record<string, Record<string, unknown>>);
     }
-    return Object.entries(prompts as Record<string, Record<string, unknown>>);
+    return Object.entries(prompts as unknown as Record<string, Record<string, unknown>>);
   })();
 
   if (loadError) {
@@ -810,36 +831,35 @@ export function BenchmarkDetail() {
                     <div className="flex items-center justify-between gap-3 mb-3">
                       <h4 className="text-sm text-text-primary">Item Stream</h4>
                       <div className="mono text-[10px] text-text-muted">
-                        {formatInt(selectedItemTimeline.length)} events
+                        {formatInt(aggregatedSelectedItemTimeline.length)} cards • {formatInt(selectedItemTimeline.length)} raw events
                       </div>
                     </div>
-                    {selectedItemTimeline.length === 0 ? (
+                    {aggregatedSelectedItemTimeline.length === 0 ? (
                       <div className="text-sm text-text-secondary">No item-scoped events have been persisted yet.</div>
                     ) : (
                       <div className="space-y-3 max-h-90 overflow-y-auto pr-1">
-                        {selectedItemTimeline.map((event, index) => {
-                          const descriptor = describeBenchmarkEvent(event);
+                        {aggregatedSelectedItemTimeline.map((event, index) => {
                           return (
                             <div
-                              key={`${selectedItem.item_id}-${event.event}-${event.timestamp ?? index}`}
-                              className={`border rounded-md p-3 ${descriptor.tone}`}
+                              key={`${selectedItem.item_id}-${event.key}-${event.timestamp ?? index}`}
+                              className={`border rounded-md p-3 ${event.tone}`}
                             >
                               <div className="flex items-center justify-between gap-3 mb-1">
                                 <div>
-                                  <div className="mono text-[10px] text-text-muted mb-1">{descriptor.label}</div>
-                                  <div className="text-sm text-text-primary">{descriptor.title}</div>
+                                  <div className="mono text-[10px] text-text-muted mb-1">{event.label}</div>
+                                  <div className="text-sm text-text-primary">{event.title}</div>
                                 </div>
                                 <div className="mono text-[10px] text-text-muted">{formatDateTime(event.timestamp)}</div>
                               </div>
                               <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word mb-2">
-                                {descriptor.summary}
+                                {event.summary}
                               </p>
                               <details className="group">
                                 <summary className="mono text-[10px] text-text-muted cursor-pointer select-none">
-                                  {descriptor.detailsLabel}
+                                  {event.detailsLabel}
                                 </summary>
                                 <pre className="mt-2 text-[11px] text-text-secondary whitespace-pre-wrap wrap-break-word">
-                                  {prettyJson(event.data)}
+                                  {prettyJson(event.details)}
                                 </pre>
                               </details>
                             </div>
@@ -908,6 +928,8 @@ export function BenchmarkDetail() {
                 {copyState === "copied" ? "Copied" : "Copy JSON"}
               </button>
               <div className="flex items-center gap-3 rounded-md border border-border-subtle bg-void px-3 py-2 mono text-xs text-text-secondary">
+                <span>Cards {formatInt(aggregatedFilteredTimeline.length)}</span>
+                <span className="text-text-muted">•</span>
                 <span>Events {formatInt(filteredTimeline.length)}</span>
                 <span className="text-text-muted">•</span>
                 <span>Runs {formatInt(detail.run_count)}</span>
@@ -937,30 +959,29 @@ export function BenchmarkDetail() {
             onScroll={handleTimelineScroll}
             className="space-y-3 max-h-96 overflow-y-auto pr-1"
           >
-            {filteredTimeline.map((event, index) => {
-              const descriptor = describeBenchmarkEvent(event);
+            {aggregatedFilteredTimeline.map((event, index) => {
               return (
                 <div
-                  key={`${event.event}-${event.timestamp ?? index}`}
-                  ref={index === filteredTimeline.length - 1 ? latestTimelineEntryRef : undefined}
-                  className={`border rounded-md p-3 ${descriptor.tone}`}
+                  key={`${event.key}-${event.timestamp ?? index}`}
+                  ref={index === aggregatedFilteredTimeline.length - 1 ? latestTimelineEntryRef : undefined}
+                  className={`border rounded-md p-3 ${event.tone}`}
                 >
                   <div className="flex items-center justify-between gap-3 mb-1">
                     <div>
-                      <div className="mono text-[10px] text-text-muted mb-1">{descriptor.label}</div>
-                      <div className="text-sm text-text-primary">{descriptor.title}</div>
+                      <div className="mono text-[10px] text-text-muted mb-1">{event.label}</div>
+                      <div className="text-sm text-text-primary">{event.title}</div>
                     </div>
                     <div className="mono text-[10px] text-text-muted">{formatDateTime(event.timestamp)}</div>
                   </div>
                   <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word mb-2">
-                    {descriptor.summary}
+                    {event.summary}
                   </p>
                   <details className="group">
                     <summary className="mono text-[10px] text-text-muted cursor-pointer select-none">
-                      {descriptor.detailsLabel}
+                      {event.detailsLabel}
                     </summary>
                     <pre className="mt-2 text-[11px] text-text-secondary whitespace-pre-wrap wrap-break-word">
-                      {prettyJson(event.data)}
+                      {prettyJson(event.details)}
                     </pre>
                   </details>
                 </div>
@@ -1552,6 +1573,75 @@ function prettyJson(value: unknown): string {
   }
 }
 
+function aggregateBenchmarkTimeline(events: TaskEvent[]): AggregatedBenchmarkTimelineEvent[] {
+  return events.reduce<AggregatedBenchmarkTimelineEvent[]>((current, event) => {
+    const nextEvent = mapAggregatedBenchmarkTimelineEvent(event);
+    const index = current.findIndex((entry) => entry.key === nextEvent.key);
+    if (index === -1) {
+      return [...current, nextEvent];
+    }
+
+    const previous = current[index];
+    const merged: AggregatedBenchmarkTimelineEvent = {
+      ...previous,
+      ...nextEvent,
+      details: {
+        ...previous.details,
+        ...nextEvent.details,
+      },
+    };
+    return current.map((entry, entryIndex) => (entryIndex === index ? merged : entry));
+  }, []);
+}
+
+function mapAggregatedBenchmarkTimelineEvent(event: TaskEvent): AggregatedBenchmarkTimelineEvent {
+  return {
+    key: benchmarkTimelineKey(event),
+    timestamp: event.timestamp ?? null,
+    details: isRecord(event.data) ? event.data : {},
+    ...describeBenchmarkEvent(event),
+  };
+}
+
+function benchmarkTimelineKey(event: TaskEvent): string {
+  return benchmarkDraftKeyForEvent(event) ?? benchmarkEventKey(event);
+}
+
+function benchmarkDraftKeyForEvent(event: TaskEvent): string | null {
+  if (!BENCHMARK_COALESCED_EVENT_TYPES.has(event.event)) {
+    return null;
+  }
+
+  const data = isRecord(event.data) ? event.data : {};
+  const context = isRecord(data.benchmark_context) ? data.benchmark_context : null;
+  const itemId = benchmarkItemIdForEvent(event);
+  const agentId = typeof data.agent_id === "string" && data.agent_id.trim()
+    ? data.agent_id
+    : null;
+  const stage = typeof data.stage === "string" && data.stage.trim()
+    ? data.stage
+    : null;
+  const roundNumber = typeof data.round_number === "number" && Number.isFinite(data.round_number)
+    ? data.round_number
+    : context && typeof context.round_number === "number" && Number.isFinite(context.round_number)
+      ? context.round_number
+      : null;
+
+  const parts = [
+    itemId,
+    event.event,
+    agentId,
+    stage,
+    roundNumber === null ? null : String(roundNumber),
+  ].filter((value): value is string => Boolean(value));
+
+  return parts.length >= 3 ? parts.join(":") : null;
+}
+
+function benchmarkEventKey(event: TaskEvent): string {
+  return `${event.event}:${event.timestamp ?? ""}:${JSON.stringify(event.data ?? null)}`;
+}
+
 function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
   const data = isRecord(event.data) ? event.data : {};
   const eventLabel = titleCase(event.event);
@@ -1620,7 +1710,14 @@ function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
   }
 
   if (event.event === "agent_output_delta") {
-    const chunk = String(data.content_delta ?? data.answer_delta ?? data.delta ?? "Streaming draft...");
+    const chunk = String(
+      data.content_so_far
+      ?? data.answer_so_far
+      ?? data.content_delta
+      ?? data.answer_delta
+      ?? data.delta
+      ?? "Streaming draft...",
+    );
     const agent = String(data.agent_id ?? "agent");
     const model = String(data.agent_model ?? "unknown-model");
     return {
@@ -1651,7 +1748,9 @@ function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
 
   if (event.event === "cross_examination_delta" || event.event === "cross_examination") {
     const summary = String(
-      data.content_delta
+      data.content_so_far
+      ?? data.question_so_far
+      ?? data.content_delta
       ?? data.summary
       ?? data.question
       ?? "Cross-examination in progress.",
@@ -1669,7 +1768,7 @@ function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
     return {
       label: contextPrefix || "THINKING",
       title: `${String(data.agent_id ?? "agent")} reasoning stream`,
-      summary: String(data.thinking_delta ?? data.thinking_so_far ?? "Thinking..."),
+      summary: String(data.thinking_so_far ?? data.thinking_delta ?? "Thinking..."),
       detailsLabel: "thinking stream",
       tone: "border-emerald-400/40 bg-emerald-400/10",
     };
@@ -1747,10 +1846,24 @@ function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
   }
 
   if (event.event === "complete") {
+    const switches = typeof data.mechanism_switches === "number"
+      ? `${Math.round(data.mechanism_switches)} switches`
+      : null;
+    const entropy = typeof data.disagreement_entropy === "number"
+      ? `entropy ${data.disagreement_entropy.toFixed(2)}`
+      : null;
+    const novelty = typeof data.novelty_score === "number"
+      ? `novelty ${data.novelty_score.toFixed(2)}`
+      : typeof data.information_gain_delta === "number"
+        ? `info gain ${data.information_gain_delta.toFixed(2)}`
+        : null;
+    const completionBits = [switches, entropy, novelty].filter(Boolean).join(" · ");
     return {
       label: "COMPLETE",
       title: "Benchmark run completed",
-      summary: `Run ${String(data.run_id ?? "unknown")} finished successfully.`,
+      summary: completionBits
+        ? `Run ${String(data.run_id ?? "unknown")} finished successfully · ${completionBits}`
+        : `Run ${String(data.run_id ?? "unknown")} finished successfully.`,
       detailsLabel: "completion payload",
       tone: "border-emerald-400/40 bg-emerald-400/10",
     };

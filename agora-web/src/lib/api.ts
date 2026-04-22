@@ -13,8 +13,10 @@ import type {
   BenchmarkItemResponse as GeneratedBenchmarkItemResponse,
   BenchmarkPromptTemplate as GeneratedBenchmarkPromptTemplate,
   BenchmarkPromptTemplatesResponse as GeneratedBenchmarkPromptTemplatesResponse,
+  BenchmarkRunRequest as GeneratedBenchmarkRunRequest,
   BenchmarkRunResponse as GeneratedBenchmarkRunResponse,
   BenchmarkRunStatusResponse as GeneratedBenchmarkRunStatusResponse,
+  BenchmarkSummaryResponse as GeneratedBenchmarkSummaryResponse,
   DeliberationResultResponse,
   ModelTelemetryResponse as GeneratedModelTelemetryResponse,
   TaskCreateResponse,
@@ -46,11 +48,7 @@ interface StreamTicketResponse {
   expires_at: string;
 }
 
-export interface BenchmarkSummary {
-  per_mode: Record<string, Record<string, number>>;
-  per_mechanism: Record<string, Record<string, number>>;
-  per_category: Record<string, Record<string, Record<string, number>>>;
-}
+export type BenchmarkSummary = GeneratedBenchmarkSummaryResponse;
 
 export type BenchmarkDomainName = "math" | "factual" | "reasoning" | "code" | "creative" | "demo";
 export type BenchmarkPromptSourceName = "template" | "custom";
@@ -111,15 +109,10 @@ export type BenchmarkRunStatusPayload = GeneratedBenchmarkRunStatusResponse;
 export type BenchmarkCatalogEntry = GeneratedBenchmarkCatalogEntry;
 export type BenchmarkCatalogPayload = GeneratedBenchmarkCatalogResponse;
 
-export interface BenchmarkRunRequestPayload {
-  training_per_category?: number;
-  holdout_per_category?: number;
-  agent_count?: number;
-  live_agents?: boolean;
-  seed?: number;
+export type BenchmarkRunRequestPayload = Partial<GeneratedBenchmarkRunRequest> & {
   domain_prompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>>;
   reasoning_presets?: Partial<ReasoningPresetState>;
-}
+};
 
 export type BenchmarkRunResponsePayload = GeneratedBenchmarkRunResponse;
 export type BenchmarkPromptTemplatePayload = GeneratedBenchmarkPromptTemplate;
@@ -481,9 +474,8 @@ export async function streamBenchmarkRun(
   const handleEventMessage = (eventType: string, event: Event) => {
     if (!hasStringMessageData(event)) {
       if (eventType === "error") {
-        sawTerminalEvent = true;
-        closeSource();
-        clearReconnectTimer();
+        // Native EventSource transport errors also surface as an "error" event
+        // without payload data. Let `source.onerror` own reconnect behavior.
         return;
       }
       emitStreamError(`Benchmark stream payload missing data for ${eventType}`);
@@ -492,9 +484,7 @@ export async function streamBenchmarkRun(
     const rawData = event.data.trim();
     if (!rawData) {
       if (eventType === "error") {
-        sawTerminalEvent = true;
-        closeSource();
-        clearReconnectTimer();
+        // Treat empty error payloads as transport noise instead of terminal run failures.
         return;
       }
       emitStreamError(`Benchmark stream payload missing data for ${eventType}`);
@@ -775,9 +765,6 @@ export async function streamDeliberation(
       // Native EventSource transport errors also use the "error" event type
       // but do not include payload data. Let `source.onerror` handle reconnects.
       if (eventType === "error") {
-        sawTerminalEvent = true;
-        closeSource();
-        clearReconnectTimer();
         return;
       }
       emitStreamError(`Stream payload missing data for ${eventType}`);
@@ -788,9 +775,8 @@ export async function streamDeliberation(
     const rawData = message.data.trim();
     if (rawData.length === 0) {
       if (eventType === "error") {
-        sawTerminalEvent = true;
-        closeSource();
-        clearReconnectTimer();
+        // Empty error payloads generally come from the transport layer. Keep the
+        // stream reconnect path alive instead of marking the run terminal.
         return;
       }
       emitStreamError(`Stream payload missing data for ${eventType}`);

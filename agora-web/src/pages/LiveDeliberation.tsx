@@ -1008,8 +1008,23 @@ export function LiveDeliberation() {
             </div>
             <p className="text-lg text-text-primary mb-4">{finalAnswer.text}</p>
             <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 sm:gap-0">
-              <div className="mono text-accent">
-                Confidence: {(finalAnswer.confidence * 100).toFixed(1)}%
+              <div className="space-y-2">
+                <div className="mono text-accent">
+                  Confidence: {(finalAnswer.confidence * 100).toFixed(1)}%
+                </div>
+                {taskResult ? (
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 mono text-[11px] text-accent">
+                      Switches {taskResult.mechanism_switches}
+                    </span>
+                    <span className="rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 mono text-[11px] text-accent">
+                      Entropy {latestConvergence ? formatFixed(latestConvergence.disagreement_entropy) : "n/a"}
+                    </span>
+                    <span className="rounded-full border border-accent/40 bg-accent/10 px-2.5 py-1 mono text-[11px] text-accent">
+                      Novelty {latestConvergence ? formatFixed(latestConvergence.novelty_score ?? latestConvergence.information_gain_delta) : "n/a"}
+                    </span>
+                  </div>
+                ) : null}
               </div>
               <button
                 className="btn-primary flex items-center justify-center gap-2"
