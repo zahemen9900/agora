@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -2007,6 +2008,124 @@ async def test_run_task_reconciles_initialized_task_without_replaying_init_write
 
 
 @pytest.mark.asyncio
+async def test_run_task_reconciles_selection_state_without_replaying_selection_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "selection-reconcile-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="selection reconcile",
+        mechanism_used=MechanismType.DEBATE,
+        mechanism_selection=selection,
+        final_answer="Recovered after selection reconciliation.",
+        confidence=0.88,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=4,
+        mechanism_switches=0,
+        merkle_root=hashlib.sha256(b"selection-reconcile-root").hexdigest(),
+        transcript_hashes=[hashlib.sha256(b"selection-reconcile-leaf").hexdigest()],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=13,
+        total_latency_ms=4.0,
+        timestamp=datetime.now(UTC),
+    )
+    selection_attempts = 0
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _ExecuteSelectionOrchestrator:
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+        ):
+            self.agent_count = agent_count
+            self.allow_offline_fallback = allow_offline_fallback
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def execute_selection(
+            self,
+            task: str,
+            selection: task_routes.MechanismSelection,
+            event_sink=None,
+            agents=None,
+            allow_switch: bool = True,
+        ) -> DeliberationResult:
+            del selection, event_sink, agents, allow_switch
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_fail(**_kwargs: object) -> dict[str, str]:
+        nonlocal selection_attempts
+        selection_attempts += 1
+        raise RuntimeError("selection persistence lost")
+
+    async def selection_unexpected(**_kwargs: object) -> dict[str, str]:
+        raise AssertionError("record_selection should not replay after reconciliation")
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_fail)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _ExecuteSelectionOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="selection reconcile", agent_count=4, stakes=0.2),
+            _override_user(),
+        )
+        created_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+        assert created_status.chain_operations["record_selection"].status == "failed"
+
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_unexpected)
+        monkeypatch.setattr(
+            task_routes.bridge,
+            "fetch_task_account",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    selector_reasoning_hash=created_status.selector_reasoning_hash,
+                    transcript_merkle_root="0" * 64,
+                    decision_hash="0" * 64,
+                    quorum_reached=False,
+                    mechanism="debate",
+                    switched_to=None,
+                    mechanism_switches=0,
+                    payment_amount_lamports=int(created_status.payment_amount * task_routes.LAMPORTS_PER_SOL),
+                    status="in_progress",
+                )
+            ),
+        )
+
+        run_result = await task_routes.run_task(create.task_id, _override_user())
+        final_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+    finally:
+        task_routes._store = None
+
+    assert run_result.final_answer == "Recovered after selection reconciliation."
+    assert selection_attempts == 1
+    assert final_status.chain_operations["record_selection"].status == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_completed_task_reconciles_switch_pda_before_retrying_receipt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2135,6 +2254,130 @@ async def test_completed_task_reconciles_switch_pda_before_retrying_receipt(
 
 
 @pytest.mark.asyncio
+async def test_completed_task_reconciles_receipt_state_without_replaying_receipt_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "receipt-reconcile-data"))
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="receipt reconcile",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="Receipt reconciliation recovered the result.",
+        confidence=0.92,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=4,
+        mechanism_switches=0,
+        merkle_root=hashlib.sha256(b"receipt-reconcile-root").hexdigest(),
+        transcript_hashes=[hashlib.sha256(b"receipt-reconcile-leaf").hexdigest()],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=14,
+        total_latency_ms=4.0,
+        timestamp=datetime.now(UTC),
+    )
+    receipt_calls = 0
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _ExecuteSelectionOrchestrator:
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+        ):
+            self.agent_count = agent_count
+            self.allow_offline_fallback = allow_offline_fallback
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def execute_selection(
+            self,
+            task: str,
+            selection: task_routes.MechanismSelection,
+            event_sink=None,
+            agents=None,
+            allow_switch: bool = True,
+        ) -> DeliberationResult:
+            del selection, event_sink, agents, allow_switch
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def receipt_fail(**_kwargs: object) -> dict[str, str]:
+        nonlocal receipt_calls
+        receipt_calls += 1
+        raise RuntimeError("receipt persistence lost")
+
+    async def receipt_unexpected(**_kwargs: object) -> dict[str, str]:
+        raise AssertionError("submit_receipt should not replay after reconciliation")
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_fail)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _ExecuteSelectionOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="receipt reconcile", agent_count=4, stakes=0.0),
+            _override_user(),
+        )
+        first = await task_routes.run_task(create.task_id, _override_user())
+        failed_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+        assert first.final_answer == "Receipt reconciliation recovered the result."
+        assert failed_status.chain_operations["submit_receipt"].status == "failed"
+
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_unexpected)
+        monkeypatch.setattr(
+            task_routes.bridge,
+            "fetch_task_account",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    selector_reasoning_hash=failed_status.selector_reasoning_hash,
+                    transcript_merkle_root=failed_status.merkle_root,
+                    decision_hash=failed_status.decision_hash,
+                    quorum_reached=True,
+                    mechanism="vote",
+                    switched_to=None,
+                    mechanism_switches=0,
+                    payment_amount_lamports=0,
+                    status="completed",
+                )
+            ),
+        )
+
+        retried = await task_routes.run_task(create.task_id, _override_user())
+        final_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+    finally:
+        task_routes._store = None
+
+    assert retried.final_answer == "Receipt reconciliation recovered the result."
+    assert receipt_calls == 1
+    assert final_status.chain_operations["submit_receipt"].status == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_concurrent_payment_release_uses_task_scoped_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2234,6 +2477,89 @@ async def test_repeated_payment_release_after_success_does_not_call_bridge(
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "Payment already released"
+
+
+@pytest.mark.asyncio
+async def test_release_payment_reconciles_paid_task_without_replaying_bridge_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "payment-reconcile-data"))
+    release_attempts = 0
+
+    async def pay_fail(**_kwargs: object) -> dict[str, str]:
+        nonlocal release_attempts
+        release_attempts += 1
+        raise RuntimeError("payment persistence lost")
+
+    async def pay_unexpected(**_kwargs: object) -> dict[str, str]:
+        raise AssertionError("release_payment should not replay after reconciliation")
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="pay reconcile", agent_count=4, stakes=0.2),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "completed"
+        task["quorum_reached"] = True
+        task["payment_status"] = "locked"
+        await store.save_task("user-1", create.task_id, task)
+
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "release_payment", pay_fail)
+
+        first = await task_routes.release_payment(create.task_id, _override_user())
+        failed_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+        assert first["released"] is False
+        assert failed_status.chain_operations["release_payment"].status == "failed"
+
+        monkeypatch.setattr(task_routes.bridge, "release_payment", pay_unexpected)
+        monkeypatch.setattr(
+            task_routes.bridge,
+            "fetch_task_account",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    selector_reasoning_hash=failed_status.selector_reasoning_hash,
+                    transcript_merkle_root=failed_status.merkle_root or "0" * 64,
+                    decision_hash=failed_status.decision_hash or "0" * 64,
+                    quorum_reached=True,
+                    mechanism=failed_status.mechanism,
+                    switched_to=None,
+                    mechanism_switches=failed_status.mechanism_switches,
+                    payment_amount_lamports=0,
+                    status="paid",
+                )
+            ),
+        )
+        monkeypatch.setattr(task_routes.bridge, "vault_account_exists", AsyncMock(return_value=False))
+
+        second = await task_routes.release_payment(create.task_id, _override_user())
+        final_status = await task_routes.get_task_status(
+            create.task_id,
+            _override_user(),
+            detailed=True,
+        )
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert second["released"] is True
+    assert release_attempts == 1
+    assert final_status.status == "paid"
+    assert final_status.payment_status == "released"
+    assert final_status.chain_operations["release_payment"].status == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -3891,6 +4217,91 @@ async def test_benchmark_detail_synthesizes_items_from_saved_request_on_failed_r
 
 
 @pytest.mark.asyncio
+async def test_benchmark_detail_aliases_generic_items_to_expected_phase_identity(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    run_id = "bench-generic-alias"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "running",
+            "created_at": "2026-04-22T21:00:00+00:00",
+            "updated_at": "2026-04-22T21:01:00+00:00",
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {
+                    "math": {
+                        "template_id": "custom",
+                        "question": "What is the exact value of 11/12 + 7/18?",
+                        "source": "custom",
+                    }
+                },
+                "resolved_domain_prompts": {
+                    "math": {
+                        "template_id": "custom",
+                        "template_title": "Custom Question",
+                        "source": "custom",
+                        "question": "What is the exact value of 11/12 + 7/18?",
+                    }
+                },
+            },
+            "benchmark_items": [
+                {
+                    "item_id": "bench-generic-alias:benchmark:0",
+                    "item_index": 0,
+                    "task_index": 0,
+                    "phase": "benchmark",
+                    "run_kind": "run",
+                    "category": "math",
+                    "question": "What is the exact value of 11/12 + 7/18?",
+                    "source_task": "What is the exact value of 11/12 + 7/18?",
+                    "status": "completed",
+                    "mechanism": "vote",
+                    "selector_source": "llm_reasoning",
+                    "selector_fallback_path": [],
+                    "failure_reason": None,
+                    "latest_error_event": None,
+                    "fallback_events": [],
+                    "total_tokens": 144,
+                    "thinking_tokens": 12,
+                    "total_latency_ms": 91.0,
+                    "model_telemetry": {},
+                    "summary": {"correct": True},
+                    "started_at": "2026-04-22T21:00:10+00:00",
+                    "completed_at": "2026-04-22T21:00:30+00:00",
+                    "events": [],
+                }
+            ],
+            "events": [],
+        },
+    )
+
+    detail = await client.get(f"/benchmarks/{run_id}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    math_items = [item for item in payload["benchmark_items"] if item["category"] == "math"]
+    assert len(math_items) == 3
+    assert math_items[0]["item_id"] == "pre_learning:selector_initial:0"
+    assert math_items[0]["phase"] == "pre_learning"
+    assert math_items[0]["run_kind"] == "selector_initial"
+    assert math_items[0]["status"] == "completed"
+
+
+@pytest.mark.asyncio
 async def test_benchmark_run_endpoint_persists_status_and_artifacts(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -3907,32 +4318,40 @@ async def test_benchmark_run_endpoint_persists_status_and_artifacts(
         store = task_routes.get_task_store()
         await store.save_global_benchmark_artifact(
             run_id,
-            {
-                "artifact_id": run_id,
-                "scope": "global",
-                "source": "user_triggered",
-                "status": "completed",
-                "created_at": "2026-04-18T02:00:00+00:00",
-                "benchmark_payload": {
-                    "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+                {
+                    "artifact_id": run_id,
+                    "scope": "global",
+                    "source": "user_triggered",
+                    "status": "completed",
+                    "created_at": "2026-04-18T02:00:00+00:00",
+                    "benchmark_payload": {
+                        "generated_at": "2026-04-18T02:00:00+00:00",
+                        "benchmark_config": {
+                            "agent_count": 1,
+                        },
+                        "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+                    },
                 },
-            },
-        )
+            )
         await store.save_user_benchmark_artifact(
             workspace_id,
             run_id,
-            {
-                "artifact_id": run_id,
-                "scope": "user",
-                "owner_user_id": workspace_id,
-                "source": "user_triggered",
-                "status": "completed",
-                "created_at": "2026-04-18T02:00:00+00:00",
-                "benchmark_payload": {
-                    "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+                {
+                    "artifact_id": run_id,
+                    "scope": "user",
+                    "owner_user_id": workspace_id,
+                    "source": "user_triggered",
+                    "status": "completed",
+                    "created_at": "2026-04-18T02:00:00+00:00",
+                    "benchmark_payload": {
+                        "generated_at": "2026-04-18T02:00:00+00:00",
+                        "benchmark_config": {
+                            "agent_count": 1,
+                        },
+                        "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+                    },
                 },
-            },
-        )
+            )
         await store.save_user_test_result(
             workspace_id,
             run_id,

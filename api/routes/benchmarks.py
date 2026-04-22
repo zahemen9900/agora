@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
 
 from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
@@ -34,6 +35,8 @@ from api.models import (
     BenchmarkRunRequest,
     BenchmarkRunResponse,
     BenchmarkRunStatusResponse,
+    BenchmarkStoredRequest,
+    BenchmarkSummaryResponse,
     ModelTelemetryResponse,
     TaskEvent,
 )
@@ -581,6 +584,24 @@ def _cost_from_object(value: Any) -> BenchmarkCostEstimateResponse | None:
     )
 
 
+def _stored_benchmark_request(value: Any) -> BenchmarkStoredRequest | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return BenchmarkStoredRequest.model_validate(value)
+    except ValidationError:
+        return None
+
+
+def _benchmark_summary_response(value: Any) -> BenchmarkSummaryResponse:
+    if not isinstance(value, dict):
+        return BenchmarkSummaryResponse()
+    try:
+        return BenchmarkSummaryResponse.model_validate(value)
+    except ValidationError:
+        return BenchmarkSummaryResponse()
+
+
 def _model_telemetry_from_record(value: Any) -> dict[str, ModelTelemetryResponse]:
     if not isinstance(value, dict):
         return {}
@@ -1093,7 +1114,8 @@ def _build_benchmark_detail_response(
     if isinstance(artifact, dict) and isinstance(artifact.get("owner_user_id"), str):
         owner_user_id = artifact.get("owner_user_id")
 
-    summary = _as_dict(payload.get("summary")) if payload else {}
+    request_record = _stored_benchmark_request(record_request)
+    summary = _benchmark_summary_response(payload.get("summary") if payload else None)
     benchmark_items, active_item_id, failure_counts_by_stage = _benchmark_items_from_payload(
         benchmark_id=benchmark_id,
         payload=payload,
@@ -1128,9 +1150,13 @@ def _build_benchmark_detail_response(
         thinking_tokens=telemetry["thinking_tokens"],
         total_latency_ms=telemetry.get("total_latency_ms", 0.0),
         models=telemetry["models"],
-        request=record_request,
-        reasoning_presets=resolve_reasoning_presets(
-            record_request.get("reasoning_presets") if isinstance(record_request, dict) else None
+        request=request_record,
+        reasoning_presets=(
+            request_record.reasoning_presets
+            if request_record is not None
+            else resolve_reasoning_presets(
+                record_request.get("reasoning_presets") if isinstance(record_request, dict) else None
+            )
         ),
         model_telemetry=telemetry.get("model_telemetry", {}),
         events=[
@@ -1673,9 +1699,50 @@ def _benchmark_items_from_payload(
         benchmark_id=benchmark_id,
         run_record=run_record,
     )
+    generic_aliases: list[tuple[str, BenchmarkItemResponse]] = []
+    for item_id, item in item_records.items():
+        phase_key = (item.phase or "").strip().lower()
+        run_kind_key = (item.run_kind or "").strip().lower()
+        if phase_key and phase_key != "benchmark":
+            continue
+        if run_kind_key and run_kind_key != "run":
+            continue
+        generic_aliases.append((item_id, item))
+
     for expected in expected_items:
         existing = item_records.get(expected.item_id)
         if existing is None:
+            alias_entry = next(
+                (
+                    (alias_id, alias_item)
+                    for alias_id, alias_item in generic_aliases
+                    if alias_item.task_index == expected.task_index
+                    and alias_item.category == expected.category
+                    and alias_item.question == expected.question
+                ),
+                None,
+            )
+            if alias_entry is not None:
+                alias_id, alias_item = alias_entry
+                item_records.pop(alias_id, None)
+                generic_aliases = [
+                    entry for entry in generic_aliases if entry[0] != alias_id
+                ]
+                item_records[expected.item_id] = alias_item.model_copy(
+                    update={
+                        "item_id": expected.item_id,
+                        "item_index": expected.item_index,
+                        "task_index": expected.task_index,
+                        "phase": expected.phase,
+                        "run_kind": expected.run_kind,
+                        "category": expected.category,
+                        "question": expected.question,
+                        "source_task": alias_item.source_task or expected.source_task,
+                    }
+                )
+                if active_item_id == alias_id:
+                    active_item_id = expected.item_id
+                continue
             item_records[expected.item_id] = expected
             continue
         item_records[expected.item_id] = existing.model_copy(
@@ -1849,8 +1916,14 @@ def _is_current_runtime_benchmark_payload(payload: dict[str, Any]) -> bool:
     return bool(benchmark_config and payload.get("generated_at"))
 
 
+def _is_catalog_runtime_benchmark_payload(payload: dict[str, Any]) -> bool:
+    if _is_current_runtime_benchmark_payload(payload):
+        return True
+    return isinstance(payload.get("runs"), list)
+
+
 def _is_catalog_eligible_artifact(artifact: dict[str, Any]) -> bool:
-    return _is_current_runtime_benchmark_payload(_artifact_payload(artifact))
+    return _is_catalog_runtime_benchmark_payload(_artifact_payload(artifact))
 
 
 def _artifact_identifier_candidates(artifact: dict[str, Any]) -> list[str]:
@@ -1951,6 +2024,7 @@ def _to_run_status(
     error = record.get("error")
     error_text = str(error).strip() if error is not None else None
     request_payload = record.get("request") if isinstance(record.get("request"), dict) else None
+    request_record = _stored_benchmark_request(request_payload)
 
     model_costs = record.get("model_estimated_costs_usd")
     if not isinstance(model_costs, dict):
@@ -1986,8 +2060,8 @@ def _to_run_status(
     )
 
     agent_count = _safe_positive_int(record.get("agent_count"))
-    if agent_count is None and isinstance(request_payload, dict):
-        agent_count = _safe_positive_int(request_payload.get("agent_count"))
+    if agent_count is None and request_record is not None:
+        agent_count = request_record.agent_count
 
     return BenchmarkRunStatusResponse(
         run_id=run_id,
@@ -1996,9 +2070,13 @@ def _to_run_status(
         updated_at=_parse_timestamp(record.get("updated_at") or record.get("created_at")),
         error=error_text,
         artifact_id=artifact,
-        request=request_payload,
-        reasoning_presets=resolve_reasoning_presets(
-            request_payload.get("reasoning_presets") if isinstance(request_payload, dict) else None
+        request=request_record,
+        reasoning_presets=(
+            request_record.reasoning_presets
+            if request_record is not None
+            else resolve_reasoning_presets(
+                request_payload.get("reasoning_presets") if isinstance(request_payload, dict) else None
+            )
         ),
         latest_mechanism=(
             str(record.get("latest_mechanism")).strip() if record.get("latest_mechanism") else None

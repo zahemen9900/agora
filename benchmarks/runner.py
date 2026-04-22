@@ -142,6 +142,8 @@ class BenchmarkRunner:
                 runs.append(
                     self._build_execution_record(
                         task_index=task_index,
+                        phase="benchmark",
+                        run_kind=mechanism,
                         mode=mechanism,
                         task_item=task_item,
                         execution=execution,
@@ -262,6 +264,8 @@ class BenchmarkRunner:
 
             record = self._build_execution_record(
                 task_index=task_index,
+                phase="pre_learning",
+                run_kind="selector_initial",
                 mode="selector",
                 task_item=task_item,
                 execution=first,
@@ -312,6 +316,8 @@ class BenchmarkRunner:
             )
             learned_record = self._build_execution_record(
                 task_index=task_index,
+                phase="learning_updates",
+                run_kind="selector_learn",
                 mode="selector_learn",
                 task_item=task_item,
                 execution=learned,
@@ -347,6 +353,8 @@ class BenchmarkRunner:
             )
             holdout_record = self._build_execution_record(
                 task_index=task_index,
+                phase="post_learning",
+                run_kind="selector_holdout",
                 mode="selector",
                 task_item=task_item,
                 execution=holdout,
@@ -679,14 +687,25 @@ class BenchmarkRunner:
         self,
         *,
         task_index: int,
+        phase: str | None = None,
+        run_kind: str | None = None,
         mode: str,
         task_item: dict[str, Any],
         execution: TaskLikeExecutionOutcome,
     ) -> dict[str, Any]:
         if execution.status == "completed" and execution.result is not None:
-            return self._build_run_record(task_index, mode, task_item, execution.result)
+            return self._build_run_record(
+                task_index,
+                mode,
+                task_item,
+                execution.result,
+                phase=phase,
+                run_kind=run_kind,
+            )
         return self._build_failed_run_record(
             task_index=task_index,
+            phase=phase,
+            run_kind=run_kind,
             mode=mode,
             task_item=task_item,
             execution=execution,
@@ -696,6 +715,8 @@ class BenchmarkRunner:
         self,
         *,
         task_index: int,
+        phase: str | None = None,
+        run_kind: str | None = None,
         mode: str,
         task_item: dict[str, Any],
         execution: TaskLikeExecutionOutcome,
@@ -705,6 +726,8 @@ class BenchmarkRunner:
         failure_reason = execution.failure_reason or "benchmark_item_failed"
         return {
             "task_index": task_index,
+            "phase": phase,
+            "run_kind": run_kind,
             "task": task_item["task"],
             "question": self._task_question(task_item),
             "source_task": task_item["task"],
@@ -760,6 +783,9 @@ class BenchmarkRunner:
         mode: str,
         task_item: dict[str, Any],
         result: DeliberationResult,
+        *,
+        phase: str | None = None,
+        run_kind: str | None = None,
     ) -> dict[str, Any]:
         """Build a benchmark run record from a deliberation result."""
 
@@ -798,6 +824,8 @@ class BenchmarkRunner:
 
         return {
             "task_index": task_index,
+            "phase": phase,
+            "run_kind": run_kind,
             "task": task_item["task"],
             "question": self._task_question(task_item),
             "source_task": task_item["task"],
