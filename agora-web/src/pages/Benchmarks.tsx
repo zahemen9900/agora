@@ -558,6 +558,21 @@ export function Benchmarks() {
         updated_at: run.created_at,
         error: null,
         artifact_id: null,
+        request: null,
+        reasoning_presets: null,
+        latest_mechanism: null,
+        agent_count: null,
+        total_tokens: null,
+        thinking_tokens: null,
+        total_latency_ms: null,
+        model_telemetry: {},
+        cost: null,
+        completed_item_count: 0,
+        failed_item_count: 0,
+        degraded_item_count: 0,
+        failure_counts_by_category: {},
+        failure_counts_by_reason: {},
+        failure_counts_by_stage: {},
       });
       closeWizard();
       navigate(`/benchmarks/${run.run_id}`);

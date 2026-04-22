@@ -420,22 +420,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clientId = resolvedAuthConfig?.workos_client_id ?? "";
   const redirectUri = resolveRedirectUri(import.meta.env.VITE_WORKOS_REDIRECT_URI);
+  const devProxySetting = (import.meta.env.VITE_WORKOS_USE_DEV_PROXY ?? "").trim().toLowerCase();
+  const useDevProxy = import.meta.env.DEV
+    && !["0", "false", "no", "off"].includes(devProxySetting);
+
   const configuredApiHostname = (import.meta.env.VITE_WORKOS_API_HOSTNAME ?? "").trim();
-  // Always proxy WorkOS SDK requests through the current host so Vercel/Vite can forward
-  // /user_management/* to api.workos.com — avoids CORS failures in both dev and production.
-  const apiHostname = configuredApiHostname || window.location.hostname;
+  const apiHostname = configuredApiHostname || (useDevProxy ? window.location.hostname : undefined);
 
   const configuredPortRaw = (import.meta.env.VITE_WORKOS_API_PORT ?? "").trim();
   const configuredPort = configuredPortRaw ? Number.parseInt(configuredPortRaw, 10) : Number.NaN;
   const apiPort = Number.isFinite(configuredPort)
     ? configuredPort
-    : (window.location.port ? Number.parseInt(window.location.port, 10) : undefined);
+    : (useDevProxy && window.location.port
+      ? Number.parseInt(window.location.port, 10)
+      : undefined);
 
   const configuredHttpsRaw = (import.meta.env.VITE_WORKOS_API_HTTPS ?? "").trim().toLowerCase();
   const configuredHttps = configuredHttpsRaw
     ? ["1", "true", "yes", "on"].includes(configuredHttpsRaw)
     : undefined;
-  const apiHttps = configuredHttps ?? (window.location.protocol === "https:");
+  const apiHttps = configuredHttps ?? (useDevProxy ? window.location.protocol === "https:" : undefined);
 
   if (authConfigError) {
     throw new Error(authConfigError);
