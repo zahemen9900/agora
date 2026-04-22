@@ -340,6 +340,12 @@ export interface BenchmarkItemResponse {
   events: Array<TaskEvent>;
 }
 
+export interface BenchmarkItemEventsResponse {
+  benchmark_id: string;
+  item_id: string;
+  events: Array<TaskEvent>;
+}
+
 export interface BenchmarkPromptTemplatesResponse {
   domains: Record<string, Array<BenchmarkPromptTemplate>>;
 }

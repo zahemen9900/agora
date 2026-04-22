@@ -141,14 +141,23 @@ async def execute_task_like_run(
     )
 
     try:
-        result = await orchestrator.execute_selection(
-            task=task_text,
-            selection=selection,
-            event_sink=event_sink,
-            agents=agents,
-            allow_switch=allow_switch,
-        )
-        if result.fallback_count > 0 and not orchestrator.allow_offline_fallback:
+        if hasattr(orchestrator, "execute_selection"):
+            result = await orchestrator.execute_selection(
+                task=task_text,
+                selection=selection,
+                event_sink=event_sink,
+                agents=agents,
+                allow_switch=allow_switch,
+            )
+        else:
+            # Compatibility path for legacy orchestrator adapters and test doubles.
+            result = await orchestrator.run(
+                task=task_text,
+                stakes=selection.task_features.stakes,
+                mechanism_override=selection.mechanism.value,
+                event_sink=event_sink,
+            )
+        if result.fallback_count > 0 and not getattr(orchestrator, "allow_offline_fallback", True):
             raise RuntimeError("Provider fallback occurred but allow_offline_fallback=false")
         normalized_result = result.model_copy(
             update={

@@ -650,7 +650,11 @@ async def _attempt_chain_operation(
     if current is not None and current.status == "succeeded":
         return None
 
-    if reconcile is not None:
+    if (
+        reconcile is not None
+        and current is not None
+        and (current.attempts > 0 or current.status == "failed")
+    ):
         reconciled = await reconcile(current)
         if reconciled is not None:
             _mark_chain_operation_succeeded(task, operation_key, reconciled)
