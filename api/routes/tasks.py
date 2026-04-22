@@ -655,7 +655,16 @@ async def _attempt_chain_operation(
         and current is not None
         and (current.attempts > 0 or current.status == "failed")
     ):
-        reconciled = await reconcile(current)
+        try:
+            reconciled = await reconcile(current)
+        except Exception as exc:
+            logger.warning(
+                "task_chain_reconciliation_failed",
+                task_id=task_id,
+                operation=operation_key,
+                error=str(exc),
+            )
+            reconciled = None
         if reconciled is not None:
             _mark_chain_operation_succeeded(task, operation_key, reconciled)
             if on_success is not None:
