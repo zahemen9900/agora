@@ -1,6 +1,9 @@
 name: Deploy SDK
 
 on:
+  push:
+    tags:
+      - "sdk-v*"
   workflow_dispatch:
     inputs:
       publish:
@@ -21,10 +24,10 @@ jobs:
       url: https://pypi.org/p/agora-arbitrator-sdk
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -38,7 +41,7 @@ jobs:
         run: python -m twine check sdk/dist/*
 
       - name: Publish to PyPI
-        if: ${{ inputs.publish }}
+        if: ${{ github.event_name == 'push' || inputs.publish }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdk/dist/

@@ -1,21 +1,21 @@
 # Release and Deploy Operations
 
-## Decisions (2026-04-14)
+## Decisions (2026-04-21)
 
 - SDK release mode: hybrid.
-- This cycle: document and verify release readiness, do not publish to PyPI yet.
+- Preferred SDK publish path: GitHub trusted publishing via `.github/workflows/deploy-sdk.yml`.
 - Production deploy path: Artifact Registry via Cloud Build, then Cloud Run deploy.
 - GHCR role: CI/reference image mirror only, not canonical production source.
 
-## SDK Release Runbook (Manual, Current Cycle)
+## SDK Release Runbook (Trusted Publishing, Current Cycle)
 
-Target package: `agora-arbitrator-sdk==0.1.0a1`
+Target package: `agora-arbitrator-sdk==0.1.0a4`
 
 ### Prerequisites
 
 - Python 3.11+
-- PyPI account with project access
-- `TWINE_USERNAME` and `TWINE_PASSWORD` exported (or token-based equivalent)
+- PyPI project configured with the GitHub trusted publisher
+- GitHub Actions access to run `.github/workflows/deploy-sdk.yml`
 
 ### Build and Validate
 
@@ -25,19 +25,24 @@ python -m build sdk
 python -m twine check sdk/dist/*
 ```
 
+The public SDK package is `agora-arbitrator-sdk`. Source code lives in the
+repo-root `agora/` tree; the `sdk/` directory is metadata-only and remains the
+canonical build entrypoint for release operations.
+
 The SDK now resolves the canonical hosted Cloud Run backend by default, so release smoke
 and install checks do not need a manual hosted API URL.
 
-### Publish (When Authorized)
+### Publish (Preferred)
 
 ```bash
-python -m twine upload --repository pypi sdk/dist/*
+git tag sdk-v0.1.0a4
+git push origin sdk-v0.1.0a4
 ```
 
 Trusted publishing is wired for the repository in `.github/workflows/deploy-sdk.yml`
 using the PyPI project settings for `agora-arbitrator-sdk` / `zahemen9900` / `agora` / `pypi`.
-This cycle keeps the publish step manual; the workflow is ready for the next authorization
-without requiring a new setup pass.
+Tag pushes matching `sdk-v*` publish automatically. Manual `workflow_dispatch`
+is still available as fallback. Local `twine upload` is fallback-only for emergency recovery.
 
 ### Post-Publish Verification
 
@@ -45,7 +50,7 @@ without requiring a new setup pass.
 python -m venv /tmp/agora-arbitrator-sdk-verify
 source /tmp/agora-arbitrator-sdk-verify/bin/activate
 python -m pip install --upgrade pip
-python -m pip install agora-arbitrator-sdk==0.1.0a1
+python -m pip install agora-arbitrator-sdk==0.1.0a4
 python - <<'PY'
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 print("sdk-import-ok")
@@ -55,7 +60,7 @@ PY
 ### Notes
 
 - Build and import checks were completed in-repo during this cycle.
-- Live PyPI upload remains intentionally manual and pending maintainer approval.
+- Preferred publish path is GitHub OIDC trusted publishing, not a local API token.
 
 ## Future Automation Plan (Next Cycle)
 

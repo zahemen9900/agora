@@ -3,6 +3,7 @@ import { AuthProvider, storeReturnTo } from "./lib/auth";
 import { useAuth } from "./lib/useAuth";
 import { ThemeProvider } from "./hooks/ThemeProvider";
 import { AgoraLoader } from "./components/ui/AgoraLoader";
+import { SessionRecoveryPage } from "./pages/SessionRecovery";
 
 // Page components
 import { DashboardLayout } from "./layouts/DashboardLayout";
@@ -34,10 +35,14 @@ function RedirectToAuth() {
 }
 
 function AppRoutes() {
-  const { isLoading, authStatus, featureFlags } = useAuth();
+  const { isLoading, authStatus, authIssue, featureFlags } = useAuth();
 
   if (isLoading) {
     return <AgoraLoader variant="splash" />;
+  }
+
+  if (authIssue) {
+    return <SessionRecoveryPage issue={authIssue} />;
   }
 
   const isAuthenticated = authStatus === "authenticated";

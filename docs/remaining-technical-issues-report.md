@@ -84,7 +84,6 @@ Move both controls into shared storage:
 **Files**
 
 - `agora/sdk/arbitrator.py:110-167`
-- `sdk/agora/sdk/arbitrator.py:110-167`
 
 **What remains**
 

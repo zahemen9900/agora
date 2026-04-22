@@ -172,6 +172,36 @@ async def test_task_store_append_event_retries_on_generation_conflicts() -> None
 
 
 @pytest.mark.asyncio
+async def test_task_store_append_events_persists_all_events_in_order() -> None:
+    bucket = _FakeBucket()
+    store = _make_store(bucket)
+    blob_name = TaskStore._task_blob_name("user-1", "task-1")
+    bucket.seed_json(
+        blob_name,
+        {
+            "task_id": "task-1",
+            "workspace_id": "user-1",
+            "events": [],
+        },
+    )
+
+    await store.append_events(
+        "user-1",
+        "task-1",
+        [
+            {"event": "agent_output_delta", "data": {"chunk": "hello"}},
+            {"event": "usage_delta", "data": {"total_tokens": 42}},
+        ],
+    )
+
+    task = await store.get_task("user-1", "task-1")
+    assert task is not None
+    events = task.get("events", [])
+    assert [event["event"] for event in events] == ["agent_output_delta", "usage_delta"]
+    assert all(event["timestamp"] for event in events)
+
+
+@pytest.mark.asyncio
 async def test_task_store_append_event_raises_not_found_when_task_missing() -> None:
     store = _make_store(_FakeBucket())
 
@@ -233,3 +263,32 @@ async def test_local_store_append_event_persists_timestamped_event(tmp_path: Pat
     assert len(events) == 1
     assert events[0]["event"] == "agent_output"
     assert events[0]["timestamp"]
+
+
+@pytest.mark.asyncio
+async def test_local_store_append_events_persists_all_events_in_order(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "local-store-append-many"))
+    await store.save_task(
+        "user-1",
+        "task-1",
+        {
+            "task_id": "task-1",
+            "workspace_id": "user-1",
+            "events": [],
+        },
+    )
+
+    await store.append_events(
+        "user-1",
+        "task-1",
+        [
+            {"event": "agent_output_delta", "data": {"chunk": "hello"}},
+            {"event": "thinking_delta", "data": {"chunk": "reasoning"}},
+        ],
+    )
+
+    task = await store.get_task("user-1", "task-1")
+    assert task is not None
+    events = task.get("events", [])
+    assert [event["event"] for event in events] == ["agent_output_delta", "thinking_delta"]
+    assert all(event["timestamp"] for event in events)

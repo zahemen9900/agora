@@ -25,7 +25,7 @@ class TaskCreateRequest(BaseModel):
     stakes: float = Field(default=0.0, ge=0.0)
     mechanism_override: MechanismName | None = None
     allow_mechanism_switch: bool = True
-    allow_offline_fallback: bool = False
+    allow_offline_fallback: bool = True
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     reasoning_presets: ReasoningPresetOverrides | None = None
 
@@ -40,6 +40,7 @@ class TaskCreateResponse(BaseModel):
     selector_reasoning_hash: str
     status: TaskStatusName
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
 
 
@@ -95,6 +96,7 @@ class DeliberationResultResponse(BaseModel):
     mechanism_trace: list[dict[str, Any]] = Field(default_factory=list)
     execution_mode: str = "live"
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     fallback_count: int = Field(default=0, ge=0)
     fallback_events: list[dict[str, Any]] = Field(default_factory=list)
     mechanism_override_source: str | None = None
@@ -110,9 +112,10 @@ class TaskStatusResponse(BaseModel):
     mechanism: MechanismName
     mechanism_override: MechanismName | None = None
     allow_mechanism_switch: bool = True
-    allow_offline_fallback: bool = False
+    allow_offline_fallback: bool = True
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
     status: TaskStatusName
     selector_reasoning: str
@@ -219,6 +222,7 @@ BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
 BenchmarkDomainName = Literal["math", "factual", "reasoning", "code", "creative", "demo"]
 BenchmarkPromptSourceName = Literal["template", "custom"]
 CostEstimationModeName = Literal["exact", "approx_total_tokens", "unavailable", "mixed"]
+BenchmarkItemStatusName = Literal["queued", "running", "completed", "failed", "degraded"]
 
 
 class BenchmarkDomainPrompt(BaseModel):
@@ -294,6 +298,12 @@ class BenchmarkRunStatusResponse(BaseModel):
     total_latency_ms: float | None = Field(default=None, ge=0.0)
     model_telemetry: dict[str, ModelTelemetryResponse] = Field(default_factory=dict)
     cost: BenchmarkCostEstimateResponse | None = None
+    completed_item_count: int = Field(default=0, ge=0)
+    failed_item_count: int = Field(default=0, ge=0)
+    degraded_item_count: int = Field(default=0, ge=0)
+    failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
 
 
 class BenchmarkCatalogEntry(BaseModel):
@@ -330,6 +340,42 @@ class BenchmarkCatalogResponse(BaseModel):
     user_tests_frequency: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
 
 
+class BenchmarkItemResponse(BaseModel):
+    """Normalized item-scoped view inside one benchmark run."""
+
+    item_id: str
+    item_index: int = Field(default=0, ge=0)
+    task_index: int = Field(default=0, ge=0)
+    phase: str | None = None
+    run_kind: str | None = None
+    category: str
+    question: str
+    source_task: str | None = None
+    status: BenchmarkItemStatusName
+    mechanism: str | None = None
+    selector_source: str | None = None
+    selector_fallback_path: list[str] = Field(default_factory=list)
+    failure_reason: str | None = None
+    latest_error_event: TaskEvent | None = None
+    fallback_events: list[dict[str, Any]] = Field(default_factory=list)
+    total_tokens: int = Field(default=0, ge=0)
+    thinking_tokens: int = Field(default=0, ge=0)
+    total_latency_ms: float = Field(default=0.0, ge=0.0)
+    model_telemetry: dict[str, ModelTelemetryResponse] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    events: list[TaskEvent] = Field(default_factory=list)
+
+
+class BenchmarkItemEventsResponse(BaseModel):
+    """Replay payload for one benchmark item's event stream."""
+
+    benchmark_id: str
+    item_id: str
+    events: list[TaskEvent] = Field(default_factory=list)
+
+
 class BenchmarkDetailResponse(BaseModel):
     """Expanded benchmark detail payload for dedicated detail views."""
 
@@ -359,6 +405,15 @@ class BenchmarkDetailResponse(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     benchmark_payload: dict[str, Any] = Field(default_factory=dict)
     cost: BenchmarkCostEstimateResponse | None = None
+    benchmark_items: list[BenchmarkItemResponse] = Field(default_factory=list)
+    active_item_id: str | None = None
+    active_item: BenchmarkItemResponse | None = None
+    completed_item_count: int = Field(default=0, ge=0)
+    failed_item_count: int = Field(default=0, ge=0)
+    degraded_item_count: int = Field(default=0, ge=0)
+    failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
 
 
 class BenchmarkPromptTemplate(BaseModel):

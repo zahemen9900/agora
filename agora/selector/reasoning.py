@@ -67,57 +67,35 @@ class ReasoningSelector:
             historical_payload=historical_payload,
         )
 
-        try:
-            response, _usage = await self._get_caller().call(
-                system_prompt=prompt.system,
-                user_prompt=prompt.user,
-                response_format=_ReasoningResponse,
-                temperature=0.3,
-            )
-            if not isinstance(response, _ReasoningResponse):
-                raise AgentCallError(
-                    "Unexpected structured output payload from reasoning selector."
-                )
+        response, _usage = await self._get_caller().call(
+            system_prompt=prompt.system,
+            user_prompt=prompt.user,
+            response_format=_ReasoningResponse,
+            temperature=0.3,
+        )
+        if not isinstance(response, _ReasoningResponse):
+            raise AgentCallError("Unexpected structured output payload from reasoning selector.")
 
-            reasoning_hash = hashlib.sha256(response.reasoning.encode("utf-8")).hexdigest()
-            selection = MechanismSelection(
-                mechanism=MechanismType(response.mechanism),
-                confidence=response.confidence,
-                reasoning=response.reasoning,
-                reasoning_hash=reasoning_hash,
-                bandit_recommendation=bandit_mechanism,
-                bandit_confidence=bandit_confidence,
-                task_features=features,
-            )
-            logger.info(
-                "reasoning_selector_decision",
-                mechanism=selection.mechanism.value,
-                confidence=selection.confidence,
-                bandit_recommendation=selection.bandit_recommendation.value,
-                bandit_confidence=selection.bandit_confidence,
-            )
-            return selection
-        except AgentCallError as exc:
-            fallback_reasoning = (
-                "Reasoning model unavailable; defaulting to Thompson Sampling recommendation "
-                "to preserve availability."
-            )
-            reasoning_hash = hashlib.sha256(fallback_reasoning.encode("utf-8")).hexdigest()
-            logger.warning(
-                "reasoning_selector_fallback",
-                reason="agent_call_error",
-                error=str(exc),
-                fallback_mechanism=bandit_mechanism.value,
-            )
-            return MechanismSelection(
-                mechanism=bandit_mechanism,
-                confidence=bandit_confidence,
-                reasoning=fallback_reasoning,
-                reasoning_hash=reasoning_hash,
-                bandit_recommendation=bandit_mechanism,
-                bandit_confidence=bandit_confidence,
-                task_features=features,
-            )
+        reasoning_hash = hashlib.sha256(response.reasoning.encode("utf-8")).hexdigest()
+        selection = MechanismSelection(
+            mechanism=MechanismType(response.mechanism),
+            confidence=response.confidence,
+            reasoning=response.reasoning,
+            reasoning_hash=reasoning_hash,
+            bandit_recommendation=bandit_mechanism,
+            bandit_confidence=bandit_confidence,
+            task_features=features,
+            selector_source="llm_reasoning",
+            selector_fallback_path=["reasoning"],
+        )
+        logger.info(
+            "reasoning_selector_decision",
+            mechanism=selection.mechanism.value,
+            confidence=selection.confidence,
+            bandit_recommendation=selection.bandit_recommendation.value,
+            bandit_confidence=selection.bandit_confidence,
+        )
+        return selection
 
     def _get_caller(self) -> AgentCaller:
         """Return lazily initialized reasoning caller."""

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Copy, KeyRound, ShieldX } from "lucide-react";
 
 import {
@@ -11,13 +11,20 @@ import {
 import { useAuth } from "../lib/useAuth";
 
 export function ApiKeys() {
-  const { getAccessToken, workspace } = useAuth();
+  const { getAccessToken, principal, user, workspace } = useAuth();
+  const workosFirstName = normalizedFirstName(user?.firstName);
+  const principalFirstName = normalizedFirstName(principal?.display_name);
+  const emailFirstName = firstNameFromEmail(user?.email ?? principal?.email);
+  const resolvedFirstName = workosFirstName || principalFirstName || emailFirstName || "Authenticated user";
+  const workspaceLabel = normalizeWorkspaceLabel(workspace?.display_name, resolvedFirstName);
   const [name, setName] = useState("");
   const [keys, setKeys] = useState<ApiKeyMetadataResponse[]>([]);
   const [created, setCreated] = useState<ApiKeyCreateResponse | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const copyTimeoutRef = useRef<number | null>(null);
 
   const loadKeys = useCallback(async () => {
     setLoading(true);
@@ -40,6 +47,15 @@ export function ApiKeys() {
     void loadKeys();
   }, [loadKeys]);
 
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current !== null) {
+        window.clearTimeout(copyTimeoutRef.current);
+        copyTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
   async function handleCreate() {
     if (!name.trim()) {
       return;
@@ -53,6 +69,7 @@ export function ApiKeys() {
       }
       const payload = await createApiKey(token, name.trim());
       setCreated(payload);
+      setCopyState("idle");
       setName("");
       await loadKeys();
     } catch (cause) {
@@ -81,20 +98,25 @@ export function ApiKeys() {
       return;
     }
     await navigator.clipboard.writeText(created.api_key);
+    setCopyState("copied");
+    if (copyTimeoutRef.current !== null) {
+      window.clearTimeout(copyTimeoutRef.current);
+    }
+    copyTimeoutRef.current = window.setTimeout(() => setCopyState("idle"), 1500);
   }
 
   return (
-    <div className="max-w-[900px] mx-auto">
+    <div className="max-w-225 mx-auto">
       <header className="mb-10">
         <div className="mono text-text-muted text-xs mb-3">WORKSPACE</div>
         <h1 className="text-3xl md:text-4xl mb-4">API Keys</h1>
-        <p className="text-text-secondary text-lg max-w-[700px]">
+        <p className="text-text-secondary text-lg max-w-175">
           Issue workspace-scoped machine credentials for CI, services, notebooks, and SDK clients.
           Keys are shown exactly once and can be revoked at any time.
         </p>
-        {workspace ? (
+        {principal || workspace ? (
           <p className="mono text-text-muted text-sm mt-4">
-            {workspace.display_name} · {workspace.id}
+            {resolvedFirstName} · {workspaceLabel}
           </p>
         ) : null}
       </header>
@@ -130,7 +152,8 @@ export function ApiKeys() {
           </div>
           <div className="flex flex-wrap gap-3 items-center">
             <button className="btn-secondary" onClick={() => void copyCreatedKey()}>
-              <Copy size={16} /> Copy key
+              {copyState === "copied" ? <CheckCircle2 size={16} /> : <Copy size={16} />}
+              {copyState === "copied" ? "Copied" : "Copy key"}
             </button>
             <span className="mono text-xs text-text-muted">
               {created.metadata.name} · {created.metadata.public_id}
@@ -208,4 +231,49 @@ export function ApiKeys() {
       </section>
     </div>
   );
+}
+
+function normalizedFirstName(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (isLikelyWorkOSId(trimmed)) {
+    return "";
+  }
+  return trimmed.split(/\s+/)[0] ?? "";
+}
+
+function firstNameFromEmail(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed || !trimmed.includes("@")) {
+    return "";
+  }
+  const localPart = trimmed.split("@")[0]?.trim();
+  if (!localPart) {
+    return "";
+  }
+  return localPart.split(/[._-]+/)[0] ?? "";
+}
+
+function isLikelyWorkOSId(value: string): boolean {
+  const trimmed = value.trim();
+  return /^(user|org|inv|team|role)_[A-Za-z0-9]+$/i.test(trimmed);
+}
+
+function normalizeWorkspaceLabel(
+  value: string | null | undefined,
+  firstName: string,
+): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return firstName ? `${firstName}'s Workspace` : "Workspace";
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (isLikelyWorkOSId(trimmed) || /^user_[a-z0-9]+\'s workspace$/i.test(trimmed) || lower.includes("user_")) {
+    return firstName ? `${firstName}'s Workspace` : "Workspace";
+  }
+
+  return trimmed;
 }

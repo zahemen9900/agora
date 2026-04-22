@@ -1,3 +1,4 @@
 include README.md
-include pyproject.toml
+include setup.py
+include LICENSE
 recursive-exclude * __pycache__ *.py[cod]

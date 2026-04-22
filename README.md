@@ -384,22 +384,19 @@ gcloud secrets versions access latest --secret agora-gemini-api-key --project ag
 
 ## Quick Usage
 
-```python
-import asyncio
+This cell is notebook / Colab friendly. Paste it as-is into a notebook and run it
+with top-level `await`. If you are writing a plain Python script, move the body
+into `main()` and call it from your script's entry point.
 
+```python
 from agora.runtime.orchestrator import AgoraOrchestrator
 
 
-async def main() -> None:
-    orchestrator = AgoraOrchestrator(agent_count=3)
-    result = await orchestrator.run("What is the capital of France?")
-    print(result.final_answer)
-    print(result.confidence, result.quorum_reached)
-    print(result.merkle_root)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+orchestrator = AgoraOrchestrator(agent_count=3)
+result = await orchestrator.run("What is the capital of France?")
+print(result.final_answer)
+print(result.confidence, result.quorum_reached)
+print(result.merkle_root)
 ```
 
 ### Strict Phase 2 Demo (Hosted Default + Local Strict Option + Devnet)

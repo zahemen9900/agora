@@ -13,7 +13,7 @@ from time import monotonic
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
 
@@ -42,6 +42,9 @@ from agora.types import (
 MechanismName = Literal["debate", "vote"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
+BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
+BenchmarkDomainName = Literal["math", "factual", "reasoning", "code", "creative", "demo"]
+BenchmarkPromptSourceName = Literal["template", "custom"]
 DEFAULT_PROGRAM_ID = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
 
@@ -78,7 +81,7 @@ class ArbitratorConfig(BaseModel):
     agent_count: int = 4
     reasoning_presets: ReasoningPresetOverrides | None = None
     allow_mechanism_switch: bool = True
-    allow_offline_fallback: bool = False
+    allow_offline_fallback: bool = True
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     auth_token: str | None = None
     local_models: list[LocalModelSpec] | None = None
@@ -102,6 +105,7 @@ class HostedTaskCreateResponse(BaseModel):
     selector_reasoning_hash: str = ""
     status: TaskStatusName = "pending"
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
 
 
@@ -136,6 +140,7 @@ class HostedDeliberationResult(BaseModel):
     mechanism_trace: list[MechanismTraceSegment] = Field(default_factory=list)
     execution_mode: str = "live"
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     fallback_count: int = 0
     fallback_events: list[FallbackEvent] = Field(default_factory=list)
     mechanism_override_source: str | None = None
@@ -166,9 +171,10 @@ class HostedTaskStatus(BaseModel):
     mechanism: MechanismName = "debate"
     mechanism_override: MechanismName | None = None
     allow_mechanism_switch: bool = True
-    allow_offline_fallback: bool = False
+    allow_offline_fallback: bool = True
     quorum_threshold: float = 0.6
     selector_source: str = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
     status: TaskStatusName = "pending"
     selector_reasoning: str = ""
@@ -222,13 +228,43 @@ class HostedModelTelemetry(BaseModel):
     estimation_mode: str | None = None
 
 
+class HostedBenchmarkDomainPrompt(BaseModel):
+    """Prompt configuration for one benchmark domain."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    template_id: str | None = None
+    question: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("question", "prompt"),
+        serialization_alias="prompt",
+    )
+    source: BenchmarkPromptSourceName = "template"
+
+
+class HostedBenchmarkRunRequest(BaseModel):
+    """Typed request payload for benchmark execution."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    training_per_category: int = Field(default=1, ge=1, le=20)
+    holdout_per_category: int = Field(default=1, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=12)
+    live_agents: bool = True
+    seed: int = 42
+    domain_prompts: dict[BenchmarkDomainName, HostedBenchmarkDomainPrompt] = Field(
+        default_factory=dict
+    )
+    reasoning_presets: ReasoningPresetOverrides | None = None
+
+
 class HostedBenchmarkRunResponse(BaseModel):
     """Benchmark run trigger acknowledgement."""
 
     model_config = ConfigDict(extra="ignore")
 
     run_id: str
-    status: str
+    status: BenchmarkRunStatusName
     created_at: datetime | None = None
 
 
@@ -238,7 +274,7 @@ class HostedBenchmarkRunStatus(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     run_id: str
-    status: str
+    status: BenchmarkRunStatusName
     created_at: datetime | None = None
     updated_at: datetime | None = None
     error: str | None = None
@@ -251,6 +287,52 @@ class HostedBenchmarkRunStatus(BaseModel):
     total_latency_ms: float | None = None
     model_telemetry: dict[str, HostedModelTelemetry] = Field(default_factory=dict)
     cost: HostedCostEstimate | None = None
+    completed_item_count: int = 0
+    failed_item_count: int = 0
+    degraded_item_count: int = 0
+    failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
+
+
+class HostedBenchmarkItem(BaseModel):
+    """One task-like benchmark item with replayable event state."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    item_id: str
+    item_index: int = 0
+    task_index: int = 0
+    phase: str | None = None
+    run_kind: str | None = None
+    category: str
+    question: str
+    source_task: str | None = None
+    status: str
+    mechanism: str | None = None
+    selector_source: str | None = None
+    selector_fallback_path: list[str] = Field(default_factory=list)
+    failure_reason: str | None = None
+    latest_error_event: dict[str, Any] | None = None
+    fallback_events: list[dict[str, Any]] = Field(default_factory=list)
+    total_tokens: int = 0
+    thinking_tokens: int = 0
+    total_latency_ms: float = 0.0
+    model_telemetry: dict[str, HostedModelTelemetry] = Field(default_factory=dict)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class HostedBenchmarkItemEvents(BaseModel):
+    """Replay payload for one benchmark item."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    benchmark_id: str
+    item_id: str
+    events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class HostedBenchmarkDetail(BaseModel):
@@ -281,6 +363,36 @@ class HostedBenchmarkDetail(BaseModel):
     summary: dict[str, Any] = Field(default_factory=dict)
     benchmark_payload: dict[str, Any] = Field(default_factory=dict)
     cost: HostedCostEstimate | None = None
+    benchmark_items: list[HostedBenchmarkItem] = Field(default_factory=list)
+    active_item_id: str | None = None
+    active_item: HostedBenchmarkItem | None = None
+    completed_item_count: int = 0
+    failed_item_count: int = 0
+    degraded_item_count: int = 0
+    failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
+
+
+class HostedBenchmarkRunError(RuntimeError):
+    """Base class for structured hosted benchmark lifecycle failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        run_id: str,
+        status: BenchmarkRunStatusName,
+        error: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.run_id = run_id
+        self.status = status
+        self.error = error
+
+
+class HostedBenchmarkRunExecutionError(HostedBenchmarkRunError):
+    """Raised when a hosted benchmark run reaches a failed terminal state."""
 
 
 class HostedPaymentReleaseResponse(BaseModel):
@@ -338,7 +450,7 @@ class AgoraArbitrator:
         agent_count: int = 4,
         reasoning_presets: ReasoningPresetOverrides | None = None,
         allow_mechanism_switch: bool = True,
-        allow_offline_fallback: bool = False,
+        allow_offline_fallback: bool = True,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
         local_models: list[LocalModelSpec] | None = None,
@@ -528,12 +640,27 @@ class AgoraArbitrator:
                 )
             await asyncio.sleep(interval)
 
-    async def run_benchmark(self, **payload: Any) -> HostedBenchmarkRunResponse:
-        """Trigger a hosted benchmark run."""
+    async def run_benchmark(
+        self,
+        request: HostedBenchmarkRunRequest | None = None,
+        **payload: Any,
+    ) -> HostedBenchmarkRunResponse:
+        """Trigger a hosted benchmark run.
+
+        Benchmarks require a human bearer token, not an Agora API key.
+        """
+
+        if request is not None and payload:
+            raise ValueError("Pass either request=... or keyword payload fields, not both")
+        request_payload = (
+            request
+            if request is not None
+            else HostedBenchmarkRunRequest.model_validate(payload or {})
+        )
 
         response = await self._client.post(
             "/benchmarks/run",
-            json=payload,
+            json=request_payload.model_dump(mode="json", by_alias=True),
             headers=self._headers(),
         )
         response.raise_for_status()
@@ -549,6 +676,36 @@ class AgoraArbitrator:
         response.raise_for_status()
         return HostedBenchmarkRunStatus.model_validate(response.json())
 
+    async def wait_for_benchmark_run(
+        self,
+        run_id: str,
+        *,
+        timeout_seconds: float | None = None,
+        poll_interval_seconds: float = 1.0,
+    ) -> HostedBenchmarkRunStatus:
+        """Poll a hosted benchmark run until terminal success, failure, or timeout."""
+
+        deadline = None if timeout_seconds is None else monotonic() + max(0.0, timeout_seconds)
+        interval = max(0.05, poll_interval_seconds)
+
+        while True:
+            status = await self.get_benchmark_run_status(run_id)
+            if status.status == "completed":
+                return status
+            if status.status == "failed":
+                raise HostedBenchmarkRunExecutionError(
+                    status.error or f"Hosted benchmark run {run_id} failed",
+                    run_id=run_id,
+                    status=status.status,
+                    error=status.error,
+                )
+            if deadline is not None and monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out waiting for hosted benchmark run {run_id} to complete "
+                    f"(last status={status.status})"
+                )
+            await asyncio.sleep(interval)
+
     async def get_benchmark_detail(self, benchmark_id: str) -> HostedBenchmarkDetail:
         """Fetch a hosted benchmark detail payload by run_id or artifact_id."""
 
@@ -558,6 +715,34 @@ class AgoraArbitrator:
         )
         response.raise_for_status()
         return HostedBenchmarkDetail.model_validate(response.json())
+
+    async def get_benchmark_item(
+        self,
+        benchmark_id: str,
+        item_id: str,
+    ) -> HostedBenchmarkItem:
+        """Fetch one item-scoped benchmark payload."""
+
+        response = await self._client.get(
+            f"/benchmarks/{benchmark_id}/items/{item_id}",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return HostedBenchmarkItem.model_validate(response.json())
+
+    async def get_benchmark_item_events(
+        self,
+        benchmark_id: str,
+        item_id: str,
+    ) -> HostedBenchmarkItemEvents:
+        """Fetch replayable events for one benchmark item."""
+
+        response = await self._client.get(
+            f"/benchmarks/{benchmark_id}/items/{item_id}/events",
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return HostedBenchmarkItemEvents.model_validate(response.json())
 
     async def stream_benchmark_run_events(
         self,
@@ -666,14 +851,13 @@ class AgoraArbitrator:
                 )
             ):
                 raise RuntimeError("Local fallback occurred but allow_offline_fallback=false")
-            selector_source = "llm_reasoning"
-            if self.config.mechanism is not None:
-                selector_source = "forced_override"
-            elif "Reasoning model unavailable" in result.mechanism_selection.reasoning:
-                selector_source = "bandit_fallback"
             return result.model_copy(
                 update={
-                    "selector_source": selector_source,
+                    "selector_source": (
+                        "forced_override"
+                        if self.config.mechanism is not None
+                        else result.selector_source
+                    ),
                     "mechanism_override_source": (
                         "sdk" if self.config.mechanism is not None else None
                     ),
@@ -1135,6 +1319,39 @@ class AgoraArbitrator:
                 latest_error_event=status.latest_error_event,
             )
 
+    def _validate_completed_result_shape(
+        self,
+        status: HostedTaskStatus,
+    ) -> None:
+        """Reject fake-complete hosted payloads when strict verification is enabled."""
+
+        if not self.config.strict_verification:
+            return
+        if status.status != "completed":
+            return
+        if status.result is None:
+            return
+
+        required_completed_fields = (
+            "convergence_history",
+            "mechanism_trace",
+            "fallback_events",
+            "fallback_count",
+        )
+        missing = [
+            field_name
+            for field_name in required_completed_fields
+            if field_name not in status.result.model_fields_set
+        ]
+        if missing:
+            raise HostedTaskProtocolError(
+                "Task status missing completed result fields: " + ", ".join(missing),
+                task_id=status.task_id,
+                status=status.status,
+                failure_reason=status.failure_reason,
+                latest_error_event=status.latest_error_event,
+            )
+
     async def _status_to_result(
         self,
         status_payload: HostedTaskStatus | dict[str, Any],
@@ -1154,6 +1371,7 @@ class AgoraArbitrator:
                 failure_reason=status.failure_reason,
                 latest_error_event=status.latest_error_event,
             )
+        self._validate_completed_result_shape(status)
 
         mechanism = MechanismType(str(status.mechanism).lower())
         features = await extract_features(
@@ -1302,7 +1520,7 @@ class AgoraNode:
         mechanism: MechanismName | None = None,
         agent_count: int = 4,
         allow_mechanism_switch: bool = True,
-        allow_offline_fallback: bool = False,
+        allow_offline_fallback: bool = True,
         quorum_threshold: float = 0.6,
         auth_token: str | None = None,
         local_models: list[LocalModelSpec] | None = None,

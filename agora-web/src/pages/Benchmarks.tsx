@@ -81,133 +81,133 @@ const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
     math: [
       {
         id: "math-stepwise",
-        title: "Exact Value",
-        question: "What is the exact value of 7/8 + 5/12?",
+        title: "Compound Growth",
+        question: "A portfolio grows at 8% annually, compounded monthly. What is its value after 5 years if the initial investment is $10,000? Round to the nearest dollar.",
       },
       {
         id: "math-proof-check",
-        title: "Verification Check",
-        question: "Which is larger, 3/5 or 5/8, and by how much?",
+        title: "Break-even Analysis",
+        question: "A product costs $240 to manufacture and sells for $360. Fixed monthly overhead is $18,000. How many units must be sold per month to break even?",
       },
       {
         id: "math-fast",
-        title: "Sequence Term",
-        question: "What is the 20th term of the sequence 2, 5, 8, 11, ...?",
+        title: "Probability Estimate",
+        question: "A fair six-sided die is rolled three times. What is the probability of getting at least one 6?",
       },
       {
         id: "math-robust",
-        title: "Rate Problem",
-        question: "If a machine completes 9 tasks in 12 minutes, how long does it take to complete 27 tasks at the same rate?",
+        title: "Optimal Allocation",
+        question: "A team has 120 hours to allocate across two projects. Project A yields $500/hour of value and Project B yields $350/hour, but B requires at least 40 hours. How should the hours be split to maximize total value?",
       },
     ],
     factual: [
       {
         id: "factual-cited",
-        title: "Capital Fact",
-        question: "What is the capital of France?",
+        title: "Consensus Threshold",
+        question: "What voting threshold does the UN Security Council require to pass a non-procedural resolution, and which members hold veto power?",
       },
       {
         id: "factual-multihop",
-        title: "Historical Year",
-        question: "In what year did Apollo 11 land on the Moon?",
+        title: "Protocol Origin",
+        question: "Which organization originally developed the TCP/IP protocol suite, and in what decade was it first deployed?",
       },
       {
         id: "factual-precision",
-        title: "Author Check",
-        question: "Who wrote Pride and Prejudice?",
+        title: "Market Structure",
+        question: "What distinguishes an oligopoly from a monopoly, and name one real-world industry that is commonly cited as an oligopoly?",
       },
       {
         id: "factual-contrast",
-        title: "Planet Fact",
-        question: "Which planet is the largest in the Solar System?",
+        title: "Constitutional Clause",
+        question: "What does the equal protection clause of the US 14th Amendment guarantee, and which landmark Supreme Court case applied it to school segregation?",
       },
     ],
     reasoning: [
       {
         id: "reasoning-tradeoff",
-        title: "Tradeoff Call",
-        question: "Should a system optimize for speed or robustness when the cost of error is high?",
+        title: "Rollout Strategy",
+        question: "A company wants to deploy a new AI model to 10 million users. Should it do a full immediate rollout or a staged 5% canary release first? Consider reliability, user impact, and rollback complexity.",
       },
       {
         id: "reasoning-structured",
-        title: "Evidence Balance",
-        question: "When evidence is incomplete, should a model hedge or choose the most likely answer?",
+        title: "Hiring Signal",
+        question: "A candidate scores in the 95th percentile on technical assessments but performed poorly in the panel interview. Should the hiring committee weight the structured test or the interview more heavily, and why?",
       },
       {
         id: "reasoning-risk",
-        title: "Risk Preference",
-        question: "Is it better to minimize false positives or false negatives in a high-stakes decision?",
+        title: "Audit vs. Speed",
+        question: "A financial institution can deploy a credit-scoring model that is 3% more accurate than its current one but is a black box. Should accuracy gains outweigh auditability requirements in regulated lending?",
       },
       {
         id: "reasoning-ethical",
-        title: "Decision Lens",
-        question: "Is a simpler model preferable if it is marginally less accurate but easier to audit?",
+        title: "Data Retention",
+        question: "A health-tech startup collects anonymized patient data to improve its diagnostic model. Should it retain this data indefinitely for model improvement, or delete it after 2 years to limit privacy risk?",
       },
     ],
     code: [
       {
         id: "code-bugfix",
-        title: "Root Cause",
-        question: "What is the most likely root cause of this bug?",
+        title: "Deadlock Diagnosis",
+        question: "Two microservices each acquire a lock on a shared resource before requesting a lock held by the other. The system intermittently hangs under load. What is the root cause and the minimal fix?",
       },
       {
         id: "code-design",
-        title: "Design Choice",
-        question: "Which approach is more maintainable for this feature, a refactor or a targeted patch?",
+        title: "Schema Migration",
+        question: "A production API needs to add a non-nullable column to a table with 50 million rows and zero downtime. Should the team use a multi-step migration with a backfill, or a single ALTER TABLE statement? Justify the choice.",
       },
       {
         id: "code-performance",
-        title: "Latency Tradeoff",
-        question: "How can we reduce latency without changing the public API?",
+        title: "Cache Strategy",
+        question: "An endpoint that aggregates data from three downstream services has a p99 latency of 800ms. The underlying data changes every 5 minutes. Should the team add an in-memory cache, a Redis layer, or parallelize the downstream calls? Which gives the best latency improvement with the lowest risk?",
       },
       {
         id: "code-tests",
-        title: "Regression Test",
-        question: "Which test would best catch this regression?",
+        title: "Test Coverage Gap",
+        question: "A payment processing module has 90% line coverage but a critical bug slipped to production. The bug involved an unchecked nil pointer in an error-handling branch. What type of additional tests would have caught this, and how should the team prioritize them?",
       },
     ],
     creative: [
       {
         id: "creative-divergent",
-        title: "Concept Direction",
-        question: "What concept best fits a premium, industrial benchmark dashboard?",
+        title: "Dashboard Concept",
+        question: "Design the information hierarchy for a real-time AI arbitration dashboard meant for technical operators. What should appear above the fold, and what belongs in a detail panel?",
       },
       {
         id: "creative-story",
-        title: "Narrative Angle",
-        question: "Which narrative angle makes a product feel most trustworthy?",
+        title: "Trust Narrative",
+        question: "A B2B product makes high-stakes recommendations powered by multi-agent AI. Which communication strategy builds more trust with enterprise buyers: emphasizing the AI's accuracy metrics, or emphasizing the human-readable audit trail?",
       },
       {
         id: "creative-product",
-        title: "Product Angle",
-        question: "What product idea best serves a technical operator who needs fast decisions?",
+        title: "API Design",
+        question: "You are designing a public API for a multi-agent reasoning service. Should the primary interface be synchronous (request/response) or asynchronous (submit job, poll or webhook)? Argue for the better default given typical use cases.",
       },
       {
         id: "creative-brand",
-        title: "Brand Voice",
-        question: "Which brand voice fits a multi-agent AI operator console best?",
+        title: "Naming Convention",
+        question: "An AI orchestration platform is choosing between two naming philosophies for its agent roles: neutral technical names (e.g. Agent-A, Agent-B) vs. role-based names (e.g. Advocate, Skeptic, Arbiter). Which better serves transparency and user trust?",
       },
     ],
     demo: [
       {
         id: "demo-balanced",
-        title: "Stakeholder Summary",
-        question: "What is the clearest way to explain this benchmark result to a stakeholder?",
+        title: "Result Framing",
+        question: "An arbitration run reached consensus with 4 of 5 agents agreeing after two debate rounds. One agent dissented citing insufficient evidence. How should this result be summarized for a non-technical stakeholder without overstating confidence?",
       },
       {
         id: "demo-chain-ready",
-        title: "Replayable Receipt",
-        question: "What should a replayable deliberation receipt emphasize first?",
+        title: "Receipt Priority",
+        question: "A on-chain deliberation receipt must fit key information into a compact format for public verifiability. What are the three most critical fields to include first — and why — given that the full transcript is available off-chain?",
       },
       {
         id: "demo-latency",
-        title: "Concise Summary",
-        question: "How can we present cost and latency without overwhelming the audience?",
+        title: "Cost vs. Quality",
+        question: "Benchmark results show that the debate mechanism is 12% more accurate than voting but costs 3× more tokens and takes 4× longer. At what stakes or task complexity does the quality gain justify the cost?",
       },
       {
         id: "demo-confidence",
-        title: "Confidence Framing",
-        question: "Which summary framing makes the result easiest to trust at a glance?",
+        title: "Quorum Framing",
+        question: "A deliberation reached quorum at 80% agent agreement. Should the output be presented as a 'consensus decision' or a 'majority recommendation', and does the distinction matter for downstream use in automated pipelines?",
       },
     ],
   },
@@ -440,12 +440,15 @@ export function Benchmarks() {
   }, [benchmarks]);
 
   const costData = useMemo(() => {
+    const costSummary =
+      Object.keys(normalizedSummary.per_mechanism).length > 0
+        ? normalizedSummary.per_mechanism
+        : normalizedSummary.per_mode;
     return BENCHMARK_MECHANISMS.map((mechanism) => {
-      const metrics = normalizedSummary.per_mode[mechanism] ?? {};
-      const avgEstimatedCost = asNumber(metrics.avg_estimated_cost_usd);
+      const metrics = costSummary[mechanism] ?? {};
       return {
         mechanism: titleCase(mechanism),
-        estimatedCostUsd: avgEstimatedCost > 0 ? avgEstimatedCost : null,
+        estimatedCostUsd: asNumber(metrics.avg_estimated_cost_usd),
       };
     });
   }, [normalizedSummary]);
@@ -455,6 +458,14 @@ export function Benchmarks() {
       return [];
     }
     return (yourSortMode === "recent" ? catalog.user_recent : catalog.user_frequency).slice(0, 3);
+  }, [catalog, yourSortMode]);
+
+  const failedBenchmarkRuns = useMemo(() => {
+    if (!catalog) {
+      return [];
+    }
+    const runs = yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency;
+    return runs.filter((run) => run.status === "failed").slice(0, 3);
   }, [catalog, yourSortMode]);
 
   const globalEntries = useMemo(() => {
@@ -661,9 +672,9 @@ export function Benchmarks() {
                     />
                     <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
                     <Legend iconType="circle" wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: "12px" }} />
-                    <Bar dataKey="debate" name="Debate" fill="var(--color-border-muted)" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="vote" name="Vote" fill="var(--color-text-muted)" radius={[4, 4, 0, 0]} />
-                    <Bar dataKey="selector" name="Selector" fill="var(--color-accent)" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="debate" name="Debate" fill="var(--color-border-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
+                    <Bar dataKey="vote" name="Vote" fill="var(--color-text-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
+                    <Bar dataKey="selector" name="Selector" fill="var(--color-accent)" radius={[4, 4, 0, 0]} minPointSize={4} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -730,7 +741,7 @@ export function Benchmarks() {
                       formatter={(value) => formatUsd(Number(value))}
                       cursor={{ fill: "var(--color-elevated)" }}
                     />
-                    <Bar dataKey="estimatedCostUsd" name="Estimated USD" fill="var(--color-text-primary)" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="estimatedCostUsd" name="Estimated USD" fill="var(--color-text-primary)" radius={[4, 4, 0, 0]} minPointSize={4} />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
@@ -793,7 +804,7 @@ export function Benchmarks() {
                     className="btn-secondary"
                     onClick={() => navigate(`/benchmarks/${activeBenchmarkRun.run_id}`)}
                   >
-                    Open Live View
+                    {activeBenchmarkRun.status === "failed" ? "Open Failed Report" : "Open Live View"}
                   </button>
                 </div>
               )}
@@ -816,17 +827,44 @@ export function Benchmarks() {
           </div>
           {catalogError ? (
             <p className="text-sm text-text-secondary">{catalogError}</p>
-          ) : yourEntries.length === 0 ? (
-            <p className="text-sm text-text-secondary">No user benchmark artifacts yet.</p>
           ) : (
-            <div className="space-y-3">
-              {yourEntries.map((entry) => (
-                <BenchmarkCatalogCard
-                  key={entry.artifact_id}
-                  entry={entry}
-                  onOpen={() => navigate(`/benchmarks/${entry.artifact_id}`)}
-                />
-              ))}
+            <div className="space-y-5">
+              {yourEntries.length > 0 ? (
+                <div className="space-y-3">
+                  {yourEntries.map((entry) => (
+                    <BenchmarkCatalogCard
+                      key={entry.artifact_id}
+                      entry={entry}
+                      onOpen={() => navigate(`/benchmarks/${entry.artifact_id}`)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-text-secondary">No user benchmark artifacts yet.</p>
+              )}
+
+              {failedBenchmarkRuns.length > 0 ? (
+                <div className="pt-5 border-t border-border-subtle">
+                  <div className="flex items-center justify-between gap-3 mb-3">
+                    <div>
+                      <h4 className="text-base font-semibold">Failed Runs</h4>
+                      <p className="text-xs text-text-secondary">
+                        Persisted benchmark failures stay visible here with their error details.
+                      </p>
+                    </div>
+                    <span className="badge">{titleCase(yourSortMode)}</span>
+                  </div>
+                  <div className="space-y-3">
+                    {failedBenchmarkRuns.map((run) => (
+                      <FailedBenchmarkRunCard
+                        key={run.run_id}
+                        run={run}
+                        onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
         </div>
@@ -1057,7 +1095,7 @@ export function Benchmarks() {
                               <div className="mono text-[10px] text-text-muted mb-1">
                                 STARTING FROM {wizardSelectedTemplate.title.toUpperCase()}
                               </div>
-                              <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
+                              <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word">
                                 {wizardSelectedTemplate.question}
                               </p>
                             </div>
@@ -1081,7 +1119,7 @@ export function Benchmarks() {
                     ) : (
                       <div className="rounded-md border border-border-subtle bg-elevated/40 p-3">
                         <div className="mono text-xs text-text-muted mb-1">SELECTED QUESTION</div>
-                        <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
+                        <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word">
                           {normalizeText(wizardCurrentSelection?.question) || "Choose a question above or switch to custom mode."}
                         </p>
                       </div>
@@ -1211,6 +1249,9 @@ function BenchmarkCatalogCard({
   entry: BenchmarkCatalogEntry;
   onOpen: () => void;
 }) {
+  const dominantMechanism = dominantCountEntry(entry.mechanism_counts)?.[0] ?? entry.latest_mechanism ?? null;
+  const dominantModel = dominantCountEntry(entry.model_counts)?.[0] ?? entry.models?.[0] ?? null;
+  const dominantProvider = dominantModel ? providerFromModel(dominantModel) : null;
   return (
     <button
       type="button"
@@ -1221,6 +1262,9 @@ function BenchmarkCatalogCard({
         <span className="mono text-xs text-text-muted">{entry.artifact_id.slice(0, 18)}...</span>
         <span className="badge">{titleCase(entry.scope)}</span>
         {entry.latest_mechanism ? <span className="badge">{titleCase(entry.latest_mechanism)}</span> : null}
+        {dominantMechanism ? <span className="badge">mix {titleCase(dominantMechanism)}</span> : null}
+        {dominantProvider ? <span className="badge">{titleCase(dominantProvider)} heavy</span> : null}
+        <span className="badge">{frequencyBucket(entry.frequency_score)}</span>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs text-text-secondary mb-3">
@@ -1229,6 +1273,13 @@ function BenchmarkCatalogCard({
         <div>Tokens {formatInt(entry.total_tokens ?? 0)}</div>
         <div>Thinking {formatInt(entry.thinking_tokens ?? 0)}</div>
         <div>Cost {formatUsd(entry.cost?.estimated_cost_usd ?? null)}</div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-[11px] text-text-muted mb-3">
+        <div>Latency class {latencyBucket(entry.total_latency_ms ?? null)}</div>
+        <div>Cost class {costBucket(entry.cost?.estimated_cost_usd ?? null)}</div>
+        <div>Mechanisms {Object.keys(entry.mechanism_counts).length || 0}</div>
+        <div>Models {Object.keys(entry.model_counts).length || 0}</div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -1251,8 +1302,50 @@ function BenchmarkCatalogCard({
   );
 }
 
+function FailedBenchmarkRunCard({
+  run,
+  onOpen,
+}: {
+  run: BenchmarkRunStatusPayload;
+  onOpen: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="w-full text-left border border-red-400/30 rounded-md px-4 py-4 bg-red-400/10 hover:border-red-300 transition-colors"
+    >
+      <div className="flex flex-wrap gap-2 items-center mb-2">
+        <span className="mono text-xs text-text-muted break-all">{run.run_id}</span>
+        <span className="badge bg-red-500/15 text-red-200 border-red-500/30">failed</span>
+        {run.artifact_id ? <span className="badge">artifact {run.artifact_id}</span> : null}
+        {run.latest_mechanism ? <span className="badge">{titleCase(run.latest_mechanism)}</span> : null}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs text-text-secondary mb-3">
+        <div>Tokens {formatInt(run.total_tokens ?? 0)}</div>
+        <div>Agents {run.agent_count ?? "n/a"}</div>
+        <div>Thinking {formatInt(run.thinking_tokens ?? 0)}</div>
+        <div>Cost {formatUsd(run.cost?.estimated_cost_usd ?? null)}</div>
+        <div>Updated {formatDateTime(run.updated_at)}</div>
+      </div>
+
+      {run.error ? (
+        <div className="mono text-xs text-red-200 mb-3 wrap-break-word whitespace-pre-wrap">
+          {run.error}
+        </div>
+      ) : null}
+
+      <div className="flex items-center justify-between text-xs text-text-muted">
+        <span>{formatDateTime(run.created_at)}</span>
+        <span className="inline-flex items-center gap-1">Open failed report <ChevronRight size={12} /></span>
+      </div>
+    </button>
+  );
+}
+
 function deriveSummary(payload: BenchmarkPayload | null): BenchmarkSummary {
-  const fallback = { per_mode: {}, per_category: {} } satisfies BenchmarkSummary;
+  const fallback = { per_mode: {}, per_mechanism: {}, per_category: {} } satisfies BenchmarkSummary;
   if (!payload) {
     return fallback;
   }
@@ -1274,7 +1367,9 @@ function deriveSummary(payload: BenchmarkPayload | null): BenchmarkSummary {
 
 function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSummary {
   const safePerMode = summary.per_mode || {};
+  const safePerMechanism = summary.per_mechanism || safePerMode;
   const perMode: Record<string, Record<string, number>> = {};
+  const perMechanism: Record<string, Record<string, number>> = {};
   for (const mechanism of BENCHMARK_MECHANISMS) {
     const metrics = safePerMode[mechanism] ?? {};
     perMode[mechanism] = {
@@ -1285,6 +1380,17 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
       switch_rate: asNumber(metrics.switch_rate),
       avg_thinking_tokens: asNumber(metrics.avg_thinking_tokens),
       avg_estimated_cost_usd: asNumber(metrics.avg_estimated_cost_usd),
+    };
+
+    const mechanismMetrics = safePerMechanism[mechanism] ?? {};
+    perMechanism[mechanism] = {
+      accuracy: asNumber(mechanismMetrics.accuracy),
+      avg_tokens: asNumber(mechanismMetrics.avg_tokens),
+      avg_latency_ms: asNumber(mechanismMetrics.avg_latency_ms),
+      avg_rounds: asNumber(mechanismMetrics.avg_rounds),
+      switch_rate: asNumber(mechanismMetrics.switch_rate),
+      avg_thinking_tokens: asNumber(mechanismMetrics.avg_thinking_tokens),
+      avg_estimated_cost_usd: asNumber(mechanismMetrics.avg_estimated_cost_usd),
     };
   }
 
@@ -1307,7 +1413,7 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
     }
   }
 
-  return { per_mode: perMode, per_category: perCategory };
+  return { per_mode: perMode, per_mechanism: perMechanism, per_category: perCategory };
 }
 
 function asNumber(value: unknown): number {
@@ -1355,4 +1461,51 @@ function titleCase(value: string): string {
     .filter(Boolean)
     .map((part) => part[0].toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function dominantCountEntry(record: Record<string, number> | null | undefined): [string, number] | null {
+  if (!record) {
+    return null;
+  }
+  const entries = Object.entries(record).sort((left, right) => right[1] - left[1]);
+  return entries[0] ?? null;
+}
+
+function frequencyBucket(score: number | null | undefined): string {
+  if (score === null || score === undefined || !Number.isFinite(score) || score <= 0) {
+    return "rare config";
+  }
+  if (score < 12) {
+    return "rare config";
+  }
+  if (score < 30) {
+    return "steady config";
+  }
+  return "high-frequency config";
+}
+
+function costBucket(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return "n/a";
+  }
+  if (value < 0.005) {
+    return "lean";
+  }
+  if (value < 0.02) {
+    return "balanced";
+  }
+  return "heavy";
+}
+
+function latencyBucket(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return "n/a";
+  }
+  if (value < 90_000) {
+    return "fast";
+  }
+  if (value < 240_000) {
+    return "medium";
+  }
+  return "slow";
 }

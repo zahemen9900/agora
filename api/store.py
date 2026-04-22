@@ -308,6 +308,16 @@ class TaskStore:
         return tasks
 
     async def append_event(self, workspace_id: str, task_id: str, event: dict[str, Any]) -> None:
+        await self.append_events(workspace_id, task_id, [event])
+
+    async def append_events(
+        self,
+        workspace_id: str,
+        task_id: str,
+        events: list[dict[str, Any]],
+    ) -> None:
+        if not events:
+            return
         blob = self.bucket.blob(self._task_blob_name(workspace_id, task_id))
 
         for attempt in range(1, self._APPEND_EVENT_MAX_RETRIES + 1):
@@ -332,13 +342,15 @@ class TaskStore:
                     f"task not found workspace_id={workspace_id} task_id={task_id}"
                 )
 
-            timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
-            task.setdefault("events", []).append(
-                {
-                    **event,
-                    "timestamp": timestamp,
-                }
-            )
+            task_events = task.setdefault("events", [])
+            for event in events:
+                timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
+                task_events.append(
+                    {
+                        **event,
+                        "timestamp": timestamp,
+                    }
+                )
 
             generation = blob.generation
             if generation is None:
@@ -564,6 +576,16 @@ class TaskStore:
         run_id: str,
         event: dict[str, Any],
     ) -> None:
+        await self.append_user_test_events(user_id, run_id, [event])
+
+    async def append_user_test_events(
+        self,
+        user_id: str,
+        run_id: str,
+        events: list[dict[str, Any]],
+    ) -> None:
+        if not events:
+            return
         blob = self.bucket.blob(self._user_test_blob_name(user_id, run_id))
 
         for attempt in range(1, self._APPEND_EVENT_MAX_RETRIES + 1):
@@ -578,13 +600,15 @@ class TaskStore:
                     f"run not found user_id={user_id} run_id={run_id}"
                 )
 
-            timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
-            record.setdefault("events", []).append(
-                {
-                    **event,
-                    "timestamp": timestamp,
-                }
-            )
+            record_events = record.setdefault("events", [])
+            for event in events:
+                timestamp = event.get("timestamp") or datetime.now(UTC).isoformat()
+                record_events.append(
+                    {
+                        **event,
+                        "timestamp": timestamp,
+                    }
+                )
 
             generation = blob.generation
             if generation is None:

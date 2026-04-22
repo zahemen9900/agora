@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
 
+from agora.agent import AgentCallError
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
@@ -18,6 +19,19 @@ from api.routes import benchmarks as benchmark_routes
 from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
 from benchmarks.runner import BenchmarkRunner
+from agora.types import DeliberationResult, MechanismType
+from tests.helpers import make_selection
+
+
+def _override_user() -> AuthenticatedUser:
+    return AuthenticatedUser(
+        auth_method="jwt",
+        workspace_id="user-1",
+        user_id="user-1",
+        email="user1@example.com",
+        display_name="User One",
+        scopes=["tasks:read", "tasks:write"],
+    )
 
 
 def test_benchmark_runner_loads_curated_dataset() -> None:
@@ -330,6 +344,13 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
     task_routes._store = store
 
     artifact_payload = {
+        "generated_at": "2026-04-21T00:00:00+00:00",
+        "artifact_version": "benchmark-tasklike-v2",
+        "benchmark_config": {
+            "agent_count": 4,
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+        },
         "summary": None,
         "post_learning": {
             "summary": {
@@ -341,7 +362,7 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
     artifact = {
         "artifact_id": "local-stage-summary",
         "scope": "global",
-        "source": "local_backfill",
+        "source": "user_triggered",
         "status": "completed",
         "benchmark_payload": artifact_payload,
     }
@@ -369,6 +390,134 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
         assert healed_summary is not None
         assert healed_summary["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
     finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmarks_route_heal_skips_legacy_global_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-artifact-heal-skip-legacy"))
+    task_routes._store = store
+
+    legacy_artifact = {
+        "artifact_id": "legacy-phase2-validation",
+        "scope": "global",
+        "source": "legacy_backfill",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-17T00:00:00+00:00",
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.11}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.22}}},
+            },
+        },
+    }
+    current_artifact = {
+        "artifact_id": "current-tasklike-benchmark",
+        "scope": "global",
+        "source": "user_triggered",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-21T00:00:00+00:00",
+            "artifact_version": "benchmark-tasklike-v2",
+            "benchmark_config": {
+                "agent_count": 4,
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+            },
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.73}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.61}}},
+            },
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        await store.save_global_benchmark_artifact("legacy-phase2-validation", legacy_artifact)
+        await store.save_global_benchmark_artifact("current-tasklike-benchmark", current_artifact)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks",
+                headers={"x-agora-admin-token": "admin-token"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
+        assert (
+            payload["summary"]["per_category"]["reasoning"]["selector"]["accuracy"]
+            == pytest.approx(0.61)
+        )
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_benchmark_catalog_hides_legacy_backfill_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "benchmark-catalog-hides-legacy"))
+    task_routes._store = store
+
+    legacy_artifact = {
+        "artifact_id": "legacy-phase2-validation",
+        "scope": "global",
+        "source": "legacy_backfill",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-17T00:00:00+00:00",
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.11}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.22}}},
+            },
+        },
+    }
+    current_artifact = {
+        "artifact_id": "current-tasklike-benchmark",
+        "scope": "global",
+        "source": "user_triggered",
+        "status": "completed",
+        "benchmark_payload": {
+            "generated_at": "2026-04-21T00:00:00+00:00",
+            "artifact_version": "benchmark-tasklike-v2",
+            "benchmark_config": {
+                "agent_count": 4,
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+            },
+            "summary": {
+                "per_mode": {"selector": {"accuracy": 0.73}},
+                "per_category": {"reasoning": {"selector": {"accuracy": 0.61}}},
+            },
+        },
+    }
+
+    try:
+        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "")
+        app.dependency_overrides[benchmark_routes.get_current_user] = _override_user
+        await store.save_global_benchmark_artifact("legacy-phase2-validation", legacy_artifact)
+        await store.save_global_benchmark_artifact("current-tasklike-benchmark", current_artifact)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/benchmarks/catalog",
+                headers={"Authorization": "Bearer dummy"},
+            )
+
+        assert response.status_code == 200
+        payload = response.json()
+        artifact_ids = [entry["artifact_id"] for entry in payload["global_recent"]]
+        assert "current-tasklike-benchmark" in artifact_ids
+        assert "legacy-phase2-validation" not in artifact_ids
+    finally:
+        app.dependency_overrides.pop(benchmark_routes.get_current_user, None)
         task_routes._store = None
 
 
@@ -521,6 +670,11 @@ async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_miss
 
 @pytest.mark.asyncio
 async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path) -> None:
+    class _FailingSelectorCaller:
+        async def call(self, *args: object, **kwargs: object) -> tuple[object, dict[str, object]]:
+            del args, kwargs
+            raise AgentCallError("selector provider unavailable")
+
     async def deterministic_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt, user_prompt
         return {
@@ -562,6 +716,7 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
     training = [task for task in training if task["category"] != "demo"]
     holdout = [task for task in holdout if task["category"] != "demo"]
     orchestrator = AgoraOrchestrator(agent_count=3)
+    orchestrator.selector.reasoning._caller = _FailingSelectorCaller()
     runner = BenchmarkRunner(orchestrator, agents=[deterministic_agent] * 3)
 
     payload = await runner.run_phase2_validation(
@@ -586,6 +741,94 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
     assert "output_tokens_used" in sample_run
     assert "thinking_tokens_used" in sample_run
     assert "cost" in sample_run
+
+
+@pytest.mark.asyncio
+async def test_phase2_validation_continues_after_failed_item(tmp_path: Path) -> None:
+    class _FailingSelectorCaller:
+        async def call(self, *args: object, **kwargs: object) -> tuple[object, dict[str, object]]:
+            del args, kwargs
+            raise AgentCallError("selector provider unavailable")
+
+    async def mixed_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt
+        if "FAIL BENCHMARK ITEM" in user_prompt:
+            raise RuntimeError("provider_kimi_unavailable_or_invalid")
+        return {
+            "answer": "Constraint-matching answer",
+            "confidence": 0.81,
+            "predicted_group_answer": "Constraint-matching answer",
+            "reasoning": "Deterministic success agent.",
+            "claim": "The answer follows the prompt directly.",
+            "evidence": "The prompt states the deciding condition clearly.",
+            "defense": "The critique does not invalidate the direct answer.",
+            "final_answer": "Constraint-matching answer",
+            "summary": "The deterministic local agent selected the direct answer.",
+            "analyses": [
+                {
+                    "faction": "pro",
+                    "weakest_claim": "pro claim",
+                    "flaw": "Needs explicit constraint support.",
+                    "attack_axis": "constraint_fit",
+                    "counterexample": "A stronger answer satisfying more constraints.",
+                    "failure_mode": "The claim is plausible but under-grounded.",
+                    "question": "Which prompt constraint makes the claim decisive?",
+                },
+                {
+                    "faction": "opp",
+                    "weakest_claim": "opp claim",
+                    "flaw": "Relies on an unstated assumption.",
+                    "attack_axis": "hidden_assumption",
+                    "counterexample": "A boundary case where the assumption breaks.",
+                    "failure_mode": "The claim fails when its hidden assumption is false.",
+                    "question": "Which assumption must hold for the claim to win?",
+                },
+            ],
+        }
+
+    orchestrator = AgoraOrchestrator(agent_count=3, allow_offline_fallback=True)
+    orchestrator.selector.reasoning._caller = _FailingSelectorCaller()
+    runner = BenchmarkRunner(orchestrator, agents=[mixed_agent] * 3)
+
+    payload = await runner.run_phase2_validation(
+        training_tasks=[
+            {
+                "task": "FAIL BENCHMARK ITEM",
+                "category": "reasoning",
+                "ground_truth": "Constraint-matching answer",
+                "stakes": 0.0,
+            },
+            {
+                "task": "Safe benchmark item",
+                "category": "math",
+                "ground_truth": "Constraint-matching answer",
+                "stakes": 0.0,
+            },
+        ],
+        holdout_tasks=[
+            {
+                "task": "Safe holdout benchmark item",
+                "category": "factual",
+                "ground_truth": "Constraint-matching answer",
+                "stakes": 0.0,
+            }
+        ],
+        output_path=str(tmp_path / "phase2_validation_partial.json"),
+    )
+
+    pre_learning_runs = payload["pre_learning"]["runs"]
+    learning_runs = payload["learning_updates"]["runs"]
+    post_learning_runs = payload["post_learning"]["runs"]
+
+    assert any(run["item_status"] == "failed" for run in pre_learning_runs)
+    assert any(run["item_status"] == "completed" for run in pre_learning_runs + learning_runs + post_learning_runs)
+    assert payload["pre_learning"]["summary"]["failed_run_count"] >= 1
+    assert payload["post_learning"]["summary"]["completed_run_count"] >= 1
+    assert payload["pre_learning"]["summary"]["failure_counts_by_reason"]
+    assert all(
+        "selector_source" in run and "selector_fallback_path" in run
+        for run in pre_learning_runs + learning_runs + post_learning_runs
+    )
 
 
 @pytest.mark.asyncio
@@ -651,6 +894,104 @@ async def test_phase2_validation_seeded_mode_raises_on_merkle_divergence(
             output_path=str(tmp_path / "phase2_validation_failure.json"),
             seed=11,
         )
+
+
+@pytest.mark.asyncio
+async def test_phase2_validation_forwards_live_orchestrator_events_with_benchmark_context(
+    tmp_path: Path,
+) -> None:
+    class _FakeBandit:
+        @staticmethod
+        def get_stats() -> dict[str, object]:
+            return {"debate": {"alpha": 1.0, "beta": 1.0}}
+
+    class _FakeSelector:
+        bandit = _FakeBandit()
+
+    def _result(task: str) -> DeliberationResult:
+        return DeliberationResult(
+            task=task,
+            mechanism_used=MechanismType.DEBATE,
+            mechanism_selection=make_selection(
+                mechanism=MechanismType.DEBATE,
+                topic_category="reasoning",
+            ),
+            final_answer="Hybrid answer",
+            confidence=0.82,
+            quorum_reached=True,
+            round_count=2,
+            agent_count=4,
+            mechanism_switches=0,
+            merkle_root="benchmark-root",
+            transcript_hashes=["h1", "h2"],
+            agent_models_used=["gemini-3-flash-preview", "claude-sonnet-4-6"],
+            model_token_usage={"gemini-3-flash-preview": 11, "claude-sonnet-4-6": 9},
+            model_input_token_usage={"gemini-3-flash-preview": 5, "claude-sonnet-4-6": 4},
+            model_output_token_usage={"gemini-3-flash-preview": 6, "claude-sonnet-4-6": 5},
+            total_tokens_used=20,
+            total_latency_ms=25.0,
+            timestamp=datetime.now(UTC),
+        )
+
+    class _FakeOrchestrator:
+        selector = _FakeSelector()
+
+        async def run(self, task: str, **kwargs: object) -> DeliberationResult:
+            event_sink = kwargs.get("event_sink")
+            if callable(event_sink):
+                await event_sink(
+                    "agent_output_delta",
+                    {
+                        "agent_id": "agent-1",
+                        "agent_model": "gemini-3-flash-preview",
+                        "role": "voter",
+                        "content_delta": "live chunk",
+                    },
+                )
+                await event_sink(
+                    "usage_delta",
+                    {
+                        "agent_id": "agent-1",
+                        "agent_model": "gemini-3-flash-preview",
+                        "total_tokens": 11,
+                    },
+                )
+            return _result(task)
+
+        async def run_and_learn(self, task: str, **kwargs: object) -> DeliberationResult:
+            return await self.run(task, **kwargs)
+
+    runner = BenchmarkRunner(_FakeOrchestrator(), agents=None)
+    captured_events: list[tuple[str, dict[str, object]]] = []
+
+    async def event_sink(event_type: str, payload: dict[str, object]) -> None:
+        captured_events.append((event_type, payload))
+
+    await runner.run_phase2_validation(
+        training_tasks=[
+            {
+                "task": "Should we deliberate or vote?",
+                "category": "reasoning",
+                "ground_truth": "Hybrid answer",
+            }
+        ],
+        holdout_tasks=[],
+        output_path=str(tmp_path / "phase2_validation_live_events.json"),
+        seed=None,
+        event_sink=event_sink,
+    )
+
+    forwarded = [event for event in captured_events if event[0] in {"agent_output_delta", "usage_delta"}]
+    assert forwarded
+    event_type, payload = forwarded[0]
+    assert event_type == "agent_output_delta"
+    assert payload["agent_id"] == "agent-1"
+    benchmark_context = payload["benchmark_context"]
+    assert isinstance(benchmark_context, dict)
+    assert benchmark_context["phase"] == "pre_learning"
+    assert benchmark_context["category"] == "reasoning"
+    assert benchmark_context["task_index"] == 0
+    assert benchmark_context["run_kind"] == "selector_initial"
 
 
 @pytest.mark.asyncio
@@ -1016,6 +1357,350 @@ async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
     assert arbitrator.latest_task_id == "task-stream"
     assert seen_calls[0][1] == "/tasks/task-stream/run-async"
     assert seen_calls[1][1] == "/tasks/task-stream/stream-ticket"
+
+
+@pytest.mark.asyncio
+async def test_sdk_benchmark_helpers_cover_run_wait_detail_and_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedBenchmarkRunRequest
+
+    arbitrator = AgoraArbitrator(
+        auth_token="human-bearer-token",
+        strict_verification=False,
+    )
+    seen_calls: list[tuple[str, str, dict[str, Any]]] = []
+    status_payloads = [
+        {
+            "run_id": "run-sdk",
+            "status": "running",
+            "created_at": "2026-04-21T04:00:00Z",
+            "updated_at": "2026-04-21T04:00:01Z",
+        },
+        {
+            "run_id": "run-sdk",
+            "status": "completed",
+            "created_at": "2026-04-21T04:00:00Z",
+            "updated_at": "2026-04-21T04:00:02Z",
+            "artifact_id": "artifact-sdk",
+            "latest_mechanism": "selector",
+            "agent_count": 2,
+            "total_tokens": 48,
+        },
+    ]
+    status_index = {"value": 0}
+
+    async def fake_post(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("POST", url, dict(kwargs)))
+        if url == "/benchmarks/run":
+            return _FakeResponse(
+                {
+                    "run_id": "run-sdk",
+                    "status": "queued",
+                    "created_at": "2026-04-21T04:00:00Z",
+                }
+            )
+        if url == "/benchmarks/runs/run-sdk/stream-ticket":
+            return _FakeResponse({"ticket": "ticket-benchmark"})
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+    async def fake_get(url: str, *_args: object, **kwargs: object) -> _FakeResponse:
+        seen_calls.append(("GET", url, dict(kwargs)))
+        if url == "/benchmarks/runs/run-sdk":
+            payload = status_payloads[min(status_index["value"], len(status_payloads) - 1)]
+            status_index["value"] += 1
+            return _FakeResponse(payload)
+        if url == "/benchmarks/run-sdk":
+            return _FakeResponse(
+                {
+                    "benchmark_id": "run-sdk",
+                    "artifact_id": "artifact-sdk",
+                    "run_id": "run-sdk",
+                    "scope": "user",
+                    "source": "user_test",
+                    "status": "completed",
+                    "created_at": "2026-04-21T04:00:00Z",
+                    "updated_at": "2026-04-21T04:00:02Z",
+                    "run_count": 1,
+                    "latest_mechanism": "selector",
+                    "agent_count": 2,
+                    "total_tokens": 48,
+                    "thinking_tokens": 0,
+                    "total_latency_ms": 15.0,
+                    "models": ["gemini-3-flash-preview"],
+                    "model_telemetry": {
+                        "gemini-3-flash-preview": {
+                            "total_tokens": 48,
+                            "input_tokens": 20,
+                            "output_tokens": 28,
+                            "thinking_tokens": 0,
+                            "latency_ms": 15.0,
+                        }
+                    },
+                    "events": [],
+                    "summary": {"accuracy": 1.0},
+                    "benchmark_payload": {"benchmark_config": {"agent_count": 2}},
+                }
+            )
+        raise AssertionError(f"Unexpected GET url: {url}")
+
+    class _FakeStreamResponse:
+        def __init__(self, lines: list[str]) -> None:
+            self._lines = lines
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_lines(self):
+            for line in self._lines:
+                yield line
+
+    class _FakeStreamContext:
+        def __init__(self, lines: list[str]) -> None:
+            self._response = _FakeStreamResponse(lines)
+
+        async def __aenter__(self) -> _FakeStreamResponse:
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_stream(method: str, url: str, *_args: object, **kwargs: object) -> _FakeStreamContext:
+        seen_calls.append((method, url, dict(kwargs)))
+        assert method == "GET"
+        assert url == "/benchmarks/runs/run-sdk/stream"
+        assert kwargs.get("params") == {"ticket": "ticket-benchmark"}
+        return _FakeStreamContext(
+            [
+                "event: running",
+                'data: {"payload": {"run_id": "run-sdk", "status": "running"}, "timestamp": "2026-04-21T04:00:01Z"}',
+                "",
+                "event: complete",
+                'data: {"payload": {"run_id": "run-sdk", "status": "completed", "artifact_id": "artifact-sdk"}, "timestamp": "2026-04-21T04:00:02Z"}',
+                "",
+            ]
+        )
+
+    monkeypatch.setattr(arbitrator._client, "post", fake_post)
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+    monkeypatch.setattr(arbitrator._client, "stream", fake_stream)
+
+    started = await arbitrator.run_benchmark(
+        HostedBenchmarkRunRequest(
+            agent_count=2,
+            live_agents=False,
+            domain_prompts={
+                "math": {
+                    "template_id": "math-stepwise",
+                    "question": "What is 2 + 2?",
+                    "source": "custom",
+                }
+            },
+        )
+    )
+    completed = await arbitrator.wait_for_benchmark_run(
+        started.run_id,
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.01,
+    )
+    detail = await arbitrator.get_benchmark_detail(started.run_id)
+    events = [event async for event in arbitrator.stream_benchmark_run_events(started.run_id)]
+    await arbitrator.aclose()
+
+    assert started.status == "queued"
+    assert completed.status == "completed"
+    assert completed.artifact_id == "artifact-sdk"
+    assert detail.benchmark_id == "run-sdk"
+    assert detail.summary["accuracy"] == 1.0
+    assert events[-1]["event"] == "complete"
+    assert seen_calls[0][2]["json"] == {
+        "training_per_category": 1,
+        "holdout_per_category": 1,
+        "agent_count": 2,
+        "live_agents": False,
+        "seed": 42,
+        "domain_prompts": {
+            "math": {
+                "template_id": "math-stepwise",
+                "prompt": "What is 2 + 2?",
+                "source": "custom",
+            }
+        },
+        "reasoning_presets": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_sdk_wait_for_benchmark_run_raises_structured_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedBenchmarkRunExecutionError
+
+    arbitrator = AgoraArbitrator(auth_token="human-bearer-token", strict_verification=False)
+
+    async def fake_get(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        assert url == "/benchmarks/runs/run-failed"
+        return _FakeResponse(
+            {
+                "run_id": "run-failed",
+                "status": "failed",
+                "created_at": "2026-04-21T04:00:00Z",
+                "updated_at": "2026-04-21T04:00:03Z",
+                "error": "benchmark providers unavailable",
+            }
+        )
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    with pytest.raises(HostedBenchmarkRunExecutionError) as exc_info:
+        await arbitrator.wait_for_benchmark_run("run-failed", poll_interval_seconds=0.01)
+
+    await arbitrator.aclose()
+
+    assert exc_info.value.run_id == "run-failed"
+    assert exc_info.value.status == "failed"
+    assert exc_info.value.error == "benchmark providers unavailable"
+
+
+@pytest.mark.asyncio
+async def test_sdk_benchmark_flow_e2e_against_local_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import HostedBenchmarkRunRequest
+
+    store = LocalTaskStore(data_dir=str(tmp_path / "sdk-benchmark-e2e"))
+    task_routes._store = store
+
+    async def fake_human_user(_credentials: object | None = None) -> AuthenticatedUser:
+        return AuthenticatedUser(
+            auth_method="jwt",
+            workspace_id="workspace-sdk",
+            user_id="user-sdk",
+            email="sdk@example.com",
+            display_name="SDK User",
+            scopes=["tasks:read", "tasks:write"],
+        )
+
+    async def fake_execute_benchmark_run(
+        *,
+        workspace_id: str,
+        run_id: str,
+        request: Any,
+    ) -> None:
+        stream = benchmark_routes.get_stream_manager()
+        started_at = datetime.now(UTC)
+        await store.save_user_test_result(
+            workspace_id,
+            run_id,
+            {
+                "run_id": run_id,
+                "workspace_id": workspace_id,
+                "kind": "benchmark",
+                "status": "running",
+                "created_at": started_at.isoformat(),
+                "updated_at": started_at.isoformat(),
+                "request": request.model_dump(mode="json"),
+                "label": "User-triggered benchmark",
+            },
+        )
+        await benchmark_routes._persist_and_emit_benchmark_event(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            event_type="running",
+            event_data={"run_id": run_id, "status": "running"},
+        )
+
+        completed_at = datetime.now(UTC)
+        await store.save_user_test_result(
+            workspace_id,
+            run_id,
+            {
+                "run_id": run_id,
+                "workspace_id": workspace_id,
+                "kind": "benchmark",
+                "status": "completed",
+                "created_at": started_at.isoformat(),
+                "updated_at": completed_at.isoformat(),
+                "artifact_id": "artifact-sdk-e2e",
+                "request": request.model_dump(mode="json"),
+                "latest_mechanism": "selector",
+                "agent_count": request.agent_count,
+                "total_tokens": 64,
+                "thinking_tokens": 8,
+                "total_latency_ms": 12.5,
+                "model_telemetry": {
+                    "gemini-3-flash-preview": {
+                        "total_tokens": 64,
+                        "input_tokens": 32,
+                        "output_tokens": 24,
+                        "thinking_tokens": 8,
+                        "latency_ms": 12.5,
+                    }
+                },
+                "cost": {
+                    "estimated_cost_usd": 0.0012,
+                    "model_estimated_costs_usd": {"gemini-3-flash-preview": 0.0012},
+                    "pricing_version": "2026-04-21",
+                    "estimation_mode": "exact",
+                    "pricing_sources": {"gemini-3-flash-preview": "test"},
+                },
+                "summary": {"accuracy": 1.0},
+                "benchmark_payload": {"benchmark_config": {"agent_count": request.agent_count}},
+                "events": [],
+                "source": "user_test",
+                "run_count": 1,
+                "model_counts": {"gemini-3-flash-preview": 1},
+                "mechanism_counts": {"selector": 1},
+                "models": ["gemini-3-flash-preview"],
+            },
+        )
+        await benchmark_routes._persist_and_emit_benchmark_event(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            run_id=run_id,
+            event_type="complete",
+            event_data={
+                "run_id": run_id,
+                "status": "completed",
+                "artifact_id": "artifact-sdk-e2e",
+            },
+        )
+
+    app.dependency_overrides[benchmark_routes.get_current_user] = fake_human_user
+    monkeypatch.setattr(benchmark_routes, "_execute_benchmark_run", fake_execute_benchmark_run)
+
+    try:
+        arbitrator = AgoraArbitrator(auth_token="human-bearer-token", strict_verification=False)
+        await arbitrator._client.aclose()
+        arbitrator._client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        )
+
+        started = await arbitrator.run_benchmark(
+            HostedBenchmarkRunRequest(agent_count=2, live_agents=False)
+        )
+        completed = await arbitrator.wait_for_benchmark_run(
+            started.run_id,
+            timeout_seconds=2.0,
+            poll_interval_seconds=0.01,
+        )
+        detail = await arbitrator.get_benchmark_detail(started.run_id)
+        await arbitrator.aclose()
+
+        assert started.status == "queued"
+        assert completed.status == "completed"
+        assert detail.benchmark_id == started.run_id
+        assert detail.agent_count == 2
+        assert detail.request is not None
+        assert detail.request["agent_count"] == 2
+    finally:
+        app.dependency_overrides.clear()
+        task_routes._store = None
 
 
 class _FakeResponse:

@@ -31,6 +31,11 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     created_by: "demo-user",
     mechanism: "debate",
     mechanism_override: null,
+    allow_mechanism_switch: true,
+    allow_offline_fallback: true,
+    quorum_threshold: 0.6,
+    selector_source: "llm_reasoning",
+    mechanism_override_source: null,
     status: "pending",
     selector_reasoning: "Example prompt for demo purposes.",
     selector_reasoning_hash: "",
@@ -43,6 +48,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     round_count: 0,
     mechanism_switches: 0,
     transcript_hashes: [],
+    selector_fallback_path: [],
     solana_tx_hash: null,
     explorer_url: null,
     payment_amount: 0,
@@ -50,9 +56,58 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     chain_operations: {},
     created_at: now,
     completed_at: null,
+    failure_reason: null,
+    latest_error_event: null,
     result: null,
     events: [],
   };
+}
+
+function dominantModelLabel(task: TaskStatusResponse): string | null {
+  const telemetry = task.result?.model_telemetry ?? {};
+  const entries = Object.entries(telemetry).sort(
+    (left, right) => (right[1]?.total_tokens ?? 0) - (left[1]?.total_tokens ?? 0),
+  );
+  return entries[0]?.[0] ?? null;
+}
+
+function paymentStatusTone(status: TaskStatusResponse["payment_status"]): string {
+  if (status === "released") {
+    return "bg-accent-muted text-accent border-accent";
+  }
+  if (status === "locked") {
+    return "bg-warning/10 text-warning border-warning/40";
+  }
+  return "bg-void text-text-secondary border-border-subtle";
+}
+
+function statusTone(status: TaskStatusResponse["status"]): string {
+  if (status === "completed" || status === "paid") {
+    return "bg-accent-muted text-accent border-accent";
+  }
+  if (status === "failed") {
+    return "bg-danger/10 text-danger border-danger/40";
+  }
+  return "bg-void text-text-secondary border-border-subtle";
+}
+
+function compactTaskInsight(task: TaskStatusResponse): string {
+  const result = task.result;
+  if (!result) {
+    return `Status: ${task.status} • Hash: ${task.merkle_root ? task.merkle_root.slice(0, 8) : "Pending"}`;
+  }
+
+  const fallbackCount = result.fallback_count ?? 0;
+  const lockedClaimCount = result.locked_claims?.length ?? 0;
+  const hotPath = dominantModelLabel(task);
+  const fragments = [
+    `${result.execution_mode ?? "live"} execution`,
+    `${lockedClaimCount} locked claim${lockedClaimCount === 1 ? "" : "s"}`,
+    `${fallbackCount} fallback${fallbackCount === 1 ? "" : "s"}`,
+    result.mechanism_switches > 0 ? `${result.mechanism_switches} switch${result.mechanism_switches === 1 ? "" : "es"}` : null,
+    hotPath ? `hot path ${hotPath}` : null,
+  ].filter(Boolean);
+  return fragments.join(" • ");
 }
 
 export function TaskSubmit() {
@@ -295,15 +350,36 @@ export function TaskSubmit() {
                   {task.task_text}
                 </h3>
                 
-                <p className="text-sm text-text-secondary mb-6 flex-1 line-clamp-2">
-                  {isExample ? "Try this example task in the deliberation engine" : `Status: ${task.status} • Hash: ${task.merkle_root ? task.merkle_root.slice(0, 8) : "Pending"}`}
+                <p className="text-sm text-text-secondary mb-4 flex-1 line-clamp-3">
+                  {isExample ? "Try this example task in the deliberation engine" : compactTaskInsight(task)}
                 </p>
+
+                {!isExample ? (
+                  <div className="mb-4 flex flex-wrap gap-2">
+                    <span className={`badge border ${statusTone(task.status)}`}>{task.status}</span>
+                    <span className="badge">{task.selector_source.replace(/_/g, " ")}</span>
+                    <span className={`badge border ${paymentStatusTone(task.payment_status)}`}>
+                      payment {task.payment_status}
+                    </span>
+                    {task.result?.fallback_count ? (
+                      <span className="badge">{task.result.fallback_count} fallback</span>
+                    ) : null}
+                    {task.result?.locked_claims?.length ? (
+                      <span className="badge">{task.result.locked_claims.length} verified</span>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <div className="flex items-center gap-3 mt-auto pt-4 border-t border-border-subtle">
                   <span className="badge">{task.mechanism.toUpperCase()}</span>
                   <span className="mono text-xs text-text-muted">
                     {task.result ? `${task.result.latency_ms.toFixed(0)} ms` : "waiting..."}
                   </span>
+                  {!isExample && task.result?.mechanism_switches ? (
+                    <span className="mono text-xs text-text-muted">
+                      {task.result.mechanism_switches} switch{task.result.mechanism_switches === 1 ? "" : "es"}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             );

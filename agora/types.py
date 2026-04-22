@@ -39,7 +39,13 @@ LocalProviderName = Literal["gemini", "anthropic", "openrouter"]
 GeminiProReasoningPreset = Literal["low", "high"]
 ReasoningPresetName = Literal["low", "medium", "high"]
 ExecutionMode = Literal["live", "fallback", "mixed", "offline_benchmark"]
-SelectorSource = Literal["llm_reasoning", "bandit_fallback", "forced_override", "env_pin"]
+SelectorSource = Literal[
+    "llm_reasoning",
+    "heuristic_fallback",
+    "bandit_fallback",
+    "forced_override",
+    "env_pin",
+]
 MechanismOverrideSource = Literal["request", "env_pin", "sdk", "benchmark"]
 CostEstimationMode = Literal["exact", "approx_total_tokens", "unavailable", "mixed"]
 
@@ -93,6 +99,8 @@ class MechanismSelection(BaseModel):
     bandit_recommendation: MechanismType
     bandit_confidence: float = Field(ge=0.0, le=1.0)
     task_features: TaskFeatures
+    selector_source: SelectorSource = "llm_reasoning"
+    selector_fallback_path: list[str] = Field(default_factory=lambda: ["reasoning"])
 
 
 class AgentOutput(BaseModel):

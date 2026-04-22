@@ -52,6 +52,8 @@ EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 _STREAM_EVENT_PREFIX = "\u001eAGORA_STREAM_EVENT\u001e"
 _STREAM_EVENT_SEPARATOR = "\u001f"
+_SCHEMA_COERCION_REASON = "schema_incomplete_live_response"
+_SCHEMA_COERCION_CONFIDENCE = 0.5
 
 class _VoteResponse(BaseModel):
     """Structured schema for vote generation."""
@@ -939,7 +941,7 @@ class VoteEngine:
         response: str | _VoteResponse
         usage: dict[str, Any]
         vote: _VoteResponse
-        fallback_used = False
+        coercion_provenance: str | None = None
         for attempt in range(2):
             response, usage = await caller.call(
                 system_prompt=system_prompt,
@@ -951,16 +953,17 @@ class VoteEngine:
             )
             if isinstance(response, _VoteResponse):
                 vote = response
-                fallback_used = False
+                coercion_provenance = None
             else:
-                vote, fallback_used = self._coerce_vote_response(str(response), fallback)
-            if not fallback_used or self.allow_offline_fallback:
+                vote, coercion_provenance = self._coerce_vote_response(str(response), fallback)
+            if coercion_provenance is None or self.allow_offline_fallback:
                 break
             if attempt == 0:
                 logger.warning(
-                    "vote_kimi_response_empty_retrying",
+                    "vote_kimi_response_retrying",
                     model=self._model_name("kimi"),
                     provider=self._provider_for_tier("kimi"),
+                    provenance=coercion_provenance,
                 )
                 continue
             raise AgentCallError(
@@ -1005,18 +1008,22 @@ class VoteEngine:
             "provider": usage.get("provider", self._provider_for_tier("kimi")),
             "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
             "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
+            **self._coercion_usage(
+                component="vote._VoteResponse",
+                provenance=coercion_provenance,
+            ),
         }
 
     @staticmethod
     def _coerce_vote_response(
         response_text: str,
         fallback: _VoteResponse,
-    ) -> tuple[_VoteResponse, bool]:
+    ) -> tuple[_VoteResponse, str | None]:
         """Parse Kimi JSON when present; otherwise use its raw answer text."""
 
         cleaned = response_text.strip()
         if not cleaned:
-            return fallback, True
+            return fallback, "offline_fallback"
 
         try:
             parsed = json.loads(AgentCaller._extract_json_payload(cleaned))
@@ -1025,18 +1032,38 @@ class VoteEngine:
                     parsed["answer"] = parsed["final_answer"]
                 parsed.setdefault("predicted_group_answer", parsed.get("answer", cleaned))
                 parsed.setdefault("reasoning", cleaned)
-                parsed.setdefault("confidence", fallback.confidence)
-                return _VoteResponse.model_validate(parsed), False
+                parsed.setdefault("confidence", _SCHEMA_COERCION_CONFIDENCE)
+                return _VoteResponse.model_validate(parsed), "schema_coercion"
         except (json.JSONDecodeError, ValidationError):
             pass
 
         clipped = cleaned[:1200]
         return _VoteResponse(
             answer=clipped,
-            confidence=fallback.confidence,
+            confidence=_SCHEMA_COERCION_CONFIDENCE,
             predicted_group_answer=clipped,
             reasoning=cleaned,
-        ), False
+        ), "schema_coercion"
+
+    @staticmethod
+    def _coercion_usage(
+        *,
+        component: str,
+        provenance: str | None,
+    ) -> dict[str, Any]:
+        """Attach schema-coercion provenance to stage telemetry."""
+
+        if provenance != "schema_coercion":
+            return {}
+        return {
+            "fallback_events": [
+                FallbackEvent(
+                    component=component,
+                    reason=_SCHEMA_COERCION_REASON,
+                    fallback_type="schema_coercion",
+                )
+            ]
+        }
 
     def _get_caller(self, tier: str) -> AgentCaller:
         """Return lazy caller instance for a tier."""

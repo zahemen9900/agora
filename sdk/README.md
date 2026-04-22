@@ -6,6 +6,10 @@ Agora decides whether a task should be resolved by structured debate or confiden
 
 Hosted and local results both expose the same Phase 2 telemetry contract: per-model tokens, input/output/thinking token splits when available, latency, and estimated USD cost.
 
+Maintainer note: the canonical Python source tree lives in `agora/` at the repo
+root. The `sdk/` directory exists only as the SDK release wrapper for PyPI
+metadata, README content, and build entrypoints.
+
 ## Quickstart
 
 ```bash
@@ -108,6 +112,7 @@ print(result.final_answer)
 ```python
 from agora.sdk import (
     AgoraArbitrator,
+    HostedBenchmarkRunRequest,
     LocalDebateConfig,
     LocalModelSpec,
     LocalProviderKeys,
@@ -147,6 +152,42 @@ Do not combine `auth_token=` with `local_models=`. Every provider referenced in
 `local_models` or `devils_advocate_model` must also have a key in
 `LocalProviderKeys`.
 
+### Hosted benchmark runs
+
+Benchmarks are available through the SDK, but they use the benchmark API
+surface, which currently requires a human bearer token. Use a WorkOS-backed
+human session token here, not an Agora API key.
+
+```python
+from agora.sdk import AgoraArbitrator, HostedBenchmarkRunRequest
+
+
+arbitrator = AgoraArbitrator(auth_token="workos_or_human_bearer_token")
+run = await arbitrator.run_benchmark(
+    HostedBenchmarkRunRequest(
+        agent_count=4,
+        live_agents=True,
+        training_per_category=1,
+        holdout_per_category=1,
+    )
+)
+
+status = await arbitrator.wait_for_benchmark_run(
+    run.run_id,
+    timeout_seconds=900,
+    poll_interval_seconds=2.0,
+)
+detail = await arbitrator.get_benchmark_detail(status.artifact_id or run.run_id)
+
+print(status.status)
+print(detail.summary)
+await arbitrator.aclose()
+```
+
+If you want live progress, pair `stream_benchmark_run_events(run_id)` with
+`wait_for_benchmark_run(run_id)`. The stream is the event feed; the wait helper
+is the terminal-state contract.
+
 ### LangGraph integration
 
 ```python
@@ -177,6 +218,7 @@ async with AgoraNode() as agora_node:
 - Merkle-verifiable transcript receipts
 - Per-model telemetry and estimated USD cost in hosted and local modes
 - Optional hosted API mode, local callable mode, and explicit local model rosters
+- Hosted benchmark execution helpers with polling, detail fetch, and SSE streaming
 
 ## Authentication
 
@@ -184,6 +226,7 @@ async with AgoraNode() as agora_node:
 - SDK, CI, notebooks, and server-side callers should use first-party Agora API keys.
 - Hosted mode keeps the same `auth_token=` interface, but the token should be an Agora API key such as `agora_live_<public_id>.<secret>` or `agora_test_<public_id>.<secret>` in non-production environments.
 - Strict hosted E2E should use a real staging API key, not a fabricated JWT.
+- Benchmark endpoints are the exception: they currently require a human bearer token and reject API-key principals.
 
 ### Hosted API URL policy
 
@@ -201,5 +244,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a1`.
-- This cycle keeps PyPI publish manual while documenting the next-cycle automation plan.
+- Current package target is `agora-arbitrator-sdk==0.1.0a4`.
+- Preferred publish path is the trusted GitHub workflow in `.github/workflows/deploy-sdk.yml`.

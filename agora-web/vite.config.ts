@@ -34,7 +34,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     server: {
       proxy: {
-        '/api': {
+        '^/api(?:/|$)': {
           target: apiProxyTarget,
           changeOrigin: true,
           secure: false,
