@@ -1,5 +1,5 @@
 import { ArrowRight } from 'lucide-react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/useAuth';
 import { Button } from '../components/ui/Button';
 import { motion } from 'framer-motion';
@@ -71,17 +71,19 @@ const PAPERS: PaperCardProps[] = [
 ];
 
 export function LoginPage() {
-  const { signIn, signUp, isLoading } = useAuth();
+  const { signIn, signUp, isLoading, authStatus } = useAuth();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const wasRedirected = searchParams.get('redirect') === '1';
+  const isAuthenticated = authStatus === 'authenticated';
+  const fromPage = searchParams.get('from');
 
   return (
     <div className="flex flex-col relative">
 
-      {/* Redirect notice — outside the padded section so it spans edge-to-edge */}
-      {wasRedirected && (
+      {/* Redirect notice — spans edge-to-edge, shown when bounced from a protected route */}
+      {fromPage && (
         <div className="w-full z-50 bg-accent/10 border-b border-accent/20 text-center py-2.5 text-sm text-accent sticky top-0">
-          Sign in to continue to your destination.
+          Sign in again to access {fromPage}.
         </div>
       )}
 
@@ -98,9 +100,15 @@ export function LoginPage() {
           <div className="wordmark text-2xl tracking-widest">AGORA</div>
           <div className="flex items-center gap-4">
             <ThemeToggle />
-            <button onClick={() => signIn()} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
-              {isLoading ? 'Connecting...' : 'Sign In'}
-            </button>
+            {isAuthenticated ? (
+              <button onClick={() => navigate('/tasks')} className="btn-primary text-sm px-4 py-2">
+                Go to Dashboard
+              </button>
+            ) : (
+              <button onClick={() => signIn()} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
+                {isLoading ? 'Connecting...' : 'Sign In'}
+              </button>
+            )}
           </div>
         </header>
 
@@ -147,22 +155,24 @@ export function LoginPage() {
                 <Button
                   variant="primary"
                   size="md"
-                  onClick={() => signIn()}
-                  disabled={isLoading}
+                  onClick={() => isAuthenticated ? navigate('/tasks') : signIn()}
+                  disabled={!isAuthenticated && isLoading}
                   rightIcon={<ArrowRight size={18} />}
                   className="shadow-[0_0_20px_rgba(0,212,170,0.3)] hover:shadow-[0_0_30px_rgba(0,212,170,0.5)] transition-shadow duration-300"
                 >
-                  {isLoading ? 'Connecting...' : 'Sign In'}
+                  {isAuthenticated ? 'Enter Dashboard' : isLoading ? 'Connecting...' : 'Sign In'}
                 </Button>
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={() => signUp()}
-                  disabled={isLoading}
-                  rightIcon={<ArrowRight size={18} />}
-                >
-                  {isLoading ? 'Loading...' : 'Create Account'}
-                </Button>
+                {!isAuthenticated && (
+                  <Button
+                    variant="secondary"
+                    size="md"
+                    onClick={() => signUp()}
+                    disabled={isLoading}
+                    rightIcon={<ArrowRight size={18} />}
+                  >
+                    {isLoading ? 'Loading...' : 'Create Account'}
+                  </Button>
+                )}
               </motion.div>
 
               {/* Mobile-only diagram (shown below CTAs on small screens) */}

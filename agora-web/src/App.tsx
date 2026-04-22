@@ -17,10 +17,20 @@ import { Benchmarks } from "./pages/Benchmarks";
 import { BenchmarksAll } from "./pages/BenchmarksAll";
 import { BenchmarkDetail } from "./pages/BenchmarkDetail";
 
+function pathToLabel(pathname: string): string {
+  if (pathname.startsWith('/task/') && pathname.endsWith('/receipt')) return 'On-Chain Receipt';
+  if (pathname.startsWith('/task/')) return 'Live Deliberation';
+  if (pathname.startsWith('/benchmarks')) return 'Benchmarks';
+  if (pathname === '/tasks') return 'Tasks';
+  if (pathname === '/api-keys') return 'API Keys';
+  return 'that page';
+}
+
 function RedirectToAuth() {
   const location = useLocation();
   storeReturnTo(`${location.pathname}${location.search}${location.hash}`);
-  return <Navigate to="/auth?redirect=1" replace />;
+  const label = pathToLabel(location.pathname);
+  return <Navigate to={`/?from=${encodeURIComponent(label)}`} replace />;
 }
 
 function AppRoutes() {
@@ -61,7 +71,7 @@ function AppRoutes() {
       {/* Protected routes - only accessible when authenticated */}
       {isAuthenticated && (
         <>
-          <Route path="/" element={<Navigate to="/tasks" replace />} />
+          <Route path="/" element={<LoginPage />} />
           <Route path="/tasks" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
           <Route path="/task/:taskId" element={<DashboardLayout><LiveDeliberation /></DashboardLayout>} />
           <Route path="/task/:taskId/receipt" element={<DashboardLayout><OnChainReceipt /></DashboardLayout>} />
