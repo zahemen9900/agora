@@ -9,6 +9,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useNavigate } from "react-router-dom";
 
 import {
   ApiRequestError,
@@ -330,6 +331,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
 
 // AuthProvider wraps WorkOS AuthKitProvider with correct configuration
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const configuredClientId = (import.meta.env.VITE_WORKOS_CLIENT_ID ?? "").trim();
   const [resolvedAuthConfig, setResolvedAuthConfig] = useState<AuthConfigPayload | null>(
     () => !shouldResolveAuthFromBackend(configuredClientId) && configuredClientId
@@ -356,7 +358,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         if (!cancelled) {
-          setResolvedAuthConfig(fallback);
+          // Guard: don't replace if the lazy initializer already set the same config.
+          setResolvedAuthConfig((prev) => prev ?? fallback);
         }
         return;
       }
@@ -467,7 +470,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       https={apiHttps}
       onRedirectCallback={({ state }) => {
         const target = returnToFromState(state) ?? consumeReturnTo();
-        window.location.replace(target);
+        navigate(target, { replace: true });
       }}
     >
       <AuthStateProvider>{children}</AuthStateProvider>
