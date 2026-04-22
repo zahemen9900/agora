@@ -16,6 +16,7 @@ import {
   getBenchmarkDetail,
   streamBenchmarkRun,
   type BenchmarkDetailPayload,
+  type BenchmarkItemPayload,
   type TaskEvent,
 } from "../lib/api";
 import { useAuth } from "../lib/useAuth";
@@ -44,6 +45,13 @@ interface BenchmarkTimelineDescriptor {
   tone: string;
 }
 
+interface BenchmarkReliabilitySummary {
+  retryCount: number;
+  terminalErrorCount: number;
+  retryByProvider: Array<[string, number]>;
+  phaseCounts: Array<[string, number]>;
+}
+
 const DEFAULT_METRIC: NormalizedMetric = {
   accuracy: 0,
   avg_tokens: 0,
@@ -61,8 +69,10 @@ export function BenchmarkDetail() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [timeline, setTimeline] = useState<TaskEvent[]>([]);
+  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [now, setNow] = useState(() => Date.now());
+  const [phaseFilter, setPhaseFilter] = useState<string>("all");
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const followTimelineRef = useRef(true);
@@ -82,6 +92,7 @@ export function BenchmarkDetail() {
       const payload = await getBenchmarkDetail(token, benchmarkId);
       setDetail(payload);
       setTimeline(payload.events ?? []);
+      setSelectedItemId(payload.active_item_id ?? payload.benchmark_items?.[0]?.item_id ?? null);
     } catch (error) {
       if (error instanceof ApiRequestError) {
         setLoadError(error.message);
@@ -104,6 +115,10 @@ export function BenchmarkDetail() {
 
   const detailRunId = detail?.run_id ?? benchmarkId;
   const detailStatus = detail?.status;
+  const benchmarkItems = useMemo(
+    () => detail?.benchmark_items ?? [],
+    [detail?.benchmark_items],
+  );
 
   useEffect(() => {
     if (detailStatus !== "queued" && detailStatus !== "running") {
@@ -149,6 +164,20 @@ export function BenchmarkDetail() {
           );
           return exists ? current : [...current, event];
         });
+        setDetail((current) => {
+          if (!current) {
+            return current;
+          }
+          const nextItems = mergeBenchmarkItemsFromEvent(current.benchmark_items ?? [], event);
+          const nextActiveItemId = benchmarkItemIdForEvent(event) ?? current.active_item_id ?? nextItems[0]?.item_id ?? null;
+          const nextActiveItem = nextItems.find((item) => item.item_id === nextActiveItemId) ?? null;
+          return {
+            ...current,
+            benchmark_items: nextItems,
+            active_item_id: nextActiveItemId,
+            active_item: nextActiveItem,
+          };
+        });
 
         const data = event.data as Record<string, unknown>;
         const telemetry = typeof data.telemetry === "object" && data.telemetry !== null
@@ -183,6 +212,12 @@ export function BenchmarkDetail() {
                 typeof telemetry.total_latency_ms === "number" ? telemetry.total_latency_ms : current.total_latency_ms,
               model_telemetry: (telemetry.model_telemetry as typeof current.model_telemetry) ?? current.model_telemetry,
               cost: (telemetry.cost as typeof current.cost) ?? current.cost,
+              completed_item_count:
+                typeof telemetry.completed_item_count === "number" ? telemetry.completed_item_count : current.completed_item_count,
+              failed_item_count:
+                typeof telemetry.failed_item_count === "number" ? telemetry.failed_item_count : current.failed_item_count,
+              degraded_item_count:
+                typeof telemetry.degraded_item_count === "number" ? telemetry.degraded_item_count : current.degraded_item_count,
             };
           });
         } else if (event.event === "queued" || event.event === "started" || event.event === "complete" || event.event === "failed" || event.event === "error") {
@@ -301,11 +336,110 @@ export function BenchmarkDetail() {
     : [];
 
   const timelineJson = useMemo(() => prettyJson(timeline), [timeline]);
+  const timelineByItem = useMemo(() => {
+    const grouped = new Map<string, TaskEvent[]>();
+    for (const event of timeline) {
+      const itemId = benchmarkItemIdForEvent(event);
+      if (!itemId) {
+        continue;
+      }
+      const bucket = grouped.get(itemId) ?? [];
+      bucket.push(event);
+      grouped.set(itemId, bucket);
+    }
+    return grouped;
+  }, [timeline]);
+  const selectedItem = useMemo(() => {
+    if (benchmarkItems.length === 0) {
+      return null;
+    }
+    if (selectedItemId) {
+      return benchmarkItems.find((item) => item.item_id === selectedItemId) ?? benchmarkItems[0];
+    }
+    return detail?.active_item ?? benchmarkItems[0];
+  }, [benchmarkItems, detail?.active_item, selectedItemId]);
+  const selectedItemTimeline = useMemo(() => {
+    if (!selectedItem) {
+      return [];
+    }
+    const streamed = timelineByItem.get(selectedItem.item_id) ?? [];
+    if (streamed.length > 0) {
+      return streamed;
+    }
+    return selectedItem.events ?? [];
+  }, [selectedItem, timelineByItem]);
+  const availablePhases = useMemo(() => {
+    const phases = new Set<string>();
+    for (const event of timeline) {
+      const phase = benchmarkPhaseForEvent(event);
+      if (phase) {
+        phases.add(phase);
+      }
+    }
+    return ["all", ...Array.from(phases)];
+  }, [timeline]);
+  const filteredTimeline = useMemo(() => (
+    phaseFilter === "all"
+      ? timeline
+      : timeline.filter((event) => benchmarkPhaseForEvent(event) === phaseFilter)
+  ), [phaseFilter, timeline]);
+  useEffect(() => {
+    if (!selectedItemId && benchmarkItems.length > 0) {
+      setSelectedItemId(detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null);
+      return;
+    }
+    if (selectedItemId && benchmarkItems.every((item) => item.item_id !== selectedItemId)) {
+      setSelectedItemId(detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null);
+    }
+  }, [benchmarkItems, detail?.active_item_id, selectedItemId]);
+  useEffect(() => {
+    if (!availablePhases.includes(phaseFilter)) {
+      setPhaseFilter("all");
+    }
+  }, [availablePhases, phaseFilter]);
   const lastTimelineEvent = timeline.length > 0 ? timeline[timeline.length - 1] : null;
   const streamState = useMemo(
     () => deriveBenchmarkStreamState(detail?.status, lastTimelineEvent, now),
     [detail?.status, lastTimelineEvent, now],
   );
+  const dominantMechanism = dominantCountEntry(detail?.mechanism_counts)?.[0] ?? detail?.latest_mechanism ?? null;
+  const dominantModel = dominantCountEntry(detail?.model_counts)?.[0] ?? detail?.models[0] ?? null;
+  const reliability = useMemo<BenchmarkReliabilitySummary>(() => {
+    const retryCounter = new Map<string, number>();
+    const phaseCounter = new Map<string, number>();
+    let retryCount = 0;
+    let terminalErrorCount = 0;
+
+    for (const event of timeline) {
+      const data = isRecord(event.data) ? event.data : {};
+      const phase = benchmarkPhaseForEvent(event);
+      if (phase) {
+        phaseCounter.set(phase, (phaseCounter.get(phase) ?? 0) + 1);
+      }
+      if (event.event === "provider_retrying") {
+        retryCount += 1;
+        const provider = String(data.provider ?? providerFromModel(String(data.model ?? "unknown")));
+        retryCounter.set(provider, (retryCounter.get(provider) ?? 0) + 1);
+      }
+      if (event.event === "failed" || event.event === "error") {
+        terminalErrorCount += 1;
+      }
+    }
+
+    return {
+      retryCount,
+      terminalErrorCount,
+      retryByProvider: Array.from(retryCounter.entries()).sort((left, right) => right[1] - left[1]),
+      phaseCounts: Array.from(phaseCounter.entries()).sort((left, right) => left[0].localeCompare(right[0])),
+    };
+  }, [timeline]);
+  const reliabilityCards = useMemo(() => ({
+    completed: detail?.completed_item_count ?? benchmarkItems.filter((item) => item.status === "completed").length,
+    failed: detail?.failed_item_count ?? benchmarkItems.filter((item) => item.status === "failed").length,
+    degraded: detail?.degraded_item_count ?? benchmarkItems.filter((item) => item.status === "degraded").length,
+    active: benchmarkItems.filter((item) => item.status === "running" || item.status === "queued").length,
+  }), [benchmarkItems, detail?.completed_item_count, detail?.degraded_item_count, detail?.failed_item_count]);
+  const frontierHighlights = useMemo(() => buildFrontierHighlights(modeRows), [modeRows]);
 
   useEffect(() => {
     followTimelineRef.current = true;
@@ -449,7 +583,7 @@ export function BenchmarkDetail() {
             <div>Thinking {formatMaybeRuntimeInt(detail.thinking_tokens, detail.status)}</div>
             <div>Latency {formatMaybeRuntimeLatency(detail.total_latency_ms ?? null, detail.status)}</div>
             <div>Cost {formatUsd(detail.cost?.estimated_cost_usd ?? null)}</div>
-            <div>Last event {lastTimelineEvent ? relativeTimeFrom(lastTimelineEvent.timestamp, now) : "waiting..."}</div>
+            <div>{selectedItem ? `Active item ${selectedItem.item_index + 1}` : "No active item"}</div>
           </div>
         </div>
       ) : null}
@@ -481,10 +615,289 @@ export function BenchmarkDetail() {
         <MetricCard label="Estimated Cost" value={formatUsd(detail.cost?.estimated_cost_usd ?? null)} />
       </div>
 
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
+        <div className="card p-4 sm:p-6">
+          <h3 className="text-lg font-semibold mb-3">Benchmark Composition</h3>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <InlineMetricTile label="Dominant Mechanism" value={dominantMechanism ? titleCase(dominantMechanism) : "n/a"} />
+            <InlineMetricTile label="Dominant Model" value={dominantModel ?? "n/a"} />
+            <InlineMetricTile label="Frequency Score" value={String(detail.frequency_score)} />
+            <InlineMetricTile label="Config Density" value={frequencyBucket(detail.frequency_score)} />
+          </div>
+          {detail.reasoning_presets ? (
+            <div className="mb-4">
+              <div className="mono text-[11px] text-text-muted mb-2">REASONING PRESETS</div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(detail.reasoning_presets).map(([key, value]) => (
+                  <span key={key} className="badge">
+                    {key.replace(/_/g, " ")} {value}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="space-y-3">
+            <div>
+              <div className="mono text-[11px] text-text-muted mb-2">MECHANISM COUNTS</div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(detail.mechanism_counts).length > 0 ? Object.entries(detail.mechanism_counts).map(([key, value]) => (
+                  <span key={key} className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary">
+                    {titleCase(key)} {value}
+                  </span>
+                )) : <span className="text-sm text-text-secondary">No mechanism composition saved.</span>}
+              </div>
+            </div>
+            <div>
+              <div className="mono text-[11px] text-text-muted mb-2">MODEL COUNTS</div>
+              <div className="space-y-2">
+                {Object.entries(detail.model_counts).length > 0 ? Object.entries(detail.model_counts)
+                  .sort((left, right) => right[1] - left[1])
+                  .map(([model, count]) => (
+                    <div key={model} className="flex items-center justify-between gap-3 text-sm text-text-secondary">
+                      <span className="inline-flex items-center gap-2 min-w-0">
+                        <ProviderGlyph provider={providerFromModel(model)} />
+                        <span className="truncate">{model}</span>
+                      </span>
+                      <span className="mono text-text-primary">{count}</span>
+                    </div>
+                  )) : <span className="text-sm text-text-secondary">No model composition saved.</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="card p-4 sm:p-6">
+          <h3 className="text-lg font-semibold mb-3">Reliability</h3>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <InlineMetricTile label="Retry Events" value={String(reliability.retryCount)} />
+            <InlineMetricTile label="Failed Items" value={String(reliabilityCards.failed)} />
+            <InlineMetricTile label="Degraded Items" value={String(reliabilityCards.degraded)} />
+            <InlineMetricTile label="Last Event" value={lastTimelineEvent ? relativeTimeFrom(lastTimelineEvent.timestamp, now) : "waiting..."} />
+            <InlineMetricTile label="Completed Items" value={String(reliabilityCards.completed)} />
+            <InlineMetricTile label="Active Items" value={String(reliabilityCards.active)} />
+            <InlineMetricTile label="Stream State" value={streamState.label} />
+            <InlineMetricTile label="Terminal Errors" value={String(reliability.terminalErrorCount)} />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-md border border-border-subtle bg-void p-3">
+              <div className="mono text-[11px] text-text-muted mb-2">RETRIES BY PROVIDER</div>
+              {reliability.retryByProvider.length === 0 ? (
+                <div className="text-sm text-text-secondary">No provider retries recorded in this artifact.</div>
+              ) : (
+                <div className="space-y-2">
+                  {reliability.retryByProvider.map(([provider, count]) => (
+                    <div key={provider} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-text-secondary">{titleCase(provider)}</span>
+                      <span className="mono text-text-primary">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="rounded-md border border-border-subtle bg-void p-3">
+              <div className="mono text-[11px] text-text-muted mb-2">EVENT DENSITY BY PHASE</div>
+              {reliability.phaseCounts.length === 0 ? (
+                <div className="text-sm text-text-secondary">No phase-scoped live events were recorded.</div>
+              ) : (
+                <div className="space-y-2">
+                  {reliability.phaseCounts.map(([phase, count]) => (
+                    <div key={phase} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-text-secondary">{titleCase(phase)}</span>
+                      <span className="mono text-text-primary">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {benchmarkItems.length > 0 ? (
+        <div className="card p-4 sm:p-6 mb-8">
+          <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-4">
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Active Benchmark Item</h3>
+              <p className="text-sm text-text-secondary">
+                One benchmark item at a time, using the same live event grammar as task execution.
+              </p>
+            </div>
+            <div className="rounded-md border border-border-subtle bg-void px-3 py-2 mono text-xs text-text-secondary">
+              {selectedItem ? `${titleCase(selectedItem.category)} · ${titleCase(selectedItem.status)}` : "No item selected"}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)] gap-6">
+            <div className="space-y-3">
+              {benchmarkItems.map((item) => {
+                const selected = item.item_id === selectedItem?.item_id;
+                return (
+                  <button
+                    key={item.item_id}
+                    type="button"
+                    onClick={() => setSelectedItemId(item.item_id)}
+                    className={`w-full text-left rounded-md border p-3 transition-colors ${
+                      selected
+                        ? "border-accent bg-accent/5"
+                        : "border-border-subtle bg-void hover:border-accent/40"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div>
+                        <div className="mono text-[10px] text-text-muted mb-1">
+                          ITEM {item.item_index + 1} • {titleCase(item.phase ?? "benchmark")}
+                        </div>
+                        <div className="text-sm text-text-primary">{titleCase(item.category)}</div>
+                      </div>
+                      <span className={`mono text-[10px] rounded-full border px-2 py-1 ${benchmarkItemStatusTone(item.status)}`}>
+                        {item.status}
+                      </span>
+                    </div>
+                    <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word mb-2">
+                      {truncateText(item.question, 140)}
+                    </p>
+                    <div className="flex flex-wrap gap-2 mono text-[10px] text-text-muted">
+                      <span>{item.mechanism ? titleCase(item.mechanism) : "pending mechanism"}</span>
+                      {item.selector_source ? <span>{item.selector_source}</span> : null}
+                      <span>{formatMaybeInt(item.total_tokens)}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="space-y-4">
+              {selectedItem ? (
+                <>
+                  <div className="rounded-md border border-border-subtle bg-void p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                      <div>
+                        <div className="mono text-[10px] text-text-muted mb-1">
+                          {titleCase(selectedItem.phase ?? "benchmark")} • {selectedItem.run_kind ?? "run"}
+                        </div>
+                        <div className="text-sm text-text-primary whitespace-pre-wrap wrap-break-word">
+                          {selectedItem.question}
+                        </div>
+                      </div>
+                      <span className={`mono text-[10px] rounded-full border px-2 py-1 ${benchmarkItemStatusTone(selectedItem.status)}`}>
+                        {selectedItem.status}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      <InlineMetricTile label="Mechanism" value={selectedItem.mechanism ? titleCase(selectedItem.mechanism) : "n/a"} />
+                      <InlineMetricTile label="Selector Source" value={selectedItem.selector_source ?? "n/a"} />
+                      <InlineMetricTile label="Tokens" value={formatMaybeInt(selectedItem.total_tokens)} />
+                      <InlineMetricTile label="Thinking" value={formatMaybeInt(selectedItem.thinking_tokens)} />
+                    </div>
+                    {selectedItem.selector_fallback_path && selectedItem.selector_fallback_path.length > 0 ? (
+                      <div className="mt-3">
+                        <div className="mono text-[10px] text-text-muted mb-2">SELECTOR CASCADE</div>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedItem.selector_fallback_path.map((step) => (
+                            <span key={step} className="badge">{step}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    {selectedItem.failure_reason ? (
+                      <div className="mt-3 rounded-md border border-red-400/30 bg-red-400/10 p-3 text-xs text-text-secondary">
+                        {selectedItem.failure_reason}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="rounded-md border border-border-subtle bg-void p-4">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <h4 className="text-sm text-text-primary">Item Stream</h4>
+                      <div className="mono text-[10px] text-text-muted">
+                        {formatInt(selectedItemTimeline.length)} events
+                      </div>
+                    </div>
+                    {selectedItemTimeline.length === 0 ? (
+                      <div className="text-sm text-text-secondary">No item-scoped events have been persisted yet.</div>
+                    ) : (
+                      <div className="space-y-3 max-h-90 overflow-y-auto pr-1">
+                        {selectedItemTimeline.map((event, index) => {
+                          const descriptor = describeBenchmarkEvent(event);
+                          return (
+                            <div
+                              key={`${selectedItem.item_id}-${event.event}-${event.timestamp ?? index}`}
+                              className={`border rounded-md p-3 ${descriptor.tone}`}
+                            >
+                              <div className="flex items-center justify-between gap-3 mb-1">
+                                <div>
+                                  <div className="mono text-[10px] text-text-muted mb-1">{descriptor.label}</div>
+                                  <div className="text-sm text-text-primary">{descriptor.title}</div>
+                                </div>
+                                <div className="mono text-[10px] text-text-muted">{formatDateTime(event.timestamp)}</div>
+                              </div>
+                              <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word mb-2">
+                                {descriptor.summary}
+                              </p>
+                              <details className="group">
+                                <summary className="mono text-[10px] text-text-muted cursor-pointer select-none">
+                                  {descriptor.detailsLabel}
+                                </summary>
+                                <pre className="mt-2 text-[11px] text-text-secondary whitespace-pre-wrap wrap-break-word">
+                                  {prettyJson(event.data)}
+                                </pre>
+                              </details>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="card p-4 sm:p-6 mb-8">
+        <h3 className="text-lg font-semibold mb-3">Accuracy / Cost Frontier</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+          <InlineMetricTile label="Best Accuracy" value={frontierHighlights.bestAccuracy} />
+          <InlineMetricTile label="Fastest Mode" value={frontierHighlights.fastest} />
+          <InlineMetricTile label="Cheapest Mode" value={frontierHighlights.cheapest} />
+        </div>
+        {modeRows.length === 0 ? (
+          <div className="text-sm text-text-secondary">No per-mechanism metrics were stored for this benchmark artifact.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-170 border-collapse">
+              <thead>
+                <tr className="border-b border-border-subtle">
+                  <th className="py-2 pr-3 text-left mono text-[10px] text-text-muted">MECHANISM</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">ACCURACY</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">TOKENS</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">THINKING</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">LATENCY</th>
+                  <th className="py-2 text-right mono text-[10px] text-text-muted">COST</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modeRows.map((row) => (
+                  <tr key={row.mechanism} className="border-b border-border-subtle/70">
+                    <td className="py-2 pr-3 text-sm text-text-primary">{row.mechanism}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{row.accuracy.toFixed(2)}%</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.avgTokens)}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.thinkingTokens)}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatLatency(row.avgLatencyMs)}</td>
+                    <td className="py-2 text-right mono text-[11px] text-text-primary">{formatUsd(row.avgCostUsd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {timeline.length > 0 ? (
         <div className="card p-4 sm:p-6 mb-8">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
-            <h3 className="text-lg font-semibold">Run Timeline</h3>
+            <h3 className="text-lg font-semibold">Raw Event Timeline</h3>
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
@@ -495,23 +908,41 @@ export function BenchmarkDetail() {
                 {copyState === "copied" ? "Copied" : "Copy JSON"}
               </button>
               <div className="flex items-center gap-3 rounded-md border border-border-subtle bg-void px-3 py-2 mono text-xs text-text-secondary">
-                <span>Events {formatInt(timeline.length)}</span>
+                <span>Events {formatInt(filteredTimeline.length)}</span>
                 <span className="text-text-muted">•</span>
                 <span>Runs {formatInt(detail.run_count)}</span>
               </div>
             </div>
           </div>
+          {availablePhases.length > 1 ? (
+            <div className="flex flex-wrap gap-2 mb-4">
+              {availablePhases.map((phase) => (
+                <button
+                  key={phase}
+                  type="button"
+                  onClick={() => setPhaseFilter(phase)}
+                  className={`mono px-3 py-1.5 text-[11px] rounded-full border transition-colors ${
+                    phaseFilter === phase
+                      ? "bg-accent-muted text-accent border-accent"
+                      : "bg-void text-text-secondary border-border-subtle hover:border-accent/40"
+                  }`}
+                >
+                  {phase === "all" ? "All phases" : titleCase(phase)}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div
             ref={timelineContainerRef}
             onScroll={handleTimelineScroll}
             className="space-y-3 max-h-96 overflow-y-auto pr-1"
           >
-            {timeline.map((event, index) => {
+            {filteredTimeline.map((event, index) => {
               const descriptor = describeBenchmarkEvent(event);
               return (
                 <div
                   key={`${event.event}-${event.timestamp ?? index}`}
-                  ref={index === timeline.length - 1 ? latestTimelineEntryRef : undefined}
+                  ref={index === filteredTimeline.length - 1 ? latestTimelineEntryRef : undefined}
                   className={`border rounded-md p-3 ${descriptor.tone}`}
                 >
                   <div className="flex items-center justify-between gap-3 mb-1">
@@ -718,6 +1149,15 @@ function MetricCard({ label, value }: { label: string; value: string }) {
   );
 }
 
+function InlineMetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border-subtle bg-void p-3">
+      <div className="mono text-[10px] text-text-muted mb-1">{label.toUpperCase()}</div>
+      <div className="text-sm text-text-primary break-words">{value}</div>
+    </div>
+  );
+}
+
 function JsonPanel({ title, value }: { title: string; value: unknown }) {
   return (
     <div className="card p-4 sm:p-6">
@@ -914,6 +1354,196 @@ function titleCase(value: string): string {
     .join(" ");
 }
 
+function dominantCountEntry(record: Record<string, number> | null | undefined): [string, number] | null {
+  if (!record) {
+    return null;
+  }
+  const entries = Object.entries(record).sort((left, right) => right[1] - left[1]);
+  return entries[0] ?? null;
+}
+
+function frequencyBucket(score: number | null | undefined): string {
+  if (score === null || score === undefined || !Number.isFinite(score) || score <= 0) {
+    return "rare config";
+  }
+  if (score < 12) {
+    return "rare config";
+  }
+  if (score < 30) {
+    return "steady config";
+  }
+  return "high-frequency config";
+}
+
+function benchmarkPhaseForEvent(event: TaskEvent): string | null {
+  const data = isRecord(event.data) ? event.data : {};
+  const context = isRecord(data.benchmark_context) ? data.benchmark_context : null;
+  if (context && typeof context.phase === "string") {
+    return context.phase;
+  }
+  if (typeof data.phase === "string") {
+    return data.phase;
+  }
+  return null;
+}
+
+function benchmarkItemIdForEvent(event: TaskEvent): string | null {
+  const data = isRecord(event.data) ? event.data : {};
+  if (typeof data.item_id === "string" && data.item_id.trim()) {
+    return data.item_id;
+  }
+  const context = isRecord(data.benchmark_context) ? data.benchmark_context : null;
+  if (context && typeof context.item_id === "string" && context.item_id.trim()) {
+    return context.item_id;
+  }
+  const phase = typeof data.phase === "string"
+    ? data.phase
+    : context && typeof context.phase === "string"
+      ? context.phase
+      : null;
+  const runKind = typeof data.run_kind === "string"
+    ? data.run_kind
+    : context && typeof context.run_kind === "string"
+      ? context.run_kind
+      : null;
+  const taskIndex = typeof data.task_index === "number"
+    ? data.task_index
+    : context && typeof context.task_index === "number"
+      ? context.task_index
+      : null;
+  if (!phase || !runKind || taskIndex === null) {
+    return null;
+  }
+  return `${phase}:${runKind}:${taskIndex}`;
+}
+
+function benchmarkItemStatusTone(status: BenchmarkItemPayload["status"]): string {
+  if (status === "completed") {
+    return "border-emerald-400/40 text-emerald-500 bg-emerald-400/10";
+  }
+  if (status === "degraded") {
+    return "border-amber-400/40 text-amber-500 bg-amber-400/10";
+  }
+  if (status === "failed") {
+    return "border-red-400/40 text-red-500 bg-red-400/10";
+  }
+  if (status === "running") {
+    return "border-accent/40 text-accent bg-accent/10";
+  }
+  return "border-border-subtle text-text-secondary bg-void";
+}
+
+function mergeBenchmarkItemsFromEvent(
+  currentItems: BenchmarkItemPayload[],
+  event: TaskEvent,
+): BenchmarkItemPayload[] {
+  const itemId = benchmarkItemIdForEvent(event);
+  if (!itemId) {
+    return currentItems;
+  }
+  const data = isRecord(event.data) ? event.data : {};
+  const context = isRecord(data.benchmark_context) ? data.benchmark_context : null;
+  const nextStatus = (
+    typeof data.item_status === "string"
+      ? data.item_status
+      : event.event === "domain_progress"
+        ? "completed"
+        : event.event === "failed" || event.event === "error"
+          ? "failed"
+          : "running"
+  ) as BenchmarkItemPayload["status"];
+  const itemIndex = typeof data.item_index === "number"
+    ? data.item_index
+    : context && typeof context.item_index === "number"
+      ? context.item_index
+      : currentItems.length;
+  const taskIndex = typeof data.task_index === "number"
+    ? data.task_index
+    : context && typeof context.task_index === "number"
+      ? context.task_index
+      : itemIndex;
+  const existing = currentItems.find((item) => item.item_id === itemId);
+  const nextEvents = existing?.events ?? [];
+  const alreadyPresent = nextEvents.some(
+    (entry) => entry.event === event.event && entry.timestamp === event.timestamp,
+  );
+  const mergedEvents = alreadyPresent ? nextEvents : [...nextEvents, event];
+  const merged: BenchmarkItemPayload = {
+    item_id: itemId,
+    item_index: existing?.item_index ?? itemIndex,
+    task_index: existing?.task_index ?? taskIndex,
+    phase:
+      (typeof data.phase === "string" ? data.phase : context && typeof context.phase === "string" ? context.phase : existing?.phase) ?? null,
+    run_kind:
+      (typeof data.run_kind === "string" ? data.run_kind : context && typeof context.run_kind === "string" ? context.run_kind : existing?.run_kind) ?? null,
+    category:
+      (typeof data.category === "string" ? data.category : context && typeof context.category === "string" ? context.category : existing?.category) ?? "unknown",
+    question:
+      (typeof data.question === "string" ? data.question : context && typeof context.question === "string" ? context.question : existing?.question) ?? "Benchmark question",
+    source_task:
+      (typeof data.source_task === "string" ? data.source_task : context && typeof context.source_task === "string" ? context.source_task : existing?.source_task) ?? null,
+    status: nextStatus,
+    mechanism:
+      (typeof data.mechanism === "string" ? data.mechanism : typeof data.latest_mechanism === "string" ? data.latest_mechanism : existing?.mechanism) ?? null,
+    selector_source:
+      (typeof data.selector_source === "string" ? data.selector_source : existing?.selector_source) ?? null,
+    selector_fallback_path:
+      (Array.isArray(data.selector_fallback_path) ? data.selector_fallback_path.map(String) : existing?.selector_fallback_path) ?? [],
+    failure_reason:
+      (event.event === "failed" || event.event === "error")
+        ? String(data.message ?? existing?.failure_reason ?? "")
+        : existing?.failure_reason ?? null,
+    latest_error_event:
+      event.event === "failed" || event.event === "error" ? event : existing?.latest_error_event ?? null,
+    fallback_events: existing?.fallback_events ?? [],
+    total_tokens:
+      typeof data.total_tokens === "number" ? data.total_tokens : existing?.total_tokens,
+    thinking_tokens:
+      typeof data.thinking_tokens === "number" ? data.thinking_tokens : existing?.thinking_tokens,
+    total_latency_ms:
+      typeof data.total_latency_ms === "number"
+        ? data.total_latency_ms
+        : typeof data.latency_ms === "number"
+          ? data.latency_ms
+          : existing?.total_latency_ms,
+    model_telemetry: existing?.model_telemetry ?? {},
+    summary: existing?.summary ?? {},
+    started_at: existing?.started_at ?? event.timestamp ?? null,
+    completed_at:
+      nextStatus === "completed" || nextStatus === "failed" || nextStatus === "degraded"
+        ? event.timestamp ?? existing?.completed_at ?? null
+        : existing?.completed_at ?? null,
+    events: mergedEvents,
+  };
+  const filtered = currentItems.filter((item) => item.item_id !== itemId);
+  return [...filtered, merged].sort((left, right) => left.item_index - right.item_index);
+}
+
+function buildFrontierHighlights(
+  rows: Array<{
+    mechanism: string;
+    accuracy: number;
+    avgLatencyMs: number;
+    avgCostUsd: number;
+  }>,
+): { bestAccuracy: string; fastest: string; cheapest: string } {
+  if (rows.length === 0) {
+    return {
+      bestAccuracy: "n/a",
+      fastest: "n/a",
+      cheapest: "n/a",
+    };
+  }
+  const bestAccuracy = [...rows].sort((left, right) => right.accuracy - left.accuracy)[0];
+  const fastest = [...rows].sort((left, right) => left.avgLatencyMs - right.avgLatencyMs)[0];
+  const cheapest = [...rows].sort((left, right) => left.avgCostUsd - right.avgCostUsd)[0];
+  return {
+    bestAccuracy: `${bestAccuracy.mechanism} (${bestAccuracy.accuracy.toFixed(1)}%)`,
+    fastest: `${fastest.mechanism} (${formatLatency(fastest.avgLatencyMs)})`,
+    cheapest: `${cheapest.mechanism} (${formatUsd(cheapest.avgCostUsd)})`,
+  };
+}
+
 function prettyJson(value: unknown): string {
   try {
     return JSON.stringify(value ?? null, null, 2);
@@ -925,6 +1555,11 @@ function prettyJson(value: unknown): string {
 function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
   const data = isRecord(event.data) ? event.data : {};
   const eventLabel = titleCase(event.event);
+  const benchmarkContext = isRecord(data.benchmark_context) ? data.benchmark_context : null;
+  const contextPhase = benchmarkContext ? titleCase(String(benchmarkContext.phase ?? "benchmark")) : null;
+  const contextCategory = benchmarkContext ? titleCase(String(benchmarkContext.category ?? "unknown")) : null;
+  const contextRunKind = benchmarkContext ? titleCase(String(benchmarkContext.run_kind ?? "run")) : null;
+  const contextPrefix = [contextPhase, contextCategory, contextRunKind].filter(Boolean).join(" · ");
 
   if (event.event === "queued") {
     return {
@@ -971,6 +1606,123 @@ function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
       summary: question,
       detailsLabel: "progress telemetry",
       tone: "border-accent/30 bg-accent/5",
+    };
+  }
+
+  if (event.event === "mechanism_selected") {
+    return {
+      label: contextPrefix || "MECHANISM",
+      title: `${String(data.mechanism ?? "selector").toUpperCase()} selected`,
+      summary: String(data.reasoning ?? "The benchmark runner selected a mechanism for this case."),
+      detailsLabel: "selection rationale",
+      tone: "border-cyan-400/30 bg-cyan-400/5",
+    };
+  }
+
+  if (event.event === "agent_output_delta") {
+    const chunk = String(data.content_delta ?? data.answer_delta ?? data.delta ?? "Streaming draft...");
+    const agent = String(data.agent_id ?? "agent");
+    const model = String(data.agent_model ?? "unknown-model");
+    return {
+      label: contextPrefix || "LIVE DRAFT",
+      title: `${agent} · ${model}`,
+      summary: chunk,
+      detailsLabel: "live draft payload",
+      tone: "border-cyan-400/30 bg-cyan-400/5",
+    };
+  }
+
+  if (event.event === "agent_output") {
+    const summary = String(
+      data.content
+      ?? data.answer
+      ?? data.final_answer
+      ?? data.summary
+      ?? "Agent response completed.",
+    );
+    return {
+      label: contextPrefix || "AGENT OUTPUT",
+      title: `${String(data.agent_id ?? "agent")} · ${String(data.agent_model ?? "unknown-model")}`,
+      summary,
+      detailsLabel: "agent output metadata",
+      tone: "border-cyan-400/30 bg-cyan-400/5",
+    };
+  }
+
+  if (event.event === "cross_examination_delta" || event.event === "cross_examination") {
+    const summary = String(
+      data.content_delta
+      ?? data.summary
+      ?? data.question
+      ?? "Cross-examination in progress.",
+    );
+    return {
+      label: contextPrefix || "CROSS-EXAM",
+      title: "Devil’s advocate challenge",
+      summary,
+      detailsLabel: "cross-examination payload",
+      tone: "border-amber-400/40 bg-amber-400/10",
+    };
+  }
+
+  if (event.event === "thinking_delta") {
+    return {
+      label: contextPrefix || "THINKING",
+      title: `${String(data.agent_id ?? "agent")} reasoning stream`,
+      summary: String(data.thinking_delta ?? data.thinking_so_far ?? "Thinking..."),
+      detailsLabel: "thinking stream",
+      tone: "border-emerald-400/40 bg-emerald-400/10",
+    };
+  }
+
+  if (event.event === "usage_delta") {
+    const parts = [
+      typeof data.total_tokens === "number" ? `${Math.round(data.total_tokens)} total tokens` : null,
+      typeof data.input_tokens === "number" ? `${Math.round(data.input_tokens)} in` : null,
+      typeof data.output_tokens === "number" ? `${Math.round(data.output_tokens)} out` : null,
+      typeof data.thinking_tokens === "number" ? `${Math.round(data.thinking_tokens)} thinking` : null,
+      typeof data.latency_ms === "number" ? `${Math.round(data.latency_ms)} ms` : null,
+    ].filter(Boolean);
+    return {
+      label: contextPrefix || "USAGE",
+      title: `${String(data.agent_id ?? "agent")} telemetry`,
+      summary: parts.join(" · ") || "Usage updated.",
+      detailsLabel: "usage telemetry",
+      tone: "border-violet-400/40 bg-violet-400/10",
+    };
+  }
+
+  if (event.event === "convergence_update") {
+    return {
+      label: contextPrefix || "CONVERGENCE",
+      title: `Round ${String(data.round_number ?? "?")} convergence`,
+      summary: [
+        typeof data.disagreement_entropy === "number" ? `Entropy ${data.disagreement_entropy.toFixed(2)}` : null,
+        typeof data.novelty_score === "number" ? `Novelty ${data.novelty_score.toFixed(2)}` : null,
+        typeof data.information_gain_delta === "number" ? `Info gain ${data.information_gain_delta.toFixed(2)}` : null,
+      ].filter(Boolean).join(" · ") || "Convergence metrics updated.",
+      detailsLabel: "convergence metrics",
+      tone: "border-violet-400/40 bg-violet-400/10",
+    };
+  }
+
+  if (event.event === "mechanism_switch") {
+    return {
+      label: contextPrefix || "SWITCH",
+      title: `${String(data.from_mechanism ?? "unknown")} → ${String(data.to_mechanism ?? "unknown")}`,
+      summary: String(data.reasoning ?? "The benchmark run switched mechanisms."),
+      detailsLabel: "switch rationale",
+      tone: "border-orange-400/40 bg-orange-400/10",
+    };
+  }
+
+  if (event.event === "quorum_reached") {
+    return {
+      label: contextPrefix || "QUORUM",
+      title: "Consensus reached",
+      summary: String(data.final_answer ?? "The participating agents converged on a final answer."),
+      detailsLabel: "quorum payload",
+      tone: "border-emerald-400/40 bg-emerald-400/10",
     };
   }
 

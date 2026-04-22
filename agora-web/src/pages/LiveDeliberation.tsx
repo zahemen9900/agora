@@ -875,6 +875,34 @@ export function LiveDeliberation() {
     });
   }, [task]);
 
+  const taskResult = task?.result ?? null;
+  const mechanismTrace = taskResult?.mechanism_trace ?? [];
+  const convergenceHistory = taskResult?.convergence_history ?? [];
+  const lockedClaims = taskResult?.locked_claims ?? [];
+  const fallbackEvents = taskResult?.fallback_events ?? [];
+  const transcriptHashes = taskResult?.transcript_hashes ?? task?.transcript_hashes ?? [];
+  const chainOperations = Object.entries(task?.chain_operations ?? {});
+  const reasoningPresetEntries = taskResult?.reasoning_presets
+    ? Object.entries(taskResult.reasoning_presets)
+    : [];
+  const latestConvergence = convergenceHistory[convergenceHistory.length - 1] ?? null;
+  const previousConvergence = convergenceHistory.length > 1
+    ? convergenceHistory[convergenceHistory.length - 2]
+    : null;
+  const deliberationStateLabel = latestConvergence
+    ? describeDeliberationState(latestConvergence, previousConvergence)
+    : "awaiting convergence data";
+  const dominantAnswer = latestConvergence && typeof latestConvergence.dominant_answer_share === "number"
+    ? `${Math.round(latestConvergence.dominant_answer_share * 100)}% dominant answer share`
+    : "dominant answer share n/a";
+  const transcriptIntegrityLabel = transcriptHashes.length > 0
+    ? `${transcriptHashes.length.toLocaleString()} transcript hashes`
+    : "no transcript hashes";
+  const chainHealthLabel = chainOperations.length > 0
+    ? summarizeChainHealth(chainOperations.map(([, operation]) => operation))
+    : "no chain operations yet";
+  const hotPathModel = dominantModelFromUsage(modelUsage);
+
   const taskStatus = task?.status ?? "pending";
   const isTaskActive = !task?.result && (taskStatus === "pending" || taskStatus === "in_progress");
   const taskActivityLabel = taskStatus === "pending" ? "QUEUEING RUN" : "RUNNING LIVE";
@@ -994,53 +1022,53 @@ export function LiveDeliberation() {
         )}
       </AnimatePresence>
 
-      {task?.result && (
+      {taskResult && (
         <div className="card p-5 mb-8 border border-border-subtle">
           <div className="mono text-xs text-text-muted mb-3">RUN SUMMARY</div>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-4">
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">TOTAL TOKENS</div>
-              <div className="mono text-sm text-text-primary">{task.result.total_tokens_used}</div>
+              <div className="mono text-sm text-text-primary">{taskResult.total_tokens_used}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">INPUT TOKENS</div>
-              <div className="mono text-sm text-text-primary">{formatMaybeInt(task.result.input_tokens_used)}</div>
+              <div className="mono text-sm text-text-primary">{formatMaybeInt(taskResult.input_tokens_used)}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">OUTPUT TOKENS</div>
-              <div className="mono text-sm text-text-primary">{formatMaybeInt(task.result.output_tokens_used)}</div>
+              <div className="mono text-sm text-text-primary">{formatMaybeInt(taskResult.output_tokens_used)}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">THINKING TOKENS</div>
-              <div className="mono text-sm text-text-primary">{formatMaybeInt(task.result.thinking_tokens_used)}</div>
+              <div className="mono text-sm text-text-primary">{formatMaybeInt(taskResult.thinking_tokens_used)}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">LATENCY</div>
-              <div className="mono text-sm text-text-primary">{task.result.latency_ms.toFixed(0)} ms</div>
+              <div className="mono text-sm text-text-primary">{taskResult.latency_ms.toFixed(0)} ms</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">SWITCHES</div>
-              <div className="mono text-sm text-text-primary">{task.result.mechanism_switches}</div>
+              <div className="mono text-sm text-text-primary">{taskResult.mechanism_switches}</div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">USD COST</div>
               <div className="mono text-sm text-text-primary">
-                {typeof task.result.cost?.estimated_cost_usd === "number"
-                  ? `$${task.result.cost.estimated_cost_usd.toFixed(6)}`
+                {typeof taskResult.cost?.estimated_cost_usd === "number"
+                  ? `$${taskResult.cost.estimated_cost_usd.toFixed(6)}`
                   : "n/a"}
               </div>
             </div>
             <div className="rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">PAYOUT (SOL)</div>
-              <div className="mono text-sm text-text-primary">{task.payment_amount.toFixed(3)}</div>
+              <div className="mono text-sm text-text-primary">{taskResult.payment_amount.toFixed(3)}</div>
             </div>
           </div>
 
-          {task.result.reasoning_presets ? (
+          {taskResult.reasoning_presets ? (
             <div className="mb-4">
               <div className="mono text-[11px] text-text-muted mb-2">REASONING PRESETS</div>
               <div className="flex flex-wrap gap-2">
-                {Object.entries(task.result.reasoning_presets).map(([providerKey, preset]) => (
+                {reasoningPresetEntries.map(([providerKey, preset]) => (
                   <span
                     key={providerKey}
                     className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary"
@@ -1090,14 +1118,111 @@ export function LiveDeliberation() {
             </div>
           )}
 
-          {task.solana_tx_hash && (
+          {task?.solana_tx_hash ? (
             <div className="mt-4 rounded-md border border-border-subtle p-3 bg-void">
               <div className="mono text-[10px] text-text-muted mb-1">ON-CHAIN RECEIPT</div>
               <div className="mono text-xs text-text-primary break-all">{task.solana_tx_hash}</div>
             </div>
-          )}
+          ) : null}
         </div>
       )}
+
+      {taskResult ? (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
+          <div className="card p-5 border border-border-subtle">
+            <div className="mono text-xs text-text-muted mb-3">MECHANISM DECISION</div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <MetricTile label="Selector Source" value={taskResult.selector_source.replace(/_/g, " ")} />
+              <MetricTile label="Execution Mode" value={taskResult.execution_mode.replace(/_/g, " ")} />
+              <MetricTile label="Override Source" value={(taskResult.mechanism_override_source ?? "none").replace(/_/g, " ")} />
+              <MetricTile label="Fallback Count" value={String(taskResult.fallback_count)} />
+            </div>
+            <div className="rounded-md border border-border-subtle bg-void p-3">
+              <div className="mono text-[10px] text-text-muted mb-2">MECHANISM TRACE</div>
+              {mechanismTrace.length === 0 ? (
+                <div className="text-sm text-text-secondary">
+                  Single-path execution. No mechanism trace segments were recorded.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {mechanismTrace.map((segment, index) => (
+                    <div key={`${String(segment.mechanism)}-${String(segment.start_round)}-${index}`} className="border border-border-subtle rounded-md p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                        <span className="badge">{String(segment.mechanism).toUpperCase()}</span>
+                        <span className="mono text-[11px] text-text-muted">
+                          rounds {String(segment.start_round)}-{String(segment.end_round)}
+                        </span>
+                      </div>
+                      <div className="text-xs text-text-secondary">
+                        {segment.switch_reason
+                          ? `switch reason: ${String(segment.switch_reason)}`
+                          : "no switch reason recorded for this segment"}
+                      </div>
+                      <div className="mono text-[10px] text-text-muted mt-2">
+                        {Array.isArray(segment.transcript_hashes)
+                          ? `${segment.transcript_hashes.length} transcript hashes`
+                          : "transcript hashes n/a"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="card p-5 border border-border-subtle">
+            <div className="mono text-xs text-text-muted mb-3">VERIFICATION & CLAIMS</div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <MetricTile label="Transcript Integrity" value={transcriptIntegrityLabel} />
+              <MetricTile label="Chain Health" value={chainHealthLabel} />
+              <MetricTile label="Locked Claims" value={`${lockedClaims.length} verified`} />
+              <MetricTile label="Hot Path" value={hotPathModel ?? "n/a"} />
+            </div>
+            <div className="space-y-3">
+              <div className="rounded-md border border-border-subtle bg-void p-3">
+                <div className="mono text-[10px] text-text-muted mb-2">LOCKED CLAIMS</div>
+                {lockedClaims.length === 0 ? (
+                  <div className="text-sm text-text-secondary">No locked claims were verified in this run.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {lockedClaims.map((claim, index) => (
+                      <div key={`${String(claim.claim_hash ?? index)}`} className="border border-border-subtle rounded-md p-3">
+                        <div className="text-sm text-text-primary mb-1">&quot;{String(claim.claim_text ?? "")}&quot;</div>
+                        <div className="mono text-[10px] text-text-muted">
+                          verified by {String(claim.verified_by ?? "Agora")} • round {String(claim.round_locked ?? "n/a")}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="rounded-md border border-border-subtle bg-void p-3">
+                <div className="mono text-[10px] text-text-muted mb-2">CHAIN OPERATIONS</div>
+                {chainOperations.length === 0 ? (
+                  <div className="text-sm text-text-secondary">No chain side effects have been recorded yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {chainOperations.map(([name, operation]) => (
+                      <div key={name} className="flex flex-col gap-1 rounded-md border border-border-subtle p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm text-text-primary">{titleCase(name)}</span>
+                          <span className={`badge ${chainOperationTone(operation.status)}`}>{operation.status}</span>
+                        </div>
+                        <div className="mono text-[10px] text-text-muted">
+                          attempts {operation.attempts} • updated {formatTimestamp(operation.updated_at)}
+                        </div>
+                        {operation.error ? (
+                          <div className="text-xs text-danger whitespace-pre-wrap break-words">{operation.error}</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <ConvergenceMeter
         entropy={convergence.entropy}
@@ -1105,6 +1230,86 @@ export function LiveDeliberation() {
         novelty={convergence.infoGain}
         lockedClaims={convergence.lockedClaims.length}
       />
+
+      {taskResult ? (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
+          <div className="card p-5 border border-border-subtle">
+            <div className="mono text-xs text-text-muted mb-3">DELIBERATION QUALITY</div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <MetricTile label="Current State" value={deliberationStateLabel} />
+              <MetricTile label="Dominant Answer" value={dominantAnswer} />
+              <MetricTile label="Novelty" value={latestConvergence ? formatFixed(latestConvergence.novelty_score) : "n/a"} />
+              <MetricTile label="Answer Churn" value={latestConvergence ? formatFixed(latestConvergence.answer_churn) : "n/a"} />
+            </div>
+            {convergenceHistory.length === 0 ? (
+              <div className="text-sm text-text-secondary">No round-by-round convergence history was captured.</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-170 border-collapse">
+                  <thead>
+                    <tr className="border-b border-border-subtle">
+                      <th className="py-2 pr-3 text-left mono text-[10px] text-text-muted">ROUND</th>
+                      <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">ENTROPY</th>
+                      <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">NOVELTY</th>
+                      <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">CHURN</th>
+                      <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">LOCKED</th>
+                      <th className="py-2 text-right mono text-[10px] text-text-muted">DOMINANT</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {convergenceHistory.map((entry) => (
+                      <tr key={`round-${String(entry.round_number)}`} className="border-b border-border-subtle/70">
+                        <td className="py-2 pr-3 mono text-[11px] text-text-secondary">{String(entry.round_number)}</td>
+                        <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatFixed(entry.disagreement_entropy)}</td>
+                        <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatFixed(entry.novelty_score ?? entry.information_gain_delta)}</td>
+                        <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatFixed(entry.answer_churn)}</td>
+                        <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{String(entry.locked_claim_count ?? 0)}</td>
+                        <td className="py-2 text-right mono text-[11px] text-text-primary">
+                          {typeof entry.dominant_answer_share === "number"
+                            ? `${Math.round(entry.dominant_answer_share * 100)}%`
+                            : "n/a"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="card p-5 border border-border-subtle">
+            <div className="mono text-xs text-text-muted mb-3">RESILIENCE & DEGRADATION</div>
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <MetricTile label="Fallback Events" value={String(fallbackEvents.length)} />
+              <MetricTile label="Stream Errors" value={String(timeline.filter((entry) => entry.type === "error").length)} />
+              <MetricTile label="Retries Seen" value={String(timeline.filter((entry) => entry.type === "provider_retrying").length)} />
+              <MetricTile label="Selector Override" value={(taskResult.mechanism_override_source ?? "none").replace(/_/g, " ")} />
+            </div>
+            {fallbackEvents.length === 0 ? (
+              <div className="text-sm text-text-secondary">
+                No runtime degradations were recorded. This run stayed on the intended path.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {fallbackEvents.map((event, index) => (
+                  <div key={`${String(event.component)}-${String(event.timestamp ?? index)}`} className="rounded-md border border-border-subtle bg-void p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                      <span className="text-sm text-text-primary">{titleCase(String(event.component ?? "component"))}</span>
+                      <span className="badge">{String(event.fallback_type ?? "deterministic")}</span>
+                    </div>
+                    <div className="text-xs text-text-secondary whitespace-pre-wrap break-words">
+                      {String(event.reason ?? "No fallback reason recorded.")}
+                    </div>
+                    <div className="mono text-[10px] text-text-muted mt-2">
+                      {formatTimestamp(typeof event.timestamp === "string" ? event.timestamp : null)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <div className="mb-10">
         <h3 className="mono text-sm mb-4 text-accent tracking-widest">LIVE DELIBERATION TIMELINE</h3>
@@ -1178,27 +1383,87 @@ export function LiveDeliberation() {
         </div>
       </div>
 
-      {convergence.lockedClaims.length > 0 && (
-        <div className="p-6 border border-border-subtle rounded-xl bg-surface">
-          <h3 className="mono text-sm mb-4 text-accent">VERIFIED CLAIMS</h3>
-          {convergence.lockedClaims.map((claim, index) => (
-            <motion.div
-              key={`${String(claim.claim_hash ?? index)}`}
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="flex gap-3 items-start mb-4"
-            >
-              <CheckCircle2 className="text-accent shrink-0 mt-0.5" size={18} />
-              <div>
-                <p className="text-text-primary mb-1">&quot;{String(claim.claim_text ?? "")}&quot;</p>
-                <p className="mono text-xs text-text-muted">
-                  Verified by: {String(claim.verified_by ?? "Agora")}
-                </p>
-              </div>
-            </motion.div>
-          ))}
-        </div>
-      )}
     </div>
   );
+}
+
+function MetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border-subtle bg-void p-3">
+      <div className="mono text-[10px] text-text-muted mb-1">{label.toUpperCase()}</div>
+      <div className="text-sm text-text-primary break-words">{value}</div>
+    </div>
+  );
+}
+
+function dominantModelFromUsage(entries: ModelUsageSummary[]): string | null {
+  const sorted = [...entries].sort((left, right) => (right.tokens ?? 0) - (left.tokens ?? 0));
+  return sorted[0]?.model ?? null;
+}
+
+function formatFixed(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "n/a";
+}
+
+function titleCase(value: string): string {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function describeDeliberationState(
+  latest: Record<string, unknown>,
+  previous: Record<string, unknown> | null,
+): string {
+  const novelty = typeof latest.novelty_score === "number"
+    ? latest.novelty_score
+    : typeof latest.information_gain_delta === "number"
+      ? latest.information_gain_delta
+      : 0;
+  const currentEntropy = typeof latest.disagreement_entropy === "number"
+    ? latest.disagreement_entropy
+    : 1;
+  const previousEntropy = previous && typeof previous.disagreement_entropy === "number"
+    ? previous.disagreement_entropy
+    : currentEntropy;
+  const lockedGrowth = typeof latest.locked_claim_growth === "number" ? latest.locked_claim_growth : 0;
+
+  if (novelty >= 0.15 || lockedGrowth > 0) {
+    return "still learning";
+  }
+  if (currentEntropy < previousEntropy) {
+    return "converging";
+  }
+  if (currentEntropy > previousEntropy) {
+    return "diverging";
+  }
+  return "plateaued";
+}
+
+function chainOperationTone(status: string): string {
+  if (status === "succeeded") {
+    return "bg-accent-muted text-accent border-accent";
+  }
+  if (status === "failed") {
+    return "bg-danger/10 text-danger border-danger/40";
+  }
+  return "bg-warning/10 text-warning border-warning/40";
+}
+
+function summarizeChainHealth(operations: Array<{ status?: unknown }>): string {
+  const failed = operations.filter((operation) => operation.status === "failed").length;
+  const pending = operations.filter((operation) => operation.status === "pending").length;
+  const succeeded = operations.filter((operation) => operation.status === "succeeded").length;
+  if (failed > 0) {
+    return `${failed} failed / ${succeeded} succeeded`;
+  }
+  if (pending > 0) {
+    return `${pending} pending / ${succeeded} succeeded`;
+  }
+  if (succeeded > 0) {
+    return `${succeeded} succeeded`;
+  }
+  return "no activity";
 }

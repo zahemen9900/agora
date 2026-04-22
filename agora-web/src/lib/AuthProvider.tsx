@@ -331,7 +331,11 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
 // AuthProvider wraps WorkOS AuthKitProvider with correct configuration
 export function AuthProvider({ children }: { children: ReactNode }) {
   const configuredClientId = (import.meta.env.VITE_WORKOS_CLIENT_ID ?? "").trim();
-  const [resolvedAuthConfig, setResolvedAuthConfig] = useState<AuthConfigPayload | null>(null);
+  const [resolvedAuthConfig, setResolvedAuthConfig] = useState<AuthConfigPayload | null>(
+    () => !shouldResolveAuthFromBackend(configuredClientId) && configuredClientId
+      ? buildFallbackAuthConfig(configuredClientId)
+      : null,
+  );
   const [authConfigError, setAuthConfigError] = useState<string | null>(null);
   const mismatchWarnedRef = useRef(false);
 

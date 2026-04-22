@@ -26,6 +26,9 @@ export interface TaskCreateRequest {
   agent_count: number;
   stakes: number;
   mechanism_override: "debate" | "vote" | null;
+  allow_mechanism_switch: boolean;
+  allow_offline_fallback: boolean;
+  quorum_threshold: number;
   reasoning_presets: ReasoningPresetOverrides | null;
 }
 
@@ -63,6 +66,13 @@ export interface DeliberationResultResponse {
   transcript_hashes: Array<string>;
   convergence_history: Array<Record<string, unknown>>;
   locked_claims: Array<Record<string, unknown>>;
+  mechanism_trace: Array<Record<string, unknown>>;
+  execution_mode: string;
+  selector_source: string;
+  selector_fallback_path: Array<string>;
+  fallback_count: number;
+  fallback_events: Array<Record<string, unknown>>;
+  mechanism_override_source: string | null;
 }
 
 export interface BenchmarkCostEstimateResponse {
@@ -91,6 +101,12 @@ export interface TaskStatusResponse {
   created_by: string;
   mechanism: "debate" | "vote";
   mechanism_override: "debate" | "vote" | null;
+  allow_mechanism_switch: boolean;
+  allow_offline_fallback: boolean;
+  quorum_threshold: number;
+  selector_source: string;
+  selector_fallback_path: Array<string>;
+  mechanism_override_source: string | null;
   status: "pending" | "in_progress" | "completed" | "failed" | "paid";
   selector_reasoning: string;
   selector_reasoning_hash: string;
@@ -110,6 +126,8 @@ export interface TaskStatusResponse {
   chain_operations: Record<string, ChainOperationRecord>;
   created_at: string;
   completed_at: string | null;
+  failure_reason: string | null;
+  latest_error_event: TaskEvent | null;
   result: DeliberationResultResponse | null;
   events: Array<TaskEvent>;
 }
@@ -177,6 +195,9 @@ export interface TaskCreateResponse {
   reasoning: string;
   selector_reasoning_hash: string;
   status: "pending" | "in_progress" | "completed" | "failed" | "paid";
+  selector_source: string;
+  selector_fallback_path: Array<string>;
+  mechanism_override_source: string | null;
 }
 
 export interface BenchmarkRunRequest {
@@ -217,6 +238,12 @@ export interface BenchmarkRunStatusResponse {
   total_latency_ms: number | null;
   model_telemetry: Record<string, ModelTelemetryResponse>;
   cost: BenchmarkCostEstimateResponse | null;
+  completed_item_count: number;
+  failed_item_count: number;
+  degraded_item_count: number;
+  failure_counts_by_category: Record<string, number>;
+  failure_counts_by_reason: Record<string, number>;
+  failure_counts_by_stage: Record<string, number>;
 }
 
 export interface BenchmarkCatalogResponse {
@@ -276,6 +303,41 @@ export interface BenchmarkDetailResponse {
   summary: Record<string, unknown>;
   benchmark_payload: Record<string, unknown>;
   cost: BenchmarkCostEstimateResponse | null;
+  benchmark_items: Array<BenchmarkItemResponse>;
+  active_item_id: string | null;
+  active_item: BenchmarkItemResponse | null;
+  completed_item_count: number;
+  failed_item_count: number;
+  degraded_item_count: number;
+  failure_counts_by_category: Record<string, number>;
+  failure_counts_by_reason: Record<string, number>;
+  failure_counts_by_stage: Record<string, number>;
+}
+
+export interface BenchmarkItemResponse {
+  item_id: string;
+  item_index: number;
+  task_index: number;
+  phase: string | null;
+  run_kind: string | null;
+  category: string;
+  question: string;
+  source_task: string | null;
+  status: "queued" | "running" | "completed" | "failed" | "degraded";
+  mechanism: string | null;
+  selector_source: string | null;
+  selector_fallback_path: Array<string>;
+  failure_reason: string | null;
+  latest_error_event: TaskEvent | null;
+  fallback_events: Array<Record<string, unknown>>;
+  total_tokens: number;
+  thinking_tokens: number;
+  total_latency_ms: number;
+  model_telemetry: Record<string, ModelTelemetryResponse>;
+  summary: Record<string, unknown>;
+  started_at: string | null;
+  completed_at: string | null;
+  events: Array<TaskEvent>;
 }
 
 export interface BenchmarkPromptTemplatesResponse {

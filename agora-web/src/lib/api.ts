@@ -129,6 +129,12 @@ export interface BenchmarkRunStatusPayload {
   total_latency_ms?: number | null;
   model_telemetry?: Record<string, ModelTelemetryPayload>;
   cost?: BenchmarkCostEstimatePayload | null;
+  completed_item_count?: number;
+  failed_item_count?: number;
+  degraded_item_count?: number;
+  failure_counts_by_category?: Record<string, number>;
+  failure_counts_by_reason?: Record<string, number>;
+  failure_counts_by_stage?: Record<string, number>;
 }
 
 export interface BenchmarkCatalogEntry {
@@ -214,6 +220,47 @@ export interface BenchmarkDetailPayload {
   summary: Record<string, unknown>;
   benchmark_payload: Record<string, unknown>;
   cost?: BenchmarkCostEstimatePayload | null;
+  benchmark_items?: BenchmarkItemPayload[];
+  active_item_id?: string | null;
+  active_item?: BenchmarkItemPayload | null;
+  completed_item_count?: number;
+  failed_item_count?: number;
+  degraded_item_count?: number;
+  failure_counts_by_category?: Record<string, number>;
+  failure_counts_by_reason?: Record<string, number>;
+  failure_counts_by_stage?: Record<string, number>;
+}
+
+export interface BenchmarkItemPayload {
+  item_id: string;
+  item_index: number;
+  task_index: number;
+  phase?: string | null;
+  run_kind?: string | null;
+  category: string;
+  question: string;
+  source_task?: string | null;
+  status: "queued" | "running" | "completed" | "failed" | "degraded";
+  mechanism?: string | null;
+  selector_source?: string | null;
+  selector_fallback_path?: string[];
+  failure_reason?: string | null;
+  latest_error_event?: TaskEvent | null;
+  fallback_events?: Array<Record<string, unknown>>;
+  total_tokens?: number;
+  thinking_tokens?: number;
+  total_latency_ms?: number;
+  model_telemetry?: Record<string, ModelTelemetryPayload>;
+  summary?: Record<string, unknown>;
+  started_at?: string | null;
+  completed_at?: string | null;
+  events?: TaskEvent[];
+}
+
+export interface BenchmarkItemEventsPayload {
+  benchmark_id: string;
+  item_id: string;
+  events: TaskEvent[];
 }
 
 export interface StreamHandle {
@@ -417,6 +464,36 @@ export async function getBenchmarkDetail(
   });
 }
 
+export async function getBenchmarkItem(
+  token: string | null,
+  benchmarkId: string,
+  itemId: string,
+): Promise<BenchmarkItemPayload> {
+  return requestJson<BenchmarkItemPayload>(
+    `/benchmarks/${encodeURIComponent(benchmarkId)}/items/${encodeURIComponent(itemId)}`,
+    {
+      headers: {
+        ...authHeaders(token),
+      },
+    },
+  );
+}
+
+export async function getBenchmarkItemEvents(
+  token: string | null,
+  benchmarkId: string,
+  itemId: string,
+): Promise<BenchmarkItemEventsPayload> {
+  return requestJson<BenchmarkItemEventsPayload>(
+    `/benchmarks/${encodeURIComponent(benchmarkId)}/items/${encodeURIComponent(itemId)}/events`,
+    {
+      headers: {
+        ...authHeaders(token),
+      },
+    },
+  );
+}
+
 export async function triggerBenchmarkRun(
   token: string,
   payload: BenchmarkRunRequestPayload = {},
@@ -449,6 +526,16 @@ export async function streamBenchmarkRun(
     "queued",
     "started",
     "domain_progress",
+    "mechanism_selected",
+    "agent_output",
+    "agent_output_delta",
+    "cross_examination",
+    "cross_examination_delta",
+    "thinking_delta",
+    "usage_delta",
+    "convergence_update",
+    "mechanism_switch",
+    "quorum_reached",
     "provider_retrying",
     "artifact_created",
     "failed",

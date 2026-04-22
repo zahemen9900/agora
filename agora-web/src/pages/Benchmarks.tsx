@@ -1249,6 +1249,9 @@ function BenchmarkCatalogCard({
   entry: BenchmarkCatalogEntry;
   onOpen: () => void;
 }) {
+  const dominantMechanism = dominantCountEntry(entry.mechanism_counts)?.[0] ?? entry.latest_mechanism ?? null;
+  const dominantModel = dominantCountEntry(entry.model_counts)?.[0] ?? entry.models?.[0] ?? null;
+  const dominantProvider = dominantModel ? providerFromModel(dominantModel) : null;
   return (
     <button
       type="button"
@@ -1259,6 +1262,9 @@ function BenchmarkCatalogCard({
         <span className="mono text-xs text-text-muted">{entry.artifact_id.slice(0, 18)}...</span>
         <span className="badge">{titleCase(entry.scope)}</span>
         {entry.latest_mechanism ? <span className="badge">{titleCase(entry.latest_mechanism)}</span> : null}
+        {dominantMechanism ? <span className="badge">mix {titleCase(dominantMechanism)}</span> : null}
+        {dominantProvider ? <span className="badge">{titleCase(dominantProvider)} heavy</span> : null}
+        <span className="badge">{frequencyBucket(entry.frequency_score)}</span>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs text-text-secondary mb-3">
@@ -1267,6 +1273,13 @@ function BenchmarkCatalogCard({
         <div>Tokens {formatInt(entry.total_tokens ?? 0)}</div>
         <div>Thinking {formatInt(entry.thinking_tokens ?? 0)}</div>
         <div>Cost {formatUsd(entry.cost?.estimated_cost_usd ?? null)}</div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-[11px] text-text-muted mb-3">
+        <div>Latency class {latencyBucket(entry.total_latency_ms ?? null)}</div>
+        <div>Cost class {costBucket(entry.cost?.estimated_cost_usd ?? null)}</div>
+        <div>Mechanisms {Object.keys(entry.mechanism_counts).length || 0}</div>
+        <div>Models {Object.keys(entry.model_counts).length || 0}</div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -1448,4 +1461,51 @@ function titleCase(value: string): string {
     .filter(Boolean)
     .map((part) => part[0].toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function dominantCountEntry(record: Record<string, number> | null | undefined): [string, number] | null {
+  if (!record) {
+    return null;
+  }
+  const entries = Object.entries(record).sort((left, right) => right[1] - left[1]);
+  return entries[0] ?? null;
+}
+
+function frequencyBucket(score: number | null | undefined): string {
+  if (score === null || score === undefined || !Number.isFinite(score) || score <= 0) {
+    return "rare config";
+  }
+  if (score < 12) {
+    return "rare config";
+  }
+  if (score < 30) {
+    return "steady config";
+  }
+  return "high-frequency config";
+}
+
+function costBucket(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return "n/a";
+  }
+  if (value < 0.005) {
+    return "lean";
+  }
+  if (value < 0.02) {
+    return "balanced";
+  }
+  return "heavy";
+}
+
+function latencyBucket(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
+    return "n/a";
+  }
+  if (value < 90_000) {
+    return "fast";
+  }
+  if (value < 240_000) {
+    return "medium";
+  }
+  return "slow";
 }
