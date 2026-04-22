@@ -468,6 +468,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       apiHostname={apiHostname}
       port={apiPort}
       https={apiHttps}
+      devMode={true}
       onRedirectCallback={({ state }) => {
         const target = returnToFromState(state) ?? consumeReturnTo();
         navigate(target, { replace: true });
