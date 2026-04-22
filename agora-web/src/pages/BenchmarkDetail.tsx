@@ -1497,15 +1497,15 @@ function mergeBenchmarkItemsFromEvent(
       event.event === "failed" || event.event === "error" ? event : existing?.latest_error_event ?? null,
     fallback_events: existing?.fallback_events ?? [],
     total_tokens:
-      typeof data.total_tokens === "number" ? data.total_tokens : existing?.total_tokens,
+      typeof data.total_tokens === "number" ? data.total_tokens : existing?.total_tokens ?? 0,
     thinking_tokens:
-      typeof data.thinking_tokens === "number" ? data.thinking_tokens : existing?.thinking_tokens,
+      typeof data.thinking_tokens === "number" ? data.thinking_tokens : existing?.thinking_tokens ?? 0,
     total_latency_ms:
       typeof data.total_latency_ms === "number"
         ? data.total_latency_ms
         : typeof data.latency_ms === "number"
           ? data.latency_ms
-          : existing?.total_latency_ms,
+          : existing?.total_latency_ms ?? 0,
     model_telemetry: existing?.model_telemetry ?? {},
     summary: existing?.summary ?? {},
     started_at: existing?.started_at ?? event.timestamp ?? null,

@@ -5,10 +5,6 @@
       "destination": "https://agora-api-dcro4pg6ca-uc.a.run.app/:path*"
     },
     {
-      "source": "/user_management/:path*",
-      "destination": "https://api.workos.com/user_management/:path*"
-    },
-    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
