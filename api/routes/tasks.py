@@ -642,11 +642,32 @@ async def _attempt_chain_operation(
     call: Callable[[], Awaitable[dict[str, Any]]],
     strict_failure_detail: str,
     on_success: Callable[[dict[str, Any]], None] | None = None,
+    reconcile: Callable[[ChainOperationRecord | None], Awaitable[dict[str, Any] | None]] | None = None,
 ) -> dict[str, Any] | None:
     """Run one Solana side effect with a persisted write-ahead operation record."""
 
-    if _chain_operation_succeeded(task, operation_key):
+    current = _chain_operation(task, operation_key)
+    if current is not None and current.status == "succeeded":
         return None
+
+    if reconcile is not None:
+        reconciled = await reconcile(current)
+        if reconciled is not None:
+            _mark_chain_operation_succeeded(task, operation_key, reconciled)
+            if on_success is not None:
+                on_success(reconciled)
+            await _save_task_status(
+                store=store,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                task=task,
+            )
+            logger.info(
+                "task_chain_operation_reconciled",
+                task_id=task_id,
+                operation=operation_key,
+            )
+            return reconciled
 
     _mark_chain_operation_pending(task, operation_key)
     await _save_task_status(
@@ -752,6 +773,19 @@ async def _finalize_chain_setup_operations(
         if task.payment_amount > 0:
             task.payment_status = "locked"
 
+    async def reconcile_initialize(
+        current: ChainOperationRecord | None,
+    ) -> dict[str, Any] | None:
+        if current is None or current.status == "succeeded":
+            return None
+        if not await bridge.task_account_exists(task_id):
+            return None
+        return {
+            "tx_hash": current.tx_hash or "",
+            "explorer_url": current.explorer_url or "",
+            "task_pda": str(bridge.derive_task_pda(task_id)),
+        }
+
     await _attempt_chain_operation(
         store=store,
         workspace_id=workspace_id,
@@ -768,6 +802,7 @@ async def _finalize_chain_setup_operations(
         ),
         strict_failure_detail="Failed to initialize task on Solana",
         on_success=on_initialize_success,
+        reconcile=reconcile_initialize,
     )
 
     if not _chain_operation_succeeded(task, _INITIALIZE_TASK_OPERATION):
@@ -815,6 +850,21 @@ async def _finalize_result_chain_operations(
             continue
 
         data = switch_event.data
+        async def reconcile_switch(
+            current: ChainOperationRecord | None,
+            *,
+            switch_index: int = switch_index,
+        ) -> dict[str, Any] | None:
+            if current is None or current.status == "succeeded":
+                return None
+            if not await bridge.switch_account_exists(task_id, switch_index):
+                return None
+            return {
+                "tx_hash": current.tx_hash or "",
+                "explorer_url": current.explorer_url or "",
+                "switch_pda": str(bridge.derive_switch_pda(task_id, switch_index)),
+            }
+
         await _attempt_chain_operation(
             store=store,
             workspace_id=workspace_id,
@@ -830,6 +880,7 @@ async def _finalize_result_chain_operations(
                 round_number=int(data.get("round_number", result_response.round_count)),
             ),
             strict_failure_detail="Failed to record mechanism switch on Solana",
+            reconcile=reconcile_switch,
         )
 
     if any(
@@ -901,6 +952,19 @@ def _event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any
         data=event_data,
         timestamp=datetime.now(UTC),
     ).model_dump(mode="json")
+
+
+def _append_task_event_snapshot(
+    task: TaskStatusResponse,
+    *,
+    event_type: str,
+    event_data: dict[str, Any],
+) -> None:
+    """Keep the in-memory task event snapshot aligned with persisted event writes."""
+
+    task.events.append(
+        TaskEvent.model_validate(_event_payload(event_type, event_data))
+    )
 
 
 def _to_sse_message(event: dict[str, Any]) -> dict[str, Any]:
@@ -1276,6 +1340,7 @@ async def _execute_task_run(
 
     task = _to_status_response(raw_task, detailed=True)
     run_key = _task_run_key(workspace_id, task_id)
+    recovering_stale_in_progress = False
     if task.status in {"completed", "paid"} and task.result is not None:
         if bridge.is_configured() and (
             _chain_setup_needs_retry(task) or _chain_finalization_needs_retry(task)
@@ -1309,10 +1374,26 @@ async def _execute_task_run(
             finally:
                 await _release_task_run_lock(run_key, lease_id=retry_lease.lease_id)
         return task.result
-    if task.status == "in_progress":
-        raise HTTPException(status_code=409, detail="Task is already in progress")
     if task.status != "pending":
-        raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
+        if task.status != "in_progress":
+            raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
+
+    lease: RunLockLease | None
+    if task.status == "in_progress":
+        lease = await _acquire_task_run_lock(run_key)
+        if lease is None:
+            raise HTTPException(status_code=409, detail="Task is already in progress")
+        try:
+            await _enforce_task_run_rate_limit(workspace_id)
+        except Exception:
+            await _release_task_run_lock(run_key, lease_id=lease.lease_id)
+            raise
+        recovering_stale_in_progress = True
+    else:
+        await _enforce_task_run_rate_limit(workspace_id)
+        lease = await _acquire_task_run_lock(run_key)
+        if lease is None:
+            raise HTTPException(status_code=409, detail="Task is already in progress")
 
     forced_mechanism = _forced_mechanism()
     stored_override: MechanismType | None = None
@@ -1329,11 +1410,6 @@ async def _execute_task_run(
             status_code=409,
             source="stored task mechanism",
         )
-
-    await _enforce_task_run_rate_limit(workspace_id)
-    lease = await _acquire_task_run_lock(run_key)
-    if lease is None:
-        raise HTTPException(status_code=409, detail="Task is already in progress")
 
     workspace_slot = await _acquire_workspace_run_slot(
         workspace_id,
@@ -1450,8 +1526,28 @@ async def _execute_task_run(
     if hasattr(orchestrator, "build_vote_engine"):
         orchestrator.vote_engine = orchestrator.build_vote_engine(
             quorum_threshold=task.quorum_threshold,
-        )
+    )
     try:
+        if recovering_stale_in_progress:
+            recovery_event = {
+                "task_id": task_id,
+                "from_status": "in_progress",
+                "reason": "Recovered stale in-progress task after acquiring a fresh run lease.",
+            }
+            await persist_and_emit(
+                store=store,
+                stream=stream,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                event_type="task_recovered",
+                event_data=recovery_event,
+                journal=journal,
+            )
+            _append_task_event_snapshot(
+                task,
+                event_type="task_recovered",
+                event_data=recovery_event,
+            )
         task.status = "in_progress"
         await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
 
