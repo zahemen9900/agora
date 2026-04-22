@@ -2074,11 +2074,15 @@ async def test_run_task_reconciles_selection_state_without_replaying_selection_w
     async def selection_unexpected(**_kwargs: object) -> dict[str, str]:
         raise AssertionError("record_selection should not replay after reconciliation")
 
+    async def receipt_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "receipt_tx", "explorer_url": "https://explorer/receipt_tx"}
+
     try:
         monkeypatch.setattr(task_routes.settings, "strict_chain_writes", False)
         monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
         monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
         monkeypatch.setattr(task_routes.bridge, "record_selection", selection_fail)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
         monkeypatch.setattr(task_routes, "AgoraOrchestrator", _ExecuteSelectionOrchestrator)
 
         create = await task_routes.create_task(

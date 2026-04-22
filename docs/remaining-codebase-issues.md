@@ -14,197 +14,101 @@ Unlike the technical-security backlog, almost everything in this document is ind
 
 ### Can be fixed immediately with no auth dependency
 
-- `#1` false public mechanism contract for `delphi` and `moa`
-- `#2` multi-worker / crash-unsafe task execution coordination
-- `#3` GCS store swallowing infrastructure errors
-- `#4` non-transactional Solana write flow
-- `#6` manually duplicated backend/frontend schemas
+- `#2` stale `in_progress` recovery follow-through and broader multi-worker hardening
+- `#4` remaining Solana reconciliation gaps
+- `#6` remaining benchmark payload typing cleanup
 - `#7` placeholder public surfaces
-- `#8` selector import cycle
 - `#9` environment-fragile validation/tooling
 
 None of these require WorkOS to be finished. None require API keys to exist first.
 
 ### Strongest candidates to do before machine-auth rollout
 
-- `#1` false public mechanism contract
-- `#2` multi-worker / crash-unsafe execution coordination
+- `#2` stale `in_progress` recovery follow-through and broader multi-worker hardening
 - `#4` Solana write-flow reconciliation and idempotency
 
-Why these four first:
+Why these first:
 
-- `#1` keeps the public API/SDK contract honest before external users depend on it.
-- `#2` is the biggest correctness problem in hosted execution.
+- `#2` is still the biggest hosted-execution correctness problem once more workers exist.
 - `#4` determines whether hosted side effects are recoverable once more real users and credentials exist.
 
 ### Does not need to block auth work
 
-- `#3`, `#6`, `#7`, `#8`, and `#9` can run in parallel and should not hold up the API key design.
+- `#6`, `#7`, and `#9` can run in parallel and should not hold up the API key design.
 
 ## Priority 0
 
-### 1. Public mechanism contract is false for `delphi` and `moa`
+### 1. Resolved: public mechanism contract now rejects unsupported roadmap values
+
+**Dispatch status**
+
+- Resolved on 2026-04-21/2026-04-22
+
+What changed:
+
+- Public API and SDK request/response types now expose only `debate|vote`.
+- Task creation and execution reject unsupported mechanisms instead of silently rerouting them.
+- Selector/runtime execution paths no longer advertise unsupported execution coverage.
+
+What remains:
+
+- The roadmap placeholder modules still exist as internal scaffolds. That is tracked under `#7`, not here.
+
+### 2. Task execution coordination still needs broader hardening, but stale-run recovery landed
 
 **Dispatch status**
 
 - Start now
-- Strongly recommended before external/authenticated hosted usage expands
+- Still the highest-priority remaining hosted correctness item
 
-The public API, selector, and model schema all advertise `delphi` and `moa` as supported mechanisms, but the runtime does not implement them. Worse, the orchestrator silently falls back to debate instead of rejecting the request or surfacing a capability error.
+What changed already:
 
-Why this matters:
+- Distributed coordination, stream tickets, lease refresh, workspace concurrency slots, and Redis-backed fan-out are now present.
+- As of 2026-04-22, a persisted `in_progress` task is no longer treated as permanently stuck. If no live run lease exists, the API recovers the task, emits `task_recovered`, and continues execution.
 
-- The API contract is lying to callers.
-- Forced overrides can claim one mechanism at task creation and execute another at runtime.
-- Selector outputs can imply coverage that does not exist.
+What still remains:
 
-Evidence:
+- Full multi-worker guarantees still depend on the coordination backend and deployment topology.
+- We still need broader operational policy around lease expiry, operator resets, and replay behavior after more complex partial failures.
 
-- `api/models.py:21`, `api/models.py:28`, `agora/types.py:16`
-- `agora/selector/reasoning.py:82`
-- `agora/runtime/orchestrator.py:221`, `agora/runtime/orchestrator.py:319`
-- `agora/engines/delphi.py:8`
-- `agora/engines/moa.py:8`
+Evidence for the remaining work:
 
-Concrete failure mode:
+- `api/routes/tasks.py`
+- `api/coordination.py`
+- `api/streaming.py`
 
-- A caller can request `mechanism_override="delphi"` or `mechanism_override="moa"`.
-- Task creation accepts it and persists that mechanism.
-- Runtime execution silently routes to debate in `AgoraOrchestrator._execute_mechanism`.
+Why this remains open:
 
-Recommended fix:
-
-1. Pick one contract and enforce it.
-2. Either remove `delphi`/`moa` from public schemas and selector prompts until implemented, or implement them for real.
-3. If unsupported mechanisms remain in the enum for roadmap reasons, reject them explicitly at API/runtime boundaries with a 4xx/clear SDK error. Do not silently reroute.
-
-Why I did not auto-fix it:
-
-- This changes public behavior and API compatibility.
-- It requires a product decision: hide roadmap mechanisms vs keep them visible but unsupported.
-
-### 2. Task execution coordination is not safe in multi-worker or crash scenarios
-
-**Dispatch status**
-
-- Start now
-- Treat as a blocker before full machine-auth rollout
-
-Task exclusivity, stream tickets, and live event fan-out are enforced with in-memory process-local state. That is fine for a single dev process, but it is not correct for a real deployment.
-
-Why this matters:
-
-- Duplicate task execution can still happen across workers/replicas.
-- Stream tickets are only valid in the process that minted them.
-- SSE subscriptions only receive events emitted by the same process.
-- A worker crash can leave a task stuck in `in_progress` forever with no lease recovery path.
-
-Evidence:
-
-- `api/routes/tasks.py:36`
-- `api/routes/tasks.py:47`
-- `api/routes/tasks.py:107`
-- `api/routes/tasks.py:420`
-- `api/routes/tasks.py:425`
-- `api/routes/tasks.py:628`
-- `api/streaming.py:10`
-- `api/streaming.py:50`
-
-Concrete failure modes:
-
-- Two workers can both observe the same persisted task as `pending` and race into execution.
-- A task marked `in_progress` is unrecoverable after process death because there is no run lease, heartbeat, or stale-run timeout.
-- Browser SSE may fail or go silent when requests are load-balanced across processes.
-
-Recommended fix:
-
-1. Replace `_running_task_keys` with a persistent lease or compare-and-set transition in the task store.
-2. Store stream tickets in shared storage or sign them statelessly.
-3. Replace in-memory SSE fan-out with a distributed event channel if multi-instance support matters.
-4. Add stuck-task recovery: lease expiry, heartbeat, or operator reset path.
-
-Why I did not auto-fix it:
-
-- This is not a cleanup patch. It is a concurrency and deployment architecture change.
-- The right fix depends on the intended runtime model: single process, GCS-backed API, Redis, queue worker, etc.
+- The stale-run bug is fixed, but the subsystem is still a deployment architecture concern, not just a local code-path concern.
 
 ## Priority 1
 
-### 3. GCS storage layer swallows infrastructure failures as missing data
+### 3. Resolved: GCS storage now distinguishes missing, invalid, and unavailable
+
+**Dispatch status**
+
+- Resolved on 2026-04-21
+
+What changed:
+
+- The storage layer now raises typed `TaskStoreNotFound`, `TaskStorePayloadError`, and `TaskStoreUnavailable` instead of broadly collapsing infrastructure failures into normal control flow.
+
+### 4. Resolved: Solana write flow now reconciles every current chain side effect
 
 **Dispatch status**
 
 - Start now
-- Independent of WorkOS and API key design
+- Still recommended before higher-volume authenticated usage
 
-`TaskStore` catches broad `Exception` in read paths and converts many failures into `None`, empty lists, or silent skips.
+What changed:
 
-Why this matters:
+- Chain operations persist pending/succeeded/failed state as a write-ahead log.
+- Retry paths now reconcile `initialize_task`, `record_selection`, `record_switch:*`, `submit_receipt`, and `release_payment` from deterministic on-chain state instead of blindly replaying writes.
+- `TaskAccount` decoding plus vault existence checks now provide recovery signals for selection, receipt, and payment release, not just task/switch PDA existence.
 
-- Credential failures, RPC/GCS outages, malformed JSON, and permission errors become indistinguishable from “not found”.
-- Incident diagnosis gets harder because real infra failures are downgraded into normal control flow.
-- Partial data corruption can be hidden instead of surfaced.
+What still exists but is no longer treated as a blocking gap:
 
-Evidence:
-
-- `api/store.py:41`
-- `api/store.py:65`
-- `api/store.py:81`
-- `api/store.py:124`
-- `api/store.py:140`
-
-Recommended fix:
-
-1. Narrow exception handling to expected not-found and parse cases.
-2. Log and re-raise infrastructure/auth errors.
-3. Distinguish “missing object”, “invalid payload”, and “backend unavailable” in the task-store interface.
-
-Why I did not auto-fix it:
-
-- Tightening these catches changes API behavior during outages and could turn soft failures into hard errors.
-- That is the correct long-term direction, but it needs an intentional reliability decision.
-
-### 4. Solana write flow is not transactional and can leave local/chain state out of sync
-
-**Dispatch status**
-
-- Start now
-- Strongly recommended before higher-volume authenticated usage
-
-The task lifecycle performs multiple external side effects across chain writes and local persistence without a transactional model.
-
-Why this matters:
-
-- A later failure can occur after an earlier chain write already succeeded.
-- Strict mode can return failure even though on-chain state was partially committed.
-- Replay/recovery semantics are unclear.
-
-Evidence:
-
-- `api/routes/tasks.py:329`
-- `api/routes/tasks.py:341`
-- `api/routes/tasks.py:491`
-- `api/routes/tasks.py:525`
-- `api/routes/tasks.py:731`
-- `api/solana_bridge.py:445`
-- `api/solana_bridge.py:478`
-
-Concrete failure modes:
-
-- `initialize_task` can succeed and `record_selection` can fail, leaving chain state initialized without a consistent local record.
-- Receipt submission can succeed while later local persistence or switch recording fails.
-- Payment release can succeed on chain while the API crashes before fully persisting the final local state.
-
-Recommended fix:
-
-1. Define explicit idempotency keys and replay semantics for every chain write.
-2. Persist a write-ahead intent or operation log before side effects.
-3. Split local task state from chain operation state so partial completion is observable and recoverable.
-
-Why I did not auto-fix it:
-
-- This needs a full state machine design, not a cleanup edit.
-- The safe version requires product decisions about retry, reconciliation, and eventual consistency.
+- There is still no full cross-operation transaction manager. That is longer-horizon hardening, not an unresolved hole in the current write flow.
 
 ### 5. Resolved: SDK packaging no longer mirrors the Python source tree
 
@@ -228,45 +132,31 @@ Why this note remains here:
 
 ## Priority 2
 
-### 6. Backend and frontend API schemas are still manually duplicated
+### 6. Generated frontend API types landed, but benchmark payloads are still only partially normalized
 
 **Dispatch status**
 
 - Start now
 - Independent of WorkOS and API key design
 
-I consolidated repeated unions inside each side, but the Python and TypeScript contracts are still hand-maintained in parallel.
+What changed already:
 
-Why this matters:
+- `agora-web/src/lib/api.generated.ts` is now generated from the backend schema.
+- The frontend API layer now aliases most benchmark catalog/detail/run types to generated contracts instead of hand-maintaining shadow interfaces.
 
-- Contract drift will keep happening.
-- The recent `mechanism_override` frontend break was exactly this class of failure.
+What still remains:
 
-Evidence:
+- The `/benchmarks` summary payload is still intentionally loose and frontend-only helper shapes remain for that endpoint.
+- Some backend benchmark fields still use `dict[str, Any]`, which limits how precise the generated TypeScript can become.
 
-- `api/models.py:15`
-- `api/models.py:64`
-- `agora-web/src/lib/api.ts:9`
-- `agora-web/src/lib/api.ts:43`
-
-Recommended fix:
-
-1. Generate TypeScript types from the backend schema, or
-2. Move to an explicit shared schema source and generate both sides.
-
-Why I did not auto-fix it:
-
-- That is a tooling choice, not a cleanup edit.
-- It affects the backend/frontend build pipeline.
-
-### 7. Public placeholder/stub surfaces still exist outside the main runtime path
+### 7. Internal placeholder/stub surfaces still exist and should stay clearly unsupported
 
 **Dispatch status**
 
 - Start now
 - Independent of WorkOS and API key design
 
-Some exported modules are still explicit placeholders. They are not all harmful, but they enlarge the apparent supported surface area.
+Some modules are still explicit placeholders. They are now documented more clearly as internal, but they still exist and still enlarge the apparent supported surface area.
 
 Evidence:
 
@@ -279,60 +169,37 @@ Why this matters:
 - New engineers and SDK consumers can infer support that does not exist.
 - Placeholder interfaces tend to calcify into accidental compatibility promises.
 
-Recommended fix:
+Current status:
 
-1. Either mark them clearly as internal roadmap placeholders and stop exporting them broadly, or
-2. Implement them, or
-3. Remove them from public-facing docs and package exports.
+- README and module docstrings now mark these as internal/unsupported placeholders.
+- They remain open because the code still ships with the stubs present.
 
-Why I did not auto-fix it:
-
-- This touches package/API surface and roadmap signaling.
-
-### 8. Selector package layout has a benign but unnecessary import cycle
+### 8. Resolved: selector package import cycle is gone
 
 **Dispatch status**
 
-- Start now if someone is already in the selector package
-- Otherwise keep behind the correctness work above
+- Resolved on 2026-04-21
 
-The selector package re-export pattern creates a package-level cycle between
-`agora.selector` and `agora.selector.selector`.
+What changed:
 
-Evidence:
-
-- `agora/selector/__init__.py:3`
-- `agora/selector/selector.py:9`
-
-Why this matters:
-
-- It is mostly tooling debt, not a production bug.
-- It makes dependency graphs noisier and complicates cycle detection.
-
-Recommended fix:
-
-- Stop re-exporting `AgoraSelector` from `agora.selector.__init__`, or reduce imports to one direction.
-
-Why I did not auto-fix it:
-
-- Low payoff relative to the higher-priority correctness issues above.
+- `agora.selector.__init__` now uses lazy exports and `TYPE_CHECKING` imports, so the old package-level cycle is gone.
 
 ## Priority 3
 
-### 9. The current validation/tooling setup is still environment-fragile
+### 9. The current validation/tooling setup is narrower now, but still not fully bootstrap-free
 
 **Dispatch status**
 
 - Start now if someone can own dev-experience/tooling
 - Do not let this block API key/auth implementation
 
-This is not the same as the already-known frontend build blocker, but it is adjacent: validation depends on a mixed toolchain and some checks need non-default invocation to work reliably.
+This is not the same as the already-known frontend build blocker, but it is adjacent: validation still depends on a mixed toolchain and some checks need non-default invocation to work reliably.
 
 Evidence:
 
-- `pytest` in this environment required `-s` to avoid a capture-path failure.
-- `npm run lint` and `npm run build` fail under the Windows npm wrapper when launched from a WSL UNC path.
-- Vite direct execution depends on Windows-native optional bindings in the installed `node_modules`.
+- `./.venv/bin/python -m pytest -q -s` is still the reliable Python entrypoint in this environment.
+- The Windows `npm` wrapper still fails under WSL UNC paths.
+- As of 2026-04-22, the repo has a working WSL-native Node path and a helper wrapper: `./scripts/with_wsl_node.sh npm --prefix agora-web run build` now succeeds from this checkout.
 
 Why this matters:
 
@@ -341,8 +208,13 @@ Why this matters:
 
 Recommended fix:
 
-1. Standardize on WSL-native Node and Python entrypoints for local dev, or standardize on Windows-native paths and stop mixing.
-2. Encode the expected dev environment in docs or bootstrap scripts.
+1. Keep standardizing on WSL-native Node and Python entrypoints for local dev.
+2. If this still causes confusion for contributors, add bootstrap automation that exports the WSL Node path automatically instead of relying on the helper wrapper.
+
+What changed already:
+
+- README now documents the working Python test command and calls out the WSL/Windows npm trap explicitly.
+- `scripts/with_wsl_node.sh` now codifies the WSL-native Node workaround instead of relying on shell-specific tribal knowledge.
 
 Why I did not auto-fix it:
 

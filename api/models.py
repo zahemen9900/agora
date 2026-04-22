@@ -237,6 +237,15 @@ class BenchmarkDomainPrompt(BaseModel):
     source: BenchmarkPromptSourceName = "template"
 
 
+class ResolvedBenchmarkDomainPrompt(BaseModel):
+    """Fully resolved prompt metadata stored alongside benchmark runs."""
+
+    template_id: str = Field(default="custom", max_length=120)
+    template_title: str = Field(default="Custom Question", max_length=240)
+    source: BenchmarkPromptSourceName = "template"
+    question: str = Field(default="", max_length=8_000)
+
+
 class BenchmarkCostEstimateResponse(BaseModel):
     """Estimated benchmark cost metadata derived from token telemetry."""
 
@@ -272,6 +281,21 @@ class BenchmarkRunRequest(BaseModel):
     reasoning_presets: ReasoningPresetOverrides | None = None
 
 
+class BenchmarkStoredRequest(BaseModel):
+    """Normalized benchmark request shape persisted in run records."""
+
+    training_per_category: int = Field(default=1, ge=1, le=20)
+    holdout_per_category: int = Field(default=1, ge=1, le=10)
+    agent_count: int = Field(default=4, ge=1, le=12)
+    live_agents: bool = True
+    seed: int = 42
+    domain_prompts: dict[BenchmarkDomainName, BenchmarkDomainPrompt] = Field(default_factory=dict)
+    reasoning_presets: ReasoningPresets | None = None
+    resolved_domain_prompts: dict[BenchmarkDomainName, ResolvedBenchmarkDomainPrompt] = Field(
+        default_factory=dict
+    )
+
+
 class BenchmarkRunResponse(BaseModel):
     """Initial acknowledgement for an async benchmark run trigger."""
 
@@ -289,7 +313,7 @@ class BenchmarkRunStatusResponse(BaseModel):
     updated_at: datetime
     error: str | None = None
     artifact_id: str | None = None
-    request: dict[str, Any] | None = None
+    request: BenchmarkStoredRequest | None = None
     reasoning_presets: ReasoningPresets | None = None
     latest_mechanism: str | None = None
     agent_count: int | None = Field(default=None, ge=1)
@@ -338,6 +362,14 @@ class BenchmarkCatalogResponse(BaseModel):
     user_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
     user_tests_recent: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
     user_tests_frequency: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
+
+
+class BenchmarkSummaryResponse(BaseModel):
+    """Structured aggregate summary for benchmark result views."""
+
+    per_mode: dict[str, dict[str, float]] = Field(default_factory=dict)
+    per_mechanism: dict[str, dict[str, float]] = Field(default_factory=dict)
+    per_category: dict[str, dict[str, dict[str, float]]] = Field(default_factory=dict)
 
 
 class BenchmarkItemResponse(BaseModel):
@@ -398,11 +430,11 @@ class BenchmarkDetailResponse(BaseModel):
     total_latency_ms: float = Field(default=0.0, ge=0.0)
     models: list[str] = Field(default_factory=list)
     run_id: str | None = None
-    request: dict[str, Any] | None = None
+    request: BenchmarkStoredRequest | None = None
     reasoning_presets: ReasoningPresets | None = None
     model_telemetry: dict[str, ModelTelemetryResponse] = Field(default_factory=dict)
     events: list[TaskEvent] = Field(default_factory=list)
-    summary: dict[str, Any] = Field(default_factory=dict)
+    summary: BenchmarkSummaryResponse = Field(default_factory=BenchmarkSummaryResponse)
     benchmark_payload: dict[str, Any] = Field(default_factory=dict)
     cost: BenchmarkCostEstimateResponse | None = None
     benchmark_items: list[BenchmarkItemResponse] = Field(default_factory=list)

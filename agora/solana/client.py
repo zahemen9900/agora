@@ -1,4 +1,4 @@
-"""Solana client interface for protocol-facing on-chain operations."""
+"""Internal Solana adapter interface for optional protocol integrations."""
 
 from __future__ import annotations
 

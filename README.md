@@ -136,7 +136,7 @@ agora/
   sdk/
     arbitrator.py        # Public SDK facade (Phase 2 target)
   solana/
-    client.py            # Stubbed on-chain client (Josh track)
+    client.py            # Internal on-chain adapter stub (not publicly supported yet)
 
 tests/
   test_bandit.py
@@ -190,7 +190,18 @@ export AGORA_API_KEY_DEFAULT_TTL_DAYS=90
 
 ```bash
 ruff check .
-pytest -s -q
+./.venv/bin/python -m pytest -q -s
+```
+
+For frontend validation from WSL, use a WSL-native Node installation. The Windows
+`npm` wrapper fails under UNC working directories like `\\wsl.localhost\...` and
+will not reliably run `agora-web` builds from this checkout.
+
+The repo now includes a helper wrapper that prefers a WSL-native Node install
+under `~/.nvm` when your shell would otherwise hit the Windows wrapper:
+
+```bash
+./scripts/with_wsl_node.sh npm --prefix agora-web run build
 ```
 
 ### RWX cloud CI from local checkout
