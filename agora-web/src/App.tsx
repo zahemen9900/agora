@@ -1,7 +1,8 @@
-import { Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./lib/auth";
+import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { AuthProvider, storeReturnTo } from "./lib/auth";
 import { useAuth } from "./lib/useAuth";
 import { ThemeProvider } from "./hooks/ThemeProvider";
+import { AgoraLoader } from "./components/ui/AgoraLoader";
 
 // Page components
 import { DashboardLayout } from "./layouts/DashboardLayout";
@@ -16,15 +17,27 @@ import { Benchmarks } from "./pages/Benchmarks";
 import { BenchmarksAll } from "./pages/BenchmarksAll";
 import { BenchmarkDetail } from "./pages/BenchmarkDetail";
 
+function pathToLabel(pathname: string): string {
+  if (pathname.startsWith('/task/') && pathname.endsWith('/receipt')) return 'On-Chain Receipt';
+  if (pathname.startsWith('/task/')) return 'Live Deliberation';
+  if (pathname.startsWith('/benchmarks')) return 'Benchmarks';
+  if (pathname === '/tasks') return 'Tasks';
+  if (pathname === '/api-keys') return 'API Keys';
+  return 'that page';
+}
+
+function RedirectToAuth() {
+  const location = useLocation();
+  storeReturnTo(`${location.pathname}${location.search}${location.hash}`);
+  const label = pathToLabel(location.pathname);
+  return <Navigate to={`/?from=${encodeURIComponent(label)}`} replace />;
+}
+
 function AppRoutes() {
   const { isLoading, authStatus, featureFlags } = useAuth();
 
   if (isLoading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw' }}>
-        <h1 className="wordmark" style={{ animation: 'shimmer 2s infinite ease-in-out', color: 'var(--text-muted)' }}>AGORA</h1>
-      </div>
-    );
+    return <AgoraLoader variant="splash" />;
   }
 
   const isAuthenticated = authStatus === "authenticated";
@@ -38,16 +51,19 @@ function AppRoutes() {
       <Route path="/login" element={isAuthenticated ? <Navigate to="/tasks" replace /> : <LoginRoute />} />
       <Route path="/callback" element={<Callback />} />
 
-      {/* Unauthenticated: show LoginPage at the current URL so rememberReturnTo() captures the
-          original path when the user clicks Sign In (deep link recovery). */}
+      {/* Unauthenticated: root shows the landing page; any other path stores the
+          destination and redirects to / with a ?from= banner param. */}
       {!isAuthenticated && (
-        <Route path="*" element={<LoginPage />} />
+        <>
+          <Route path="/" element={<LoginPage />} />
+          <Route path="*" element={<RedirectToAuth />} />
+        </>
       )}
 
       {/* Protected routes - only accessible when authenticated */}
       {isAuthenticated && (
         <>
-          <Route path="/" element={<Navigate to="/tasks" replace />} />
+          <Route path="/" element={<LoginPage />} />
           <Route path="/tasks" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
           <Route path="/task/:taskId" element={<DashboardLayout><LiveDeliberation /></DashboardLayout>} />
           <Route path="/task/:taskId/receipt" element={<DashboardLayout><OnChainReceipt /></DashboardLayout>} />

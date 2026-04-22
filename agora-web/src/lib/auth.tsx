@@ -21,6 +21,7 @@ import {
   type WorkspaceResponse,
 } from "./api";
 import { AuthContext, type AuthContextType, type AuthStatus } from "./authContext";
+import { AgoraLoader } from "../components/ui/AgoraLoader";
 
 // Re-export user type for consumers
 export type User = WorkOSUser;
@@ -47,6 +48,12 @@ function sanitizeReturnTo(value: string | null | undefined): string {
     return normalized.startsWith("/") ? normalized : DEFAULT_RETURN_TO;
   } catch {
     return DEFAULT_RETURN_TO;
+  }
+}
+
+export function storeReturnTo(path: string): void {
+  if (!window.sessionStorage.getItem(RETURN_TO_STORAGE_KEY)) {
+    window.sessionStorage.setItem(RETURN_TO_STORAGE_KEY, sanitizeReturnTo(path));
   }
 }
 
@@ -417,13 +424,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   if (!resolvedAuthConfig) {
-    return (
-      <div className="max-w-[900px] mx-auto px-4 py-16">
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">Initializing authentication settings...</p>
-        </div>
-      </div>
-    );
+    return <AgoraLoader variant="auth" />;
   }
 
   if (!clientId) {
