@@ -1026,6 +1026,14 @@ def _to_status_response(raw_task: dict[str, Any], *, detailed: bool = False) -> 
     return TaskStatusResponse.model_validate(normalized)
 
 
+def _resolved_task_quorum(task: TaskStatusResponse) -> bool | None:
+    """Return the best available quorum signal, preferring the persisted result payload."""
+
+    if task.result is not None:
+        return task.result.quorum_reached
+    return task.quorum_reached
+
+
 def _event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any]:
     """Build a persisted event envelope."""
 
@@ -1984,8 +1992,23 @@ async def release_payment(
             )
         if task.status == "paid" or task.payment_status == "released":
             raise HTTPException(status_code=409, detail="Payment already released")
-        if not task.quorum_reached:
-            raise HTTPException(status_code=409, detail="Quorum not reached")
+        resolved_quorum = _resolved_task_quorum(task)
+        task.quorum_reached = resolved_quorum
+        if not resolved_quorum:
+            confidence = task.result.confidence if task.result is not None else None
+            confidence_detail = (
+                f" Final confidence was {confidence:.2f} against quorum threshold "
+                f"{task.quorum_threshold:.2f}."
+                if confidence is not None
+                else ""
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Payment can only be released after quorum is reached."
+                    f"{confidence_detail}"
+                ),
+            )
         if not bridge.is_configured():
             raise HTTPException(status_code=503, detail="Solana bridge is not configured")
 

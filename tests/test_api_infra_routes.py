@@ -3445,6 +3445,88 @@ async def test_pay_validates_quorum_and_status(
         with pytest.raises(HTTPException) as exc_info:
             await task_routes.release_payment(task_id, _override_user())
         assert exc_info.value.status_code == 409
+        assert "Payment can only be released after quorum is reached" in str(exc_info.value.detail)
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_release_payment_prefers_result_quorum_when_summary_field_is_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "stale-quorum-data"))
+
+    completed_result = DeliberationResult(
+        task="stale quorum summary",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=make_selection(mechanism=MechanismType.VOTE, topic_category="factual"),
+        final_answer="Accepted.",
+        confidence=0.91,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=4,
+        mechanism_switches=0,
+        merkle_root=hashlib.sha256(b"stale-quorum-root").hexdigest(),
+        transcript_hashes=[hashlib.sha256(b"leaf-1").hexdigest()],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=8,
+        total_latency_ms=2.0,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
+
+    class _FakeOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None):
+            del reasoning_presets
+            self.agent_count = agent_count
+            self.selector = _FakeSelector()
+
+        async def run(self, task: str, **_kwargs: object) -> DeliberationResult:
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def receipt_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "receipt_tx", "explorer_url": "https://explorer/receipt_tx"}
+
+    async def pay_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "pay_tx", "explorer_url": "https://explorer/pay_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
+        monkeypatch.setattr(task_routes.bridge, "release_payment", pay_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="stale quorum summary", agent_count=4, stakes=0.2),
+            _override_user(),
+        )
+        await task_routes.run_task(create.task_id, _override_user())
+
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["quorum_reached"] = False
+        await store.save_task("user-1", create.task_id, task)
+
+        pay_resp = await task_routes.release_payment(create.task_id, _override_user())
+        assert pay_resp["released"] is True
+        assert pay_resp["tx_hash"] == "pay_tx"
     finally:
         task_routes._store = None
 

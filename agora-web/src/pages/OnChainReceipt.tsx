@@ -8,6 +8,7 @@ import {
   getTask,
   releaseTaskPayment,
   verifyMerkleRoot,
+  ApiRequestError,
   type TaskStatusResponse,
 } from "../lib/api";
 import { useAuth } from "../lib/useAuth";
@@ -19,6 +20,7 @@ export function OnChainReceipt() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [isVerified, setIsVerified] = useState<boolean | null>(null);
   const [isPaying, setIsPaying] = useState(false);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!taskId) return;
@@ -43,11 +45,18 @@ export function OnChainReceipt() {
   const handleReleasePayment = async () => {
     if (!taskId) return;
     setIsPaying(true);
+    setPaymentError(null);
     try {
       const token = await getAccessToken();
       await releaseTaskPayment(taskId, token);
       const refreshed = await getTask(taskId, token, true);
       setTask(refreshed);
+    } catch (error) {
+      if (error instanceof ApiRequestError) {
+        setPaymentError(error.message);
+      } else {
+        setPaymentError("Payment release failed.");
+      }
     } finally {
       setIsPaying(false);
     }
@@ -55,6 +64,9 @@ export function OnChainReceipt() {
 
   const result = task?.result;
   const paymentReleased = task?.payment_status === "released";
+  const paymentLocked = task?.payment_status === "locked";
+  const quorumReached = result?.quorum_reached ?? task?.quorum_reached ?? false;
+  const canReleasePayment = paymentLocked && task?.status === "completed" && quorumReached;
 
   return (
     <div className="max-w-[1000px] mx-auto w-full">
@@ -89,7 +101,7 @@ export function OnChainReceipt() {
         <div className="card p-6">
           <div className="mono text-text-muted text-xs mb-2">QUORUM</div>
           <div className="text-lg font-semibold text-accent flex items-center gap-2">
-            <CheckCircle2 size={18} /> {result?.quorum_reached ? "Reached" : "Pending"}
+            <CheckCircle2 size={18} /> {quorumReached ? "Reached" : "Not Reached"}
           </div>
         </div>
         <div className="card p-6">
@@ -201,7 +213,7 @@ export function OnChainReceipt() {
                 )
               : "Verify Locally"}
         </button>
-        {task && task.payment_status === "locked" && task.status === "completed" && (
+        {task && canReleasePayment && (
           <button
             className="btn-secondary w-[250px] justify-center"
             onClick={handleReleasePayment}
@@ -209,6 +221,15 @@ export function OnChainReceipt() {
           >
             {isPaying ? "Releasing Payment..." : "Release Payment"}
           </button>
+        )}
+        {task && paymentLocked && task.status === "completed" && !quorumReached && (
+          <p className="mono text-sm text-text-secondary max-w-[420px] text-center">
+            Payment stays locked because this task completed without reaching quorum.
+            {result ? ` Consensus confidence was ${(result.confidence * 100).toFixed(1)}%.` : ""}
+          </p>
+        )}
+        {paymentError && (
+          <p className="mono text-sm text-red-300 max-w-[420px] text-center">{paymentError}</p>
         )}
         {isVerified && (
           <p className="mono text-accent mt-2 text-sm">

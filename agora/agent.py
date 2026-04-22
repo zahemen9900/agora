@@ -1450,21 +1450,29 @@ class AgentCaller:
 
         normalized_level = (self.thinking_level or "").strip().upper()
         if normalized_level:
-            thinking_level = getattr(genai_types.ThinkingLevel, normalized_level, None)
-            if thinking_level is not None:
-                try:
-                    return genai_types.ThinkingConfig(
-                        includeThoughts=True,
-                        thinkingLevel=thinking_level,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "gemini_thinking_config_unavailable",
-                        model=self.model,
-                        thinking_level=self.thinking_level,
-                        thinking_budget=self.thinking_budget,
-                        error=str(exc),
-                    )
+            thinking_level_enum = getattr(genai_types, "ThinkingLevel", None)
+            if thinking_level_enum is not None:
+                thinking_level = getattr(thinking_level_enum, normalized_level, None)
+                if thinking_level is not None:
+                    try:
+                        return genai_types.ThinkingConfig(
+                            includeThoughts=True,
+                            thinkingLevel=thinking_level,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "gemini_thinking_config_unavailable",
+                            model=self.model,
+                            thinking_level=self.thinking_level,
+                            thinking_budget=self.thinking_budget,
+                            error=str(exc),
+                        )
+            else:
+                logger.warning(
+                    "gemini_thinking_level_enum_missing",
+                    model=self.model,
+                    thinking_level=self.thinking_level,
+                )
 
         if self.enable_thinking and self.thinking_budget is not None:
             try:
