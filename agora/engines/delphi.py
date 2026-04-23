@@ -1,4 +1,4 @@
-"""Delphi engine stub for Phase 3 extension."""
+"""Internal Delphi roadmap stub; not part of the supported runtime surface."""
 
 from __future__ import annotations
 

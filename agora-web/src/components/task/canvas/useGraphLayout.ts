@@ -17,10 +17,6 @@ interface TimelineEventLike {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function safeNum(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
-}
-
 function roundOf(event: TimelineEventLike): number {
   const r = Number(event.details?.round_number ?? 0);
   return Number.isFinite(r) ? r : 0;
@@ -225,6 +221,5 @@ export function useGraphLayout(
     }
 
     return { nodes, edges };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [timeline, options?.taskId, options?.taskText]);
 }

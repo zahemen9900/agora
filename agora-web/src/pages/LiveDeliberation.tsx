@@ -30,24 +30,6 @@ function injectLdKeyframes() {
   document.head.appendChild(s);
 }
 
-function StreamingCursor() {
-  return (
-    <span
-      aria-hidden="true"
-      style={{
-        display: 'inline-block',
-        width: '2px',
-        height: '0.9em',
-        marginLeft: '2px',
-        verticalAlign: 'text-bottom',
-        borderRadius: '1px',
-        backgroundColor: 'var(--accent-emerald)',
-        animation: 'ld-cursor-blink 0.75s step-end infinite',
-      }}
-    />
-  );
-}
-
 // Each token chunk that arrives from the stream gets its own fade-in span.
 // The chunk starts at opacity 0 and fades to 1 over 400ms. Because chunks
 // arrive at different moments, they are at different points in their fade
@@ -61,7 +43,6 @@ function StreamingText({ text, isActive }: { text: string; isActive: boolean }) 
   useEffect(() => {
     if (!isActive) {
       seenLenRef.current = text.length;
-      setChunks([]);
       return;
     }
     if (text.length <= seenLenRef.current) return;
@@ -1449,7 +1430,7 @@ export function LiveDeliberation() {
         <div className="space-y-3">
           {timeline.map((entry) => {
             const isLatestEntry = entry.key === timeline[timeline.length - 1]?.key;
-            const isActiveStream = entry.isDraft && isLatestEntry;
+            const isActiveStream = Boolean(entry.isDraft && isLatestEntry);
             const provider = providerFromModel(entry.agentModel ?? "");
             const usageLine = formatUsageLine(entry.details);
             return (

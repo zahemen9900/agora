@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
+import inspect
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator, EventSink
 from agora.selector.features import extract_features
 from agora.types import (
@@ -35,6 +37,47 @@ class TaskLikeExecutionOutcome(BaseModel):
     result: DeliberationResult | None = None
     failure_reason: str | None = None
     latest_error_event: dict[str, Any] | None = None
+
+
+def _reasoning_hash_function(orchestrator: Any) -> Callable[[str], str]:
+    """Return a stable reasoning hash function for full and legacy orchestrators."""
+
+    hasher = getattr(orchestrator, "hasher", None)
+    hash_content = getattr(hasher, "hash_content", None)
+    if callable(hash_content):
+        return hash_content
+    return TranscriptHasher.hash_content
+
+
+async def _invoke_orchestrator_run(
+    orchestrator: Any,
+    *,
+    task_text: str,
+    stakes: float,
+    mechanism_override: MechanismType,
+    event_sink: EventSink | None,
+    agents: Sequence[Callable[..., Any]] | None,
+) -> DeliberationResult:
+    """Call orchestrator.run while tolerating legacy adapters with narrower signatures."""
+
+    kwargs: dict[str, Any] = {
+        "task": task_text,
+        "stakes": stakes,
+        "mechanism_override": mechanism_override,
+        "event_sink": event_sink,
+        "agents": agents,
+    }
+    parameters = inspect.signature(orchestrator.run).parameters.values()
+    accepts_kwargs = any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+    if accepts_kwargs:
+        return await orchestrator.run(**kwargs)
+
+    supported_kwargs = {
+        name: value
+        for name, value in kwargs.items()
+        if name in inspect.signature(orchestrator.run).parameters
+    }
+    return await orchestrator.run(**supported_kwargs)
 
 
 async def build_pinned_selection(
@@ -88,7 +131,7 @@ async def resolve_task_like_selection(
             agent_count=agent_count,
             stakes=stakes,
             mechanism=forced_override,
-            reasoning_hash=orchestrator.hasher.hash_content,
+            reasoning_hash=_reasoning_hash_function(orchestrator),
             selector_source="env_pin",
             mechanism_override_source="env_pin",
         )
@@ -100,7 +143,7 @@ async def resolve_task_like_selection(
             agent_count=agent_count,
             stakes=stakes,
             mechanism=requested_override,
-            reasoning_hash=orchestrator.hasher.hash_content,
+            reasoning_hash=_reasoning_hash_function(orchestrator),
             selector_source="forced_override",
             mechanism_override_source="request",
         )
@@ -141,14 +184,34 @@ async def execute_task_like_run(
     )
 
     try:
-        result = await orchestrator.execute_selection(
-            task=task_text,
-            selection=selection,
-            event_sink=event_sink,
-            agents=agents,
-            allow_switch=allow_switch,
-        )
-        if result.fallback_count > 0 and not orchestrator.allow_offline_fallback:
+        if mechanism_override_source is not None:
+            result = await _invoke_orchestrator_run(
+                orchestrator,
+                task_text=task_text,
+                stakes=selection.task_features.stakes,
+                mechanism_override=selection.mechanism,
+                event_sink=event_sink,
+                agents=agents,
+            )
+        elif hasattr(orchestrator, "execute_selection"):
+            result = await orchestrator.execute_selection(
+                task=task_text,
+                selection=selection,
+                event_sink=event_sink,
+                agents=agents,
+                allow_switch=allow_switch,
+            )
+        else:
+            # Compatibility path for legacy orchestrator adapters and test doubles.
+            result = await _invoke_orchestrator_run(
+                orchestrator,
+                task_text=task_text,
+                stakes=selection.task_features.stakes,
+                mechanism_override=selection.mechanism,
+                event_sink=event_sink,
+                agents=agents,
+            )
+        if result.fallback_count > 0 and not getattr(orchestrator, "allow_offline_fallback", True):
             raise RuntimeError("Provider fallback occurred but allow_offline_fallback=false")
         normalized_result = result.model_copy(
             update={

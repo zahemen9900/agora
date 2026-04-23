@@ -1606,6 +1606,8 @@ class DebateEngine:
     ) -> tuple[BaseModel, dict[str, Any]]:
         """Call an agent with structured output and strict fallback policy."""
 
+        coercion_provenance: str | None = None
+
         if custom_agent is not None:
             response, usage = await invoke_custom_agent(
                 custom_agent,
@@ -1887,6 +1889,7 @@ class DebateEngine:
             _SynthesisResponse,
         }:
             try:
+                coercion_provenance = None
                 kimi_response, kimi_usage = await self._call_provider(
                     tier="kimi",
                     system_prompt=system_prompt,

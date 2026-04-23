@@ -31,6 +31,7 @@ SCHEMA_NAMES = [
     "BenchmarkRunStatusResponse",
     "BenchmarkCatalogResponse",
     "BenchmarkDetailResponse",
+    "BenchmarkItemEventsResponse",
     "BenchmarkPromptTemplatesResponse",
 ]
 

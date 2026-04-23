@@ -124,7 +124,7 @@ function RevealModal({ created, onDismiss }: RevealModalProps) {
             onClick={handleCopy}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-              padding: '12px', borderRadius: '10px', border: 'none',
+              padding: '12px', borderRadius: '10px',
               background: copyState === 'copied' ? 'var(--accent-emerald-soft)' : 'var(--accent-emerald)',
               color: copyState === 'copied' ? 'var(--accent-emerald)' : '#0A0C0E',
               fontFamily: FONT, fontSize: '13px', fontWeight: 600,

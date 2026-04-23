@@ -31,7 +31,6 @@ import {
   type BenchmarkCatalogEntry,
   type BenchmarkCatalogPayload,
   type BenchmarkDomainName,
-  type BenchmarkDomainPromptPayload,
   type BenchmarkPayload,
   type BenchmarkPromptTemplatesPayload,
   type BenchmarkRunRequestPayload,
@@ -391,7 +390,7 @@ export function Benchmarks() {
             return;
           }
           setActiveBenchmarkRun(status);
-          if (status.status === "completed") {
+          if (status.status === "completed" || status.status === "failed") {
             await loadBenchmarkData();
           }
         } catch (error) {
@@ -460,6 +459,28 @@ export function Benchmarks() {
     return (yourSortMode === "recent" ? catalog.user_recent : catalog.user_frequency).slice(0, 3);
   }, [catalog, yourSortMode]);
 
+  const inProgressBenchmarkRuns = useMemo(() => {
+    const merged = new Map<string, BenchmarkRunStatusPayload>();
+    const catalogRuns = catalog
+      ? (yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency)
+      : [];
+
+    for (const run of catalogRuns) {
+      if (run.status === "queued" || run.status === "running") {
+        merged.set(run.run_id, run);
+      }
+    }
+
+    if (activeBenchmarkRun && (activeBenchmarkRun.status === "queued" || activeBenchmarkRun.status === "running")) {
+      const existing = merged.get(activeBenchmarkRun.run_id);
+      merged.set(activeBenchmarkRun.run_id, existing ? { ...existing, ...activeBenchmarkRun } : activeBenchmarkRun);
+    }
+
+    return Array.from(merged.values())
+      .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
+      .slice(0, 3);
+  }, [activeBenchmarkRun, catalog, yourSortMode]);
+
   const failedBenchmarkRuns = useMemo(() => {
     if (!catalog) {
       return [];
@@ -476,7 +497,7 @@ export function Benchmarks() {
   }, [catalog, globalSortMode]);
 
   const runPayloadPreview = useMemo(() => {
-    const domainPrompts: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>> = {};
+    const domainPrompts: NonNullable<BenchmarkRunRequestPayload["domain_prompts"]> = {};
     for (const domain of BENCHMARK_DOMAINS) {
       const selection = domainPromptSelection[domain];
       if (!selection) {
@@ -487,7 +508,7 @@ export function Benchmarks() {
         continue;
       }
       domainPrompts[domain] = {
-        template_id: selection.templateId,
+        template_id: selection.templateId ?? null,
         question,
         source: selection.useCustomPrompt ? "custom" : "template",
       };
@@ -558,6 +579,21 @@ export function Benchmarks() {
         updated_at: run.created_at,
         error: null,
         artifact_id: null,
+        request: null,
+        reasoning_presets: null,
+        latest_mechanism: null,
+        agent_count: null,
+        total_tokens: null,
+        thinking_tokens: null,
+        total_latency_ms: null,
+        model_telemetry: {},
+        cost: null,
+        completed_item_count: 0,
+        failed_item_count: 0,
+        degraded_item_count: 0,
+        failure_counts_by_category: {},
+        failure_counts_by_reason: {},
+        failure_counts_by_stage: {},
       });
       closeWizard();
       navigate(`/benchmarks/${run.run_id}`);
@@ -829,8 +865,26 @@ export function Benchmarks() {
             <p className="text-sm text-text-secondary">{catalogError}</p>
           ) : (
             <div className="space-y-5">
-              {yourEntries.length > 0 ? (
+              {inProgressBenchmarkRuns.length > 0 ? (
                 <div className="space-y-3">
+                  <div>
+                    <h4 className="text-base font-semibold">Live Runs</h4>
+                    <p className="text-xs text-text-secondary">
+                      Queued and running benchmarks stay visible here until they settle into an artifact or failed report.
+                    </p>
+                  </div>
+                  {inProgressBenchmarkRuns.map((run) => (
+                    <RunningBenchmarkRunCard
+                      key={run.run_id}
+                      run={run}
+                      onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              {yourEntries.length > 0 ? (
+                <div className={`space-y-3 ${inProgressBenchmarkRuns.length > 0 ? "pt-5 border-t border-border-subtle" : ""}`}>
                   {yourEntries.map((entry) => (
                     <BenchmarkCatalogCard
                       key={entry.artifact_id}
@@ -1344,8 +1398,62 @@ function FailedBenchmarkRunCard({
   );
 }
 
+function RunningBenchmarkRunCard({
+  run,
+  onOpen,
+}: {
+  run: BenchmarkRunStatusPayload;
+  onOpen: () => void;
+}) {
+  const running = run.status === "running";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`w-full text-left rounded-md px-4 py-4 transition-colors ${
+        running
+          ? "border border-accent/40 bg-accent/5 hover:border-accent"
+          : "border border-border-subtle bg-void hover:border-accent/40"
+      }`}
+    >
+      <div className="flex flex-wrap gap-2 items-center mb-2">
+        <span className="mono text-xs text-text-muted break-all">{run.run_id}</span>
+        <span className={`badge ${running ? "bg-accent-muted text-accent border-accent/40" : ""}`}>
+          {titleCase(run.status)}
+        </span>
+        {run.latest_mechanism ? <span className="badge">{titleCase(run.latest_mechanism)}</span> : null}
+        {run.artifact_id ? <span className="badge">artifact {run.artifact_id}</span> : null}
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs text-text-secondary mb-3">
+        <div>Tokens {formatInt(run.total_tokens ?? 0)}</div>
+        <div>Agents {run.agent_count ?? "n/a"}</div>
+        <div>Thinking {formatInt(run.thinking_tokens ?? 0)}</div>
+        <div>Cost {formatUsd(run.cost?.estimated_cost_usd ?? null)}</div>
+        <div>Updated {formatDateTime(run.updated_at)}</div>
+      </div>
+
+      <div className="flex items-center justify-between text-xs text-text-muted">
+        <span>{running ? "Live stream attached to this run." : "Queued for execution."}</span>
+        <span className="inline-flex items-center gap-1">
+          {running ? "Open live view" : "Open queued run"} <ChevronRight size={12} />
+        </span>
+      </div>
+    </button>
+  );
+}
+
 function deriveSummary(payload: BenchmarkPayload | null): BenchmarkSummary {
-  const fallback = { per_mode: {}, per_mechanism: {}, per_category: {} } satisfies BenchmarkSummary;
+  const fallback = {
+    per_mode: {},
+    per_mechanism: {},
+    per_category: {},
+    completed_run_count: 0,
+    failed_run_count: 0,
+    degraded_run_count: 0,
+    scored_run_count: 0,
+    proxy_run_count: 0,
+  } satisfies BenchmarkSummary;
   if (!payload) {
     return fallback;
   }
@@ -1374,6 +1482,9 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
     const metrics = safePerMode[mechanism] ?? {};
     perMode[mechanism] = {
       accuracy: asNumber(metrics.accuracy),
+      run_count: asNumber(metrics.run_count),
+      scored_run_count: asNumber(metrics.scored_run_count),
+      proxy_run_count: asNumber(metrics.proxy_run_count),
       avg_tokens: asNumber(metrics.avg_tokens),
       avg_latency_ms: asNumber(metrics.avg_latency_ms),
       avg_rounds: asNumber(metrics.avg_rounds),
@@ -1385,6 +1496,9 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
     const mechanismMetrics = safePerMechanism[mechanism] ?? {};
     perMechanism[mechanism] = {
       accuracy: asNumber(mechanismMetrics.accuracy),
+      run_count: asNumber(mechanismMetrics.run_count),
+      scored_run_count: asNumber(mechanismMetrics.scored_run_count),
+      proxy_run_count: asNumber(mechanismMetrics.proxy_run_count),
       avg_tokens: asNumber(mechanismMetrics.avg_tokens),
       avg_latency_ms: asNumber(mechanismMetrics.avg_latency_ms),
       avg_rounds: asNumber(mechanismMetrics.avg_rounds),
@@ -1405,6 +1519,9 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
       const metrics = safePerCategory[category]?.[mechanism] ?? {};
       perCategory[category][mechanism] = {
         accuracy: asNumber(metrics.accuracy),
+        run_count: asNumber(metrics.run_count),
+        scored_run_count: asNumber(metrics.scored_run_count),
+        proxy_run_count: asNumber(metrics.proxy_run_count),
         avg_tokens: asNumber(metrics.avg_tokens),
         avg_latency_ms: asNumber(metrics.avg_latency_ms),
         avg_thinking_tokens: asNumber(metrics.avg_thinking_tokens),
@@ -1413,7 +1530,16 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
     }
   }
 
-  return { per_mode: perMode, per_mechanism: perMechanism, per_category: perCategory };
+  return {
+    per_mode: perMode,
+    per_mechanism: perMechanism,
+    per_category: perCategory,
+    completed_run_count: asNumber(summary.completed_run_count),
+    failed_run_count: asNumber(summary.failed_run_count),
+    degraded_run_count: asNumber(summary.degraded_run_count),
+    scored_run_count: asNumber(summary.scored_run_count),
+    proxy_run_count: asNumber(summary.proxy_run_count),
+  };
 }
 
 function asNumber(value: unknown): number {

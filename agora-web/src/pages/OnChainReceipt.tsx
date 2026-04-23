@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -15,6 +15,7 @@ import {
   getTask,
   releaseTaskPayment,
   verifyMerkleRoot,
+  ApiRequestError,
   type TaskStatusResponse,
 } from "../lib/api";
 import { useAuth } from "../lib/useAuth";
@@ -242,9 +243,12 @@ export function OnChainReceipt() {
       await releaseTaskPayment(taskId, token);
       const refreshed = await getTask(taskId, token, true);
       setTask(refreshed);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Payment release failed.";
-      setPaymentError(msg);
+    } catch (error) {
+      if (error instanceof ApiRequestError) {
+        setPaymentError(error.message);
+      } else {
+        setPaymentError("Payment release failed.");
+      }
     } finally {
       setIsPaying(false);
     }
@@ -252,6 +256,9 @@ export function OnChainReceipt() {
 
   const result = task?.result;
   const paymentReleased = task?.payment_status === "released";
+  const paymentLocked = task?.payment_status === "locked";
+  const quorumReached = result?.quorum_reached ?? task?.quorum_reached ?? false;
+  const canReleasePayment = paymentLocked && task?.status === "completed" && quorumReached;
   const loading = task === null;
 
   return (
@@ -686,8 +693,7 @@ export function OnChainReceipt() {
             "Verify Locally"
           )}
         </button>
-
-        {task && task.payment_status === "locked" && task.status === "completed" && (
+        {task && canReleasePayment && (
           <button
             type="button"
             onClick={handleReleasePayment}
@@ -725,8 +731,28 @@ export function OnChainReceipt() {
             {isPaying ? "Releasing Payment…" : "Release Payment"}
           </button>
         )}
-
-        {/* Payment error */}
+        {task && paymentLocked && task.status === "completed" && !quorumReached && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: '8px',
+            padding: '10px 16px',
+            borderRadius: '10px',
+            border: '1px solid var(--border-default)',
+            background: 'var(--bg-elevated)',
+            fontFamily: FONT,
+            fontSize: '11px',
+            color: 'var(--text-secondary)',
+            maxWidth: '420px',
+            textAlign: 'left',
+          }}>
+            <AlertCircle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+            <span>
+              Payment stays locked because this task completed without reaching quorum.
+              {result ? ` Consensus confidence was ${(result.confidence * 100).toFixed(1)}%.` : ""}
+            </span>
+          </div>
+        )}
         {paymentError && (
           <div style={{
             display: 'flex',
@@ -746,7 +772,6 @@ export function OnChainReceipt() {
             {paymentError}
           </div>
         )}
-
         {isVerified && (
           <p style={{
             fontFamily: FONT,

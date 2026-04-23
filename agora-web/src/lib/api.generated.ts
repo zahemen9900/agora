@@ -229,7 +229,7 @@ export interface BenchmarkRunStatusResponse {
   updated_at: string;
   error: string | null;
   artifact_id: string | null;
-  request: Record<string, unknown> | null;
+  request: BenchmarkStoredRequest | null;
   reasoning_presets: ReasoningPresets | null;
   latest_mechanism: string | null;
   agent_count: number | null;
@@ -244,6 +244,24 @@ export interface BenchmarkRunStatusResponse {
   failure_counts_by_category: Record<string, number>;
   failure_counts_by_reason: Record<string, number>;
   failure_counts_by_stage: Record<string, number>;
+}
+
+export interface BenchmarkStoredRequest {
+  training_per_category: number;
+  holdout_per_category: number;
+  agent_count: number;
+  live_agents: boolean;
+  seed: number;
+  domain_prompts: Record<string, BenchmarkDomainPrompt>;
+  reasoning_presets: ReasoningPresets | null;
+  resolved_domain_prompts: Record<string, ResolvedBenchmarkDomainPrompt>;
+}
+
+export interface ResolvedBenchmarkDomainPrompt {
+  template_id: string;
+  template_title: string;
+  source: "template" | "custom";
+  question: string;
 }
 
 export interface BenchmarkCatalogResponse {
@@ -296,11 +314,11 @@ export interface BenchmarkDetailResponse {
   total_latency_ms: number;
   models: Array<string>;
   run_id: string | null;
-  request: Record<string, unknown> | null;
+  request: BenchmarkStoredRequest | null;
   reasoning_presets: ReasoningPresets | null;
   model_telemetry: Record<string, ModelTelemetryResponse>;
   events: Array<TaskEvent>;
-  summary: Record<string, unknown>;
+  summary: BenchmarkSummaryResponse;
   benchmark_payload: Record<string, unknown>;
   cost: BenchmarkCostEstimateResponse | null;
   benchmark_items: Array<BenchmarkItemResponse>;
@@ -337,6 +355,23 @@ export interface BenchmarkItemResponse {
   summary: Record<string, unknown>;
   started_at: string | null;
   completed_at: string | null;
+  events: Array<TaskEvent>;
+}
+
+export interface BenchmarkSummaryResponse {
+  per_mode: Record<string, Record<string, number>>;
+  per_mechanism: Record<string, Record<string, number>>;
+  per_category: Record<string, Record<string, Record<string, number>>>;
+  completed_run_count: number;
+  failed_run_count: number;
+  degraded_run_count: number;
+  scored_run_count: number;
+  proxy_run_count: number;
+}
+
+export interface BenchmarkItemEventsResponse {
+  benchmark_id: string;
+  item_id: string;
   events: Array<TaskEvent>;
 }
 

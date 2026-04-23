@@ -443,6 +443,54 @@ async def test_gemini_structured_output_parses_pydantic(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_gemini_call_tolerates_missing_thinking_level_enum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gemini calls should keep working when the SDK drops ThinkingLevel enum support."""
+
+    monkeypatch.setenv("AGORA_GEMINI_API_KEY", "gemini-test-key")
+    response = _FakeGeminiResponse(
+        '{"answer":"Paris","confidence":0.91}',
+        input_tokens=11,
+        output_tokens=7,
+    )
+
+    created: dict[str, _FakeGeminiClient] = {}
+
+    def _fake_client_ctor(*, api_key: str) -> _FakeGeminiClient:
+        client = _FakeGeminiClient(api_key=api_key, response=response)
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "genai", SimpleNamespace(Client=_fake_client_ctor))
+    monkeypatch.setattr(
+        agent_module,
+        "genai_types",
+        SimpleNamespace(
+            GenerateContentConfig=_FakeGeminiGenerateContentConfig,
+            ThinkingConfig=_FakeGeminiThinkingConfig,
+        ),
+    )
+
+    caller = AgentCaller(model="gemini-2.5-pro", temperature=0.3, thinking_level="high")
+    parsed, usage = await caller.call(
+        system_prompt="Return structured JSON.",
+        user_prompt="Capital of France",
+        response_format=_StructuredResponse,
+    )
+
+    assert isinstance(parsed, _StructuredResponse)
+    assert parsed.answer == "Paris"
+    assert usage["provider"] == "gemini"
+
+    kwargs = created["client"].models.last_generate_kwargs
+    assert kwargs is not None
+    config = kwargs["config"]
+    assert "thinkingConfig" in config.kwargs
+    assert config.kwargs["thinkingConfig"].kwargs["thinkingBudget"] == get_config().gemini_thinking_budget
+
+
+@pytest.mark.asyncio
 async def test_gemini_streaming_returns_full_text_and_usage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
