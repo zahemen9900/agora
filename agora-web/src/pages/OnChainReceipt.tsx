@@ -258,7 +258,7 @@ export function OnChainReceipt() {
   const paymentReleased = task?.payment_status === "released";
   const paymentLocked = task?.payment_status === "locked";
   const quorumReached = result?.quorum_reached ?? task?.quorum_reached ?? false;
-  const canReleasePayment = paymentLocked && task?.status === "completed" && quorumReached;
+  const canReleasePayment = paymentLocked && task?.status === "completed";
   const loading = task === null;
 
   return (
