@@ -1,4 +1,4 @@
-import { Bot, Brain, Cpu, Sparkles } from "lucide-react";
+import { Cpu } from "lucide-react";
 
 import type { ProviderName } from "../lib/modelProviders";
 
@@ -9,14 +9,17 @@ export function ProviderGlyph({
   provider: ProviderName;
   size?: number;
 }) {
-  if (provider === "gemini") {
-    return <Sparkles size={size} />;
-  }
-  if (provider === "claude") {
-    return <Bot size={size} />;
-  }
-  if (provider === "kimi") {
-    return <Brain size={size} />;
+  if (provider !== "other") {
+    return (
+      <img
+        src={`/models/${provider}.png`}
+        alt={provider}
+        width={size}
+        height={size}
+        style={{ borderRadius: "3px", objectFit: "contain", flexShrink: 0 }}
+        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+      />
+    );
   }
   return <Cpu size={size} />;
 }

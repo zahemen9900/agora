@@ -20,6 +20,7 @@ import {
   type WorkspaceResponse,
 } from "./api";
 import { AuthContext, type AuthContextType, type AuthIssue, type AuthStatus } from "./authContext";
+import { AgoraLoader } from "../components/ui/AgoraLoader";
 
 const RETURN_TO_STORAGE_KEY = "agora:returnTo";
 const DEFAULT_RETURN_TO = "/";
@@ -420,39 +421,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clientId = resolvedAuthConfig?.workos_client_id ?? "";
   const redirectUri = resolveRedirectUri(import.meta.env.VITE_WORKOS_REDIRECT_URI);
-  const devProxySetting = (import.meta.env.VITE_WORKOS_USE_DEV_PROXY ?? "").trim().toLowerCase();
-  const useDevProxy = import.meta.env.DEV
-    && !["0", "false", "no", "off"].includes(devProxySetting);
-
   const configuredApiHostname = (import.meta.env.VITE_WORKOS_API_HOSTNAME ?? "").trim();
-  const apiHostname = configuredApiHostname || (useDevProxy ? window.location.hostname : undefined);
+  // Always proxy WorkOS SDK requests through the current host so Vercel/Vite can forward
+  // /user_management/* to api.workos.com — avoids CORS failures in both dev and production.
+  const apiHostname = configuredApiHostname || window.location.hostname;
 
   const configuredPortRaw = (import.meta.env.VITE_WORKOS_API_PORT ?? "").trim();
   const configuredPort = configuredPortRaw ? Number.parseInt(configuredPortRaw, 10) : Number.NaN;
   const apiPort = Number.isFinite(configuredPort)
     ? configuredPort
-    : (useDevProxy && window.location.port
-      ? Number.parseInt(window.location.port, 10)
-      : undefined);
+    : (window.location.port ? Number.parseInt(window.location.port, 10) : undefined);
 
   const configuredHttpsRaw = (import.meta.env.VITE_WORKOS_API_HTTPS ?? "").trim().toLowerCase();
   const configuredHttps = configuredHttpsRaw
     ? ["1", "true", "yes", "on"].includes(configuredHttpsRaw)
     : undefined;
-  const apiHttps = configuredHttps ?? (useDevProxy ? window.location.protocol === "https:" : undefined);
+  const apiHttps = configuredHttps ?? (window.location.protocol === "https:");
 
   if (authConfigError) {
     throw new Error(authConfigError);
   }
 
   if (!resolvedAuthConfig) {
-    return (
-      <div className="max-w-225 mx-auto px-4 py-16">
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">Initializing authentication settings...</p>
-        </div>
-      </div>
-    );
+    return <AgoraLoader variant="auth" />;
   }
 
   if (!clientId) {

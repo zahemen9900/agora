@@ -1,21 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronRight, Loader2, Play } from "lucide-react";
+import { Settings2, ArrowRight, Loader2 } from "lucide-react";
 
-import { EnsemblePlan } from "../components/EnsemblePlan";
-import { ReasoningPresetControls } from "../components/ReasoningPresetControls";
+import { ConfigModal } from "../components/task/ConfigModal";
+import { DecisionPopup } from "../components/task/DecisionPopup";
+import { RecentDeliberationsCarousel } from "../components/task/RecentDeliberationsCarousel";
 import { listTasks, submitTask, type TaskStatusResponse } from "../lib/api";
 import { useAuth } from "../lib/useAuth";
 import {
-  buildDebateRoster,
-  buildProviderCountBadges,
-  buildVoteRoster,
   DEFAULT_REASONING_PRESETS,
-  getBalancedEnsembleLabel,
-  getDebateSpecialistSummary,
   type ReasoningPresetState,
 } from "../lib/deliberationConfig";
 
+// ── Example tasks (unchanged) ─────────────────────────────────────────────────
 const EXAMPLE_TASKS = [
   "Should a startup with 3 engineers use microservices or a monolith?",
   "What is the optimal interest rate policy given current inflation?",
@@ -63,56 +60,15 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
   };
 }
 
-function dominantModelLabel(task: TaskStatusResponse): string | null {
-  const telemetry = task.result?.model_telemetry ?? {};
-  const entries = Object.entries(telemetry).sort(
-    (left, right) => (right[1]?.total_tokens ?? 0) - (left[1]?.total_tokens ?? 0),
-  );
-  return entries[0]?.[0] ?? null;
-}
+const EXAMPLE_TASK_OBJECTS = EXAMPLE_TASKS.map(makeExampleTask);
 
-function paymentStatusTone(status: TaskStatusResponse["payment_status"]): string {
-  if (status === "released") {
-    return "bg-accent-muted text-accent border-accent";
-  }
-  if (status === "locked") {
-    return "bg-warning/10 text-warning border-warning/40";
-  }
-  return "bg-void text-text-secondary border-border-subtle";
-}
-
-function statusTone(status: TaskStatusResponse["status"]): string {
-  if (status === "completed" || status === "paid") {
-    return "bg-accent-muted text-accent border-accent";
-  }
-  if (status === "failed") {
-    return "bg-danger/10 text-danger border-danger/40";
-  }
-  return "bg-void text-text-secondary border-border-subtle";
-}
-
-function compactTaskInsight(task: TaskStatusResponse): string {
-  const result = task.result;
-  if (!result) {
-    return `Status: ${task.status} • Hash: ${task.merkle_root ? task.merkle_root.slice(0, 8) : "Pending"}`;
-  }
-
-  const fallbackCount = result.fallback_count ?? 0;
-  const lockedClaimCount = result.locked_claims?.length ?? 0;
-  const hotPath = dominantModelLabel(task);
-  const fragments = [
-    `${result.execution_mode ?? "live"} execution`,
-    `${lockedClaimCount} locked claim${lockedClaimCount === 1 ? "" : "s"}`,
-    `${fallbackCount} fallback${fallbackCount === 1 ? "" : "s"}`,
-    result.mechanism_switches > 0 ? `${result.mechanism_switches} switch${result.mechanism_switches === 1 ? "" : "es"}` : null,
-    hotPath ? `hot path ${hotPath}` : null,
-  ].filter(Boolean);
-  return fragments.join(" • ");
-}
-
+// ── Main component ────────────────────────────────────────────────────────────
 export function TaskSubmit() {
   const navigate = useNavigate();
   const { getAccessToken } = useAuth();
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── All original state is preserved exactly ──
   const [taskText, setTaskText] = useState("");
   const [agentCount, setAgentCount] = useState(4);
   const [stakes, setStakes] = useState("0.001");
@@ -125,21 +81,13 @@ export function TaskSubmit() {
     mechanism: string;
     confidence: number;
     reasoning: string;
+    taskId: string;
   } | null>(null);
 
-  const voteRoster = useMemo(
-    () => buildVoteRoster(agentCount, reasoningPresets),
-    [agentCount, reasoningPresets],
-  );
-  const debateRoster = useMemo(
-    () => buildDebateRoster(agentCount, reasoningPresets),
-    [agentCount, reasoningPresets],
-  );
-  const providerCountBadges = useMemo(
-    () => buildProviderCountBadges(agentCount),
-    [agentCount],
-  );
-  const ensembleLabel = useMemo(() => getBalancedEnsembleLabel(agentCount), [agentCount]);
+  // ── New UI state ──
+  const [configOpen, setConfigOpen] = useState(false);
+  const [tasksLoading, setTasksLoading] = useState(true);
+
 
   const fetchRecentTasks = useCallback(async (): Promise<TaskStatusResponse[]> => {
     const token = await getAccessToken();
@@ -157,26 +105,22 @@ export function TaskSubmit() {
 
   useEffect(() => {
     let cancelled = false;
-
     void (async () => {
       try {
         const tasks = await fetchRecentTasks();
-        if (!cancelled) {
-          setRecentTasks(tasks);
-        }
+        if (!cancelled) setRecentTasks(tasks);
       } catch (error) {
         console.error(error);
+      } finally {
+        if (!cancelled) setTasksLoading(false);
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [fetchRecentTasks]);
 
+  // ── Submit handler (original logic, adds taskId to reveal state) ──
   const handleSubmit = async () => {
     if (!taskText.trim()) return;
-
     setIsSubmitting(true);
     setMechanismReveal(null);
     try {
@@ -194,198 +138,314 @@ export function TaskSubmit() {
         mechanism: response.mechanism.toUpperCase(),
         confidence: response.confidence,
         reasoning: response.reasoning,
+        taskId: response.task_id,
       });
       await loadRecentTasks();
-      window.setTimeout(() => {
-        navigate(`/task/${response.task_id}`);
-      }, 1500);
+      // Navigation now happens from the popup's onNavigate callback
     } catch (error) {
       console.error(error);
       setIsSubmitting(false);
     }
   };
 
+  // ── Textarea auto-grow ──
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setTaskText(e.target.value);
+    e.target.style.height = "auto";
+    e.target.style.height = `${e.target.scrollHeight}px`;
+  };
+
+  const FONT = "'Commit Mono', 'SF Mono', monospace";
+
   return (
-    <div className="max-w-5xl mx-auto mt-10">
-      <div className="text-center mb-10">
-        <h1 className="mb-4 text-3xl md:text-5xl">What should your agents deliberate on?</h1>
-        <p className="text-text-secondary text-lg">
+    <div style={{ maxWidth: '760px', margin: '0 auto', padding: '40px 16px 80px' }}>
+
+
+      {/* ── Page header ─────────────────────────────────────────── */}
+      <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+        <h1 style={{
+          fontFamily: FONT,
+          fontSize: 'clamp(22px, 4vw, 36px)',
+          fontWeight: 800,
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          color: 'var(--text-primary)',
+          marginBottom: '10px',
+        }}>
+          What should your agents deliberate on?
+        </h1>
+        <p style={{
+          fontSize: '14px',
+          color: 'var(--text-secondary)',
+          fontFamily: FONT,
+          margin: 0,
+        }}>
           Agora analyzes the task, chooses debate or vote, and records a verifiable receipt.
         </p>
       </div>
 
-      <div className="card p-8 mb-16">
-
-
+      {/* ── Notion-style composer ────────────────────────────────── */}
+      <div style={{
+        background: 'var(--bg-elevated)',
+        border: '1px solid var(--border-default)',
+        borderRadius: '16px',
+        overflow: 'hidden',
+        boxShadow: '0 4px 24px rgba(0,0,0,0.15)',
+        transition: 'border-color 0.15s ease',
+      }}
+        onFocusCapture={(e) => {
+          (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-strong)';
+        }}
+        onBlurCapture={(e) => {
+          (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-default)';
+        }}
+      >
+        {/* ── Top: textarea ── */}
         <textarea
-          className="mono w-full min-h-40 bg-void text-text-primary border border-border-subtle rounded-lg p-5 text-base resize-none outline-none mb-6 focus:border-accent transition-colors"
+          ref={textareaRef}
+          id="task-input"
+          aria-label="Task description"
           placeholder="Enter a question, decision, or problem for multi-agent deliberation..."
           value={taskText}
-          onChange={(event) => {
-            setTaskText(event.target.value);
-            event.target.style.height = "auto";
-            event.target.style.height = `${event.target.scrollHeight}px`;
+          onChange={handleTextChange}
+          style={{
+            width: '100%',
+            minHeight: '120px',
+            maxHeight: '420px',
+            background: 'transparent',
+            border: 'none',
+            outline: 'none',
+            resize: 'none',
+            padding: '20px 24px',
+            fontFamily: FONT,
+            fontSize: '15px',
+            color: 'var(--text-primary)',
+            lineHeight: '1.65',
+            boxSizing: 'border-box',
+          }}
+          onKeyDown={(e) => {
+            // Ctrl+Enter or Cmd+Enter submits
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+              e.preventDefault();
+              void handleSubmit();
+            }
           }}
         />
 
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-end flex-wrap gap-6">
-          <div className="flex flex-col sm:flex-row gap-6 w-full md:w-auto">
-            <div>
-              <div className="mono text-text-muted text-xs mb-2">AGENTS</div>
-              <div className="flex gap-2">
-                {[4, 8, 12].map((num) => (
-                  <button
-                    key={num}
-                    onClick={() => setAgentCount(num)}
-                    className={`mono px-4 py-1.5 rounded-full text-sm border transition-colors ${
-                      agentCount === num
-                        ? "bg-accent-muted text-accent border-accent"
-                        : "bg-void text-text-secondary border-border-muted hover:border-text-muted"
-                    }`}
-                  >
-                    {num}
-                  </button>
-                ))}
-              </div>
-            </div>
+        {/* ── Divider ── */}
+        <div style={{ height: '1px', background: 'var(--border-default)', margin: '0 16px' }} />
 
-            <div>
-              <div className="mono text-text-muted text-xs mb-2">STAKES (SOL)</div>
-              <input
-                type="number"
-                min={0}
-                step="0.001"
-                value={stakes}
-                onChange={(event) => setStakes(event.target.value)}
-                className="mono bg-void text-text-primary border border-border-muted py-1.5 px-3 rounded-md w-25 outline-none focus:border-accent transition-colors"
-              />
-            </div>
-          </div>
-
+        {/* ── Bottom toolbar ── */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 16px',
+          gap: '12px',
+        }}>
+          {/* Left: Config button */}
           <button
-            className="btn-primary w-full md:w-auto"
+            type="button"
+            onClick={() => setConfigOpen(true)}
+            aria-label="Open configuration"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '7px 14px',
+              borderRadius: '8px',
+              border: '1px solid var(--border-default)',
+              background: 'transparent',
+              cursor: 'pointer',
+              fontFamily: FONT,
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+              transition: 'border-color 0.15s ease, color 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              const b = e.currentTarget as HTMLButtonElement;
+              b.style.borderColor = 'var(--border-strong)';
+              b.style.color = 'var(--text-primary)';
+            }}
+            onMouseLeave={(e) => {
+              const b = e.currentTarget as HTMLButtonElement;
+              b.style.borderColor = 'var(--border-default)';
+              b.style.color = 'var(--text-secondary)';
+            }}
+          >
+            <Settings2 size={14} />
+            Configure
+            {/* Badges showing current settings */}
+            <span style={{
+              marginLeft: '4px',
+              padding: '1px 6px',
+              borderRadius: '100px',
+              background: 'var(--border-default)',
+              fontSize: '10px',
+              color: 'var(--text-tertiary)',
+            }}>
+              {agentCount} agents · {stakes} SOL
+            </span>
+          </button>
+
+          {/* Right: Submit */}
+          <button
+            type="button"
+            id="submit-task"
             onClick={handleSubmit}
             disabled={isSubmitting || !taskText.trim()}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '9px 20px',
+              borderRadius: '10px',
+              border: 'none',
+              background: taskText.trim() && !isSubmitting ? 'var(--accent-emerald)' : 'var(--border-strong)',
+              color: taskText.trim() && !isSubmitting ? '#000' : 'var(--text-tertiary)',
+              cursor: taskText.trim() && !isSubmitting ? 'pointer' : 'not-allowed',
+              fontFamily: FONT,
+              fontSize: '13px',
+              fontWeight: 700,
+              letterSpacing: '0.04em',
+              textTransform: 'uppercase',
+              transition: 'background 0.15s ease, color 0.15s ease',
+              flexShrink: 0,
+            }}
           >
             {isSubmitting && !mechanismReveal ? (
               <>
-                <Loader2 className="animate-spin" size={18} /> Analyzing task features...
-              </>
-            ) : mechanismReveal ? (
-              <>
-                <Loader2 className="animate-spin" size={18} /> Routing to {mechanismReveal.mechanism}
-                ...
+                <Loader2 size={14} style={{ animation: 'agora-spinner 1s linear infinite' }} />
+                Analyzing…
               </>
             ) : (
               <>
-                Submit to Agora <ChevronRight size={18} />
+                Submit to Agora
+                <ArrowRight size={14} />
               </>
             )}
           </button>
         </div>
-
-        <div className="mt-6">
-          <ReasoningPresetControls
-            value={reasoningPresets}
-            onChange={setReasoningPresets}
-          />
-        </div>
-
-        {mechanismReveal && (
-          <div className="mt-8 p-4 bg-accent-muted border-l-4 border-accent rounded-r-lg animate-[shimmer_2s_ease-out]">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="badge">ROUTED</span>
-              <span className="font-medium">
-                Agora selected {mechanismReveal.mechanism} with{" "}
-                {(mechanismReveal.confidence * 100).toFixed(0)}% confidence
-              </span>
-            </div>
-            <p className="text-sm m-0 text-text-secondary">{mechanismReveal.reasoning}</p>
-          </div>
-        )}
-
-        <div className="mt-8 grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <EnsemblePlan
-            title="VOTE MODEL PLAN"
-            label={ensembleLabel}
-            items={voteRoster}
-            countBadges={providerCountBadges}
-          />
-
-          <EnsemblePlan
-            title="DEBATE MODEL PLAN"
-            label={ensembleLabel}
-            items={debateRoster}
-            countBadges={providerCountBadges}
-            footer={getDebateSpecialistSummary()}
-          />
-        </div>
       </div>
 
-      <div className="mt-16">
-        <h2 className="text-xl mb-8">Recent Deliberations</h2>
+      {/* ── Config modal ─────────────────────────────────────────── */}
+      <ConfigModal
+        open={configOpen}
+        onClose={() => setConfigOpen(false)}
+        reasoningPresets={reasoningPresets}
+        onPresetsChange={setReasoningPresets}
+        agentCount={agentCount}
+        onAgentCountChange={setAgentCount}
+        stakes={stakes}
+        onStakesChange={setStakes}
+      />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 lg:gap-8">
-          {(recentTasks.length > 0
-            ? recentTasks
-            : EXAMPLE_TASKS.map((task, index) => makeExampleTask(task, index)))?.map((task) => {
-            const isExample = task.task_id.startsWith("example-");
-            return (
-              <div 
-                key={task.task_id} 
-                className="card p-8 flex flex-col cursor-pointer transition-all hover:border-accent hover:bg-[var(--bg-card-hover)]"
+      {/* ── Decision popup (replaces sliding alert) ───────────────── */}
+      {mechanismReveal && (
+        <DecisionPopup
+          mechanism={mechanismReveal.mechanism}
+          confidence={mechanismReveal.confidence}
+          reasoning={mechanismReveal.reasoning}
+          onNavigate={() => navigate(`/task/${mechanismReveal.taskId}`)}
+        />
+      )}
+
+      {/* Suggested prompts animation keyframe (injected once) */}
+      <style>{`
+        @keyframes prompt-fade-in {
+          from { opacity: 0; transform: translateY(6px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+      `}</style>
+
+      {/* ── Suggested prompts (shown when textarea is empty) ────────────── */}
+      {!taskText.trim() && (
+        <div style={{
+          marginTop: '16px',
+          animation: 'prompt-fade-in 0.28s cubic-bezier(0.22,1,0.36,1) both',
+        }}>
+          <div style={{
+            fontSize: '10px',
+            fontFamily: FONT,
+            color: 'var(--text-tertiary)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.1em',
+            fontWeight: 600,
+            marginBottom: '8px',
+          }}>
+            Suggested prompts
+          </div>
+          <div style={{
+            display: 'flex',
+            gap: '8px',
+            overflowX: 'auto',
+            scrollbarWidth: 'none',
+            paddingBottom: '4px',
+            maskImage: 'linear-gradient(to right, black 0%, black 85%, transparent 100%)',
+            WebkitMaskImage: 'linear-gradient(to right, black 0%, black 85%, transparent 100%)',
+          }}>
+            {EXAMPLE_TASKS.map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
                 onClick={() => {
-                  if (isExample) {
-                    setTaskText(task.task_text);
-                  } else {
-                    navigate(`/task/${task.task_id}`);
+                  setTaskText(prompt);
+                  if (textareaRef.current) {
+                    textareaRef.current.style.height = 'auto';
+                    textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+                    textareaRef.current.focus();
                   }
                 }}
+                style={{
+                  flexShrink: 0,
+                  padding: '5px 12px',
+                  borderRadius: '100px',
+                  border: '1px solid var(--border-default)',
+                  background: 'transparent',
+                  color: 'var(--text-tertiary)',
+                  fontFamily: FONT,
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                  transition: 'border-color 0.15s ease, color 0.15s ease',
+                  maxWidth: '280px',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+                onMouseEnter={(e) => {
+                  const b = e.currentTarget as HTMLButtonElement;
+                  b.style.borderColor = 'var(--accent-emerald)';
+                  b.style.color = 'var(--text-secondary)';
+                }}
+                onMouseLeave={(e) => {
+                  const b = e.currentTarget as HTMLButtonElement;
+                  b.style.borderColor = 'var(--border-default)';
+                  b.style.color = 'var(--text-tertiary)';
+                }}
               >
-                <div className="text-accent mb-6">
-                  <Play size={24} strokeWidth={1.5} />
-                </div>
-                
-                <h3 className="text-text-primary text-lg font-medium mb-2 line-clamp-2" style={{ fontFamily: 'var(--font-sans)', textTransform: 'none' }}>
-                  {task.task_text}
-                </h3>
-                
-                <p className="text-sm text-text-secondary mb-4 flex-1 line-clamp-3">
-                  {isExample ? "Try this example task in the deliberation engine" : compactTaskInsight(task)}
-                </p>
-
-                {!isExample ? (
-                  <div className="mb-4 flex flex-wrap gap-2">
-                    <span className={`badge border ${statusTone(task.status)}`}>{task.status}</span>
-                    <span className="badge">{task.selector_source.replace(/_/g, " ")}</span>
-                    <span className={`badge border ${paymentStatusTone(task.payment_status)}`}>
-                      payment {task.payment_status}
-                    </span>
-                    {task.result?.fallback_count ? (
-                      <span className="badge">{task.result.fallback_count} fallback</span>
-                    ) : null}
-                    {task.result?.locked_claims?.length ? (
-                      <span className="badge">{task.result.locked_claims.length} verified</span>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                <div className="flex items-center gap-3 mt-auto pt-4 border-t border-border-subtle">
-                  <span className="badge">{task.mechanism.toUpperCase()}</span>
-                  <span className="mono text-xs text-text-muted">
-                    {task.result ? `${task.result.latency_ms.toFixed(0)} ms` : "waiting..."}
-                  </span>
-                  {!isExample && task.result?.mechanism_switches ? (
-                    <span className="mono text-xs text-text-muted">
-                      {task.result.mechanism_switches} switch{task.result.mechanism_switches === 1 ? "" : "es"}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
+                {prompt}
+              </button>
+            ))}
+            <div style={{ flexShrink: 0, width: '32px' }} />
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* ── Recent deliberations carousel ─────────────────────────── */}
+      <RecentDeliberationsCarousel
+        tasks={recentTasks}
+        exampleTasks={EXAMPLE_TASK_OBJECTS}
+        isLoading={tasksLoading}
+        onExampleSelect={(text) => {
+          setTaskText(text);
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+            textareaRef.current.focus();
+          }
+        }}
+      />
+
     </div>
   );
 }

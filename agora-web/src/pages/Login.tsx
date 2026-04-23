@@ -1,17 +1,34 @@
-import { ArrowRight } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/useAuth';
-import { Button } from '../components/ui/Button';
-import { motion } from 'framer-motion';
-import { HeroDiagram } from '../components/landing/HeroDiagram';
+import { HeroReel } from '../components/landing/HeroReel';
 import { StepCard } from '../components/landing/StepCard';
-import { InteractiveCodeBlock } from '../components/landing/InteractiveCodeBlock';
 import { MartingaleViz } from '../components/landing/MartingaleViz';
 import { AgoraFixViz } from '../components/landing/AgoraFixViz';
 import { PaperSection, type PaperCardProps } from '../components/landing/PaperCard';
+import { MechanismSelector } from '../components/landing/MechanismSelector';
+import { LiveDeliberationPreview } from '../components/landing/LiveDeliberationPreview';
+import { OnChainReceiptPreview } from '../components/landing/OnChainReceiptPreview';
+import { BenchmarksPreview } from '../components/landing/BenchmarksPreview';
+import { FooterGraph } from '../components/landing/FooterGraph';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
+import { motion } from 'framer-motion';
+import { useState, useEffect } from 'react';
 
-// Scroll-reveal wrapper — applies to all below-fold sections
+/* ── Reduced-motion hook ─────────────────────────────────────────── */
+function useReducedMotion() {
+  const [v, setV] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const h = (e: MediaQueryListEvent) => setV(e.matches);
+    mq.addEventListener('change', h);
+    return () => mq.removeEventListener('change', h);
+  }, []);
+  return v;
+}
+
+/* ── Scroll reveal wrapper ──────────────────────────────────────── */
 function Reveal({ children, delay = 0, className = '' }: {
   children: React.ReactNode;
   delay?: number;
@@ -22,7 +39,7 @@ function Reveal({ children, delay = 0, className = '' }: {
       initial={{ opacity: 0, y: 20 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: '-50px' }}
-      transition={{ duration: 0.6, delay, ease: [0.16, 1, 0.3, 1] }}
+      transition={{ duration: 0.4, delay, ease: [0.16, 1, 0.3, 1] }}
       className={className}
     >
       {children}
@@ -30,7 +47,7 @@ function Reveal({ children, delay = 0, className = '' }: {
   );
 }
 
-// Research papers data
+/* ── Research papers ─────────────────────────────────────────────── */
 const PAPERS: PaperCardProps[] = [
   {
     authors: 'Li et al.',
@@ -70,250 +87,161 @@ const PAPERS: PaperCardProps[] = [
   },
 ];
 
+/* ══════════════════════════════════════════════════════════════════
+   MAIN LANDING PAGE — section order per §8
+══════════════════════════════════════════════════════════════════ */
 export function LoginPage() {
-  const { signIn, signUp, isLoading, authStatus } = useAuth();
+  const { signIn, isLoading, authStatus } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const reducedMotion = useReducedMotion();
   const isAuthenticated = authStatus === 'authenticated';
   const fromPage = searchParams.get('from');
 
   return (
-    <div className="flex flex-col relative">
+    <div style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
 
-      {/* Redirect notice — spans edge-to-edge, shown when bounced from a protected route */}
+      {/* Redirect notice — shown when bounced from a protected route */}
       {fromPage && (
-        <div className="w-full z-50 bg-accent/10 border-b border-accent/20 text-center py-2.5 text-sm text-accent sticky top-0">
+        <div className="w-full z-50 bg-accent/10 border-b border-accent/20 text-center py-2.5 text-sm text-accent sticky top-0" style={{ zIndex: 200 }}>
           Sign in again to access {fromPage}.
         </div>
       )}
 
-      {/* ── HERO SECTION ──────────────────────────────────────── */}
-      <section className="relative min-h-screen flex flex-col px-6 md:px-10 overflow-hidden">
-
-        {/* Ambient glow — top-center */}
-        <div className="absolute top-[-10%] left-[10%] right-[10%] md:left-[20%] md:right-[20%] h-[30vh] bg-accent-muted blur-[100px] opacity-40 pointer-events-none" />
-        {/* Glow accent — behind right diagram column */}
-        <div className="hero-glow-right" />
-
-        {/* NAV */}
-        <header className="flex justify-between items-center max-w-[1200px] mx-auto w-full z-20 py-6">
-          <div className="wordmark text-2xl tracking-widest">AGORA</div>
-          <div className="flex items-center gap-4">
-            <ThemeToggle />
-            {isAuthenticated ? (
-              <button onClick={() => navigate('/tasks')} className="btn-primary text-sm px-4 py-2">
-                Go to Dashboard
-              </button>
-            ) : (
-              <button onClick={() => signIn()} disabled={isLoading} className="btn-secondary text-sm px-4 py-2">
-                {isLoading ? 'Connecting...' : 'Sign In'}
-              </button>
-            )}
-          </div>
-        </header>
-
-        <div className="flex-1 flex items-center max-w-[1200px] mx-auto w-full relative z-10 py-16">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-12 lg:gap-20 items-center w-full">
-
-            {/* Left: text + CTAs */}
-            <div className="flex flex-col items-start">
-              <motion.div
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5 }}
-                className="badge mb-6"
-              >
-                Proof of Deliberation
-              </motion.div>
-
-              <motion.h1
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, ease: 'easeOut' }}
-                className="mb-6 tracking-tight font-bold text-left"
-                style={{ lineHeight: 1.05 }}
-              >
-                AI agents<br />debate,<br />vote &amp;<br />prove it.
-              </motion.h1>
-
-              <motion.p
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 0.2, ease: 'easeOut' }}
-                className="mb-10 text-text-secondary text-left"
-                style={{ fontSize: 'var(--text-base)', lineHeight: 1.7, maxWidth: '420px' }}
-              >
-                An on-chain orchestration primitive where AI agents debate, vote, and reach consensus — with every step cryptographically verified on Solana.
-              </motion.p>
-
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0.5, delay: 0.4, ease: 'easeOut' }}
-                className="flex flex-col sm:flex-row gap-4"
-              >
-                <Button
-                  variant="primary"
-                  size="md"
-                  onClick={() => isAuthenticated ? navigate('/tasks') : signIn()}
-                  disabled={!isAuthenticated && isLoading}
-                  rightIcon={<ArrowRight size={18} />}
-                  className="shadow-[0_0_20px_rgba(0,212,170,0.3)] hover:shadow-[0_0_30px_rgba(0,212,170,0.5)] transition-shadow duration-300"
-                >
-                  {isAuthenticated ? 'Enter Dashboard' : isLoading ? 'Connecting...' : 'Sign In'}
-                </Button>
-                {!isAuthenticated && (
-                  <Button
-                    variant="secondary"
-                    size="md"
-                    onClick={() => signUp()}
-                    disabled={isLoading}
-                    rightIcon={<ArrowRight size={18} />}
-                  >
-                    {isLoading ? 'Loading...' : 'Create Account'}
-                  </Button>
-                )}
-              </motion.div>
-
-              {/* Mobile-only diagram (shown below CTAs on small screens) */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 0.6, ease: 'easeOut' }}
-                className="mt-12 w-full md:hidden"
-              >
-                <HeroDiagram />
-              </motion.div>
-            </div>
-
-            {/* Right: animated system diagram (desktop only) */}
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ duration: 1, delay: 0.3, ease: 'easeOut' }}
-              className="hidden md:flex items-center justify-center relative"
+      {/* ── §8.1 NAV ─────────────────────────────────────────────── */}
+      <header style={{
+        position: 'sticky',
+        top: fromPage ? '42px' : 0,
+        zIndex: 100,
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        padding: '14px 72px',
+        background: 'var(--bg-base)',
+        borderBottom: '1px solid var(--border-default)',
+        backdropFilter: 'blur(12px)',
+      }}>
+        <div className="wordmark" style={{ fontSize: '18px', letterSpacing: '0.1em', color: 'var(--text-primary)' }}>
+          AGORA
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <ThemeToggle />
+          {isAuthenticated ? (
+            <button
+              onClick={() => navigate('/tasks')}
+              className="btn-primary"
+              style={{ fontSize: '13px', padding: '8px 18px' }}
             >
-              <HeroDiagram />
-            </motion.div>
-          </div>
+              Go to Dashboard
+            </button>
+          ) : (
+            <button
+              onClick={() => signIn()}
+              disabled={isLoading}
+              className="btn-secondary"
+              style={{ fontSize: '13px', padding: '8px 18px' }}
+            >
+              {isLoading ? 'Connecting…' : 'Sign In'}
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* ── §8.2 HERO WITH SCROLL-TIED DELIBERATION REEL ─────────── */}
+      <HeroReel />
+
+      {/* ── §8.3 HOW IT WORKS ─────────────────────────────────────── */}
+      <section className="section-padding" style={{ background: 'var(--bg-base)' }}>
+        <div className="content-rail">
+          <Reveal>
+            <div className="eyebrow" style={{ color: 'var(--accent-emerald)', marginBottom: '16px', textAlign: 'center' }}>
+              How It Works
+            </div>
+            <h2 style={{ textAlign: 'center', textTransform: 'uppercase', marginBottom: '16px' }}>
+              Three steps.<br />Infinite verifiability.
+            </h2>
+          </Reveal>
+          <Reveal delay={0.1}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '24px', marginTop: '48px' }}>
+              <StepCard step={1} delay={0.1} vizType="selector" accentColor="var(--text-tertiary)"
+                title="The AI Decides How to Decide"
+                description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal mechanism: debate, vote, Delphi, or MoA." />
+              <StepCard step={2} delay={0.25} vizType="debate" accentColor="var(--accent-emerald)"
+                title="Agents Deliberate with Structure"
+                description="Factional adversarial debate with Devil's Advocate cross-examination. Or confidence-calibrated voting with surprising-popularity weighting." />
+              <StepCard step={3} delay={0.4} vizType="merkle" accentColor="var(--border-strong)"
+                title="Every Step Verified On-Chain"
+                description="Arguments, votes, and mechanism switches are Merkle-hashed and committed to Solana. Anyone can recompute the proof." />
+            </div>
+          </Reveal>
         </div>
       </section>
 
-      {/* ── BELOW-THE-FOLD ───────────────────────────────────── */}
-      <main className="flex flex-col items-center max-w-[1300px] mx-auto w-full px-6 md:px-10 z-10">
-
-        {/* ── HOW IT WORKS ────── */}
-        <Reveal className="w-full py-24">
-          <div className="mono text-accent text-sm mb-3 tracking-widest font-bold text-center">HOW IT WORKS</div>
-          <h2 className="text-center mb-16" style={{ fontSize: 'var(--text-3xl)' }}>
-            Three steps.<br />Infinite verifiability.
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 w-full">
-            <StepCard
-              step={1}
-              delay={0.1}
-              vizType="selector"
-              accentColor="var(--text-muted)"
-              title="The AI Decides How to Decide"
-              description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal supported mechanism for now: debate or vote."
-            />
-            <StepCard
-              step={2}
-              delay={0.25}
-              vizType="debate"
-              accentColor="var(--accent)"
-              title={<span className="text-accent">Agents Deliberate with Structure</span>}
-              description="Factional adversarial debate with Devil's Advocate cross-examination. Or confidence-calibrated voting with surprising-popularity weighting."
-            />
-            <StepCard
-              step={3}
-              delay={0.4}
-              vizType="merkle"
-              accentColor="var(--border-accent)"
-              title="Every Step Verified On-Chain"
-              description="Arguments, votes, and mechanism switches are Merkle-hashed and committed to Solana. Anyone can recompute the proof."
-            />
-          </div>
-        </Reveal>
-
-        {/* ── SECTION DIVIDER ── */}
-        <div className="section-divider w-full" />
-
-        {/* ── PROBLEM / FIX ────── */}
-        <Reveal className="w-full py-24">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 text-left">
-
-            {/* Problem */}
-            <div className="flex flex-col gap-6">
-              <div>
-                <div className="mono text-accent text-sm mb-4 tracking-widest font-bold">THE PROBLEM</div>
-                <h4 className="mb-4 font-semibold">Multi-agent debate is a martingale.</h4>
-                <p className="text-text-secondary leading-relaxed" style={{ fontSize: '15px' }}>
-                  The most cited multi-agent debate paper of 2025 — Li et al., NeurIPS Spotlight — proved that unguided AI debate doesn't inherently improve correctness. The gains attributed to debate are often just majority voting in disguise. If agents start with a wrong prior, they'll debate themselves deeper into it.
-                </p>
+      {/* ── §8.4 PROBLEM / FIX ────────────────────────────────────── */}
+      <section className="section-padding" style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-default)', borderBottom: '1px solid var(--border-default)' }}>
+        <div className="content-rail">
+          <Reveal>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '64px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                <div>
+                  <div className="eyebrow" style={{ color: 'var(--accent-emerald)', marginBottom: '12px' }}>The Problem</div>
+                  <h2 style={{ textTransform: 'uppercase', marginBottom: '16px' }}>Multi-agent debate is a martingale.</h2>
+                  <p style={{ fontSize: '15px', lineHeight: '1.6' }}>
+                    The most cited multi-agent debate paper of 2025 — Li et al., NeurIPS Spotlight — proved that unguided AI debate doesn't inherently improve correctness. The gains attributed to debate are often just majority voting in disguise. If agents start with a wrong prior, they'll debate themselves deeper into it.
+                  </p>
+                </div>
+                <MartingaleViz />
               </div>
-              <MartingaleViz />
-            </div>
-
-            {/* Fix */}
-            <div className="flex flex-col gap-6">
-              <div>
-                <div className="mono text-accent text-sm mb-4 tracking-widest font-bold">THE FIX</div>
-                <h4 className="mb-4 font-semibold">An orchestrator that reasons, learns, and proves.</h4>
-                <p className="text-text-secondary leading-relaxed" style={{ fontSize: '15px' }}>
-                  Agora breaks the martingale with three structural innovations: a mechanism selector that learns from outcomes, debate protocols that make sycophantic convergence architecturally impossible, and on-chain verification of every step of the governance process.
-                </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                <div>
+                  <div className="eyebrow" style={{ color: 'var(--accent-emerald)', marginBottom: '12px' }}>The Fix</div>
+                  <h2 style={{ textTransform: 'uppercase', marginBottom: '16px' }}>An orchestrator that reasons, learns, and proves.</h2>
+                  <p style={{ fontSize: '15px', lineHeight: '1.6' }}>
+                    Agora breaks the martingale with three structural innovations: a mechanism selector that learns from outcomes, debate protocols that make sycophantic convergence architecturally impossible, and on-chain verification of every step of the governance process.
+                  </p>
+                </div>
+                <AgoraFixViz />
               </div>
-              <AgoraFixViz />
             </div>
+          </Reveal>
+        </div>
+      </section>
 
-          </div>
-        </Reveal>
+      {/* ── §8.5 MECHANISM SELECTOR INTERACTIVE DEMO ─────────────── */}
+      <MechanismSelector />
 
-        {/* ── SECTION DIVIDER ── */}
-        <div className="section-divider w-full" />
+      {/* ── §8.6 LIVE DELIBERATION PREVIEW ───────────────────────── */}
+      <LiveDeliberationPreview reducedMotion={reducedMotion} />
 
-        {/* ── INTEGRATION CODE BLOCK ────── */}
-        <Reveal className="w-full py-24">
-          <div className="mono text-accent text-sm mb-3 tracking-widest font-bold text-center">INTEGRATION</div>
-          <h2 className="text-center mb-4" style={{ fontSize: 'var(--text-3xl)' }}>
-            Two lines to arbitrate anything.
-          </h2>
-          <p className="text-text-secondary text-center mb-12" style={{ maxWidth: '520px', margin: '0 auto 3rem' }}>
-            Install the SDK, pass your question, get a cryptographically verified answer with a full deliberation receipt.
-          </p>
-          <div className="flex justify-center">
-            <InteractiveCodeBlock />
-          </div>
-        </Reveal>
+      {/* ── §8.7 ON-CHAIN RECEIPT PREVIEW ────────────────────────── */}
+      <OnChainReceiptPreview />
 
-        {/* ── SECTION DIVIDER ── */}
-        <div className="section-divider w-full" />
+      {/* ── §8.8 BENCHMARKS PREVIEW ──────────────────────────────── */}
+      <BenchmarksPreview />
 
-        {/* ── RESEARCH FOUNDATION ────── */}
-        <Reveal className="w-full py-24">
-          <div className="mono text-accent text-sm mb-3 tracking-widest font-bold text-center">RESEARCH FOUNDATION</div>
-          <h2 className="text-center mb-4" style={{ fontSize: 'var(--text-3xl)' }}>
-            Built on peer-reviewed science.
-          </h2>
-          <p className="text-text-secondary text-center mb-12" style={{ maxWidth: '520px', margin: '0 auto 3rem' }}>
-            Every design decision in Agora traces to published research. Click to expand.
-          </p>
-          <div className="max-w-2xl mx-auto w-full">
-            <PaperSection papers={PAPERS} />
-          </div>
-        </Reveal>
+      {/* ── RESEARCH FOUNDATION ──────────────────────────────────── */}
+      <section className="section-padding" style={{ background: 'var(--bg-subtle)', borderTop: '1px solid var(--border-default)' }}>
+        <div className="content-rail">
+          <Reveal>
+            <div className="eyebrow" style={{ color: 'var(--accent-emerald)', textAlign: 'center', marginBottom: '16px' }}>
+              Research Foundation
+            </div>
+            <h2 style={{ textAlign: 'center', textTransform: 'uppercase', marginBottom: '16px' }}>
+              Built on peer-reviewed science.
+            </h2>
+            <p className="lead" style={{ textAlign: 'center', maxWidth: '520px', margin: '0 auto 48px' }}>
+              Every design decision in Agora traces to published research.
+            </p>
+            <div style={{ maxWidth: '720px', margin: '0 auto' }}>
+              <PaperSection papers={PAPERS} />
+            </div>
+          </Reveal>
+        </div>
+      </section>
 
-      </main>
+      {/* ── §8.9 CURSOR-REACTIVE FOOTER GRAPH + §8.10 FOOTER TEXT ─ */}
+      <FooterGraph />
 
-      {/* ── FOOTER ────── */}
-      <footer className="py-16 mt-12 text-center text-text-muted relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent to-bg-elevated/20 pointer-events-none" />
-        <p className="wordmark mb-2 text-text-secondary tracking-widest relative z-10">AGORA PROTOCOL</p>
-        <p className="text-sm relative z-10">
-          Built for Colosseum Frontier × SWARM · Team: Dave, Josh, Joshua Ddf
-        </p>
-      </footer>
     </div>
   );
 }

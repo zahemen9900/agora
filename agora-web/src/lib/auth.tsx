@@ -1,3 +1,2 @@
-import type { User as WorkOSUser } from "@workos-inc/authkit-react";
-
-export type User = WorkOSUser;
+export { AuthProvider, storeReturnTo } from "./AuthProvider";
+export type { User } from "@workos-inc/authkit-react";
