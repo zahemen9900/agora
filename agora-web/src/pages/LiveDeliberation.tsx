@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
@@ -92,6 +92,7 @@ import {
   startTaskRun,
   streamDeliberation,
   type TaskEvent,
+  type TaskStatusResponse,
 } from "../lib/api";
 import { useAuth } from "../lib/useAuth";
 import {
@@ -119,6 +120,41 @@ interface TimelineEvent {
   stage?: string;
   draftKey?: string;
   isDraft?: boolean;
+}
+
+interface FinalAnswerState {
+  text: string;
+  confidence: number;
+  mechanism: string;
+}
+
+const EMPTY_TIMELINE: TimelineEvent[] = [];
+
+function useTaskScopedState<T>(
+  taskId: string | undefined,
+  initialValue: T,
+): [T, (value: SetStateAction<T>) => void] {
+  const scopedTaskId = taskId ?? null;
+  const [state, setState] = useState<{ taskId: string | null; value: T }>(() => ({
+    taskId: scopedTaskId,
+    value: initialValue,
+  }));
+
+  const value = state.taskId === scopedTaskId ? state.value : initialValue;
+  const setScopedState = useCallback((nextValue: SetStateAction<T>) => {
+    setState((current) => {
+      const currentValue = current.taskId === scopedTaskId ? current.value : initialValue;
+      const resolvedValue = typeof nextValue === "function"
+        ? (nextValue as (previous: T) => T)(currentValue)
+        : nextValue;
+      return {
+        taskId: scopedTaskId,
+        value: resolvedValue,
+      };
+    });
+  }, [initialValue, scopedTaskId]);
+
+  return [value, setScopedState];
 }
 
 interface ModelUsageSummary {
@@ -695,28 +731,25 @@ export function LiveDeliberation() {
   const taskQuery = useTaskDetailQuery(taskId);
 
   const [activeTab, setActiveTab] = useState<"logs" | "canvas">("canvas");
-  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
-  const [switchBanner, setSwitchBanner] = useState<string | null>(null);
-  const [retryNotice, setRetryNotice] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [timeline, setTimeline] = useTaskScopedState<TimelineEvent[]>(taskId, EMPTY_TIMELINE);
+  const [switchBanner, setSwitchBanner] = useTaskScopedState<string | null>(taskId, null);
+  const [retryNotice, setRetryNotice] = useTaskScopedState<string | null>(taskId, null);
+  const [errorMessage, setErrorMessage] = useTaskScopedState<string | null>(taskId, null);
   const [convergence, setConvergence] = useState({
     entropy: 1.0,
     prevEntropy: 1.0,
     infoGain: 0.0,
     lockedClaims: [] as Array<Record<string, unknown>>,
   });
-  const [finalAnswer, setFinalAnswer] = useState<{
-    text: string;
-    confidence: number;
-    mechanism: string;
-  } | null>(null);
+  const [finalAnswer, setFinalAnswer] = useTaskScopedState<FinalAnswerState | null>(taskId, null);
 
   const seenEventKeysRef = useRef<Set<string>>(new Set());
   const taskMechanismRef = useRef("debate");
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const autoScrollStartedRef = useRef(false);
   const streamTaskIdRef = useRef<string | null>(null);
-  const [followLiveUpdates, setFollowLiveUpdates] = useState(true);
+  const streamHandleRef = useRef<{ close: () => void } | null>(null);
+  const [followLiveUpdates, setFollowLiveUpdates] = useTaskScopedState<boolean>(taskId, true);
   const task = taskQuery.data ?? null;
 
   useEffect(() => {
@@ -740,24 +773,7 @@ export function LiveDeliberation() {
     return () => {
       window.removeEventListener("scroll", handleScroll);
     };
-  }, []);
-
-  const setConvergenceFromEvents = useCallback((eventList: TaskEvent[]) => {
-    const latest = [...eventList].reverse().find((event) => event.event === "convergence_update");
-    if (!latest) {
-      return;
-    }
-
-    const data = latest.data as Record<string, unknown>;
-    setConvergence({
-      prevEntropy: Number(data.disagreement_entropy ?? 1),
-      entropy: Number(data.disagreement_entropy ?? 1),
-      infoGain: Number(data.information_gain_delta ?? 0),
-      lockedClaims: Array.isArray(data.locked_claims)
-        ? (data.locked_claims as Array<Record<string, unknown>>)
-        : [],
-    });
-  }, []);
+  }, [setFollowLiveUpdates]);
 
   const handleStreamEvent = useCallback((event: TaskEvent) => {
     const eventWithTimestamp: TaskEvent = {
@@ -874,77 +890,120 @@ export function LiveDeliberation() {
       setRetryNotice(null);
       void queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
     }
-  }, [queryClient, taskId]);
+  }, [
+    queryClient,
+    setErrorMessage,
+    setFinalAnswer,
+    setRetryNotice,
+    setSwitchBanner,
+    setTimeline,
+    taskId,
+  ]);
 
   useEffect(() => {
-    if (!taskId || !task) return;
-    if (streamTaskIdRef.current === taskId) return;
+    streamHandleRef.current?.close();
+    streamHandleRef.current = null;
+    streamTaskIdRef.current = null;
+    seenEventKeysRef.current = new Set();
+    taskMechanismRef.current = "debate";
+    autoScrollStartedRef.current = false;
+  }, [taskId]);
 
-    const resolvedTaskId = taskId;
-    const status = task;
-    streamTaskIdRef.current = taskId;
+  useEffect(() => {
+    if (!task) return;
 
-    let streamHandle: { close: () => void } | null = null;
-    let cancelled = false;
+    taskMechanismRef.current = task.mechanism;
 
-    async function bootstrap() {
-      taskMechanismRef.current = status.mechanism;
-      seenEventKeysRef.current = new Set();
-      let hydratedTimeline: TimelineEvent[] = [];
-      for (const persistedEvent of status.events) {
+    setTimeline((current) => {
+      let nextTimeline = current;
+      for (const persistedEvent of task.events) {
         const eventKey = buildEventKey(persistedEvent);
         if (seenEventKeysRef.current.has(eventKey)) {
           continue;
         }
         seenEventKeysRef.current.add(eventKey);
-        hydratedTimeline = upsertTimelineEvent(hydratedTimeline, mapTaskEvent(persistedEvent));
+        nextTimeline = upsertTimelineEvent(nextTimeline, mapTaskEvent(persistedEvent));
       }
-      setTimeline(hydratedTimeline);
+      return nextTimeline;
+    });
 
-      if (status.result) {
-        setFinalAnswer({
-          text: status.result.final_answer,
-          confidence: status.result.confidence,
-          mechanism: status.result.mechanism,
-        });
-      }
-      setConvergenceFromEvents(status.events);
+    if (task.result) {
+      setFinalAnswer({
+        text: task.result.final_answer,
+        confidence: task.result.confidence,
+        mechanism: task.result.mechanism,
+      });
+    }
+  }, [setFinalAnswer, setTimeline, task]);
 
-      streamHandle = await streamDeliberation(resolvedTaskId, getAccessToken, (event) => {
+  useEffect(() => {
+    if (!taskId || !task?.task_id) return;
+    if (streamTaskIdRef.current === taskId) return;
+
+    const resolvedTaskId = taskId;
+    const cachedTask = queryClient.getQueryData<TaskStatusResponse>(
+      taskQueryKeys.detail(resolvedTaskId),
+    );
+    const initialStatus = cachedTask?.status;
+    if (initialStatus !== "pending" && initialStatus !== "in_progress") return;
+
+    streamTaskIdRef.current = taskId;
+
+    let cancelled = false;
+
+    async function attachLiveStream() {
+      const streamHandle = await streamDeliberation(resolvedTaskId, getAccessToken, (event) => {
         handleStreamEvent(event);
       });
 
-      if (status.status === "pending") {
-        void (async () => {
-          const runToken = await getAccessToken();
-          const nextStatus = await startTaskRun(resolvedTaskId, runToken);
-          if (cancelled) {
-            return;
-          }
-          setTaskDetailCache(
-            queryClient,
-            nextStatus.status === "pending"
-              ? { ...nextStatus, status: "in_progress" }
-              : nextStatus,
-          );
-        })().catch((error: unknown) => {
-          patchTaskDetailCache(queryClient, resolvedTaskId, (current) => (
-            current ? { ...current, status: "failed" } : current
-          ));
-          setErrorMessage(error instanceof Error ? error.message : "Run failed");
-        });
+      if (cancelled) {
+        streamHandle.close();
+        return;
       }
+      streamHandleRef.current = streamHandle;
+
+      const latestTask = queryClient.getQueryData<TaskStatusResponse>(
+        taskQueryKeys.detail(resolvedTaskId),
+      );
+      const shouldStartRun = (latestTask?.status ?? initialStatus) === "pending";
+      if (!shouldStartRun) {
+        return;
+      }
+
+      void (async () => {
+        const runToken = await getAccessToken();
+        const nextStatus = await startTaskRun(resolvedTaskId, runToken);
+        if (cancelled) {
+          return;
+        }
+        setTaskDetailCache(
+          queryClient,
+          nextStatus.status === "pending"
+            ? { ...nextStatus, status: "in_progress" }
+            : nextStatus,
+        );
+      })().catch((error: unknown) => {
+        patchTaskDetailCache(queryClient, resolvedTaskId, (current) => (
+          current ? { ...current, status: "failed" } : current
+        ));
+        setErrorMessage(error instanceof Error ? error.message : "Run failed");
+      });
     }
 
-    void bootstrap().catch((error: unknown) => {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to load task");
+    void attachLiveStream().catch((error: unknown) => {
+      streamTaskIdRef.current = null;
+      setErrorMessage(error instanceof Error ? error.message : "Failed to attach live stream");
     });
 
     return () => {
       cancelled = true;
-      streamHandle?.close();
+      streamHandleRef.current?.close();
+      streamHandleRef.current = null;
+      if (streamTaskIdRef.current === resolvedTaskId) {
+        streamTaskIdRef.current = null;
+      }
     };
-  }, [getAccessToken, handleStreamEvent, queryClient, setConvergenceFromEvents, task, taskId]);
+  }, [getAccessToken, handleStreamEvent, queryClient, setErrorMessage, task?.task_id, taskId]);
 
   const modelUsage = useMemo<ModelUsageSummary[]>(() => {
     const result = task?.result;
