@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Settings2, ArrowRight, Loader2 } from "lucide-react";
 
 import { ConfigModal } from "../components/task/ConfigModal";
 import { DecisionPopup } from "../components/task/DecisionPopup";
 import { RecentDeliberationsCarousel } from "../components/task/RecentDeliberationsCarousel";
-import { listTasks, submitTask, type TaskStatusResponse } from "../lib/api";
-import { useAuth } from "../lib/useAuth";
+import { type TaskStatusResponse } from "../lib/api";
 import {
   DEFAULT_REASONING_PRESETS,
   type ReasoningPresetState,
 } from "../lib/deliberationConfig";
+import {
+  taskQueryKeys,
+  useSubmitTaskMutation,
+  useTaskListQuery,
+} from "../lib/taskQueries";
 
 // ── Example tasks (unchanged) ─────────────────────────────────────────────────
 const EXAMPLE_TASKS = [
@@ -65,8 +70,10 @@ const EXAMPLE_TASK_OBJECTS = EXAMPLE_TASKS.map(makeExampleTask);
 // ── Main component ────────────────────────────────────────────────────────────
 export function TaskSubmit() {
   const navigate = useNavigate();
-  const { getAccessToken } = useAuth();
+  const queryClient = useQueryClient();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const recentTasksQuery = useTaskListQuery();
+  const submitTaskMutation = useSubmitTaskMutation();
 
   // ── All original state is preserved exactly ──
   const [taskText, setTaskText] = useState("");
@@ -76,7 +83,7 @@ export function TaskSubmit() {
     DEFAULT_REASONING_PRESETS,
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [recentTasks, setRecentTasks] = useState<TaskStatusResponse[]>([]);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [mechanismReveal, setMechanismReveal] = useState<{
     mechanism: string;
     confidence: number;
@@ -86,64 +93,44 @@ export function TaskSubmit() {
 
   // ── New UI state ──
   const [configOpen, setConfigOpen] = useState(false);
-  const [tasksLoading, setTasksLoading] = useState(true);
-
-
-  const fetchRecentTasks = useCallback(async (): Promise<TaskStatusResponse[]> => {
-    const token = await getAccessToken();
-    return listTasks(token);
-  }, [getAccessToken]);
-
-  const loadRecentTasks = useCallback(async () => {
-    try {
-      const tasks = await fetchRecentTasks();
-      setRecentTasks(tasks);
-    } catch (error) {
-      console.error(error);
-    }
-  }, [fetchRecentTasks]);
+  const recentTasks = recentTasksQuery.data ?? [];
+  const tasksLoading = recentTasksQuery.isPending;
+  const recentTasksError = recentTasksQuery.error instanceof Error
+    ? recentTasksQuery.error.message
+    : null;
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const tasks = await fetchRecentTasks();
-        if (!cancelled) setRecentTasks(tasks);
-      } catch (error) {
-        console.error(error);
-      } finally {
-        if (!cancelled) setTasksLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [fetchRecentTasks]);
+    if (recentTasksQuery.error) {
+      console.error(recentTasksQuery.error);
+    }
+  }, [recentTasksQuery.error]);
 
   // ── Submit handler (original logic, adds taskId to reveal state) ──
   const handleSubmit = async () => {
     if (!taskText.trim()) return;
     setIsSubmitting(true);
+    setSubmitError(null);
     setMechanismReveal(null);
     try {
-      const token = await getAccessToken();
       const parsedStake = Number.parseFloat(stakes);
       const normalizedStake = Number.isFinite(parsedStake) && parsedStake >= 0 ? parsedStake : 0.001;
-      const response = await submitTask(
+      const response = await submitTaskMutation.mutateAsync({
         taskText,
         agentCount,
-        normalizedStake,
+        stakes: normalizedStake,
         reasoningPresets,
-        token,
-      );
+      });
       setMechanismReveal({
         mechanism: response.mechanism.toUpperCase(),
         confidence: response.confidence,
         reasoning: response.reasoning,
         taskId: response.task_id,
       });
-      await loadRecentTasks();
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list() });
       // Navigation now happens from the popup's onNavigate callback
     } catch (error) {
       console.error(error);
+      setSubmitError(error instanceof Error ? error.message : "Task submission failed.");
       setIsSubmitting(false);
     }
   };
@@ -327,6 +314,22 @@ export function TaskSubmit() {
           </button>
         </div>
       </div>
+
+      {(submitError || recentTasksError) && (
+        <div style={{
+          marginTop: '16px',
+          padding: '12px 14px',
+          borderRadius: '12px',
+          border: '1px solid rgba(248,113,113,0.35)',
+          background: 'rgba(248,113,113,0.08)',
+          color: '#fca5a5',
+          fontFamily: FONT,
+          fontSize: '12px',
+          lineHeight: 1.6,
+        }}>
+          {submitError ?? recentTasksError}
+        </div>
+      )}
 
       {/* ── Config modal ─────────────────────────────────────────── */}
       <ConfigModal

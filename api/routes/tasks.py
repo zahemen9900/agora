@@ -1023,14 +1023,29 @@ def _to_status_response(raw_task: dict[str, Any], *, detailed: bool = False) -> 
     if not detailed:
         normalized["events"] = []
         normalized["chain_operations"] = {}
-    return TaskStatusResponse.model_validate(normalized)
+    task = TaskStatusResponse.model_validate(normalized)
+    resolved_quorum = _resolved_task_quorum(task)
+    if resolved_quorum is not None:
+        task.quorum_reached = resolved_quorum
+        if task.result is not None:
+            task.result.quorum_reached = resolved_quorum
+    return task
+
+
+def _computed_result_quorum(task: TaskStatusResponse) -> bool | None:
+    """Recompute quorum from persisted confidence when a result payload exists."""
+
+    if task.result is None:
+        return None
+    return task.result.confidence >= task.quorum_threshold
 
 
 def _resolved_task_quorum(task: TaskStatusResponse) -> bool | None:
-    """Return the best available quorum signal, preferring the persisted result payload."""
+    """Return the best available quorum signal, recomputing from confidence when possible."""
 
-    if task.result is not None:
-        return task.result.quorum_reached
+    computed_quorum = _computed_result_quorum(task)
+    if computed_quorum is not None:
+        return computed_quorum
     return task.quorum_reached
 
 

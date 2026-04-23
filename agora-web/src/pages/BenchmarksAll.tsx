@@ -1,14 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ChevronRight, RefreshCcw, Search } from "lucide-react";
 
-import {
-  ApiRequestError,
-  getBenchmarkCatalog,
-  type BenchmarkCatalogEntry,
-  type BenchmarkCatalogPayload,
-} from "../lib/api";
-import { useAuth } from "../lib/useAuth";
+import { type BenchmarkCatalogEntry } from "../lib/api";
+import { useBenchmarkCatalogQuery } from "../lib/benchmarkQueries";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
 
@@ -16,41 +11,15 @@ type SortMode = "recent" | "frequency";
 
 export function BenchmarksAll() {
   const navigate = useNavigate();
-  const { authStatus, getAccessToken } = useAuth();
-
-  const [catalog, setCatalog] = useState<BenchmarkCatalogPayload | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const catalogQuery = useBenchmarkCatalogQuery(100);
   const [yourSortMode, setYourSortMode] = useState<SortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<SortMode>("recent");
   const [query, setQuery] = useState("");
-
-  const loadCatalog = useCallback(async () => {
-    setLoadError(null);
-    setIsRefreshing(true);
-    try {
-      const token = await getAccessToken();
-      const payload = await getBenchmarkCatalog(token, 100);
-      setCatalog(payload);
-    } catch (error) {
-      if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-        setLoadError(error.message);
-      } else {
-        console.error(error);
-        setLoadError("Benchmark catalog is currently unavailable.");
-      }
-      setCatalog(null);
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [getAccessToken]);
-
-  useEffect(() => {
-    if (authStatus !== "authenticated") {
-      return;
-    }
-    void loadCatalog();
-  }, [authStatus, loadCatalog]);
+  const catalog = catalogQuery.data ?? null;
+  const loadError = !catalog && catalogQuery.error instanceof Error
+    ? catalogQuery.error.message
+    : null;
+  const isRefreshing = catalogQuery.isFetching && Boolean(catalog);
 
   const filterEntries = useCallback((entries: BenchmarkCatalogEntry[]) => {
     const loweredQuery = query.trim().toLowerCase();
@@ -104,7 +73,7 @@ export function BenchmarksAll() {
             </div>
           </label>
 
-          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void loadCatalog()}>
+          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void catalogQuery.refetch()}>
             {isRefreshing ? <RefreshCcw size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
             Refresh
           </button>

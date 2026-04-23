@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Check, Clipboard, Loader2, RefreshCcw } from "lucide-react";
 import {
@@ -12,13 +13,17 @@ import {
 } from "recharts";
 
 import {
-  ApiRequestError,
-  getBenchmarkDetail,
   streamBenchmarkRun,
   type BenchmarkDetailPayload,
   type BenchmarkItemPayload,
   type TaskEvent,
 } from "../lib/api";
+import {
+  benchmarkQueryKeys,
+  patchBenchmarkDetailCache,
+  setBenchmarkDetailCache,
+  useBenchmarkDetailQuery,
+} from "../lib/benchmarkQueries";
 import { useAuth } from "../lib/useAuth";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
@@ -87,11 +92,16 @@ const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
 export function BenchmarkDetail() {
   const navigate = useNavigate();
   const { benchmarkId } = useParams<{ benchmarkId: string }>();
-  const { authStatus, getAccessToken } = useAuth();
-
-  const [detail, setDetail] = useState<BenchmarkDetailPayload | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const { getAccessToken } = useAuth();
+  const queryClient = useQueryClient();
+  const detailQuery = useBenchmarkDetailQuery(benchmarkId);
+  const detail = detailQuery.data ?? null;
+  const loadError = !benchmarkId
+    ? "Benchmark id is required."
+    : !detail && detailQuery.error instanceof Error
+      ? detailQuery.error.message
+      : null;
+  const isRefreshing = detailQuery.isFetching && Boolean(detail);
   const [timeline, setTimeline] = useState<TaskEvent[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
@@ -101,41 +111,7 @@ export function BenchmarkDetail() {
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const followTimelineRef = useRef(true);
   const copyTimeoutRef = useRef<number | null>(null);
-
-  const loadDetail = useCallback(async () => {
-    if (!benchmarkId) {
-      setLoadError("Benchmark id is required.");
-      setDetail(null);
-      return;
-    }
-
-    setLoadError(null);
-    setIsRefreshing(true);
-    try {
-      const token = await getAccessToken();
-      const payload = await getBenchmarkDetail(token, benchmarkId);
-      setDetail(payload);
-      setTimeline(payload.events ?? []);
-      setSelectedItemId(payload.active_item_id ?? payload.benchmark_items?.[0]?.item_id ?? null);
-    } catch (error) {
-      if (error instanceof ApiRequestError) {
-        setLoadError(error.message);
-      } else {
-        console.error(error);
-        setLoadError("Unable to load benchmark report.");
-      }
-      setDetail(null);
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [benchmarkId, getAccessToken]);
-
-  useEffect(() => {
-    if (authStatus !== "authenticated") {
-      return;
-    }
-    void loadDetail();
-  }, [authStatus, loadDetail]);
+  const streamedEventKeysRef = useRef<Set<string>>(new Set());
 
   const detailRunId = detail?.run_id ?? benchmarkId;
   const detailStatus = detail?.status;
@@ -143,6 +119,31 @@ export function BenchmarkDetail() {
     () => detail?.benchmark_items ?? [],
     [detail?.benchmark_items],
   );
+
+  useEffect(() => {
+    if (!detail || !benchmarkId) {
+      return;
+    }
+    setBenchmarkDetailCache(queryClient, detail, benchmarkId);
+  }, [benchmarkId, detail, queryClient]);
+
+  useEffect(() => {
+    if (!detail) {
+      return;
+    }
+
+    setTimeline((current) => {
+      const merged = mergeUniqueTaskEvents(current, detail.events ?? []);
+      streamedEventKeysRef.current = new Set(merged.map(buildTaskEventKey));
+      return merged;
+    });
+    setSelectedItemId((current) => {
+      if (current && detail.benchmark_items.some((item) => item.item_id === current)) {
+        return current;
+      }
+      return detail.active_item_id ?? detail.benchmark_items?.[0]?.item_id ?? null;
+    });
+  }, [detail]);
 
   useEffect(() => {
     if (detailStatus !== "queued" && detailStatus !== "running") {
@@ -167,7 +168,7 @@ export function BenchmarkDetail() {
   }, [benchmarkId, detail?.artifact_id, detail?.run_id, detail?.status, navigate]);
 
   useEffect(() => {
-    if (authStatus !== "authenticated" || !detailRunId) {
+    if (!detailRunId || !benchmarkId) {
       return;
     }
     if (detailStatus !== "queued" && detailStatus !== "running") {
@@ -182,86 +183,15 @@ export function BenchmarkDetail() {
         if (cancelled) {
           return;
         }
-        setTimeline((current) => {
-          const exists = current.some(
-            (entry) => entry.event === event.event && entry.timestamp === event.timestamp,
-          );
-          return exists ? current : [...current, event];
-        });
-        setDetail((current) => {
-          if (!current) {
-            return current;
-          }
-          const nextItems = mergeBenchmarkItemsFromEvent(current.benchmark_items ?? [], event);
-          const nextActiveItemId = benchmarkItemIdForEvent(event) ?? current.active_item_id ?? nextItems[0]?.item_id ?? null;
-          const nextActiveItem = nextItems.find((item) => item.item_id === nextActiveItemId) ?? null;
-          return {
-            ...current,
-            benchmark_items: nextItems,
-            active_item_id: nextActiveItemId,
-            active_item: nextActiveItem,
-          };
-        });
-
-        const data = event.data as Record<string, unknown>;
-        const telemetry = typeof data.telemetry === "object" && data.telemetry !== null
-          ? (data.telemetry as Record<string, unknown>)
-          : null;
-
-        if (telemetry) {
-          setDetail((current) => {
-            if (!current) {
-              return current;
-            }
-            const eventFailed = event.event === "failed" || event.event === "error";
-            const nextStatus = eventFailed
-              ? "failed"
-              : event.event === "complete"
-                ? "completed"
-                : event.event === "started"
-                  ? "running"
-                  : event.event === "queued"
-                    ? "queued"
-                    : current.status;
-            return {
-              ...current,
-              status: nextStatus,
-              latest_mechanism:
-                typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
-              agent_count: isPositiveInteger(telemetry.agent_count) ? telemetry.agent_count : current.agent_count,
-              total_tokens: typeof telemetry.total_tokens === "number" ? telemetry.total_tokens : current.total_tokens,
-              thinking_tokens:
-                typeof telemetry.thinking_tokens === "number" ? telemetry.thinking_tokens : current.thinking_tokens,
-              total_latency_ms:
-                typeof telemetry.total_latency_ms === "number" ? telemetry.total_latency_ms : current.total_latency_ms,
-              model_telemetry: (telemetry.model_telemetry as typeof current.model_telemetry) ?? current.model_telemetry,
-              cost: (telemetry.cost as typeof current.cost) ?? current.cost,
-              completed_item_count:
-                typeof telemetry.completed_item_count === "number" ? telemetry.completed_item_count : current.completed_item_count,
-              failed_item_count:
-                typeof telemetry.failed_item_count === "number" ? telemetry.failed_item_count : current.failed_item_count,
-              degraded_item_count:
-                typeof telemetry.degraded_item_count === "number" ? telemetry.degraded_item_count : current.degraded_item_count,
-            };
-          });
-        } else if (event.event === "queued" || event.event === "started" || event.event === "complete" || event.event === "failed" || event.event === "error") {
-          setDetail((current) => {
-            if (!current) {
-              return current;
-            }
-            return {
-              ...current,
-              status:
-                event.event === "queued"
-                  ? "queued"
-                  : event.event === "started"
-                    ? "running"
-                    : event.event === "complete"
-                      ? "completed"
-                      : "failed",
-            };
-          });
+        const eventKey = buildTaskEventKey(event);
+        if (streamedEventKeysRef.current.has(eventKey)) {
+          return;
         }
+        streamedEventKeysRef.current.add(eventKey);
+        setTimeline((current) => mergeUniqueTaskEvents(current, [event]));
+        patchBenchmarkDetailCache(queryClient, benchmarkId, (current) => (
+          current ? applyBenchmarkStreamEventToDetail(current, event) : current
+        ));
 
         if (
           event.event === "artifact_created"
@@ -269,7 +199,9 @@ export function BenchmarkDetail() {
           || event.event === "failed"
           || event.event === "error"
         ) {
-          void loadDetail();
+          void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(benchmarkId) });
+          void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() });
+          void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() });
         }
       });
     })().catch((error: unknown) => {
@@ -282,7 +214,7 @@ export function BenchmarkDetail() {
       cancelled = true;
       handle?.close();
     };
-  }, [authStatus, detailRunId, detailStatus, getAccessToken, loadDetail]);
+  }, [benchmarkId, detailRunId, detailStatus, getAccessToken, queryClient]);
 
   const summary = useMemo<NormalizedSummary>(() => {
     return normalizeSummary(detail?.summary, detail?.benchmark_payload);
@@ -360,7 +292,7 @@ export function BenchmarkDetail() {
     }
     return Object.entries(detail.cost.model_estimated_costs_usd)
       .sort((a, b) => b[1] - a[1]);
-  }, [detail?.cost?.model_estimated_costs_usd]);
+  }, [detail]);
 
   const costByModelMap = useMemo(() => new Map(costByModel), [costByModel]);
 
@@ -383,15 +315,21 @@ export function BenchmarkDetail() {
     }
     return grouped;
   }, [timeline]);
+  const effectiveSelectedItemId = useMemo(() => {
+    if (!selectedItemId || benchmarkItems.every((item) => item.item_id !== selectedItemId)) {
+      return detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null;
+    }
+    return selectedItemId;
+  }, [benchmarkItems, detail?.active_item_id, selectedItemId]);
   const selectedItem = useMemo(() => {
     if (benchmarkItems.length === 0) {
       return null;
     }
-    if (selectedItemId) {
-      return benchmarkItems.find((item) => item.item_id === selectedItemId) ?? benchmarkItems[0];
+    if (effectiveSelectedItemId) {
+      return benchmarkItems.find((item) => item.item_id === effectiveSelectedItemId) ?? benchmarkItems[0];
     }
     return detail?.active_item ?? benchmarkItems[0];
-  }, [benchmarkItems, detail?.active_item, selectedItemId]);
+  }, [benchmarkItems, detail?.active_item, effectiveSelectedItemId]);
   const selectedItemTimeline = useMemo(() => {
     if (!selectedItem) {
       return [];
@@ -416,29 +354,16 @@ export function BenchmarkDetail() {
     }
     return ["all", ...Array.from(phases)];
   }, [timeline]);
+  const effectivePhaseFilter = availablePhases.includes(phaseFilter) ? phaseFilter : "all";
   const filteredTimeline = useMemo(() => (
-    phaseFilter === "all"
+    effectivePhaseFilter === "all"
       ? timeline
-      : timeline.filter((event) => benchmarkPhaseForEvent(event) === phaseFilter)
-  ), [phaseFilter, timeline]);
+      : timeline.filter((event) => benchmarkPhaseForEvent(event) === effectivePhaseFilter)
+  ), [effectivePhaseFilter, timeline]);
   const aggregatedFilteredTimeline = useMemo(
     () => aggregateBenchmarkTimeline(filteredTimeline),
     [filteredTimeline],
   );
-  useEffect(() => {
-    if (!selectedItemId && benchmarkItems.length > 0) {
-      setSelectedItemId(detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null);
-      return;
-    }
-    if (selectedItemId && benchmarkItems.every((item) => item.item_id !== selectedItemId)) {
-      setSelectedItemId(detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null);
-    }
-  }, [benchmarkItems, detail?.active_item_id, selectedItemId]);
-  useEffect(() => {
-    if (!availablePhases.includes(phaseFilter)) {
-      setPhaseFilter("all");
-    }
-  }, [availablePhases, phaseFilter]);
   const lastTimelineEvent = timeline.length > 0 ? timeline[timeline.length - 1] : null;
   const streamState = useMemo(
     () => deriveBenchmarkStreamState(detail?.status, lastTimelineEvent, now),
@@ -604,7 +529,7 @@ export function BenchmarkDetail() {
           <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => navigate("/benchmarks/all") }>
             <ArrowLeft size={14} /> All artifacts
           </button>
-          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void loadDetail()}>
+          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void detailQuery.refetch()}>
             {isRefreshing ? <RefreshCcw size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
             Refresh
           </button>
@@ -1003,7 +928,7 @@ export function BenchmarkDetail() {
                   type="button"
                   onClick={() => setPhaseFilter(phase)}
                   className={`mono px-3 py-1.5 text-[11px] rounded-full border transition-colors ${
-                    phaseFilter === phase
+                    effectivePhaseFilter === phase
                       ? "bg-accent-muted text-accent border-accent"
                       : "bg-void text-text-secondary border-border-subtle hover:border-accent/40"
                   }`}
@@ -1519,6 +1444,102 @@ function benchmarkItemIdForEvent(event: TaskEvent): string | null {
   return `${phase}:${runKind}:${taskIndex}`;
 }
 
+function buildTaskEventKey(event: TaskEvent): string {
+  return benchmarkEventKey(event);
+}
+
+function mergeUniqueTaskEvents(current: TaskEvent[], incoming: TaskEvent[]): TaskEvent[] {
+  if (incoming.length === 0) {
+    return current;
+  }
+
+  const seen = new Set(current.map(buildTaskEventKey));
+  const next = [...current];
+
+  for (const event of incoming) {
+    const key = buildTaskEventKey(event);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(event);
+  }
+
+  return next;
+}
+
+function statusFromBenchmarkEvent(
+  currentStatus: BenchmarkDetailPayload["status"],
+  eventType: TaskEvent["event"],
+): BenchmarkDetailPayload["status"] {
+  if (eventType === "queued") {
+    return "queued";
+  }
+  if (eventType === "started") {
+    return "running";
+  }
+  if (eventType === "complete") {
+    return "completed";
+  }
+  if (eventType === "failed" || eventType === "error") {
+    return "failed";
+  }
+  return currentStatus;
+}
+
+function applyBenchmarkStreamEventToDetail(
+  current: BenchmarkDetailPayload,
+  event: TaskEvent,
+): BenchmarkDetailPayload {
+  const data = isRecord(event.data) ? event.data : {};
+  const telemetry = isRecord(data.telemetry) ? data.telemetry : null;
+  const nextItems = mergeBenchmarkItemsFromEvent(current.benchmark_items ?? [], event);
+  const nextActiveItemId = benchmarkItemIdForEvent(event) ?? current.active_item_id ?? nextItems[0]?.item_id ?? null;
+  const nextActiveItem = nextItems.find((item) => item.item_id === nextActiveItemId) ?? null;
+
+  return {
+    ...current,
+    status: statusFromBenchmarkEvent(current.status, event.event),
+    artifact_id: typeof data.artifact_id === "string" ? data.artifact_id : current.artifact_id,
+    updated_at: event.timestamp ?? current.updated_at,
+    latest_mechanism:
+      typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
+    agent_count: telemetry && isPositiveInteger(telemetry.agent_count) ? telemetry.agent_count : current.agent_count,
+    total_tokens: telemetry && typeof telemetry.total_tokens === "number" ? telemetry.total_tokens : current.total_tokens,
+    thinking_tokens:
+      telemetry && typeof telemetry.thinking_tokens === "number"
+        ? telemetry.thinking_tokens
+        : current.thinking_tokens,
+    total_latency_ms:
+      telemetry && typeof telemetry.total_latency_ms === "number"
+        ? telemetry.total_latency_ms
+        : current.total_latency_ms,
+    model_telemetry:
+      telemetry && isRecord(telemetry.model_telemetry)
+        ? (telemetry.model_telemetry as typeof current.model_telemetry)
+        : current.model_telemetry,
+    cost:
+      telemetry && isRecord(telemetry.cost)
+        ? (telemetry.cost as unknown as typeof current.cost)
+        : current.cost,
+    benchmark_items: nextItems,
+    active_item_id: nextActiveItemId,
+    active_item: nextActiveItem,
+    completed_item_count:
+      telemetry && typeof telemetry.completed_item_count === "number"
+        ? telemetry.completed_item_count
+        : current.completed_item_count,
+    failed_item_count:
+      telemetry && typeof telemetry.failed_item_count === "number"
+        ? telemetry.failed_item_count
+        : current.failed_item_count,
+    degraded_item_count:
+      telemetry && typeof telemetry.degraded_item_count === "number"
+        ? telemetry.degraded_item_count
+        : current.degraded_item_count,
+  };
+}
+
 function benchmarkItemStatusTone(status: BenchmarkItemPayload["status"]): string {
   if (status === "completed") {
     return "border-emerald-400/40 text-emerald-500 bg-emerald-400/10";
@@ -1655,7 +1676,7 @@ function mergeBenchmarkItemsFromEvent(
   const existing = currentItems.find((item) => item.item_id === itemId);
   const nextEvents = existing?.events ?? [];
   const alreadyPresent = nextEvents.some(
-    (entry) => entry.event === event.event && entry.timestamp === event.timestamp,
+    (entry) => buildTaskEventKey(entry) === buildTaskEventKey(event),
   );
   const mergedEvents = alreadyPresent ? nextEvents : [...nextEvents, event];
   const existingSummary = isRecord(existing?.summary) ? existing.summary : {};

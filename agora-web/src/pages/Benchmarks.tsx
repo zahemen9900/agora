@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   Bar,
@@ -23,13 +24,7 @@ import {
 
 import { EnsemblePlan } from "../components/EnsemblePlan";
 import {
-  ApiRequestError,
-  getBenchmarkCatalog,
-  getBenchmarkRunStatus,
-  getBenchmarks,
-  triggerBenchmarkRun,
   type BenchmarkCatalogEntry,
-  type BenchmarkCatalogPayload,
   type BenchmarkDomainName,
   type BenchmarkPayload,
   type BenchmarkPromptTemplatesPayload,
@@ -37,7 +32,14 @@ import {
   type BenchmarkRunStatusPayload,
   type BenchmarkSummary,
 } from "../lib/api";
-import { useAuth } from "../lib/useAuth";
+import {
+  benchmarkQueryKeys,
+  seedTriggeredBenchmarkRunCache,
+  useBenchmarkCatalogQuery,
+  useBenchmarkOverviewQuery,
+  useBenchmarkPromptTemplatesQuery,
+  useTriggerBenchmarkMutation,
+} from "../lib/benchmarkQueries";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { ReasoningPresetControls } from "../components/ReasoningPresetControls";
 import {
@@ -212,21 +214,32 @@ const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
   },
 };
 
+function hasUsablePromptTemplates(
+  payload: BenchmarkPromptTemplatesPayload | undefined,
+): payload is BenchmarkPromptTemplatesPayload {
+  if (!payload || typeof payload.domains !== "object" || payload.domains === null) {
+    return false;
+  }
+
+  return BENCHMARK_DOMAINS.every((domain) => Array.isArray(payload.domains[domain]));
+}
+
 export function Benchmarks() {
   const navigate = useNavigate();
-  const { authStatus, getAccessToken } = useAuth();
+  const queryClient = useQueryClient();
+  const benchmarkOverviewQuery = useBenchmarkOverviewQuery(true);
+  const benchmarkCatalogQuery = useBenchmarkCatalogQuery(100);
+  const benchmarkPromptTemplatesQuery = useBenchmarkPromptTemplatesQuery();
+  const triggerBenchmarkMutation = useTriggerBenchmarkMutation();
+  const benchmarks = benchmarkOverviewQuery.data ?? null;
+  const catalog = benchmarkCatalogQuery.data ?? null;
+  const templates = hasUsablePromptTemplates(benchmarkPromptTemplatesQuery.data)
+    ? benchmarkPromptTemplatesQuery.data
+    : FALLBACK_PROMPT_TEMPLATES;
 
-  const [benchmarks, setBenchmarks] = useState<BenchmarkPayload | null>(null);
-  const [catalog, setCatalog] = useState<BenchmarkCatalogPayload | null>(null);
-  const templates = FALLBACK_PROMPT_TEMPLATES;
-
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
 
   const [chartsReady, setChartsReady] = useState(false);
-  const [activeBenchmarkRun, setActiveBenchmarkRun] = useState<BenchmarkRunStatusPayload | null>(null);
-  const [isTriggeringBenchmark, setIsTriggeringBenchmark] = useState(false);
 
   const [yourSortMode, setYourSortMode] = useState<CatalogSortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<CatalogSortMode>("recent");
@@ -308,104 +321,12 @@ export function Benchmarks() {
     [createDefaultDomainSelection, finalizeDomainSelection],
   );
 
-  const loadBenchmarkData = useCallback(async (): Promise<void> => {
-    setLoadError(null);
-    setCatalogError(null);
-
-    try {
-      const token = await getAccessToken();
-      if (!token) {
-        setLoadError("Authentication token is unavailable.");
-        return;
-      }
-
-      const benchmarkPayload = await getBenchmarks(token);
-      setBenchmarks(benchmarkPayload);
-
-      const catalogPayload = await getBenchmarkCatalog(token, 100);
-      setCatalog(catalogPayload);
-      setCatalogError(null);
-    } catch (error) {
-      if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-        setLoadError(error.message);
-      } else {
-        console.error(error);
-        setLoadError("Benchmark data is currently unavailable.");
-      }
-    }
-  }, [getAccessToken]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        await loadBenchmarkData();
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-          setLoadError(error.message);
-          setBenchmarks(null);
-          setCatalog(null);
-          return;
-        }
-        console.error(error);
-        setLoadError("Benchmark data is currently unavailable.");
-        setBenchmarks(null);
-        setCatalog(null);
-      }
-    }
-
-    if (authStatus !== "authenticated") {
-      return;
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authStatus, loadBenchmarkData]);
-
-  useEffect(() => {
-    if (!activeBenchmarkRun) {
-      return;
-    }
-    if (activeBenchmarkRun.status === "completed" || activeBenchmarkRun.status === "failed") {
-      return;
-    }
-
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const token = await getAccessToken();
-          if (!token) {
-            return;
-          }
-          const status = await getBenchmarkRunStatus(token, activeBenchmarkRun.run_id);
-          if (cancelled) {
-            return;
-          }
-          setActiveBenchmarkRun(status);
-          if (status.status === "completed" || status.status === "failed") {
-            await loadBenchmarkData();
-          }
-        } catch (error) {
-          if (!cancelled) {
-            console.error(error);
-          }
-        }
-      })();
-    }, 4000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [activeBenchmarkRun, getAccessToken, loadBenchmarkData]);
+  const overviewError = !benchmarks && benchmarkOverviewQuery.error instanceof Error
+    ? benchmarkOverviewQuery.error.message
+    : null;
+  const catalogError = !catalog && benchmarkCatalogQuery.error instanceof Error
+    ? benchmarkCatalogQuery.error.message
+    : null;
 
   const normalizedSummary = useMemo<BenchmarkSummary>(() => ensureCompleteSummary(deriveSummary(benchmarks)), [benchmarks]);
 
@@ -460,26 +381,15 @@ export function Benchmarks() {
   }, [catalog, yourSortMode]);
 
   const inProgressBenchmarkRuns = useMemo(() => {
-    const merged = new Map<string, BenchmarkRunStatusPayload>();
     const catalogRuns = catalog
       ? (yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency)
       : [];
 
-    for (const run of catalogRuns) {
-      if (run.status === "queued" || run.status === "running") {
-        merged.set(run.run_id, run);
-      }
-    }
-
-    if (activeBenchmarkRun && (activeBenchmarkRun.status === "queued" || activeBenchmarkRun.status === "running")) {
-      const existing = merged.get(activeBenchmarkRun.run_id);
-      merged.set(activeBenchmarkRun.run_id, existing ? { ...existing, ...activeBenchmarkRun } : activeBenchmarkRun);
-    }
-
-    return Array.from(merged.values())
+    return catalogRuns
+      .filter((run) => run.status === "queued" || run.status === "running")
       .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
       .slice(0, 3);
-  }, [activeBenchmarkRun, catalog, yourSortMode]);
+  }, [catalog, yourSortMode]);
 
   const failedBenchmarkRuns = useMemo(() => {
     if (!catalog) {
@@ -488,6 +398,10 @@ export function Benchmarks() {
     const runs = yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency;
     return runs.filter((run) => run.status === "failed").slice(0, 3);
   }, [catalog, yourSortMode]);
+
+  const featuredBenchmarkRun = useMemo<BenchmarkRunStatusPayload | null>(() => {
+    return inProgressBenchmarkRuns[0] ?? failedBenchmarkRuns[0] ?? null;
+  }, [failedBenchmarkRuns, inProgressBenchmarkRuns]);
 
   const globalEntries = useMemo(() => {
     if (!catalog) {
@@ -565,45 +479,16 @@ export function Benchmarks() {
   const handleTriggerBenchmark = useCallback(async () => {
     try {
       setRunError(null);
-      setIsTriggeringBenchmark(true);
-      const token = await getAccessToken();
-      if (!token) {
-        throw new Error("Authentication token is unavailable.");
-      }
-
-      const run = await triggerBenchmarkRun(token, runPayloadPreview);
-      setActiveBenchmarkRun({
-        run_id: run.run_id,
-        status: run.status,
-        created_at: run.created_at,
-        updated_at: run.created_at,
-        error: null,
-        artifact_id: null,
-        request: null,
-        reasoning_presets: null,
-        latest_mechanism: null,
-        agent_count: null,
-        total_tokens: null,
-        thinking_tokens: null,
-        total_latency_ms: null,
-        model_telemetry: {},
-        cost: null,
-        completed_item_count: 0,
-        failed_item_count: 0,
-        degraded_item_count: 0,
-        failure_counts_by_category: {},
-        failure_counts_by_reason: {},
-        failure_counts_by_stage: {},
-      });
+      const run = await triggerBenchmarkMutation.mutateAsync(runPayloadPreview);
+      seedTriggeredBenchmarkRunCache(queryClient, run);
+      void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() });
+      void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() });
       closeWizard();
       navigate(`/benchmarks/${run.run_id}`);
     } catch (error) {
-      console.error(error);
-      setRunError("Unable to start benchmark run right now.");
-    } finally {
-      setIsTriggeringBenchmark(false);
+      setRunError(error instanceof Error ? error.message : "Unable to start benchmark run right now.");
     }
-  }, [getAccessToken, navigate, runPayloadPreview]);
+  }, [navigate, queryClient, runPayloadPreview, triggerBenchmarkMutation]);
 
   const updateDomainSelection = (
     domain: BenchmarkDomainName,
@@ -650,32 +535,6 @@ export function Benchmarks() {
   const wizardTemplates = templates.domains[wizardDomain] ?? [];
   const wizardSelectedTemplate = wizardTemplates.find((template) => template.id === wizardCurrentSelection?.templateId);
 
-  if (loadError) {
-    return (
-      <div className="max-w-225 mx-auto pb-20 w-full">
-        <header className="mb-10">
-          <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
-        </header>
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">{loadError}</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!benchmarks) {
-    return (
-      <div className="max-w-225 mx-auto pb-20 w-full">
-        <header className="mb-10">
-          <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
-        </header>
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">Loading benchmark data...</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <>
       <div className="max-w-250 mx-auto pb-20 w-full">
@@ -686,106 +545,114 @@ export function Benchmarks() {
           </p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8 w-full">
-          <div className="card p-4 sm:p-8 col-span-1 lg:col-span-2">
-            <h3 className="mb-2 text-lg font-semibold">Accuracy by Task Category x Mechanism</h3>
-            <p className="text-sm text-text-secondary mb-8">
-              Selector runs should dominate category-specific fixed strategies after learning.
-            </p>
-            <div className="w-full h-75">
-              {chartsReady ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
-                    <XAxis
-                      dataKey="category"
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <YAxis
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
-                    <Legend iconType="circle" wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: "12px" }} />
-                    <Bar dataKey="debate" name="Debate" fill="var(--color-border-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                    <Bar dataKey="vote" name="Vote" fill="var(--color-text-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                    <Bar dataKey="selector" name="Selector" fill="var(--color-accent)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="w-full h-full" />
-              )}
+        {benchmarks ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8 w-full">
+            <div className="card p-4 sm:p-8 col-span-1 lg:col-span-2">
+              <h3 className="mb-2 text-lg font-semibold">Accuracy by Task Category x Mechanism</h3>
+              <p className="text-sm text-text-secondary mb-8">
+                Selector runs should dominate category-specific fixed strategies after learning.
+              </p>
+              <div className="w-full h-75">
+                {chartsReady ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
+                      <XAxis
+                        dataKey="category"
+                        stroke="var(--color-text-muted)"
+                        tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
+                      />
+                      <YAxis
+                        stroke="var(--color-text-muted)"
+                        tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
+                      />
+                      <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
+                      <Legend iconType="circle" wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: "12px" }} />
+                      <Bar dataKey="debate" name="Debate" fill="var(--color-border-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
+                      <Bar dataKey="vote" name="Vote" fill="var(--color-text-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
+                      <Bar dataKey="selector" name="Selector" fill="var(--color-accent)" radius={[4, 4, 0, 0]} minPointSize={4} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="w-full h-full" />
+                )}
+              </div>
             </div>
-          </div>
 
-          <div className="card p-4 sm:p-8">
-            <h3 className="mb-2 text-lg font-semibold">Selector Learning Curve</h3>
-            <p className="text-sm text-text-secondary mb-8">Accuracy before and after the learning update cycle.</p>
-            <div className="w-full h-62.5">
-              {chartsReady ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={learningCurveData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
-                    <XAxis
-                      dataKey="phase"
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <YAxis
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                      domain={[0, 100]}
-                    />
-                    <Tooltip />
-                    <Line
-                      type="monotone"
-                      dataKey="accuracy"
-                      stroke="var(--color-accent)"
-                      strokeWidth={3}
-                      dot={{ fill: "var(--color-void)", stroke: "var(--color-accent)", strokeWidth: 2, r: 4 }}
-                      activeDot={{ r: 6, fill: "var(--color-accent)" }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="w-full h-full" />
-              )}
+            <div className="card p-4 sm:p-8">
+              <h3 className="mb-2 text-lg font-semibold">Selector Learning Curve</h3>
+              <p className="text-sm text-text-secondary mb-8">Accuracy before and after the learning update cycle.</p>
+              <div className="w-full h-62.5">
+                {chartsReady ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={learningCurveData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
+                      <XAxis
+                        dataKey="phase"
+                        stroke="var(--color-text-muted)"
+                        tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
+                      />
+                      <YAxis
+                        stroke="var(--color-text-muted)"
+                        tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
+                        domain={[0, 100]}
+                      />
+                      <Tooltip />
+                      <Line
+                        type="monotone"
+                        dataKey="accuracy"
+                        stroke="var(--color-accent)"
+                        strokeWidth={3}
+                        dot={{ fill: "var(--color-void)", stroke: "var(--color-accent)", strokeWidth: 2, r: 4 }}
+                        activeDot={{ r: 6, fill: "var(--color-accent)" }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="w-full h-full" />
+                )}
+              </div>
             </div>
-          </div>
 
-          <div className="card p-4 sm:p-8">
-            <h3 className="mb-2 text-lg font-semibold">Cost Efficiency</h3>
-            <p className="text-sm text-text-secondary mb-8">
-              Estimated USD cost per mechanism from token usage and model pricing.
-            </p>
-            <div className="w-full h-62.5">
-              {chartsReady ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
-                    <XAxis
-                      dataKey="mechanism"
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <YAxis
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <Tooltip
-                      formatter={(value) => formatUsd(Number(value))}
-                      cursor={{ fill: "var(--color-elevated)" }}
-                    />
-                    <Bar dataKey="estimatedCostUsd" name="Estimated USD" fill="var(--color-text-primary)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="w-full h-full" />
-              )}
+            <div className="card p-4 sm:p-8">
+              <h3 className="mb-2 text-lg font-semibold">Cost Efficiency</h3>
+              <p className="text-sm text-text-secondary mb-8">
+                Estimated USD cost per mechanism from token usage and model pricing.
+              </p>
+              <div className="w-full h-62.5">
+                {chartsReady ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
+                      <XAxis
+                        dataKey="mechanism"
+                        stroke="var(--color-text-muted)"
+                        tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
+                      />
+                      <YAxis
+                        stroke="var(--color-text-muted)"
+                        tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
+                      />
+                      <Tooltip
+                        formatter={(value) => formatUsd(Number(value))}
+                        cursor={{ fill: "var(--color-elevated)" }}
+                      />
+                      <Bar dataKey="estimatedCostUsd" name="Estimated USD" fill="var(--color-text-primary)" radius={[4, 4, 0, 0]} minPointSize={4} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="w-full h-full" />
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="card p-6 border border-border-subtle mb-8">
+            <p className="text-text-secondary">
+              {overviewError ?? "Loading benchmark data..."}
+            </p>
+          </div>
+        )}
 
         <div className="card p-4 sm:p-8 mb-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
@@ -800,13 +667,13 @@ export function Benchmarks() {
             </button>
           </div>
 
-          {activeBenchmarkRun ? (
+          {featuredBenchmarkRun ? (
             <div className="border border-border-subtle rounded-md px-4 py-3 bg-void">
               <div className="flex flex-wrap gap-3 items-center mb-2">
                 <span className="mono text-xs text-text-muted">RUN ID</span>
-                <span className="mono text-xs text-text-primary break-all">{activeBenchmarkRun.run_id}</span>
-                <span className="badge">{titleCase(activeBenchmarkRun.status)}</span>
-                {activeBenchmarkRun.status === "queued" || activeBenchmarkRun.status === "running" ? (
+                <span className="mono text-xs text-text-primary break-all">{featuredBenchmarkRun.run_id}</span>
+                <span className="badge">{titleCase(featuredBenchmarkRun.status)}</span>
+                {featuredBenchmarkRun.status === "queued" || featuredBenchmarkRun.status === "running" ? (
                   <span className="inline-flex items-center gap-2 mono text-[11px] text-accent">
                     <Loader2 size={12} className="animate-spin" />
                     live benchmark running
@@ -814,21 +681,21 @@ export function Benchmarks() {
                 ) : null}
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-text-secondary mb-2">
-                <div>Tokens {formatInt(activeBenchmarkRun.total_tokens ?? 0)}</div>
-                <div>Thinking {formatInt(activeBenchmarkRun.thinking_tokens ?? 0)}</div>
-                <div>Latency {formatLatency(activeBenchmarkRun.total_latency_ms ?? null)}</div>
-                <div>Cost {formatUsd(activeBenchmarkRun.cost?.estimated_cost_usd ?? null)}</div>
+                <div>Tokens {formatInt(featuredBenchmarkRun.total_tokens ?? 0)}</div>
+                <div>Thinking {formatInt(featuredBenchmarkRun.thinking_tokens ?? 0)}</div>
+                <div>Latency {formatLatency(featuredBenchmarkRun.total_latency_ms ?? null)}</div>
+                <div>Cost {formatUsd(featuredBenchmarkRun.cost?.estimated_cost_usd ?? null)}</div>
               </div>
               <div className="mono text-xs text-text-muted">
-                Updated {formatDateTime(activeBenchmarkRun.updated_at)}
-                {activeBenchmarkRun.artifact_id ? ` • artifact ${activeBenchmarkRun.artifact_id}` : ""}
+                Updated {formatDateTime(featuredBenchmarkRun.updated_at)}
+                {featuredBenchmarkRun.artifact_id ? ` • artifact ${featuredBenchmarkRun.artifact_id}` : ""}
               </div>
-              {activeBenchmarkRun.status === "completed" ? (
+              {featuredBenchmarkRun.status === "completed" ? (
                 <div className="mt-3">
                   <button
                     type="button"
                     className="btn-secondary"
-                    onClick={() => navigate(`/benchmarks/${activeBenchmarkRun.artifact_id ?? activeBenchmarkRun.run_id}`)}
+                    onClick={() => navigate(`/benchmarks/${featuredBenchmarkRun.artifact_id ?? featuredBenchmarkRun.run_id}`)}
                   >
                     Open Report
                   </button>
@@ -838,16 +705,18 @@ export function Benchmarks() {
                   <button
                     type="button"
                     className="btn-secondary"
-                    onClick={() => navigate(`/benchmarks/${activeBenchmarkRun.run_id}`)}
+                    onClick={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
                   >
-                    {activeBenchmarkRun.status === "failed" ? "Open Failed Report" : "Open Live View"}
+                    {featuredBenchmarkRun.status === "failed" ? "Open Failed Report" : "Open Live View"}
                   </button>
                 </div>
               )}
-              {activeBenchmarkRun.error ? <div className="mono text-xs text-red-300 mt-2">{activeBenchmarkRun.error}</div> : null}
+              {featuredBenchmarkRun.error ? <div className="mono text-xs text-red-300 mt-2">{featuredBenchmarkRun.error}</div> : null}
             </div>
           ) : (
-            <p className="text-sm text-text-secondary">No active benchmark run yet.</p>
+            <p className="text-sm text-text-secondary">
+              {catalog ? "No active benchmark run yet." : "Loading benchmark runs..."}
+            </p>
           )}
 
           {runError ? <p className="text-sm text-red-300 mt-2">{runError}</p> : null}
@@ -863,6 +732,8 @@ export function Benchmarks() {
           </div>
           {catalogError ? (
             <p className="text-sm text-text-secondary">{catalogError}</p>
+          ) : !catalog ? (
+            <p className="text-sm text-text-secondary">Loading benchmark catalog...</p>
           ) : (
             <div className="space-y-5">
               {inProgressBenchmarkRuns.length > 0 ? (
@@ -933,6 +804,8 @@ export function Benchmarks() {
           </div>
           {catalogError ? (
             <p className="text-sm text-text-secondary">{catalogError}</p>
+          ) : !catalog ? (
+            <p className="text-sm text-text-secondary">Loading benchmark catalog...</p>
           ) : globalEntries.length === 0 ? (
             <p className="text-sm text-text-secondary">No global benchmark artifacts yet.</p>
           ) : (
@@ -1235,7 +1108,7 @@ export function Benchmarks() {
                     return 0;
                   })
                 }
-                disabled={wizardStep === 0 || isTriggeringBenchmark}
+                disabled={wizardStep === 0 || triggerBenchmarkMutation.isPending}
               >
                 <ChevronLeft size={14} /> Back
               </button>
@@ -1263,10 +1136,10 @@ export function Benchmarks() {
                   onClick={() => {
                     void handleTriggerBenchmark();
                   }}
-                  disabled={isTriggeringBenchmark}
+                  disabled={triggerBenchmarkMutation.isPending}
                 >
-                  {isTriggeringBenchmark ? <RefreshCcw size={14} className="animate-spin" /> : <ArrowRight size={14} />}
-                  {isTriggeringBenchmark ? "Starting..." : "Submit Benchmark"}
+                  {triggerBenchmarkMutation.isPending ? <RefreshCcw size={14} className="animate-spin" /> : <ArrowRight size={14} />}
+                  {triggerBenchmarkMutation.isPending ? "Starting..." : "Submit Benchmark"}
                 </button>
               )}
             </div>

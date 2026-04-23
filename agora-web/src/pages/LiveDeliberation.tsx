@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import Markdown, { type Components } from "react-markdown";
@@ -87,11 +88,9 @@ import { ConvergenceMeter } from "../components/ConvergenceMeter";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { CanvasView } from "../components/task/canvas/CanvasView";
 import {
-  getTask,
   startTaskRun,
   streamDeliberation,
   type TaskEvent,
-  type TaskStatusResponse,
 } from "../lib/api";
 import { useAuth } from "../lib/useAuth";
 import {
@@ -99,6 +98,12 @@ import {
   providerTone,
   type ProviderName,
 } from "../lib/modelProviders";
+import {
+  patchTaskDetailCache,
+  setTaskDetailCache,
+  taskQueryKeys,
+  useTaskDetailQuery,
+} from "../lib/taskQueries";
 
 interface TimelineEvent {
   key: string;
@@ -685,9 +690,10 @@ export function LiveDeliberation() {
   const { taskId } = useParams();
   const navigate = useNavigate();
   const { getAccessToken } = useAuth();
+  const queryClient = useQueryClient();
+  const taskQuery = useTaskDetailQuery(taskId);
 
   const [activeTab, setActiveTab] = useState<"logs" | "canvas">("canvas");
-  const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [switchBanner, setSwitchBanner] = useState<string | null>(null);
   const [retryNotice, setRetryNotice] = useState<string | null>(null);
@@ -708,21 +714,13 @@ export function LiveDeliberation() {
   const taskMechanismRef = useRef("debate");
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const autoScrollStartedRef = useRef(false);
+  const streamTaskIdRef = useRef<string | null>(null);
   const [followLiveUpdates, setFollowLiveUpdates] = useState(true);
+  const task = taskQuery.data ?? null;
 
   useEffect(() => {
     injectLdKeyframes();
   }, []);
-
-  useEffect(() => {
-    autoScrollStartedRef.current = false;
-    const resetFrame = window.requestAnimationFrame(() => {
-      setFollowLiveUpdates(true);
-    });
-    return () => {
-      window.cancelAnimationFrame(resetFrame);
-    };
-  }, [taskId]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -814,9 +812,32 @@ export function LiveDeliberation() {
     }
 
     if (event.event === "quorum_reached") {
-      const mechanism = safeString(data.mechanism, taskMechanismRef.current);
+      const mechanism = safeString(data.mechanism, taskMechanismRef.current) === "vote"
+        ? "vote"
+        : "debate";
       taskMechanismRef.current = mechanism;
-      setTask((current) => (current ? { ...current, status: "completed" } : current));
+      if (taskId) {
+        patchTaskDetailCache(queryClient, taskId, (current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            status: "completed",
+            mechanism,
+            quorum_reached: true,
+            result: current.result
+              ? {
+                ...current.result,
+                final_answer: safeString(data.final_answer, current.result.final_answer),
+                confidence: safeNumber(data.confidence, current.result.confidence),
+                mechanism,
+                quorum_reached: true,
+              }
+              : current.result,
+          };
+        });
+      }
       setFinalAnswer({
         text: safeString(data.final_answer, ""),
         confidence: safeNumber(data.confidence, 0),
@@ -826,38 +847,47 @@ export function LiveDeliberation() {
     }
 
     if (event.event === "error") {
-      setTask((current) => (current ? { ...current, status: "failed" } : current));
+      if (taskId) {
+        patchTaskDetailCache(queryClient, taskId, (current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            status: "failed",
+            failure_reason: safeString(data.message, current.failure_reason ?? ""),
+            latest_error_event: eventWithTimestamp,
+          };
+        });
+        void queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
+      }
       setErrorMessage(safeString(data.message, "An error occurred"));
       setRetryNotice(null);
       return;
     }
 
     if (event.event === "complete" && taskId) {
-      setTask((current) => (current ? { ...current, status: "completed" } : current));
+      patchTaskDetailCache(queryClient, taskId, (current) => (
+        current ? { ...current, status: "completed" } : current
+      ));
       setRetryNotice(null);
-      const resolvedTaskId = taskId;
-      void (async () => {
-        const token = await getAccessToken();
-        const status = await getTask(resolvedTaskId, token, true);
-        taskMechanismRef.current = status.mechanism;
-        setTask(status);
-      })().catch(() => undefined);
+      void queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
     }
-  }, [getAccessToken, taskId]);
+  }, [queryClient, taskId]);
 
   useEffect(() => {
-    if (!taskId) return;
+    if (!taskId || !task) return;
+    if (streamTaskIdRef.current === taskId) return;
+
     const resolvedTaskId = taskId;
+    const status = task;
+    streamTaskIdRef.current = taskId;
 
     let streamHandle: { close: () => void } | null = null;
     let cancelled = false;
 
     async function bootstrap() {
-      const token = await getAccessToken();
-      const status = await getTask(resolvedTaskId, token, true);
-      if (cancelled) return;
       taskMechanismRef.current = status.mechanism;
-      setTask(status);
       seenEventKeysRef.current = new Set();
       let hydratedTimeline: TimelineEvent[] = [];
       for (const persistedEvent of status.events) {
@@ -890,13 +920,16 @@ export function LiveDeliberation() {
           if (cancelled) {
             return;
           }
-          setTask(
+          setTaskDetailCache(
+            queryClient,
             nextStatus.status === "pending"
               ? { ...nextStatus, status: "in_progress" }
               : nextStatus,
           );
         })().catch((error: unknown) => {
-          setTask((current) => (current ? { ...current, status: "failed" } : current));
+          patchTaskDetailCache(queryClient, resolvedTaskId, (current) => (
+            current ? { ...current, status: "failed" } : current
+          ));
           setErrorMessage(error instanceof Error ? error.message : "Run failed");
         });
       }
@@ -910,7 +943,7 @@ export function LiveDeliberation() {
       cancelled = true;
       streamHandle?.close();
     };
-  }, [getAccessToken, handleStreamEvent, setConvergenceFromEvents, taskId]);
+  }, [getAccessToken, handleStreamEvent, queryClient, setConvergenceFromEvents, task, taskId]);
 
   const modelUsage = useMemo<ModelUsageSummary[]>(() => {
     const result = task?.result;
@@ -952,6 +985,9 @@ export function LiveDeliberation() {
   }, [task]);
 
   const taskResult = task?.result ?? null;
+  const resolvedErrorMessage = errorMessage ?? (
+    taskQuery.error instanceof Error ? taskQuery.error.message : null
+  );
   const mechanismTrace = taskResult?.mechanism_trace ?? [];
   const convergenceHistory = taskResult?.convergence_history ?? [];
   const lockedClaims = taskResult?.locked_claims ?? [];
@@ -1029,7 +1065,7 @@ export function LiveDeliberation() {
 
       {/* ── Global banners (always visible regardless of tab) ──────────── */}
       <AnimatePresence>
-        {retryNotice && !errorMessage && (
+        {retryNotice && !resolvedErrorMessage && (
           <motion.div
             initial={{ opacity: 0, y: -16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1054,11 +1090,11 @@ export function LiveDeliberation() {
         )}
       </AnimatePresence>
 
-      {errorMessage && (
+      {resolvedErrorMessage && (
         <div className="p-4 mb-6 border border-danger rounded-lg bg-[rgba(255,93,93,0.08)] text-danger">
           <div className="flex items-center gap-2">
             <AlertTriangle size={16} />
-            <span>{errorMessage}</span>
+            <span>{resolvedErrorMessage}</span>
           </div>
         </div>
       )}
