@@ -18,6 +18,7 @@ import {
   ApiRequestError,
   type TaskStatusResponse,
 } from "../lib/api";
+import { deriveReceiptPaymentState } from "../lib/paymentRelease";
 import { useAuth } from "../lib/useAuth";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
@@ -255,10 +256,15 @@ export function OnChainReceipt() {
   };
 
   const result = task?.result;
-  const paymentReleased = task?.payment_status === "released";
-  const paymentLocked = task?.payment_status === "locked";
-  const quorumReached = result?.quorum_reached ?? task?.quorum_reached ?? false;
-  const canReleasePayment = paymentLocked && task?.status === "completed";
+  const paymentState = deriveReceiptPaymentState(task);
+  const {
+    paymentReleased,
+    paymentLockedDisplay,
+    showReleaseButton,
+    releaseEnabled,
+    showNoStakeMessage,
+    showLockedWarning,
+  } = paymentState;
   const loading = task === null;
 
   return (
@@ -422,7 +428,7 @@ export function OnChainReceipt() {
                 result ? (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                     <CheckCircle2 size={15} />
-                    {result.quorum_reached ? "Reached" : "Pending"}
+                    {result.quorum_reached ? "Reached" : "Not Reached"}
                   </span>
                 ) : "…"
               }
@@ -570,7 +576,7 @@ export function OnChainReceipt() {
               label: 'Locked Payment',
               value: (
                 <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-primary)' }}>
-                  {task?.payment_status === "locked" ? `${formatSolAmount(task.payment_amount)} SOL` : "n/a"}
+                  {task && paymentLockedDisplay ? `${formatSolAmount(task.payment_amount)} SOL` : "n/a"}
                 </span>
               ),
               extra: null,
@@ -693,11 +699,11 @@ export function OnChainReceipt() {
             "Verify Locally"
           )}
         </button>
-        {task && canReleasePayment && (
+        {task && showReleaseButton && (
           <button
             type="button"
             onClick={handleReleasePayment}
-            disabled={isPaying}
+            disabled={isPaying || !releaseEnabled}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -706,32 +712,74 @@ export function OnChainReceipt() {
               width: '260px',
               padding: '11px 24px',
               borderRadius: '10px',
-              border: '1px solid var(--border-strong)',
+              border: `1px solid ${releaseEnabled ? 'var(--border-strong)' : 'var(--border-default)'}`,
               background: 'transparent',
-              color: 'var(--text-secondary)',
+              color: releaseEnabled ? 'var(--text-secondary)' : 'var(--text-tertiary)',
               fontFamily: FONT,
               fontSize: '12px',
               fontWeight: 700,
               letterSpacing: '0.06em',
               textTransform: 'uppercase',
-              cursor: isPaying ? 'not-allowed' : 'pointer',
+              cursor: isPaying ? 'not-allowed' : releaseEnabled ? 'pointer' : 'not-allowed',
               transition: 'border-color 0.15s ease, color 0.15s ease',
+              opacity: isPaying ? 0.7 : 1,
             }}
             onMouseEnter={(e) => {
-              if (!isPaying) {
+              if (!isPaying && releaseEnabled) {
                 e.currentTarget.style.borderColor = 'var(--accent-emerald)';
                 e.currentTarget.style.color = 'var(--accent-emerald)';
               }
             }}
             onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = 'var(--border-strong)';
-              e.currentTarget.style.color = 'var(--text-secondary)';
+              e.currentTarget.style.borderColor = releaseEnabled ? 'var(--border-strong)' : 'var(--border-default)';
+              e.currentTarget.style.color = releaseEnabled ? 'var(--text-secondary)' : 'var(--text-tertiary)';
             }}
           >
             {isPaying ? "Releasing Payment…" : "Release Payment"}
           </button>
         )}
-        {task && paymentLocked && task.status === "completed" && !quorumReached && (
+        {task && paymentReleased && (
+          <div style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            width: '260px',
+            padding: '11px 24px',
+            borderRadius: '10px',
+            border: '1px solid var(--accent-emerald)',
+            background: 'var(--accent-emerald-soft)',
+            color: 'var(--accent-emerald)',
+            fontFamily: FONT,
+            fontSize: '12px',
+            fontWeight: 700,
+            letterSpacing: '0.06em',
+            textTransform: 'uppercase',
+            justifyContent: 'center',
+          }}>
+            <CheckCircle2 size={15} />
+            Payment Released
+          </div>
+        )}
+        {task && showNoStakeMessage && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '10px 16px',
+            borderRadius: '10px',
+            border: '1px solid var(--border-default)',
+            background: 'var(--bg-elevated)',
+            fontFamily: FONT,
+            fontSize: '11px',
+            color: 'var(--text-tertiary)',
+            maxWidth: '420px',
+            textAlign: 'center',
+            justifyContent: 'center',
+          }}>
+            No payment stake was configured for this task.
+          </div>
+        )}
+        {task && showLockedWarning && (
           <div style={{
             display: 'flex',
             alignItems: 'flex-start',
