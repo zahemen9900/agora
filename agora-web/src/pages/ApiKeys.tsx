@@ -1,13 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Copy, KeyRound, ShieldAlert } from "lucide-react";
 
 import {
-  createApiKey,
-  listApiKeys,
-  revokeApiKey,
   type ApiKeyCreateResponse,
-  type ApiKeyMetadataResponse,
 } from "../lib/api";
+import {
+  addApiKeyToListCache,
+  apiKeyQueryKeys,
+  updateApiKeyListCache,
+  useApiKeyListQuery,
+  useCreateApiKeyMutation,
+  useRevokeApiKeyMutation,
+} from "../lib/apiKeyQueries";
 import { useAuth } from "../lib/useAuth";
 import { ApiKeyCarousel } from "../components/task/ApiKeyCarousel";
 
@@ -169,63 +174,47 @@ function RevealModal({ created, onDismiss }: RevealModalProps) {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export function ApiKeys() {
-  const { getAccessToken, principal, user, workspace } = useAuth();
+  const { principal, user, workspace } = useAuth();
+  const queryClient = useQueryClient();
+  const apiKeyListQuery = useApiKeyListQuery();
+  const createApiKeyMutation = useCreateApiKeyMutation();
+  const revokeApiKeyMutation = useRevokeApiKeyMutation();
   const workosFirstName = normalizedFirstName(user?.firstName);
   const principalFirstName = normalizedFirstName(principal?.display_name);
   const emailFirstName = firstNameFromEmail(user?.email ?? principal?.email);
   const resolvedFirstName = workosFirstName || principalFirstName || emailFirstName || "Authenticated user";
   const workspaceLabel = normalizeWorkspaceLabel(workspace?.display_name, resolvedFirstName);
   const [name, setName] = useState("");
-  const [keys, setKeys] = useState<ApiKeyMetadataResponse[]>([]);
   const [created, setCreated] = useState<ApiKeyCreateResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const loadKeys = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const token = await getAccessToken();
-      if (!token) throw new Error("Missing access token");
-      const payload = await listApiKeys(token);
-      setKeys(payload);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Failed to load API keys");
-    } finally {
-      setLoading(false);
-    }
-  }, [getAccessToken]);
-
-  useEffect(() => {
-    void loadKeys();
-  }, [loadKeys]);
+  const keys = apiKeyListQuery.data ?? [];
+  const loading = apiKeyListQuery.isLoading;
+  const listError = !apiKeyListQuery.data && apiKeyListQuery.error instanceof Error
+    ? apiKeyListQuery.error.message
+    : null;
+  const visibleError = error ?? listError;
+  const submitting = createApiKeyMutation.isPending;
 
   async function handleCreate() {
     if (!name.trim()) return;
-    setSubmitting(true);
     setError(null);
     try {
-      const token = await getAccessToken();
-      if (!token) throw new Error("Missing access token");
-      const payload = await createApiKey(token, name.trim());
+      const payload = await createApiKeyMutation.mutateAsync({ name: name.trim() });
       setCreated(payload);
       setName("");
-      await loadKeys();
+      addApiKeyToListCache(queryClient, payload.metadata);
+      await queryClient.invalidateQueries({ queryKey: apiKeyQueryKeys.list() });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Failed to create API key");
-    } finally {
-      setSubmitting(false);
     }
   }
 
   async function handleRevoke(keyId: string) {
     setError(null);
     try {
-      const token = await getAccessToken();
-      if (!token) throw new Error("Missing access token");
-      await revokeApiKey(token, keyId);
-      await loadKeys();
+      const payload = await revokeApiKeyMutation.mutateAsync({ keyId });
+      updateApiKeyListCache(queryClient, payload);
+      await queryClient.invalidateQueries({ queryKey: apiKeyQueryKeys.list() });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Failed to revoke API key");
     }
@@ -375,9 +364,9 @@ export function ApiKeys() {
         </div>
       </div>
 
-      {error ? (
+      {visibleError ? (
         <div className="card p-4 mb-6 border border-red-500/30 text-red-200" style={{ position: 'relative', zIndex: 1 }}>
-          {error}
+          {visibleError}
         </div>
       ) : null}
 
