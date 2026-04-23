@@ -446,7 +446,6 @@ export function OnChainReceipt() {
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                     <CheckCircle2 size={15} />
                     {quorumReached ? "Reached" : "Not Reached"}
-                    {quorumReached ? "Reached" : "Not Reached"}
                   </span>
                 ) : "…"
               }
