@@ -14,24 +14,36 @@ const completedQuorateTaskWithStalePaymentStatus = {
   status: "completed",
   payment_status: "none",
   payment_amount: 0.2,
+  quorum_threshold: 0.6,
   quorum_reached: true,
-  result: { quorum_reached: true },
+  result: { confidence: 1, quorum_reached: true },
 } as const;
 
 const completedNonQuorateTask = {
   status: "completed",
   payment_status: "locked",
   payment_amount: 0.2,
+  quorum_threshold: 0.6,
   quorum_reached: false,
-  result: { quorum_reached: false },
+  result: { confidence: 0.294, quorum_reached: false },
 } as const;
 
 const noStakeTask = {
   status: "completed",
   payment_status: "none",
   payment_amount: 0,
+  quorum_threshold: 0.6,
   quorum_reached: true,
-  result: { quorum_reached: true },
+  result: { confidence: 1, quorum_reached: true },
+} as const;
+
+const completedQuorateTaskWithStaleQuorumFlag = {
+  status: "completed",
+  payment_status: "none",
+  payment_amount: 0.2,
+  quorum_threshold: 0.6,
+  quorum_reached: false,
+  result: { confidence: 1, quorum_reached: false },
 } as const;
 
 {
@@ -58,6 +70,20 @@ const noStakeTask = {
   );
   assert.equal(state.releaseEnabled, false, "non-quorate tasks must keep payment release disabled");
   assert.equal(state.showLockedWarning, true, "non-quorate tasks must show the locked warning");
+}
+
+{
+  const state = deriveReceiptPaymentState(completedQuorateTaskWithStaleQuorumFlag);
+  assert.equal(
+    state.releaseEnabled,
+    true,
+    "confidence above quorum threshold must enable release even when persisted quorum flags are stale",
+  );
+  assert.equal(
+    state.showLockedWarning,
+    false,
+    "stale false quorum flags must not leave the receipt in a locked-warning state once confidence clears quorum",
+  );
 }
 
 {
