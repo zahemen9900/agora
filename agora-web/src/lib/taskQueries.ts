@@ -36,6 +36,15 @@ function toTaskListSnapshot(task: TaskStatusResponse): TaskStatusResponse {
   };
 }
 
+function taskListTimestamp(task: TaskStatusResponse): number {
+  const timestamp = Date.parse(task.completed_at ?? task.created_at);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortTaskListSnapshots(tasks: TaskStatusResponse[]): TaskStatusResponse[] {
+  return [...tasks].sort((a, b) => taskListTimestamp(b) - taskListTimestamp(a));
+}
+
 export function setTaskDetailCache(
   queryClient: QueryClient,
   task: TaskStatusResponse,
@@ -89,7 +98,11 @@ export function syncTaskListCache(
         };
       });
 
-      return found ? next : current;
+      if (found) {
+        return next;
+      }
+
+      return sortTaskListSnapshots([summaryTask, ...current]);
     },
   );
 }
