@@ -25,6 +25,9 @@ import { providerFromModel, providerTone } from "../lib/modelProviders";
 
 interface NormalizedMetric {
   accuracy: number;
+  run_count: number;
+  scored_run_count: number;
+  proxy_run_count: number;
   avg_tokens: number;
   avg_thinking_tokens: number;
   avg_latency_ms: number;
@@ -35,6 +38,11 @@ interface NormalizedSummary {
   per_mode: Record<string, NormalizedMetric>;
   per_mechanism: Record<string, NormalizedMetric>;
   per_category: Record<string, Record<string, NormalizedMetric>>;
+  completed_run_count: number;
+  failed_run_count: number;
+  degraded_run_count: number;
+  scored_run_count: number;
+  proxy_run_count: number;
 }
 
 interface BenchmarkTimelineDescriptor {
@@ -60,6 +68,9 @@ interface BenchmarkReliabilitySummary {
 
 const DEFAULT_METRIC: NormalizedMetric = {
   accuracy: 0,
+  run_count: 0,
+  scored_run_count: 0,
+  proxy_run_count: 0,
   avg_tokens: 0,
   avg_thinking_tokens: 0,
   avg_latency_ms: 0,
@@ -284,9 +295,13 @@ export function BenchmarkDetail() {
     const keys = Object.keys(mechanismSource);
     return keys.map((mechanism) => {
       const metric = mechanismSource[mechanism] ?? DEFAULT_METRIC;
+      const scoredRunCount = Math.round(metric.scored_run_count);
       return {
         mechanism: titleCase(mechanism),
-        accuracy: Number((metric.accuracy * 100).toFixed(2)),
+        accuracy: scoredRunCount > 0 ? Number((metric.accuracy * 100).toFixed(2)) : null,
+        runCount: Math.round(metric.run_count),
+        scoredRunCount,
+        proxyRunCount: Math.round(metric.proxy_run_count),
         avgTokens: Math.round(metric.avg_tokens),
         thinkingTokens: Math.round(metric.avg_thinking_tokens),
         avgLatencyMs: Math.round(metric.avg_latency_ms),
@@ -299,11 +314,17 @@ export function BenchmarkDetail() {
     const categories = Object.keys(summary.per_category);
     return categories.map((category) => {
       const perMode = summary.per_category[category] ?? {};
+      const debateScoredRuns = Math.round(perMode.debate?.scored_run_count ?? 0);
+      const voteScoredRuns = Math.round(perMode.vote?.scored_run_count ?? 0);
+      const selectorScoredRuns = Math.round(perMode.selector?.scored_run_count ?? 0);
       return {
         category: titleCase(category),
-        debate: Number(((perMode.debate?.accuracy ?? 0) * 100).toFixed(1)),
-        vote: Number(((perMode.vote?.accuracy ?? 0) * 100).toFixed(1)),
-        selector: Number(((perMode.selector?.accuracy ?? 0) * 100).toFixed(1)),
+        debate: debateScoredRuns > 0 ? Number(((perMode.debate?.accuracy ?? 0) * 100).toFixed(1)) : null,
+        vote: voteScoredRuns > 0 ? Number(((perMode.vote?.accuracy ?? 0) * 100).toFixed(1)) : null,
+        selector: selectorScoredRuns > 0 ? Number(((perMode.selector?.accuracy ?? 0) * 100).toFixed(1)) : null,
+        debateScoredRuns,
+        voteScoredRuns,
+        selectorScoredRuns,
       };
     });
   }, [summary]);
@@ -460,6 +481,25 @@ export function BenchmarkDetail() {
     degraded: detail?.degraded_item_count ?? benchmarkItems.filter((item) => item.status === "degraded").length,
     active: benchmarkItems.filter((item) => item.status === "running" || item.status === "queued").length,
   }), [benchmarkItems, detail?.completed_item_count, detail?.degraded_item_count, detail?.failed_item_count]);
+  const benchmarkMetricContext = useMemo(() => {
+    const completedRuns = summary.completed_run_count > 0
+      ? summary.completed_run_count
+      : reliabilityCards.completed + reliabilityCards.degraded;
+    const scoredRuns = summary.scored_run_count > 0
+      ? summary.scored_run_count
+      : benchmarkItems.filter((item) => benchmarkItemHasScoredCoverage(item)).length;
+    const failedRuns = summary.failed_run_count > 0 ? summary.failed_run_count : reliabilityCards.failed;
+    const degradedRuns = summary.degraded_run_count > 0 ? summary.degraded_run_count : reliabilityCards.degraded;
+    const coverage = completedRuns > 0 ? scoredRuns / completedRuns : null;
+    return {
+      completedRuns,
+      scoredRuns,
+      failedRuns,
+      degradedRuns,
+      coverage,
+      proxyRuns: summary.proxy_run_count,
+    };
+  }, [benchmarkItems, reliabilityCards, summary]);
   const frontierHighlights = useMemo(() => buildFrontierHighlights(modeRows), [modeRows]);
 
   useEffect(() => {
@@ -744,49 +784,11 @@ export function BenchmarkDetail() {
               </p>
             </div>
             <div className="rounded-md border border-border-subtle bg-void px-3 py-2 mono text-xs text-text-secondary">
-              {selectedItem ? `${titleCase(selectedItem.category)} · ${titleCase(selectedItem.status)}` : "No item selected"}
+              {selectedItem ? `${titleCase(selectedItem.category)} · ${titleCase(benchmarkItemDisplayStatus(selectedItem))}` : "No item selected"}
             </div>
           </div>
 
-          <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)] gap-6">
-            <div className="space-y-3">
-              {benchmarkItems.map((item) => {
-                const selected = item.item_id === selectedItem?.item_id;
-                return (
-                  <button
-                    key={item.item_id}
-                    type="button"
-                    onClick={() => setSelectedItemId(item.item_id)}
-                    className={`w-full text-left rounded-md border p-3 transition-colors ${
-                      selected
-                        ? "border-accent bg-accent/5"
-                        : "border-border-subtle bg-void hover:border-accent/40"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3 mb-2">
-                      <div>
-                        <div className="mono text-[10px] text-text-muted mb-1">
-                          ITEM {item.item_index + 1} • {titleCase(item.phase ?? "benchmark")}
-                        </div>
-                        <div className="text-sm text-text-primary">{titleCase(item.category)}</div>
-                      </div>
-                      <span className={`mono text-[10px] rounded-full border px-2 py-1 ${benchmarkItemStatusTone(item.status)}`}>
-                        {item.status}
-                      </span>
-                    </div>
-                    <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word mb-2">
-                      {truncateText(item.question, 140)}
-                    </p>
-                    <div className="flex flex-wrap gap-2 mono text-[10px] text-text-muted">
-                      <span>{item.mechanism ? titleCase(item.mechanism) : "pending mechanism"}</span>
-                      {item.selector_source ? <span>{item.selector_source}</span> : null}
-                      <span>{formatMaybeInt(item.total_tokens)}</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
+          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] gap-6">
             <div className="space-y-4">
               {selectedItem ? (
                 <>
@@ -800,15 +802,23 @@ export function BenchmarkDetail() {
                           {selectedItem.question}
                         </div>
                       </div>
-                      <span className={`mono text-[10px] rounded-full border px-2 py-1 ${benchmarkItemStatusTone(selectedItem.status)}`}>
-                        {selectedItem.status}
+                      <span className={`mono text-[10px] rounded-full border px-2 py-1 ${benchmarkItemDisplayStatusTone(selectedItem)}`}>
+                        {benchmarkItemDisplayStatus(selectedItem)}
                       </span>
                     </div>
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
                       <InlineMetricTile label="Mechanism" value={selectedItem.mechanism ? titleCase(selectedItem.mechanism) : "n/a"} />
                       <InlineMetricTile label="Selector Source" value={selectedItem.selector_source ?? "n/a"} />
                       <InlineMetricTile label="Tokens" value={formatMaybeInt(selectedItem.total_tokens)} />
                       <InlineMetricTile label="Thinking" value={formatMaybeInt(selectedItem.thinking_tokens)} />
+                      <InlineMetricTile label="Latency" value={formatLatency(selectedItem.total_latency_ms)} />
+                      <InlineMetricTile label="Switches" value={formatMetricInteger(selectedItem.summary?.switches)} />
+                      <InlineMetricTile label="Entropy" value={formatMetricDecimal(selectedItem.summary?.latest_entropy)} />
+                      <InlineMetricTile label="Novelty" value={formatMetricDecimal(selectedItem.summary?.latest_novelty)} />
+                      <InlineMetricTile label="Confidence" value={formatMetricPercent(selectedItem.summary?.confidence)} />
+                      <InlineMetricTile label="Scoring" value={formatScoringMode(selectedItem.summary?.scoring_mode)} />
+                      <InlineMetricTile label="Final Answer" value={formatMetricText(selectedItem.summary?.final_answer)} />
+                      <InlineMetricTile label="Cost" value={formatSelectedItemCost(selectedItem)} />
                     </div>
                     {selectedItem.selector_fallback_path && selectedItem.selector_fallback_path.length > 0 ? (
                       <div className="mt-3">
@@ -871,26 +881,74 @@ export function BenchmarkDetail() {
                 </>
               ) : null}
             </div>
+
+            <div className="space-y-3">
+              {benchmarkItems.map((item) => {
+                const selected = item.item_id === selectedItem?.item_id;
+                return (
+                  <button
+                    key={item.item_id}
+                    type="button"
+                    onClick={() => setSelectedItemId(item.item_id)}
+                    className={`w-full text-left rounded-md border p-3 transition-colors ${
+                      selected
+                        ? "border-accent bg-accent/5"
+                        : "border-border-subtle bg-void hover:border-accent/40"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-2">
+                      <div>
+                        <div className="mono text-[10px] text-text-muted mb-1">
+                          ITEM {item.item_index + 1} • {titleCase(item.phase ?? "benchmark")}
+                        </div>
+                        <div className="text-sm text-text-primary">{titleCase(item.category)}</div>
+                      </div>
+                      <span className={`mono text-[10px] rounded-full border px-2 py-1 ${benchmarkItemDisplayStatusTone(item)}`}>
+                        {benchmarkItemDisplayStatus(item)}
+                      </span>
+                    </div>
+                    <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word mb-2">
+                      {truncateText(item.question, 140)}
+                    </p>
+                    <div className="flex flex-wrap gap-2 mono text-[10px] text-text-muted">
+                      <span>{item.mechanism ? titleCase(item.mechanism) : "pending mechanism"}</span>
+                      {item.selector_source ? <span>{item.selector_source}</span> : null}
+                      <span>{formatMaybeInt(item.total_tokens)}</span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       ) : null}
 
       <div className="card p-4 sm:p-6 mb-8">
-        <h3 className="text-lg font-semibold mb-3">Accuracy / Cost Frontier</h3>
+        <h3 className="text-lg font-semibold mb-3">Scored Success / Cost Frontier</h3>
+        <p className="text-sm text-text-secondary mb-4">
+          Success rate across benchmark items that actually have scoring coverage in this artifact. Creative and demo use proxy success, not exact-match truth.
+        </p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+          <InlineMetricTile label="Scored Runs" value={formatMaybeInt(benchmarkMetricContext.scoredRuns)} />
+          <InlineMetricTile label="Failed Runs" value={formatMaybeInt(benchmarkMetricContext.failedRuns)} />
+          <InlineMetricTile label="Degraded Runs" value={formatMaybeInt(benchmarkMetricContext.degradedRuns)} />
+          <InlineMetricTile label="Coverage" value={formatCoverage(benchmarkMetricContext.coverage)} />
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
           <InlineMetricTile label="Best Accuracy" value={frontierHighlights.bestAccuracy} />
           <InlineMetricTile label="Fastest Mode" value={frontierHighlights.fastest} />
           <InlineMetricTile label="Cheapest Mode" value={frontierHighlights.cheapest} />
         </div>
         {modeRows.length === 0 ? (
-          <div className="text-sm text-text-secondary">No per-mechanism metrics were stored for this benchmark artifact.</div>
+          <div className="text-sm text-text-secondary">No per-mechanism scored-success metrics were stored for this benchmark artifact.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-170 border-collapse">
               <thead>
                 <tr className="border-b border-border-subtle">
                   <th className="py-2 pr-3 text-left mono text-[10px] text-text-muted">MECHANISM</th>
-                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">ACCURACY</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">SCORED SUCCESS</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">COVERAGE</th>
                   <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">TOKENS</th>
                   <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">THINKING</th>
                   <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">LATENCY</th>
@@ -901,7 +959,8 @@ export function BenchmarkDetail() {
                 {modeRows.map((row) => (
                   <tr key={row.mechanism} className="border-b border-border-subtle/70">
                     <td className="py-2 pr-3 text-sm text-text-primary">{row.mechanism}</td>
-                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{row.accuracy.toFixed(2)}%</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatRowAccuracy(row.accuracy)}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatCoverage(row.runCount > 0 ? row.scoredRunCount / row.runCount : null)}</td>
                     <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.avgTokens)}</td>
                     <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.thinkingTokens)}</td>
                     <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatLatency(row.avgLatencyMs)}</td>
@@ -994,7 +1053,7 @@ export function BenchmarkDetail() {
       <div className="card p-4 sm:p-8 mb-8">
         <h3 className="mb-2 text-lg font-semibold">Mechanism Performance</h3>
         <p className="text-sm text-text-secondary mb-8">
-          Accuracy percent by mechanism for the selected benchmark artifact.
+          Scored success rate by mechanism for the selected benchmark artifact.
         </p>
         <div className="w-full h-70">
           <ResponsiveContainer width="100%" height="100%">
@@ -1011,7 +1070,7 @@ export function BenchmarkDetail() {
                 tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
               />
               <Tooltip />
-              <Bar dataKey="accuracy" name="Accuracy (%)" fill="var(--color-accent)" radius={[4, 4, 0, 0]} minPointSize={4} />
+              <Bar dataKey="accuracy" name="Scored Success (%)" fill="var(--color-accent)" radius={[4, 4, 0, 0]} minPointSize={4} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -1019,7 +1078,7 @@ export function BenchmarkDetail() {
 
       <div className="card p-4 sm:p-8 mb-8 overflow-x-auto">
         <h3 className="mb-2 text-lg font-semibold">Category Accuracy Matrix</h3>
-        <p className="text-sm text-text-secondary mb-6">Per-category accuracy percentage across debate, vote, and selector mechanisms.</p>
+        <p className="text-sm text-text-secondary mb-6">Per-category scored success percentage across debate, vote, and selector mechanisms.</p>
 
         {categoryRows.length === 0 ? (
           <p className="text-sm text-text-secondary">No category metrics found in this artifact.</p>
@@ -1037,9 +1096,9 @@ export function BenchmarkDetail() {
               {categoryRows.map((row) => (
                 <tr key={row.category} className="border-b border-border-subtle/70">
                   <td className="py-2 px-3 text-sm text-text-primary">{row.category}</td>
-                  <td className="py-2 px-3 text-sm text-right text-text-secondary">{row.debate.toFixed(1)}%</td>
-                  <td className="py-2 px-3 text-sm text-right text-text-secondary">{row.vote.toFixed(1)}%</td>
-                  <td className="py-2 px-3 text-sm text-right text-accent">{row.selector.toFixed(1)}%</td>
+                  <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.debate, 1)}</td>
+                  <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.vote, 1)}</td>
+                  <td className="py-2 px-3 text-sm text-right text-accent">{formatRowAccuracy(row.selector, 1)}</td>
                 </tr>
               ))}
             </tbody>
@@ -1206,12 +1265,26 @@ function normalizeSummary(summaryCandidate: unknown, benchmarkPayloadCandidate: 
     per_mode: {},
     per_mechanism: {},
     per_category: {},
+    completed_run_count: 0,
+    failed_run_count: 0,
+    degraded_run_count: 0,
+    scored_run_count: 0,
+    proxy_run_count: 0,
   };
 }
 
 function parseSummaryObject(candidate: unknown): NormalizedSummary {
   if (!isRecord(candidate)) {
-    return { per_mode: {}, per_mechanism: {}, per_category: {} };
+    return {
+      per_mode: {},
+      per_mechanism: {},
+      per_category: {},
+      completed_run_count: 0,
+      failed_run_count: 0,
+      degraded_run_count: 0,
+      scored_run_count: 0,
+      proxy_run_count: 0,
+    };
   }
 
   const perMode: Record<string, NormalizedMetric> = {};
@@ -1248,6 +1321,11 @@ function parseSummaryObject(candidate: unknown): NormalizedSummary {
     per_mode: perMode,
     per_mechanism: perMechanism,
     per_category: perCategory,
+    completed_run_count: asNumber(candidate.completed_run_count),
+    failed_run_count: asNumber(candidate.failed_run_count),
+    degraded_run_count: asNumber(candidate.degraded_run_count),
+    scored_run_count: asNumber(candidate.scored_run_count),
+    proxy_run_count: asNumber(candidate.proxy_run_count),
   };
 }
 
@@ -1258,6 +1336,9 @@ function parseMetric(candidate: unknown): NormalizedMetric {
 
   return {
     accuracy: asNumber(candidate.accuracy),
+    run_count: asNumber(candidate.run_count),
+    scored_run_count: asNumber(candidate.scored_run_count),
+    proxy_run_count: asNumber(candidate.proxy_run_count),
     avg_tokens: asNumber(candidate.avg_tokens),
     avg_thinking_tokens: asNumber(candidate.avg_thinking_tokens),
     avg_latency_ms: asNumber(candidate.avg_latency_ms),
@@ -1454,6 +1535,91 @@ function benchmarkItemStatusTone(status: BenchmarkItemPayload["status"]): string
   return "border-border-subtle text-text-secondary bg-void";
 }
 
+function benchmarkItemHasObservedState(item: BenchmarkItemPayload): boolean {
+  return (
+    item.events.length > 0
+    || item.started_at !== null
+    || item.completed_at !== null
+    || item.total_tokens > 0
+    || item.thinking_tokens > 0
+    || item.total_latency_ms > 0
+    || item.mechanism !== null
+    || item.failure_reason !== null
+    || Object.keys(item.model_telemetry ?? {}).length > 0
+    || Object.keys(item.summary ?? {}).length > 0
+  );
+}
+
+function benchmarkItemDisplayStatus(item: BenchmarkItemPayload): string {
+  if (item.status === "queued" && !benchmarkItemHasObservedState(item)) {
+    return "pending";
+  }
+  return item.status;
+}
+
+function benchmarkItemDisplayStatusTone(item: BenchmarkItemPayload): string {
+  const displayStatus = benchmarkItemDisplayStatus(item);
+  if (displayStatus === "pending") {
+    return "border-border-subtle text-text-secondary bg-void";
+  }
+  return benchmarkItemStatusTone(item.status);
+}
+
+function benchmarkItemHasScoredCoverage(item: BenchmarkItemPayload): boolean {
+  const summary = item.summary;
+  if (!summary || typeof summary !== "object") {
+    return false;
+  }
+  return summary.scored === true || typeof summary.scoring_mode === "string";
+}
+
+function formatMetricInteger(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value).toString() : "n/a";
+}
+
+function formatMetricDecimal(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(2) : "n/a";
+}
+
+function formatMetricPercent(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "n/a";
+}
+
+function formatMetricText(value: unknown): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : "n/a";
+}
+
+function formatScoringMode(value: unknown): string {
+  if (typeof value !== "string" || !value.trim()) {
+    return "n/a";
+  }
+  return titleCase(value.replace(/_/g, " "));
+}
+
+function formatCoverage(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "n/a";
+  }
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+function formatRowAccuracy(value: number | null, digits = 2): string {
+  if (value === null || !Number.isFinite(value)) {
+    return "n/a";
+  }
+  return `${value.toFixed(digits)}%`;
+}
+
+function formatSelectedItemCost(item: BenchmarkItemPayload): string {
+  if (!item.model_telemetry || Object.keys(item.model_telemetry).length === 0) {
+    return "n/a";
+  }
+  const total = Object.values(item.model_telemetry).reduce((sum, telemetry) => {
+    return sum + (typeof telemetry.estimated_cost_usd === "number" ? telemetry.estimated_cost_usd : 0);
+  }, 0);
+  return total > 0 ? formatUsd(total) : "n/a";
+}
+
 function mergeBenchmarkItemsFromEvent(
   currentItems: BenchmarkItemPayload[],
   event: TaskEvent,
@@ -1464,9 +1630,12 @@ function mergeBenchmarkItemsFromEvent(
   }
   const data = isRecord(event.data) ? event.data : {};
   const context = isRecord(data.benchmark_context) ? data.benchmark_context : null;
+  const latestRun = isRecord(data.latest_run) ? data.latest_run : null;
   const nextStatus = (
     typeof data.item_status === "string"
       ? data.item_status
+      : latestRun && typeof latestRun.item_status === "string"
+        ? latestRun.item_status
       : event.event === "domain_progress"
         ? "completed"
         : event.event === "failed" || event.event === "error"
@@ -1489,6 +1658,29 @@ function mergeBenchmarkItemsFromEvent(
     (entry) => entry.event === event.event && entry.timestamp === event.timestamp,
   );
   const mergedEvents = alreadyPresent ? nextEvents : [...nextEvents, event];
+  const existingSummary = isRecord(existing?.summary) ? existing.summary : {};
+  const nextSummary: Record<string, unknown> = { ...existingSummary };
+  if (latestRun) {
+    if (typeof latestRun.confidence === "number") nextSummary.confidence = latestRun.confidence;
+    if (typeof latestRun.correct === "boolean") nextSummary.correct = latestRun.correct;
+    if (typeof latestRun.scored === "boolean") nextSummary.scored = latestRun.scored;
+    if (typeof latestRun.scoring_mode === "string") nextSummary.scoring_mode = latestRun.scoring_mode;
+    if (typeof latestRun.quorum_reached === "boolean") nextSummary.quorum_reached = latestRun.quorum_reached;
+    if (typeof latestRun.final_answer === "string") nextSummary.final_answer = latestRun.final_answer;
+    if (typeof latestRun.rounds === "number") nextSummary.rounds = latestRun.rounds;
+    if (typeof latestRun.switches === "number") nextSummary.switches = latestRun.switches;
+    if (typeof latestRun.execution_mode === "string") nextSummary.execution_mode = latestRun.execution_mode;
+  }
+  const metrics = isRecord(data.metrics) ? data.metrics : null;
+  if (metrics) {
+    if (typeof metrics.entropy === "number") nextSummary.latest_entropy = metrics.entropy;
+    if (typeof metrics.novelty_score === "number") nextSummary.latest_novelty = metrics.novelty_score;
+    if (typeof metrics.information_gain_delta === "number") nextSummary.latest_information_gain_delta = metrics.information_gain_delta;
+    if (typeof metrics.answer_churn === "number") nextSummary.latest_answer_churn = metrics.answer_churn;
+  }
+  if (typeof data.mechanism_switches === "number") {
+    nextSummary.switches = data.mechanism_switches;
+  }
   const merged: BenchmarkItemPayload = {
     item_id: itemId,
     item_index: existing?.item_index ?? itemIndex,
@@ -1528,7 +1720,7 @@ function mergeBenchmarkItemsFromEvent(
           ? data.latency_ms
           : existing?.total_latency_ms ?? 0,
     model_telemetry: existing?.model_telemetry ?? {},
-    summary: existing?.summary ?? {},
+    summary: nextSummary,
     started_at: existing?.started_at ?? event.timestamp ?? null,
     completed_at:
       nextStatus === "completed" || nextStatus === "failed" || nextStatus === "degraded"
@@ -1543,7 +1735,7 @@ function mergeBenchmarkItemsFromEvent(
 function buildFrontierHighlights(
   rows: Array<{
     mechanism: string;
-    accuracy: number;
+    accuracy: number | null;
     avgLatencyMs: number;
     avgCostUsd: number;
   }>,
@@ -1555,11 +1747,14 @@ function buildFrontierHighlights(
       cheapest: "n/a",
     };
   }
-  const bestAccuracy = [...rows].sort((left, right) => right.accuracy - left.accuracy)[0];
+  const scorableRows = rows.filter((row) => row.accuracy !== null);
+  const bestAccuracy = scorableRows.length > 0
+    ? [...scorableRows].sort((left, right) => (right.accuracy ?? 0) - (left.accuracy ?? 0))[0]
+    : null;
   const fastest = [...rows].sort((left, right) => left.avgLatencyMs - right.avgLatencyMs)[0];
   const cheapest = [...rows].sort((left, right) => left.avgCostUsd - right.avgCostUsd)[0];
   return {
-    bestAccuracy: `${bestAccuracy.mechanism} (${bestAccuracy.accuracy.toFixed(1)}%)`,
+    bestAccuracy: bestAccuracy ? `${bestAccuracy.mechanism} (${bestAccuracy.accuracy?.toFixed(1)}%)` : "n/a",
     fastest: `${fastest.mechanism} (${formatLatency(fastest.avgLatencyMs)})`,
     cheapest: `${cheapest.mechanism} (${formatUsd(cheapest.avgCostUsd)})`,
   };

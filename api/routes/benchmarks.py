@@ -1308,6 +1308,42 @@ def _infer_benchmark_item_status_from_event(
     return None
 
 
+def _latest_convergence_metrics(run: dict[str, Any]) -> dict[str, float | int | None]:
+    history = run.get("convergence_history")
+    if not isinstance(history, list) or not history:
+        return {
+            "latest_entropy": None,
+            "latest_novelty": None,
+            "latest_information_gain_delta": None,
+            "latest_answer_churn": None,
+        }
+    latest = next((entry for entry in reversed(history) if isinstance(entry, dict)), {})
+    if not isinstance(latest, dict):
+        latest = {}
+    return {
+        "latest_entropy": _safe_float(latest.get("entropy")),
+        "latest_novelty": _safe_float(latest.get("novelty_score")),
+        "latest_information_gain_delta": _safe_float(latest.get("information_gain_delta")),
+        "latest_answer_churn": _safe_float(latest.get("answer_churn")),
+    }
+
+
+def _benchmark_item_summary_from_run(run: dict[str, Any]) -> dict[str, Any]:
+    convergence = _latest_convergence_metrics(run)
+    return {
+        "confidence": _safe_float(run.get("confidence")),
+        "correct": bool(run.get("correct")),
+        "scored": bool(run.get("scored")),
+        "scoring_mode": str(run.get("scoring_mode") or "").strip() or None,
+        "quorum_reached": bool(run.get("quorum_reached")),
+        "final_answer": str(run.get("final_answer") or "").strip() or None,
+        "rounds": _safe_int(run.get("rounds")),
+        "switches": _safe_int(run.get("switches")),
+        "execution_mode": str(run.get("execution_mode") or "").strip() or None,
+        **convergence,
+    }
+
+
 def _event_item_identity(event: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
     data = _as_dict(event.get("data"))
     benchmark_context = _as_dict(data.get("benchmark_context"))
@@ -1638,12 +1674,7 @@ def _benchmark_items_from_payload(
             thinking_tokens=_safe_int(run.get("thinking_tokens_used")),
             total_latency_ms=_safe_float(run.get("latency_ms")),
             model_telemetry=model_telemetry,
-            summary={
-                "confidence": _safe_float(run.get("confidence")),
-                "correct": bool(run.get("correct")),
-                "quorum_reached": bool(run.get("quorum_reached")),
-                "final_answer": str(run.get("final_answer") or "").strip() or None,
-            },
+            summary=_benchmark_item_summary_from_run(run),
             started_at=(item_events[0].timestamp if item_events else None),
             completed_at=(item_events[-1].timestamp if item_events else None),
             events=item_events,

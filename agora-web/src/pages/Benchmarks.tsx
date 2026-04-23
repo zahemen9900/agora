@@ -1444,7 +1444,16 @@ function RunningBenchmarkRunCard({
 }
 
 function deriveSummary(payload: BenchmarkPayload | null): BenchmarkSummary {
-  const fallback = { per_mode: {}, per_mechanism: {}, per_category: {} } satisfies BenchmarkSummary;
+  const fallback = {
+    per_mode: {},
+    per_mechanism: {},
+    per_category: {},
+    completed_run_count: 0,
+    failed_run_count: 0,
+    degraded_run_count: 0,
+    scored_run_count: 0,
+    proxy_run_count: 0,
+  } satisfies BenchmarkSummary;
   if (!payload) {
     return fallback;
   }
@@ -1473,6 +1482,9 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
     const metrics = safePerMode[mechanism] ?? {};
     perMode[mechanism] = {
       accuracy: asNumber(metrics.accuracy),
+      run_count: asNumber(metrics.run_count),
+      scored_run_count: asNumber(metrics.scored_run_count),
+      proxy_run_count: asNumber(metrics.proxy_run_count),
       avg_tokens: asNumber(metrics.avg_tokens),
       avg_latency_ms: asNumber(metrics.avg_latency_ms),
       avg_rounds: asNumber(metrics.avg_rounds),
@@ -1484,6 +1496,9 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
     const mechanismMetrics = safePerMechanism[mechanism] ?? {};
     perMechanism[mechanism] = {
       accuracy: asNumber(mechanismMetrics.accuracy),
+      run_count: asNumber(mechanismMetrics.run_count),
+      scored_run_count: asNumber(mechanismMetrics.scored_run_count),
+      proxy_run_count: asNumber(mechanismMetrics.proxy_run_count),
       avg_tokens: asNumber(mechanismMetrics.avg_tokens),
       avg_latency_ms: asNumber(mechanismMetrics.avg_latency_ms),
       avg_rounds: asNumber(mechanismMetrics.avg_rounds),
@@ -1504,6 +1519,9 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
       const metrics = safePerCategory[category]?.[mechanism] ?? {};
       perCategory[category][mechanism] = {
         accuracy: asNumber(metrics.accuracy),
+        run_count: asNumber(metrics.run_count),
+        scored_run_count: asNumber(metrics.scored_run_count),
+        proxy_run_count: asNumber(metrics.proxy_run_count),
         avg_tokens: asNumber(metrics.avg_tokens),
         avg_latency_ms: asNumber(metrics.avg_latency_ms),
         avg_thinking_tokens: asNumber(metrics.avg_thinking_tokens),
@@ -1512,7 +1530,16 @@ function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSum
     }
   }
 
-  return { per_mode: perMode, per_mechanism: perMechanism, per_category: perCategory };
+  return {
+    per_mode: perMode,
+    per_mechanism: perMechanism,
+    per_category: perCategory,
+    completed_run_count: asNumber(summary.completed_run_count),
+    failed_run_count: asNumber(summary.failed_run_count),
+    degraded_run_count: asNumber(summary.degraded_run_count),
+    scored_run_count: asNumber(summary.scored_run_count),
+    proxy_run_count: asNumber(summary.proxy_run_count),
+  };
 }
 
 function asNumber(value: unknown): number {

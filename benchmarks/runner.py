@@ -821,6 +821,7 @@ class BenchmarkRunner:
         thinking_tokens_used = int(
             getattr(result, "thinking_tokens_used", 0) or sum(model_thinking_usage.values())
         )
+        scored, scoring_mode = self._scoring_metadata(task_item)
 
         return {
             "task_index": task_index,
@@ -834,6 +835,8 @@ class BenchmarkRunner:
             "item_status": "completed",
             "mechanism_used": result.mechanism_used.value,
             "correct": self._score_result(task_item, result),
+            "scored": scored,
+            "scoring_mode": scoring_mode,
             "confidence": result.confidence,
             "tokens_used": result.total_tokens_used,
             "latency_ms": result.total_latency_ms,
@@ -899,6 +902,17 @@ class BenchmarkRunner:
             "pricing_sources": cost_payload.pricing_sources,
             "cost": cost_payload.model_dump(mode="json"),
         }
+
+    @staticmethod
+    def _scoring_metadata(task_item: dict[str, Any]) -> tuple[bool, str]:
+        """Return whether a benchmark run should count toward scored-success metrics."""
+
+        category = str(task_item.get("category", "reasoning")).lower()
+        if category in {"creative", "demo"}:
+            return True, "proxy_success"
+        if task_item.get("ground_truth") is not None:
+            return True, "exact_match"
+        return False, "unscored"
 
     @staticmethod
     def _aggregate_model_usage(runs: list[dict[str, Any]]) -> dict[str, int]:
@@ -1020,6 +1034,9 @@ class BenchmarkRunner:
                 "per_category": {},
                 "completed_run_count": 0,
                 "failed_run_count": 0,
+                "degraded_run_count": 0,
+                "scored_run_count": 0,
+                "proxy_run_count": 0,
                 "failure_counts_by_category": {},
                 "failure_counts_by_reason": {},
             }
@@ -1029,6 +1046,15 @@ class BenchmarkRunner:
         ]
         failed_runs = [
             run for run in runs if str(run.get("item_status") or "").lower() == "failed"
+        ]
+        degraded_runs = [
+            run for run in completed_runs if str(run.get("item_status") or "").lower() == "degraded"
+        ]
+        scored_runs = [run for run in completed_runs if bool(run.get("scored"))]
+        proxy_runs = [
+            run
+            for run in scored_runs
+            if str(run.get("scoring_mode") or "").strip().lower() == "proxy_success"
         ]
 
         failure_counts_by_category: dict[str, int] = {}
@@ -1048,6 +1074,9 @@ class BenchmarkRunner:
                 "per_category": {},
                 "completed_run_count": 0,
                 "failed_run_count": len(failed_runs),
+                "degraded_run_count": 0,
+                "scored_run_count": 0,
+                "proxy_run_count": 0,
                 "failure_counts_by_category": failure_counts_by_category,
                 "failure_counts_by_reason": failure_counts_by_reason,
             }
@@ -1077,64 +1106,48 @@ class BenchmarkRunner:
             per_mechanism[mechanism_key].append(run)
             per_category[category_key][mechanism_key].append(run)
 
-        mode_summary = {
-            mode: {
-                "accuracy": sum(1 for run in mode_runs if run["correct"]) / len(mode_runs),
-                "avg_tokens": sum(run["tokens_used"] for run in mode_runs) / len(mode_runs),
-                "avg_latency_ms": sum(run["latency_ms"] for run in mode_runs) / len(mode_runs),
-                "avg_rounds": sum(run["rounds"] for run in mode_runs) / len(mode_runs),
-                "switch_rate": sum(run["switches"] for run in mode_runs) / len(mode_runs),
+        def _metric_block(bucket_runs: list[dict[str, Any]]) -> dict[str, float | int]:
+            run_count = len(bucket_runs)
+            scored_bucket = [run for run in bucket_runs if bool(run.get("scored"))]
+            scored_run_count = len(scored_bucket)
+            proxy_run_count = sum(
+                1
+                for run in scored_bucket
+                if str(run.get("scoring_mode") or "").strip().lower() == "proxy_success"
+            )
+            return {
+                "accuracy": (
+                    sum(1 for run in scored_bucket if run["correct"]) / scored_run_count
+                    if scored_run_count
+                    else 0.0
+                ),
+                "run_count": run_count,
+                "scored_run_count": scored_run_count,
+                "proxy_run_count": proxy_run_count,
+                "avg_tokens": sum(run["tokens_used"] for run in bucket_runs) / run_count,
+                "avg_latency_ms": sum(run["latency_ms"] for run in bucket_runs) / run_count,
+                "avg_rounds": sum(run["rounds"] for run in bucket_runs) / run_count,
+                "switch_rate": sum(run["switches"] for run in bucket_runs) / run_count,
                 "avg_thinking_tokens": sum(
-                    float(run.get("thinking_tokens_used") or 0) for run in mode_runs
+                    float(run.get("thinking_tokens_used") or 0) for run in bucket_runs
                 )
-                / len(mode_runs),
+                / run_count,
                 "avg_estimated_cost_usd": sum(
-                    float(run.get("estimated_cost_usd") or 0.0) for run in mode_runs
+                    float(run.get("estimated_cost_usd") or 0.0) for run in bucket_runs
                 )
-                / len(mode_runs),
+                / run_count,
             }
-            for mode, mode_runs in per_mode.items()
-        }
+
+        mode_summary = {mode: _metric_block(mode_runs) for mode, mode_runs in per_mode.items()}
 
         mechanism_summary = {
-            mechanism: {
-                "accuracy": sum(1 for run in mechanism_runs if run["correct"]) / len(mechanism_runs),
-                "avg_tokens": sum(run["tokens_used"] for run in mechanism_runs) / len(mechanism_runs),
-                "avg_latency_ms": sum(run["latency_ms"] for run in mechanism_runs)
-                / len(mechanism_runs),
-                "avg_rounds": sum(run["rounds"] for run in mechanism_runs) / len(mechanism_runs),
-                "switch_rate": sum(run["switches"] for run in mechanism_runs)
-                / len(mechanism_runs),
-                "avg_thinking_tokens": sum(
-                    float(run.get("thinking_tokens_used") or 0) for run in mechanism_runs
-                )
-                / len(mechanism_runs),
-                "avg_estimated_cost_usd": sum(
-                    float(run.get("estimated_cost_usd") or 0.0) for run in mechanism_runs
-                )
-                / len(mechanism_runs),
-            }
+            mechanism: _metric_block(mechanism_runs)
             for mechanism, mechanism_runs in per_mechanism.items()
         }
 
         category_summary = {
             category: {
-                mechanism: {
-                    "accuracy": sum(1 for run in category_runs if run["correct"])
-                    / len(category_runs),
-                    "avg_tokens": sum(run["tokens_used"] for run in category_runs)
-                    / len(category_runs),
-                    "avg_latency_ms": sum(run["latency_ms"] for run in category_runs)
-                    / len(category_runs),
-                    "avg_thinking_tokens": sum(
-                        float(run.get("thinking_tokens_used") or 0) for run in category_runs
-                    )
-                    / len(category_runs),
-                    "avg_estimated_cost_usd": sum(
-                        float(run.get("estimated_cost_usd") or 0.0) for run in category_runs
-                    )
-                    / len(category_runs),
-                }
+                mechanism: _metric_block(category_runs)
                 for mechanism, category_runs in mode_runs.items()
             }
             for category, mode_runs in per_category.items()
@@ -1146,6 +1159,9 @@ class BenchmarkRunner:
             "per_category": category_summary,
             "completed_run_count": len(completed_runs),
             "failed_run_count": len(failed_runs),
+            "degraded_run_count": len(degraded_runs),
+            "scored_run_count": len(scored_runs),
+            "proxy_run_count": len(proxy_runs),
             "failure_counts_by_category": failure_counts_by_category,
             "failure_counts_by_reason": failure_counts_by_reason,
         }

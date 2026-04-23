@@ -71,6 +71,74 @@ def test_benchmark_runner_builds_default_phase2_split() -> None:
         "demo",
     }
 
+
+def test_benchmark_summary_tracks_scored_and_proxy_coverage() -> None:
+    summary = BenchmarkRunner._summarize_runs(
+        [
+            {
+                "item_status": "completed",
+                "mode": "selector",
+                "mechanism_used": "selector",
+                "category": "math",
+                "correct": True,
+                "scored": True,
+                "scoring_mode": "exact_match",
+                "tokens_used": 100,
+                "latency_ms": 10.0,
+                "rounds": 2,
+                "switches": 1,
+                "quorum_reached": True,
+                "thinking_tokens_used": 20,
+                "estimated_cost_usd": 0.01,
+                "confidence": 0.8,
+            },
+            {
+                "item_status": "completed",
+                "mode": "selector",
+                "mechanism_used": "selector",
+                "category": "creative",
+                "correct": False,
+                "scored": True,
+                "scoring_mode": "proxy_success",
+                "tokens_used": 120,
+                "latency_ms": 15.0,
+                "rounds": 1,
+                "switches": 0,
+                "quorum_reached": False,
+                "thinking_tokens_used": 0,
+                "estimated_cost_usd": 0.02,
+                "confidence": 0.5,
+            },
+            {
+                "item_status": "completed",
+                "mode": "debate",
+                "mechanism_used": "debate",
+                "category": "reasoning",
+                "correct": False,
+                "scored": False,
+                "scoring_mode": "unscored",
+                "tokens_used": 80,
+                "latency_ms": 9.0,
+                "rounds": 2,
+                "switches": 0,
+                "quorum_reached": True,
+                "thinking_tokens_used": 10,
+                "estimated_cost_usd": 0.005,
+                "confidence": 0.7,
+            },
+        ]
+    )
+
+    assert summary["completed_run_count"] == 3
+    assert summary["scored_run_count"] == 2
+    assert summary["proxy_run_count"] == 1
+    assert summary["per_mechanism"]["selector"]["run_count"] == 2
+    assert summary["per_mechanism"]["selector"]["scored_run_count"] == 2
+    assert summary["per_mechanism"]["selector"]["accuracy"] == pytest.approx(0.5)
+    assert summary["per_mechanism"]["debate"]["run_count"] == 1
+    assert summary["per_mechanism"]["debate"]["scored_run_count"] == 0
+    assert summary["per_mechanism"]["debate"]["accuracy"] == pytest.approx(0.0)
+
 def _assert_normalized_selector_summary(
     payload: dict[str, Any],
     *,

@@ -362,6 +362,11 @@ export interface BenchmarkSummaryResponse {
   per_mode: Record<string, Record<string, number>>;
   per_mechanism: Record<string, Record<string, number>>;
   per_category: Record<string, Record<string, Record<string, number>>>;
+  completed_run_count: number;
+  failed_run_count: number;
+  degraded_run_count: number;
+  scored_run_count: number;
+  proxy_run_count: number;
 }
 
 export interface BenchmarkItemEventsResponse {

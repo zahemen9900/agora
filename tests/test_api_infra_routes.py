@@ -4060,6 +4060,18 @@ async def test_benchmark_detail_exposes_item_scoped_state_and_replay(
                         "tokens_used": 144,
                         "thinking_tokens_used": 12,
                         "latency_ms": 91.0,
+                        "rounds": 2,
+                        "switches": 1,
+                        "execution_mode": "mixed",
+                        "convergence_history": [
+                            {
+                                "round_number": 1,
+                                "entropy": 1.25,
+                                "novelty_score": 0.4,
+                                "information_gain_delta": 0.2,
+                                "answer_churn": 0.1,
+                            }
+                        ],
                         "selector_source": "heuristic_fallback",
                         "selector_fallback_path": ["reasoning", "heuristic"],
                         "fallback_events": [
@@ -4146,6 +4158,9 @@ async def test_benchmark_detail_exposes_item_scoped_state_and_replay(
     assert first_item["question"] == "What is 2 + 2?"
     assert first_item["selector_source"] == "heuristic_fallback"
     assert first_item["selector_fallback_path"] == ["reasoning", "heuristic"]
+    assert first_item["summary"]["switches"] == 1
+    assert first_item["summary"]["latest_entropy"] == pytest.approx(1.25)
+    assert first_item["summary"]["execution_mode"] == "mixed"
     assert first_item["events"][0]["event"] == "agent_output_delta"
 
     item = await client.get(f"/benchmarks/{artifact_id}/items/{item_id}")
