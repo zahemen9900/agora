@@ -11,10 +11,100 @@ import {
   Loader2,
   Zap,
 } from "lucide-react";
+
+const LD_STYLE_ID = "ld-stream-keyframes";
+function injectLdKeyframes() {
+  if (typeof document === "undefined" || document.getElementById(LD_STYLE_ID)) return;
+  const s = document.createElement("style");
+  s.id = LD_STYLE_ID;
+  s.textContent = `
+    @keyframes ld-cursor-blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+    @keyframes ld-text-fade {
+      0%   { opacity: 0; }
+      100% { opacity: 1; }
+    }
+  `;
+  document.head.appendChild(s);
+}
+
+function StreamingCursor() {
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        display: 'inline-block',
+        width: '2px',
+        height: '0.9em',
+        marginLeft: '2px',
+        verticalAlign: 'text-bottom',
+        borderRadius: '1px',
+        backgroundColor: 'var(--accent-emerald)',
+        animation: 'ld-cursor-blink 0.75s step-end infinite',
+      }}
+    />
+  );
+}
+
+// Each token chunk that arrives from the stream gets its own fade-in span.
+// The chunk starts at opacity 0 and fades to 1 over 400ms. Because chunks
+// arrive at different moments, they are at different points in their fade
+// simultaneously — creating overlapping waves of text materialising from
+// invisible into full opacity, exactly like a fade-in effect on each token.
+function StreamingText({ text, isActive }: { text: string; isActive: boolean }) {
+  const seenLenRef = useRef(0);
+  const [chunks, setChunks] = useState<Array<{ id: number; text: string }>>([]);
+  const chunkIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!isActive) {
+      seenLenRef.current = text.length;
+      setChunks([]);
+      return;
+    }
+    if (text.length <= seenLenRef.current) return;
+    const delta = text.slice(seenLenRef.current);
+    seenLenRef.current = text.length;
+    const id = ++chunkIdRef.current;
+    // Keep only the last 10 chunks in state; older ones are visually
+    // indistinguishable from the stable prefix once their fade completes.
+    setChunks((prev) => [...prev, { id, text: delta }].slice(-10));
+  }, [text, isActive]);
+
+  // Stable prefix = full text minus the text still held in chunks
+  const keptLen = chunks.reduce((acc, c) => acc + c.text.length, 0);
+  const stableText = text.slice(0, Math.max(0, text.length - keptLen));
+
+  return (
+    <span
+      style={{
+        fontFamily: "'Commit Mono', 'SF Mono', monospace",
+        fontSize: '12px',
+        lineHeight: 1.7,
+        whiteSpace: 'pre-wrap',
+        color: 'var(--text-secondary)',
+      }}
+    >
+      {stableText}
+      {chunks.map((chunk) => (
+        <span
+          key={chunk.id}
+          style={{ animation: 'ld-text-fade 0.42s ease-in-out both' }}
+        >
+          {chunk.text}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 import remarkGfm from "remark-gfm";
 
 import { ConvergenceMeter } from "../components/ConvergenceMeter";
 import { ProviderGlyph } from "../components/ProviderGlyph";
+import { CanvasView } from "../components/task/canvas/CanvasView";
 import {
   getTask,
   startTaskRun,
@@ -615,6 +705,7 @@ export function LiveDeliberation() {
   const navigate = useNavigate();
   const { getAccessToken } = useAuth();
 
+  const [activeTab, setActiveTab] = useState<"logs" | "canvas">("canvas");
   const [task, setTask] = useState<TaskStatusResponse | null>(null);
   const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
   const [switchBanner, setSwitchBanner] = useState<string | null>(null);
@@ -637,6 +728,10 @@ export function LiveDeliberation() {
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const autoScrollStartedRef = useRef(false);
   const [followLiveUpdates, setFollowLiveUpdates] = useState(true);
+
+  useEffect(() => {
+    injectLdKeyframes();
+  }, []);
 
   useEffect(() => {
     autoScrollStartedRef.current = false;
@@ -927,22 +1022,31 @@ export function LiveDeliberation() {
 
   return (
     <div className="relative">
-      <header className="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-border-subtle mb-8 gap-4 md:gap-0">
-        <div>
-          <div className="mono text-text-muted text-sm mb-2">TASK {taskId}</div>
-          <h2 className="text-xl md:text-2xl max-w-200">{task?.task_text ?? "Loading task..."}</h2>
+      {/* ── Top bar: back button + tab switcher ─────────────────────────────── */}
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
+        <button
+          onClick={() => navigate("/tasks")}
+          style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7.5 2L3 6l4.5 4" />
+          </svg>
+          Tasks
+        </button>
+        <div style={{ display: "flex", gap: "4px", padding: "4px", background: "var(--bg-elevated)", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
+          {(["canvas", "logs"] as const).map((tab) => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              style={{ padding: "6px 18px", borderRadius: "7px", border: "none", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: activeTab === tab ? 700 : 400, background: activeTab === tab ? "var(--accent-emerald)" : "transparent", color: activeTab === tab ? "#000" : "var(--text-muted)", transition: "all 0.15s ease" }}
+            >
+              {tab === "canvas" ? "🗺 Canvas" : "📋 Logs"}
+            </button>
+          ))}
         </div>
-        <div className="flex items-center gap-4 flex-wrap">
-          <span className="badge">
-            {(task?.mechanism ?? finalAnswer?.mechanism ?? "debate").toUpperCase()} (
-            {((task?.selector_confidence ?? 0) * 100).toFixed(0)}%)
-          </span>
-          <div className="mono flex items-center gap-2 text-text-secondary">
-            ROUND {task?.round_count || Math.max(1, convergence.lockedClaims.length)}
-          </div>
-        </div>
-      </header>
+      </div>
 
+      {/* ── Global banners (always visible regardless of tab) ──────────── */}
       <AnimatePresence>
         {retryNotice && !errorMessage && (
           <motion.div
@@ -995,35 +1099,64 @@ export function LiveDeliberation() {
         </div>
       ) : null}
 
-      <AnimatePresence>
-        {finalAnswer && (
-          <motion.div
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="p-6 bg-accent-muted border border-accent rounded-xl mb-8 shadow-glow"
-          >
-            <div className="flex items-center gap-3 mb-3 text-accent">
-              <CheckCircle2 size={24} />
-              <h3 className="text-accent text-lg">QUORUM REACHED</h3>
-            </div>
-            <p className="text-lg text-text-primary mb-4">{finalAnswer.text}</p>
-            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 sm:gap-0">
-              <div className="mono text-accent">
-                Confidence: {(finalAnswer.confidence * 100).toFixed(1)}%
-              </div>
-              <button
-                className="btn-primary flex items-center justify-center gap-2"
-                onClick={() => navigate(`/task/${taskId}/receipt`)}
-              >
-                View On-Chain Receipt &rarr;
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* ── Canvas tab ───────────────────────────────────────────────────── */}
+      {activeTab === "canvas" && (
+        <div style={{ border: "1px solid var(--border-subtle)", borderRadius: "14px", overflow: "hidden", minHeight: "600px", marginBottom: "32px", position: "relative" }}>
+          <CanvasView
+            timeline={timeline}
+            finalAnswer={finalAnswer}
+            taskId={taskId}
+            taskText={task?.task_text ?? ""}
+            mechanism={task?.mechanism ?? finalAnswer?.mechanism ?? "debate"}
+            roundCount={task?.round_count || Math.max(1, convergence.lockedClaims.length)}
+            eventCount={timeline.length}
+            entropy={convergence.entropy}
+          />
+        </div>
+      )}
 
-      {taskResult && (
-        <div className="card p-5 mb-8 border border-border-subtle">
+      {/* ── Logs tab ─────────────────────────────────────────────────────── */}
+      {activeTab === "logs" && (
+        <>
+          {/* Compact task header inside logs */}
+          <div style={{ marginBottom: "20px", paddingBottom: "16px", borderBottom: "1px solid var(--border-subtle)" }}>
+            <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", marginBottom: "6px", letterSpacing: "0.08em" }}>
+              TASK {taskId} · {(task?.mechanism ?? "debate").toUpperCase()} ({((task?.selector_confidence ?? 0) * 100).toFixed(0)}%) · ROUND {task?.round_count || 1}
+            </div>
+            <div style={{ fontSize: "14px", color: "var(--text-primary)", fontWeight: 500, maxWidth: "680px", lineHeight: 1.5 }}>
+              {task?.task_text ?? "Loading task…"}
+            </div>
+          </div>
+
+          <AnimatePresence>
+            {finalAnswer && (
+              <motion.div
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="p-6 bg-accent-muted border border-accent rounded-xl mb-8 shadow-glow"
+              >
+                <div className="flex items-center gap-3 mb-3 text-accent">
+                  <CheckCircle2 size={24} />
+                  <h3 className="text-accent text-lg">QUORUM REACHED</h3>
+                </div>
+                <p className="text-lg text-text-primary mb-4">{finalAnswer.text}</p>
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 sm:gap-0">
+                  <div className="mono text-accent">
+                    Confidence: {(finalAnswer.confidence * 100).toFixed(1)}%
+                  </div>
+                  <button
+                    className="btn-primary flex items-center justify-center gap-2"
+                    onClick={() => navigate(`/task/${taskId}/receipt`)}
+                  >
+                    View On-Chain Receipt &rarr;
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {taskResult && (
+            <div className="card p-5 mb-8 border border-border-subtle">
           <div className="mono text-xs text-text-muted mb-3">RUN SUMMARY</div>
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-4">
             <div className="rounded-md border border-border-subtle p-3 bg-void">
@@ -1316,18 +1449,22 @@ export function LiveDeliberation() {
         <div className="space-y-3">
           {timeline.map((entry) => {
             const isLatestEntry = entry.key === timeline[timeline.length - 1]?.key;
+            const isActiveStream = entry.isDraft && isLatestEntry;
             const provider = providerFromModel(entry.agentModel ?? "");
             const usageLine = formatUsageLine(entry.details);
             return (
               <motion.div
                 key={entry.key}
                 ref={isLatestEntry ? latestTimelineEntryRef : undefined}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
+                layout
+                initial={{ opacity: 0, y: 10, scale: 0.995 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
                 className={`card p-4 border-l-4 ${eventCardTone(entry.type)}`}
+                style={{ willChange: 'transform, opacity' }}
               >
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
                     {entry.type === "cross_examination" ? <Zap size={14} /> : null}
                     {entry.type === "mechanism_switch" ? <ArrowRightLeft size={14} /> : null}
                     {entry.type === "receipt_committed" ? <FileText size={14} /> : null}
@@ -1335,7 +1472,12 @@ export function LiveDeliberation() {
                       {entry.title}
                     </span>
                     {entry.isDraft ? (
-                      <span className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 mono text-[10px] text-accent">
+                      <span
+                        className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 mono text-[10px] text-accent"
+                        style={{
+                          animation: isActiveStream ? 'ld-cursor-blink 1.4s ease-in-out infinite' : 'none',
+                        }}
+                      >
                         LIVE
                       </span>
                     ) : null}
@@ -1343,16 +1485,30 @@ export function LiveDeliberation() {
                       <span
                         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${providerTone(provider)}`}
                       >
-                        <ProviderGlyph provider={provider} size={14} />
+                        <img
+                          src={`/models/${provider}.png`}
+                          alt={provider}
+                          width={13}
+                          height={13}
+                          style={{ borderRadius: "2px", objectFit: "contain", flexShrink: 0 }}
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                        />
                         <span className="mono text-[10px]">{entry.agentModel}</span>
                       </span>
                     ) : null}
                   </div>
-                  <span className="mono text-[10px] text-text-muted">{formatTimestamp(entry.timestamp)}</span>
+                  <span className="mono text-[10px] text-text-muted flex-shrink-0">
+                    {formatTimestamp(entry.timestamp)}
+                  </span>
                 </div>
 
+                {/* Summary / streaming body */}
                 <div className="text-text-primary mb-2 break-words">
-                  <MarkdownSummary>{entry.summary}</MarkdownSummary>
+                  {entry.isDraft ? (
+                    <StreamingText text={entry.summary} isActive={isActiveStream} />
+                  ) : (
+                    <MarkdownSummary>{entry.summary}</MarkdownSummary>
+                  )}
                 </div>
 
                 {usageLine ? (
@@ -1369,8 +1525,8 @@ export function LiveDeliberation() {
 
                 {entry.details ? (
                   <details className="rounded-md border border-border-subtle bg-void p-2">
-                    <summary className="mono text-[11px] text-text-muted cursor-pointer">
-                      {detailLabelForEvent(entry)}
+                    <summary className="mono text-[11px] text-text-muted cursor-pointer select-none">
+                      ▸ {detailLabelForEvent(entry)}
                     </summary>
                     <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap break-words mt-2">
                       {JSON.stringify(entry.details, null, 2)}
@@ -1382,6 +1538,8 @@ export function LiveDeliberation() {
           })}
         </div>
       </div>
+        </> /* end Logs tab */
+      )}
 
     </div>
   );

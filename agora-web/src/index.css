@@ -113,23 +113,23 @@
   --shadow-glow: 0 0 20px rgba(34,211,138,0.25);
 }
 
-/* ─── Light mode override — warm parchment palette ──────────────── */
+/* ─── Light mode override — warm cream palette ───────────────────── */
 [data-theme="light"] {
-  /* Warm off-white with a slight amber-cream cast */
-  --bg-base:     #F7F4EF;
-  --bg-elevated: #FFFDF8;
-  --bg-subtle:   #EDE9E1;
-  --bg-overlay:  rgba(247,244,239,0.92);
-  --bg-card:     rgba(255,253,248,0.85);
+  /* Rich cream base — noticeably warm, not sterile white */
+  --bg-base:     #F5EFE0;
+  --bg-elevated: #FDF7EC;
+  --bg-subtle:   #EDE4D0;
+  --bg-overlay:  rgba(245,239,224,0.94);
+  --bg-card:     rgba(253,247,236,0.88);
 
-  /* Text stays high-contrast; secondary/tertiary pick up the warmth */
-  --text-primary:   #1A1410;
-  --text-secondary: #5C5248;
-  --text-tertiary:  #8C8278;
+  /* Text: deep warm brown-black so contrast stays WCAG AA */
+  --text-primary:   #1C1610;
+  --text-secondary: #5A4E3C;
+  --text-tertiary:  #897869;
 
-  /* Borders with warm undertone */
-  --border-default: #DDD8CE;
-  --border-strong:  #C8C0B4;
+  /* Borders: honey-toned, clearly visible on cream */
+  --border-default: #D9CEBC;
+  --border-strong:  #C2B49E;
 
   /* Emerald slightly deeper for contrast on warm bg */
   --accent-emerald:      #0F9E72;
@@ -620,8 +620,8 @@ button { cursor: pointer; font-family: inherit; border: none; background: none; 
 
 [data-theme="light"] .hero-ambient-glow {
   background:
-    radial-gradient(ellipse 45% 55% at 78% 48%, rgba(16,185,129,0.10) 0%, transparent 70%),
-    radial-gradient(ellipse 40% 50% at 18% 35%, rgba(16,185,129,0.04) 0%, transparent 75%);
+    radial-gradient(ellipse 45% 55% at 78% 48%, rgba(15,158,114,0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 50% at 18% 35%, rgba(217,119,6,0.06) 0%, transparent 75%);
 }
 
 /* Seamless bottom fade — gradient that matches next section's bg
