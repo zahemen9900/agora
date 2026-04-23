@@ -1,7 +1,8 @@
 import { Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { AuthProvider, storeReturnTo } from "./lib/AuthProvider";
+import { AuthProvider, storeReturnTo } from "./lib/auth";
 import { useAuth } from "./lib/useAuth";
 import { ThemeProvider } from "./hooks/ThemeProvider";
+import { AgoraLoader } from "./components/ui/AgoraLoader";
 import { SessionRecoveryPage } from "./pages/SessionRecovery";
 
 // Page components
@@ -37,11 +38,7 @@ function AppRoutes() {
   const { isLoading, authStatus, authIssue, featureFlags } = useAuth();
 
   if (isLoading) {
-    return (
-      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', width: '100vw' }}>
-        <h1 className="wordmark" style={{ animation: 'shimmer 2s infinite ease-in-out', color: 'var(--text-muted)' }}>AGORA</h1>
-      </div>
-    );
+    return <AgoraLoader variant="splash" />;
   }
 
   if (authIssue) {
@@ -59,8 +56,8 @@ function AppRoutes() {
       <Route path="/login" element={isAuthenticated ? <Navigate to="/tasks" replace /> : <LoginRoute />} />
       <Route path="/callback" element={<Callback />} />
 
-      {/* Unauthenticated: landing page lives at /, /auth is also an alias.
-          Any other path is a protected deep link — store it and redirect to /auth. */}
+      {/* Unauthenticated: root shows the landing page; any other path stores the
+          destination and redirects to / with a ?from= banner param. */}
       {!isAuthenticated && (
         <>
           <Route path="/" element={<LoginPage />} />

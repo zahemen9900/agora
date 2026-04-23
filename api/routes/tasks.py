@@ -655,7 +655,16 @@ async def _attempt_chain_operation(
         and current is not None
         and (current.attempts > 0 or current.status == "failed")
     ):
-        reconciled = await reconcile(current)
+        try:
+            reconciled = await reconcile(current)
+        except Exception as exc:
+            logger.warning(
+                "task_chain_reconciliation_failed",
+                task_id=task_id,
+                operation=operation_key,
+                error=str(exc),
+            )
+            reconciled = None
         if reconciled is not None:
             _mark_chain_operation_succeeded(task, operation_key, reconciled)
             if on_success is not None:
@@ -777,6 +786,16 @@ async def _finalize_chain_setup_operations(
         if task.payment_amount > 0:
             task.payment_status = "locked"
 
+    onchain_task: Any | None = None
+    onchain_task_loaded = False
+
+    async def load_onchain_task() -> Any | None:
+        nonlocal onchain_task, onchain_task_loaded
+        if not onchain_task_loaded:
+            onchain_task = await bridge.fetch_task_account(task_id)
+            onchain_task_loaded = True
+        return onchain_task
+
     async def reconcile_initialize(
         current: ChainOperationRecord | None,
     ) -> dict[str, Any] | None:
@@ -788,6 +807,25 @@ async def _finalize_chain_setup_operations(
             "tx_hash": current.tx_hash or "",
             "explorer_url": current.explorer_url or "",
             "task_pda": str(bridge.derive_task_pda(task_id)),
+        }
+
+    async def reconcile_selection(
+        current: ChainOperationRecord | None,
+    ) -> dict[str, Any] | None:
+        if current is None or current.status == "succeeded":
+            return None
+        onchain = await load_onchain_task()
+        if onchain is None:
+            return None
+        if onchain.selector_reasoning_hash != task.selector_reasoning_hash:
+            return None
+        if onchain.status not in {"in_progress", "completed", "paid"}:
+            return None
+        return {
+            "tx_hash": current.tx_hash or "",
+            "explorer_url": current.explorer_url or "",
+            "task_pda": str(bridge.derive_task_pda(task_id)),
+            "selector_reasoning_hash": onchain.selector_reasoning_hash,
         }
 
     await _attempt_chain_operation(
@@ -823,6 +861,7 @@ async def _finalize_chain_setup_operations(
             selector_reasoning_hash=task.selector_reasoning_hash,
         ),
         strict_failure_detail="Failed to record task selection on Solana",
+        reconcile=reconcile_selection,
     )
 
 
@@ -845,6 +884,16 @@ async def _finalize_result_chain_operations(
             task_id=task_id,
         )
         return
+
+    onchain_task: Any | None = None
+    onchain_task_loaded = False
+
+    async def load_onchain_task() -> Any | None:
+        nonlocal onchain_task, onchain_task_loaded
+        if not onchain_task_loaded:
+            onchain_task = await bridge.fetch_task_account(task_id)
+            onchain_task_loaded = True
+        return onchain_task
 
     for switch_index, switch_event in enumerate(switch_events):
         operation_key = _switch_operation_key(switch_index)
@@ -896,6 +945,34 @@ async def _finalize_result_chain_operations(
     if ensure_missing:
         _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
     if _SUBMIT_RECEIPT_OPERATION in task.chain_operations:
+        async def reconcile_receipt(
+            current: ChainOperationRecord | None,
+        ) -> dict[str, Any] | None:
+            if current is None or current.status == "succeeded":
+                return None
+            onchain = await load_onchain_task()
+            if onchain is None:
+                return None
+            if onchain.transcript_merkle_root != (result_response.merkle_root or ""):
+                return None
+            if onchain.decision_hash != (result_response.decision_hash or ""):
+                return None
+            if onchain.quorum_reached != result_response.quorum_reached:
+                return None
+            if onchain.mechanism != result_response.mechanism:
+                return None
+            if onchain.mechanism_switches != result_response.mechanism_switches:
+                return None
+            if onchain.status not in {"completed", "paid"}:
+                return None
+            return {
+                "tx_hash": current.tx_hash or "",
+                "explorer_url": current.explorer_url or "",
+                "task_pda": str(bridge.derive_task_pda(task_id)),
+                "decision_hash": onchain.decision_hash,
+                "transcript_merkle_root": onchain.transcript_merkle_root,
+            }
+
         await _attempt_chain_operation(
             store=store,
             workspace_id=workspace_id,
@@ -911,6 +988,7 @@ async def _finalize_result_chain_operations(
             ),
             strict_failure_detail="Failed to submit receipt on Solana",
             on_success=lambda result: _apply_chain_tx(task, result),
+            reconcile=reconcile_receipt,
         )
 
 
@@ -946,6 +1024,14 @@ def _to_status_response(raw_task: dict[str, Any], *, detailed: bool = False) -> 
         normalized["events"] = []
         normalized["chain_operations"] = {}
     return TaskStatusResponse.model_validate(normalized)
+
+
+def _resolved_task_quorum(task: TaskStatusResponse) -> bool | None:
+    """Return the best available quorum signal, preferring the persisted result payload."""
+
+    if task.result is not None:
+        return task.result.quorum_reached
+    return task.quorum_reached
 
 
 def _event_payload(event_type: str, event_data: dict[str, Any]) -> dict[str, Any]:
@@ -1906,8 +1992,23 @@ async def release_payment(
             )
         if task.status == "paid" or task.payment_status == "released":
             raise HTTPException(status_code=409, detail="Payment already released")
-        if not task.quorum_reached:
-            raise HTTPException(status_code=409, detail="Quorum not reached")
+        resolved_quorum = _resolved_task_quorum(task)
+        task.quorum_reached = resolved_quorum
+        if not resolved_quorum:
+            confidence = task.result.confidence if task.result is not None else None
+            confidence_detail = (
+                f" Final confidence was {confidence:.2f} against quorum threshold "
+                f"{task.quorum_threshold:.2f}."
+                if confidence is not None
+                else ""
+            )
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Payment can only be released after quorum is reached."
+                    f"{confidence_detail}"
+                ),
+            )
         if not bridge.is_configured():
             raise HTTPException(status_code=503, detail="Solana bridge is not configured")
 
@@ -1917,6 +2018,27 @@ async def release_payment(
             task.status = "paid"
             task.payment_status = "released"
             _apply_chain_tx(task, result)
+
+        async def reconcile_payment(
+            current: ChainOperationRecord | None,
+        ) -> dict[str, Any] | None:
+            if current is None or current.status == "succeeded":
+                return None
+            onchain = await bridge.fetch_task_account(task_id)
+            if onchain is None:
+                return None
+            if onchain.status != "paid":
+                return None
+            if onchain.payment_amount_lamports != 0:
+                return None
+            if await bridge.vault_account_exists(task_id):
+                return None
+            return {
+                "tx_hash": current.tx_hash or "",
+                "explorer_url": current.explorer_url or "",
+                "task_pda": str(bridge.derive_task_pda(task_id)),
+                "vault_pda": str(bridge.derive_vault_pda(task_id)),
+            }
 
         if not _chain_operation_succeeded(task, _RELEASE_PAYMENT_OPERATION):
             await _attempt_chain_operation(
@@ -1928,6 +2050,7 @@ async def release_payment(
                 call=lambda: bridge.release_payment(task_id=task_id),
                 strict_failure_detail="Failed to record payment on Solana",
                 on_success=on_payment_success,
+                reconcile=reconcile_payment,
             )
         else:
             payment_record = _chain_operation(task, _RELEASE_PAYMENT_OPERATION)

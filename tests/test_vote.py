@@ -408,6 +408,31 @@ async def test_call_structured_claude_falls_back_to_kimi() -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_kimi_vote_native_structured_response_initializes_coercion_provenance() -> None:
+    """Native Kimi vote responses should not hit unbound coercion provenance paths."""
+
+    engine = VoteEngine(
+        agent_count=3,
+        kimi_agent=_SuccessfulKimiCaller(),
+    )
+    fallback = _VoteResponse(
+        answer="deterministic fallback",
+        confidence=0.2,
+        predicted_group_answer="deterministic fallback",
+        reasoning="offline fallback",
+    )
+
+    response, usage = await engine._call_kimi_vote(
+        "Return JSON.",
+        "Vote on the best option",
+        fallback,
+    )
+
+    assert response.answer == "Kimi fallback answer"
+    assert usage.get("fallback_events", []) == []
+
+
+@pytest.mark.asyncio
 async def test_call_structured_falls_back_when_claude_and_kimi_fail() -> None:
     """If Claude and Kimi fail, vote engine should return deterministic fallback."""
 

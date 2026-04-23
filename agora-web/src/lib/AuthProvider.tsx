@@ -21,6 +21,7 @@ import {
   type WorkspaceResponse,
 } from "./api";
 import { AuthContext, type AuthContextType, type AuthIssue, type AuthStatus } from "./authContext";
+import { AgoraLoader } from "../components/ui/AgoraLoader";
 
 const RETURN_TO_STORAGE_KEY = "agora:returnTo";
 const DEFAULT_RETURN_TO = "/";
@@ -445,13 +446,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   if (!resolvedAuthConfig) {
-    return (
-      <div className="max-w-225 mx-auto px-4 py-16">
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">Initializing authentication settings...</p>
-        </div>
-      </div>
-    );
+    return <AgoraLoader variant="auth" />;
   }
 
   if (!clientId) {

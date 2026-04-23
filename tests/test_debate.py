@@ -60,6 +60,19 @@ class _FailingCaller:
         raise AgentCallError("forced failure")
 
 
+class _FailOnceThenStructuredDebateCaller:
+    def __init__(self, model: str, response: object) -> None:
+        self.model = model
+        self.response = response
+        self.calls = 0
+
+    async def call(self, **_kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise AgentCallError("forced first failure")
+        return self.response, {"input_tokens": 5, "output_tokens": 7, "latency_ms": 11.0}
+
+
 class _SchemaAwareDebateCaller:
     def __init__(self, model: str) -> None:
         self.model = model
@@ -375,6 +388,53 @@ async def test_explicit_local_debate_roster_preserves_selected_model_order(
         "gemini-3.1-flash-lite-preview": 10,
         "claude-sonnet-4-6": 10,
     }
+
+
+@pytest.mark.asyncio
+async def test_call_structured_kimi_native_response_initializes_coercion_provenance() -> None:
+    """Native Kimi debate responses should not hit unbound coercion provenance paths."""
+
+    engine = DebateEngine(
+        agent_count=3,
+        kimi_agent=_SchemaAwareDebateCaller("moonshotai/kimi-k2-thinking"),
+    )
+    fallback = _InitialAnswerResponse(answer="deterministic fallback", confidence=0.2)
+
+    response, usage = await engine._call_structured(
+        tier="kimi",
+        system_prompt="Return JSON.",
+        user_prompt="Debate on the best option",
+        response_model=_InitialAnswerResponse,
+        fallback=fallback,
+    )
+
+    assert response.answer == "Architecture A"
+    assert usage.get("fallback_events", []) == []
+
+
+@pytest.mark.asyncio
+async def test_call_structured_kimi_retry_then_native_response_does_not_crash() -> None:
+    """Second-attempt native Kimi responses should not hit unbound coercion provenance."""
+
+    engine = DebateEngine(
+        agent_count=3,
+        kimi_agent=_FailOnceThenStructuredDebateCaller(
+            "moonshotai/kimi-k2-thinking",
+            _InitialAnswerResponse(answer="Recovered answer", confidence=0.72),
+        ),
+    )
+    fallback = _InitialAnswerResponse(answer="deterministic fallback", confidence=0.2)
+
+    response, usage = await engine._call_structured(
+        tier="kimi",
+        system_prompt="Return JSON.",
+        user_prompt="Debate on the best option",
+        response_model=_InitialAnswerResponse,
+        fallback=fallback,
+    )
+
+    assert response.answer == "Recovered answer"
+    assert usage.get("fallback_events", []) == []
 
 
 @pytest.mark.asyncio

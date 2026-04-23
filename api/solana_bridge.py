@@ -44,6 +44,19 @@ EXECUTABLE_MECHANISM_TO_U8: dict[str, int] = {
 _EXECUTABLE_MECHANISMS_TEXT = ", ".join(sorted(EXECUTABLE_MECHANISM_TO_U8))
 
 
+@dataclass(frozen=True)
+class OnChainTaskAccount:
+    selector_reasoning_hash: str
+    transcript_merkle_root: str
+    decision_hash: str
+    quorum_reached: bool
+    mechanism: str
+    switched_to: str | None
+    mechanism_switches: int
+    payment_amount_lamports: int
+    status: str
+
+
 @dataclass
 class SolanaBridge:
     rpc_url: str
@@ -253,6 +266,11 @@ class SolanaBridge:
     @staticmethod
     def _anchor_discriminator(instruction_name: str) -> bytes:
         payload = f"global:{instruction_name}".encode()
+        return hashlib.sha256(payload).digest()[:8]
+
+    @staticmethod
+    def _account_discriminator(account_name: str) -> bytes:
+        payload = f"account:{account_name}".encode()
         return hashlib.sha256(payload).digest()[:8]
 
     @staticmethod
@@ -508,15 +526,171 @@ class SolanaBridge:
             f"Failed to fetch account info for {address} from all configured RPC endpoints"
         ) from last_error
 
+    @staticmethod
+    def _decode_account_data(raw_data: Any) -> bytes | None:
+        if raw_data is None:
+            return None
+        if isinstance(raw_data, bytes):
+            return raw_data
+        if isinstance(raw_data, bytearray):
+            return bytes(raw_data)
+        if isinstance(raw_data, str):
+            return base64.b64decode(raw_data)
+        if isinstance(raw_data, (list, tuple)) and raw_data:
+            encoded = raw_data[0]
+            if isinstance(encoded, str):
+                return base64.b64decode(encoded)
+        return None
+
+    async def fetch_account_data(self, address: Pubkey) -> bytes | None:
+        """Fetch raw account bytes for an on-chain account."""
+
+        last_error: Exception | None = None
+        for rpc_url in self._rpc_candidates():
+            try:
+                async with AsyncClient(rpc_url, timeout=10) as client:
+                    response = await client.get_account_info(address, commitment="confirmed")
+                    value = response.value
+                    if value is None:
+                        return None
+                    decoded = self._decode_account_data(getattr(value, "data", None))
+                    if decoded is None:
+                        raise RuntimeError(f"Unsupported account data encoding for {address}")
+                    return decoded
+            except Exception as exc:  # pragma: no cover - network dependent
+                logger.warning("solana_rpc_candidate_failed", rpc_url=rpc_url, error=str(exc))
+                last_error = exc
+
+        raise RuntimeError(
+            f"Failed to fetch account data for {address} from all configured RPC endpoints"
+        ) from last_error
+
+    @staticmethod
+    def _read_u8(payload: bytes, offset: int) -> tuple[int, int]:
+        return payload[offset], offset + 1
+
+    @staticmethod
+    def _read_bool(payload: bytes, offset: int) -> tuple[bool, int]:
+        value, offset = SolanaBridge._read_u8(payload, offset)
+        return bool(value), offset
+
+    @staticmethod
+    def _read_bytes(payload: bytes, offset: int, size: int) -> tuple[bytes, int]:
+        return payload[offset : offset + size], offset + size
+
+    @staticmethod
+    def _read_option_u8(payload: bytes, offset: int) -> tuple[int | None, int]:
+        tag, offset = SolanaBridge._read_u8(payload, offset)
+        if tag == 0:
+            return None, offset
+        value, offset = SolanaBridge._read_u8(payload, offset)
+        return value, offset
+
+    @staticmethod
+    def _read_i64(payload: bytes, offset: int) -> tuple[int, int]:
+        chunk, offset = SolanaBridge._read_bytes(payload, offset, 8)
+        return int.from_bytes(chunk, "little", signed=True), offset
+
+    @staticmethod
+    def _read_u64(payload: bytes, offset: int) -> tuple[int, int]:
+        chunk, offset = SolanaBridge._read_bytes(payload, offset, 8)
+        return int.from_bytes(chunk, "little"), offset
+
+    @staticmethod
+    def _parse_onchain_mechanism(value: int) -> str:
+        mapping = {
+            0: "debate",
+            1: "vote",
+            2: "delphi",
+            3: "moa",
+            4: "hybrid",
+        }
+        mechanism = mapping.get(value)
+        if mechanism is None:
+            raise RuntimeError(f"Unsupported on-chain mechanism value: {value}")
+        return mechanism
+
+    @staticmethod
+    def _parse_onchain_task_status(value: int) -> str:
+        mapping = {
+            0: "pending",
+            1: "in_progress",
+            2: "completed",
+            3: "failed",
+            4: "paid",
+        }
+        status = mapping.get(value)
+        if status is None:
+            raise RuntimeError(f"Unsupported on-chain task status value: {value}")
+        return status
+
+    def parse_task_account(self, payload: bytes) -> OnChainTaskAccount:
+        """Decode an on-chain TaskAccount payload into a typed summary."""
+
+        if payload[:8] != self._account_discriminator("TaskAccount"):
+            raise RuntimeError("Unexpected TaskAccount discriminator")
+
+        offset = 8
+        _, offset = self._read_bytes(payload, offset, 32)
+        _, offset = self._read_bytes(payload, offset, 32)
+        mechanism_value, offset = self._read_u8(payload, offset)
+        switched_to_value, offset = self._read_option_u8(payload, offset)
+        selector_reasoning_hash, offset = self._read_bytes(payload, offset, 32)
+        transcript_merkle_root, offset = self._read_bytes(payload, offset, 32)
+        decision_hash, offset = self._read_bytes(payload, offset, 32)
+        quorum_reached, offset = self._read_bool(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+        payment_amount_lamports, offset = self._read_u64(payload, offset)
+        _, offset = self._read_bytes(payload, offset, 32)
+        _, offset = self._read_bytes(payload, offset, 32)
+        mechanism_switches, offset = self._read_u8(payload, offset)
+        status_value, offset = self._read_u8(payload, offset)
+        _, offset = self._read_i64(payload, offset)
+        completed_tag, offset = self._read_u8(payload, offset)
+        if completed_tag == 1:
+            _, offset = self._read_i64(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+        _, offset = self._read_u8(payload, offset)
+
+        return OnChainTaskAccount(
+            selector_reasoning_hash=selector_reasoning_hash.hex(),
+            transcript_merkle_root=transcript_merkle_root.hex(),
+            decision_hash=decision_hash.hex(),
+            quorum_reached=quorum_reached,
+            mechanism=self._parse_onchain_mechanism(mechanism_value),
+            switched_to=(
+                self._parse_onchain_mechanism(switched_to_value)
+                if switched_to_value is not None
+                else None
+            ),
+            mechanism_switches=mechanism_switches,
+            payment_amount_lamports=payment_amount_lamports,
+            status=self._parse_onchain_task_status(status_value),
+        )
+
     async def task_account_exists(self, task_id: str) -> bool:
         """Return whether the task PDA already exists on chain."""
 
         return await self.account_exists(self.derive_task_pda(task_id))
 
+    async def fetch_task_account(self, task_id: str) -> OnChainTaskAccount | None:
+        """Fetch and decode the task PDA when it exists."""
+
+        payload = await self.fetch_account_data(self.derive_task_pda(task_id))
+        if payload is None:
+            return None
+        return self.parse_task_account(payload)
+
     async def switch_account_exists(self, task_id: str, switch_index: int) -> bool:
         """Return whether the switch PDA already exists on chain."""
 
         return await self.account_exists(self.derive_switch_pda(task_id, switch_index))
+
+    async def vault_account_exists(self, task_id: str) -> bool:
+        """Return whether the vault PDA still exists on chain."""
+
+        return await self.account_exists(self.derive_vault_pda(task_id))
 
     async def _send_instruction(
         self,
