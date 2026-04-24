@@ -1265,3 +1265,39 @@ async def test_claude_falls_back_when_create_signature_lacks_output_config(
     assert messages_api.last_create_kwargs is not None
     assert "output_config" not in messages_api.last_create_kwargs
     assert messages_api.last_create_kwargs["temperature"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_claude_4_5_family_omits_unsupported_thinking_and_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Claude 4.5-family models should skip Anthropic advanced knobs they do not support."""
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    class _RecordingMessagesAPI:
+        def __init__(self) -> None:
+            self.last_create_kwargs: dict[str, Any] | None = None
+
+        async def create(self, **kwargs: Any) -> _FakeMessage:
+            self.last_create_kwargs = kwargs
+            return _FakeMessage('{"answer":"ok","confidence":0.9}', input_tokens=4, output_tokens=6)
+
+    messages_api = _RecordingMessagesAPI()
+    fake_client = SimpleNamespace(messages=messages_api)
+    monkeypatch.setattr(agent_module, "AsyncAnthropic", lambda api_key, max_retries=0: fake_client)
+
+    caller = AgentCaller(model="claude-haiku-4-5", temperature=0.3)
+    response, usage = await caller.call(
+        system_prompt="Return JSON.",
+        user_prompt="Say ok.",
+        response_format=_StructuredResponse,
+    )
+
+    assert isinstance(response, _StructuredResponse)
+    assert response.answer == "ok"
+    assert usage["provider"] == "claude"
+    assert messages_api.last_create_kwargs is not None
+    assert "thinking" not in messages_api.last_create_kwargs
+    assert "output_config" not in messages_api.last_create_kwargs
+    assert messages_api.last_create_kwargs["temperature"] == pytest.approx(0.3)

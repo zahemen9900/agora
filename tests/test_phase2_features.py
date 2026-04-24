@@ -139,6 +139,109 @@ def test_benchmark_summary_tracks_scored_and_proxy_coverage() -> None:
     assert summary["per_mechanism"]["debate"]["scored_run_count"] == 0
     assert summary["per_mechanism"]["debate"]["accuracy"] == pytest.approx(0.0)
 
+
+def test_benchmark_summary_categories_follow_requested_stage_axis() -> None:
+    summary = BenchmarkRunner._summarize_runs(
+        [
+            {
+                "item_status": "completed",
+                "mode": "selector",
+                "mechanism_used": "vote",
+                "category": "math",
+                "correct": True,
+                "scored": True,
+                "scoring_mode": "exact_match",
+                "tokens_used": 100,
+                "latency_ms": 10.0,
+                "rounds": 1,
+                "switches": 0,
+                "quorum_reached": True,
+                "thinking_tokens_used": 20,
+                "estimated_cost_usd": 0.01,
+                "confidence": 0.8,
+            }
+        ]
+    )
+
+    assert summary["per_mode"]["selector"]["run_count"] == 1
+    assert summary["per_mechanism"]["vote"]["run_count"] == 1
+    assert summary["per_category"]["math"]["selector"]["run_count"] == 1
+    assert summary["per_category"]["math"]["selector"]["scored_run_count"] == 1
+    assert summary["per_category"]["math"]["selector"]["accuracy"] == pytest.approx(1.0)
+
+
+def test_with_complete_summary_preserves_count_fields() -> None:
+    payload = {
+        "artifact_version": "benchmark-tasklike-v2",
+        "benchmark_config": {
+            "agent_count": 4,
+            "training_per_category": 1,
+            "holdout_per_category": 0,
+        },
+        "summary": {
+            "per_mode": {
+                "selector": {
+                    "accuracy": 1.0,
+                    "run_count": 2,
+                    "scored_run_count": 2,
+                    "proxy_run_count": 1,
+                    "avg_tokens": 10.0,
+                    "avg_latency_ms": 20.0,
+                    "avg_rounds": 1.0,
+                    "switch_rate": 0.0,
+                    "avg_thinking_tokens": 5.0,
+                    "avg_estimated_cost_usd": 0.01,
+                }
+            },
+            "per_mechanism": {
+                "vote": {
+                    "accuracy": 0.5,
+                    "run_count": 4,
+                    "scored_run_count": 4,
+                    "proxy_run_count": 0,
+                    "avg_tokens": 11.0,
+                    "avg_latency_ms": 21.0,
+                    "avg_rounds": 1.0,
+                    "switch_rate": 0.25,
+                    "avg_thinking_tokens": 6.0,
+                    "avg_estimated_cost_usd": 0.02,
+                }
+            },
+            "per_category": {
+                "math": {
+                    "selector": {
+                        "accuracy": 1.0,
+                        "run_count": 1,
+                        "scored_run_count": 1,
+                        "proxy_run_count": 0,
+                        "avg_tokens": 12.0,
+                        "avg_latency_ms": 22.0,
+                        "avg_thinking_tokens": 7.0,
+                        "avg_estimated_cost_usd": 0.03,
+                    }
+                }
+            },
+            "completed_run_count": 2,
+            "failed_run_count": 0,
+            "degraded_run_count": 0,
+            "scored_run_count": 2,
+            "proxy_run_count": 1,
+        },
+    }
+
+    normalized = benchmark_routes._with_complete_summary(payload)
+    summary = normalized["summary"]
+
+    assert summary["per_mode"]["selector"]["run_count"] == 2
+    assert summary["per_mode"]["selector"]["scored_run_count"] == 2
+    assert summary["per_mode"]["selector"]["proxy_run_count"] == 1
+    assert summary["per_mechanism"]["vote"]["run_count"] == 4
+    assert summary["per_mechanism"]["vote"]["scored_run_count"] == 4
+    assert summary["per_category"]["math"]["selector"]["run_count"] == 1
+    assert summary["per_category"]["math"]["selector"]["scored_run_count"] == 1
+    assert summary["per_category"]["math"]["selector"]["proxy_run_count"] == 0
+
+
 def _assert_normalized_selector_summary(
     payload: dict[str, Any],
     *,
@@ -821,7 +924,7 @@ async def test_phase2_validation_continues_after_failed_item(tmp_path: Path) -> 
     async def mixed_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
         del system_prompt
         if "FAIL BENCHMARK ITEM" in user_prompt:
-            raise RuntimeError("provider_kimi_unavailable_or_invalid")
+            raise RuntimeError("provider_openrouter_unavailable_or_invalid")
         return {
             "answer": "Constraint-matching answer",
             "confidence": 0.81,
@@ -1356,7 +1459,7 @@ async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
                     "reasoning_presets": {
                         "gemini_pro": "high",
                         "gemini_flash": "high",
-                        "kimi": "high",
+                        "openrouter": "high",
                         "claude": "high",
                     },
                 }
@@ -1806,7 +1909,7 @@ async def test_sdk_get_task_result_raises_structured_failure_for_failed_task(
                 "reasoning_presets": {
                     "gemini_pro": "high",
                     "gemini_flash": "medium",
-                    "kimi": "low",
+                    "openrouter": "low",
                     "claude": "medium",
                 },
                 "failure_reason": "Provider fallback disabled for vote._VoteResponse",
@@ -1869,7 +1972,7 @@ async def test_sdk_get_task_result_raises_when_task_not_complete(
                 "reasoning_presets": {
                     "gemini_pro": "high",
                     "gemini_flash": "medium",
-                    "kimi": "low",
+                    "openrouter": "low",
                     "claude": "medium",
                 },
             }
@@ -1911,7 +2014,7 @@ async def test_sdk_get_task_result_raises_protocol_error_for_missing_terminal_re
                 "reasoning_presets": {
                     "gemini_pro": "high",
                     "gemini_flash": "medium",
-                    "kimi": "low",
+                    "openrouter": "low",
                     "claude": "medium",
                 },
             }
@@ -1969,7 +2072,7 @@ async def test_sdk_wait_for_task_result_polls_until_completed(
                     "reasoning_presets": {
                         "gemini_pro": "high",
                         "gemini_flash": "medium",
-                        "kimi": "low",
+                        "openrouter": "low",
                         "claude": "medium",
                     },
                 }
@@ -1995,7 +2098,7 @@ async def test_sdk_wait_for_task_result_polls_until_completed(
                     "reasoning_presets": {
                         "gemini_pro": "high",
                         "gemini_flash": "medium",
-                        "kimi": "low",
+                        "openrouter": "low",
                         "claude": "medium",
                     },
                 }
@@ -2015,7 +2118,7 @@ async def test_sdk_wait_for_task_result_polls_until_completed(
                 "reasoning_presets": {
                     "gemini_pro": "high",
                     "gemini_flash": "medium",
-                    "kimi": "low",
+                    "openrouter": "low",
                     "claude": "medium",
                 },
                 "result": {

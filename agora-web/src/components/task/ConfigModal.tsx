@@ -8,7 +8,12 @@ import {
 // ─── Provider logo mapping ────────────────────────────────────────────────────
 const PROVIDER_LOGO: Record<string, string> = {
   gemini: '/models/gemini.png',
+  openrouter: '/models/qwen.png',
   kimi:   '/models/kimi.png',
+  gemma: '/models/gemma.png',
+  glm: '/models/glm.png',
+  gpt: '/models/gpt.png',
+  qwen: '/models/qwen.png',
   claude: '/models/claude.png',
 };
 
@@ -526,7 +531,7 @@ export function ConfigModal({
                   {[
                     { provider: 'gemini', label: 'Gemini Pro', count: Math.ceil(agentCount / 4), sublabel: 'gemini-3-flash-preview' },
                     { provider: 'gemini', label: 'Gemini Flash', count: Math.ceil(agentCount / 4), sublabel: 'gemini-3.1-flash-lite-preview' },
-                    { provider: 'kimi',   label: 'Kimi',   count: Math.ceil(agentCount / 4), sublabel: 'kimi-k2-thinking' },
+                    { provider: 'openrouter', label: 'OpenRouter', count: Math.ceil(agentCount / 4), sublabel: 'qwen/qwen3.5-flash-02-23' },
                     { provider: 'claude', label: 'Claude', count: Math.floor(agentCount / 4), sublabel: 'claude-sonnet-4-6' },
                   ].map((m) => (
                     <div key={m.label} style={{

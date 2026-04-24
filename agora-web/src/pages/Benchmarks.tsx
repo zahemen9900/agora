@@ -35,8 +35,15 @@ import {
   type BenchmarkPromptTemplatesPayload,
   type BenchmarkRunRequestPayload,
   type BenchmarkRunStatusPayload,
-  type BenchmarkSummary,
 } from "../lib/api";
+import {
+  BENCHMARK_DOMAIN_KEYS,
+  buildOverviewAccuracyData,
+  buildOverviewLearningCurve,
+  detectBenchmarkArtifactKind,
+  normalizeBenchmarkSummary,
+  type NormalizedSummary,
+} from "../lib/benchmarkMetrics";
 import { useAuth } from "../lib/useAuth";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { ReasoningPresetControls } from "../components/ReasoningPresetControls";
@@ -66,14 +73,7 @@ function normalizeText(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [
-  "math",
-  "factual",
-  "reasoning",
-  "code",
-  "creative",
-  "demo",
-];
+const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [...BENCHMARK_DOMAIN_KEYS];
 const BENCHMARK_MECHANISMS = ["debate", "vote", "selector"] as const;
 const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
   domains: {
@@ -407,36 +407,20 @@ export function Benchmarks() {
     };
   }, [activeBenchmarkRun, getAccessToken, loadBenchmarkData]);
 
-  const normalizedSummary = useMemo<BenchmarkSummary>(() => ensureCompleteSummary(deriveSummary(benchmarks)), [benchmarks]);
+  const normalizedSummary = useMemo<NormalizedSummary>(
+    () => normalizeBenchmarkSummary(benchmarks?.summary, benchmarks),
+    [benchmarks],
+  );
+  const benchmarkArtifactKind = useMemo(
+    () => detectBenchmarkArtifactKind(benchmarks),
+    [benchmarks],
+  );
 
   const accuracyData = useMemo(() => {
-    return BENCHMARK_DOMAINS.map((domain) => {
-      const metricsByMode = normalizedSummary.per_category[domain] ?? {};
-      return {
-        category: titleCase(domain),
-        debate: ((metricsByMode.debate?.accuracy ?? 0) as number) * 100,
-        vote: ((metricsByMode.vote?.accuracy ?? 0) as number) * 100,
-        selector: ((metricsByMode.selector?.accuracy ?? 0) as number) * 100,
-      };
-    });
+    return buildOverviewAccuracyData(normalizedSummary);
   }, [normalizedSummary]);
 
-  const learningCurveData = useMemo(() => {
-    const pre = Number(
-      benchmarks?.pre_learning?.summary?.per_mode?.selector?.accuracy
-      ?? benchmarks?.pre_learning?.summary?.per_mode?.vote?.accuracy
-      ?? 0,
-    ) * 100;
-    const post = Number(
-      benchmarks?.post_learning?.summary?.per_mode?.selector?.accuracy
-      ?? benchmarks?.post_learning?.summary?.per_mode?.vote?.accuracy
-      ?? pre,
-    ) * 100;
-    return [
-      { phase: "Pre", accuracy: pre },
-      { phase: "Post", accuracy: post || pre },
-    ];
-  }, [benchmarks]);
+  const learningCurveState = useMemo(() => buildOverviewLearningCurve(benchmarks), [benchmarks]);
 
   const costData = useMemo(() => {
     const costSummary =
@@ -688,9 +672,9 @@ export function Benchmarks() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8 w-full">
           <div className="card p-4 sm:p-8 col-span-1 lg:col-span-2">
-            <h3 className="mb-2 text-lg font-semibold">Accuracy by Task Category x Mechanism</h3>
+            <h3 className="mb-2 text-lg font-semibold">Accuracy by Task Category x Stage</h3>
             <p className="text-sm text-text-secondary mb-8">
-              Selector runs should dominate category-specific fixed strategies after learning.
+              Requested benchmark-stage success by category for the active artifact. This chart is stage-level, not actual executed-mechanism telemetry.
             </p>
             <div className="w-full h-75">
               {chartsReady ? (
@@ -721,11 +705,15 @@ export function Benchmarks() {
 
           <div className="card p-4 sm:p-8">
             <h3 className="mb-2 text-lg font-semibold">Selector Learning Curve</h3>
-            <p className="text-sm text-text-secondary mb-8">Accuracy before and after the learning update cycle.</p>
+            <p className="text-sm text-text-secondary mb-8">
+              {benchmarkArtifactKind === "validation"
+                ? "Accuracy before and after the learning update cycle."
+                : "Only validation artifacts with explicit pre/post stages can populate this curve honestly."}
+            </p>
             <div className="w-full h-62.5">
-              {chartsReady ? (
+              {chartsReady && learningCurveState.available ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={learningCurveData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                  <LineChart data={learningCurveState.data} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
                     <XAxis
                       dataKey="phase"
@@ -748,6 +736,10 @@ export function Benchmarks() {
                     />
                   </LineChart>
                 </ResponsiveContainer>
+              ) : learningCurveState.reason ? (
+                <div className="w-full h-full rounded-md border border-border-subtle bg-void px-4 py-5 flex items-center justify-center text-center text-sm text-text-secondary">
+                  {learningCurveState.reason}
+                </div>
               ) : (
                 <div className="w-full h-full" />
               )}
@@ -1441,105 +1433,6 @@ function RunningBenchmarkRunCard({
       </div>
     </button>
   );
-}
-
-function deriveSummary(payload: BenchmarkPayload | null): BenchmarkSummary {
-  const fallback = {
-    per_mode: {},
-    per_mechanism: {},
-    per_category: {},
-    completed_run_count: 0,
-    failed_run_count: 0,
-    degraded_run_count: 0,
-    scored_run_count: 0,
-    proxy_run_count: 0,
-  } satisfies BenchmarkSummary;
-  if (!payload) {
-    return fallback;
-  }
-
-  if (payload.summary) {
-    return payload.summary;
-  }
-
-  if (payload.post_learning?.summary) {
-    return payload.post_learning.summary;
-  }
-
-  if (payload.pre_learning?.summary) {
-    return payload.pre_learning.summary;
-  }
-
-  return fallback;
-}
-
-function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSummary {
-  const safePerMode = summary.per_mode || {};
-  const safePerMechanism = summary.per_mechanism || safePerMode;
-  const perMode: Record<string, Record<string, number>> = {};
-  const perMechanism: Record<string, Record<string, number>> = {};
-  for (const mechanism of BENCHMARK_MECHANISMS) {
-    const metrics = safePerMode[mechanism] ?? {};
-    perMode[mechanism] = {
-      accuracy: asNumber(metrics.accuracy),
-      run_count: asNumber(metrics.run_count),
-      scored_run_count: asNumber(metrics.scored_run_count),
-      proxy_run_count: asNumber(metrics.proxy_run_count),
-      avg_tokens: asNumber(metrics.avg_tokens),
-      avg_latency_ms: asNumber(metrics.avg_latency_ms),
-      avg_rounds: asNumber(metrics.avg_rounds),
-      switch_rate: asNumber(metrics.switch_rate),
-      avg_thinking_tokens: asNumber(metrics.avg_thinking_tokens),
-      avg_estimated_cost_usd: asNumber(metrics.avg_estimated_cost_usd),
-    };
-
-    const mechanismMetrics = safePerMechanism[mechanism] ?? {};
-    perMechanism[mechanism] = {
-      accuracy: asNumber(mechanismMetrics.accuracy),
-      run_count: asNumber(mechanismMetrics.run_count),
-      scored_run_count: asNumber(mechanismMetrics.scored_run_count),
-      proxy_run_count: asNumber(mechanismMetrics.proxy_run_count),
-      avg_tokens: asNumber(mechanismMetrics.avg_tokens),
-      avg_latency_ms: asNumber(mechanismMetrics.avg_latency_ms),
-      avg_rounds: asNumber(mechanismMetrics.avg_rounds),
-      switch_rate: asNumber(mechanismMetrics.switch_rate),
-      avg_thinking_tokens: asNumber(mechanismMetrics.avg_thinking_tokens),
-      avg_estimated_cost_usd: asNumber(mechanismMetrics.avg_estimated_cost_usd),
-    };
-  }
-
-  const safePerCategory = summary.per_category || {};
-  const perCategory: Record<string, Record<string, Record<string, number>>> = {};
-  const categories = new Set<string>(BENCHMARK_DOMAINS);
-  Object.keys(safePerCategory).forEach((category) => categories.add(category));
-
-  for (const category of categories) {
-    perCategory[category] = {};
-    for (const mechanism of BENCHMARK_MECHANISMS) {
-      const metrics = safePerCategory[category]?.[mechanism] ?? {};
-      perCategory[category][mechanism] = {
-        accuracy: asNumber(metrics.accuracy),
-        run_count: asNumber(metrics.run_count),
-        scored_run_count: asNumber(metrics.scored_run_count),
-        proxy_run_count: asNumber(metrics.proxy_run_count),
-        avg_tokens: asNumber(metrics.avg_tokens),
-        avg_latency_ms: asNumber(metrics.avg_latency_ms),
-        avg_thinking_tokens: asNumber(metrics.avg_thinking_tokens),
-        avg_estimated_cost_usd: asNumber(metrics.avg_estimated_cost_usd),
-      };
-    }
-  }
-
-  return {
-    per_mode: perMode,
-    per_mechanism: perMechanism,
-    per_category: perCategory,
-    completed_run_count: asNumber(summary.completed_run_count),
-    failed_run_count: asNumber(summary.failed_run_count),
-    degraded_run_count: asNumber(summary.degraded_run_count),
-    scored_run_count: asNumber(summary.scored_run_count),
-    proxy_run_count: asNumber(summary.proxy_run_count),
-  };
 }
 
 function asNumber(value: unknown): number {

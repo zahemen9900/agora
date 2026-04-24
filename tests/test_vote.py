@@ -151,7 +151,7 @@ def test_vote_response_coerces_scalar_text_fields() -> None:
     assert response.reasoning == "42"
 
 
-def test_four_agent_vote_routes_kimi_as_active_diversity_tier() -> None:
+def test_four_agent_vote_routes_openrouter_as_active_diversity_tier() -> None:
     """Four-agent voting should follow the canonical balanced provider cycle."""
 
     engine = VoteEngine(agent_count=4)
@@ -159,7 +159,7 @@ def test_four_agent_vote_routes_kimi_as_active_diversity_tier() -> None:
     assert [engine._tier_for_agent(agent_idx) for agent_idx in range(4)] == [
         "pro",
         "flash",
-        "kimi",
+        "openrouter",
         "claude",
     ]
 
@@ -170,32 +170,32 @@ def test_vote_provider_cycle_repeats_evenly_for_eight_and_twelve_agents() -> Non
     assert [VoteEngine(agent_count=8)._tier_for_agent(index) for index in range(8)] == [
         "pro",
         "flash",
-        "kimi",
+        "openrouter",
         "claude",
         "pro",
         "flash",
-        "kimi",
+        "openrouter",
         "claude",
     ]
     assert [VoteEngine(agent_count=12)._tier_for_agent(index) for index in range(12)] == [
         "pro",
         "flash",
-        "kimi",
+        "openrouter",
         "claude",
         "pro",
         "flash",
-        "kimi",
+        "openrouter",
         "claude",
         "pro",
         "flash",
-        "kimi",
+        "openrouter",
         "claude",
     ]
 
 
 @pytest.mark.asyncio
-async def test_call_structured_kimi_coerces_raw_vote() -> None:
-    """Active Kimi voter should still contribute when it returns non-JSON text."""
+async def test_call_structured_openrouter_coerces_raw_vote() -> None:
+    """Active OpenRouter voter should still contribute when it returns non-JSON text."""
 
     kimi = _RawKimiCaller()
     engine = VoteEngine(agent_count=4, kimi_agent=kimi)
@@ -207,7 +207,7 @@ async def test_call_structured_kimi_coerces_raw_vote() -> None:
     )
 
     response, usage = await engine._call_structured(
-        tier="kimi",
+        tier="openrouter",
         system_prompt="Return JSON.",
         user_prompt="Vote on the best option",
         response_model=_VoteResponse,
@@ -222,8 +222,8 @@ async def test_call_structured_kimi_coerces_raw_vote() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_structured_flash_raw_text_falls_back_to_kimi() -> None:
-    """Non-Kimi providers that return raw text should still fall through to live Kimi."""
+async def test_call_structured_flash_raw_text_falls_back_to_openrouter() -> None:
+    """Non-OpenRouter providers that return raw text should still fall through to live OpenRouter."""
 
     flash = _RawTextCaller("gemini-3.1-flash-lite-preview", "flash raw text")
     kimi = _RawTextCaller("moonshotai/kimi-k2-thinking", "Kimi fallback answer")
@@ -378,8 +378,8 @@ async def test_custom_agents_short_circuit_all_provider_tiers(
 
 
 @pytest.mark.asyncio
-async def test_call_structured_claude_falls_back_to_kimi() -> None:
-    """Structured Claude failures should retry once with Kimi fallback caller."""
+async def test_call_structured_claude_falls_back_to_openrouter() -> None:
+    """Structured Claude failures should retry once with the OpenRouter fallback caller."""
 
     engine = VoteEngine(
         agent_count=3,
@@ -408,8 +408,8 @@ async def test_call_structured_claude_falls_back_to_kimi() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_kimi_vote_native_structured_response_initializes_coercion_provenance() -> None:
-    """Native Kimi vote responses should not hit unbound coercion provenance paths."""
+async def test_call_openrouter_vote_native_structured_response_initializes_coercion_provenance() -> None:
+    """Native OpenRouter vote responses should not hit unbound coercion provenance paths."""
 
     engine = VoteEngine(
         agent_count=3,
@@ -433,8 +433,8 @@ async def test_call_kimi_vote_native_structured_response_initializes_coercion_pr
 
 
 @pytest.mark.asyncio
-async def test_call_structured_falls_back_when_claude_and_kimi_fail() -> None:
-    """If Claude and Kimi fail, vote engine should return deterministic fallback."""
+async def test_call_structured_falls_back_when_claude_and_openrouter_fail() -> None:
+    """If Claude and OpenRouter fail, vote engine should return deterministic fallback."""
 
     engine = VoteEngine(
         agent_count=3,
@@ -520,8 +520,8 @@ async def test_offline_vote_fallback_is_task_grounded_not_option_placeholder() -
     not _PAID_INTEGRATION_ENABLED or not _OPENROUTER_KEY_PRESENT,
     reason="Paid-provider vote integration is opt-in and requires OpenRouter key.",
 )
-async def test_vote_paid_integration_hits_kimi_path() -> None:
-    """Opt-in integration test should perform a live Kimi call in vote flow."""
+async def test_vote_paid_integration_hits_openrouter_path() -> None:
+    """Opt-in integration test should perform a live OpenRouter call in vote flow."""
 
     engine = VoteEngine(
         agent_count=3,

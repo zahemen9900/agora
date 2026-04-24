@@ -10,14 +10,14 @@ export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "api_keys:read" | "
 export interface ReasoningPresetOverrides {
   gemini_pro: "low" | "high" | null;
   gemini_flash: "low" | "medium" | "high" | null;
-  kimi: "low" | "medium" | "high" | null;
+  openrouter: "low" | "medium" | "high" | null;
   claude: "low" | "medium" | "high" | null;
 }
 
 export interface ReasoningPresets {
   gemini_pro: "low" | "high";
   gemini_flash: "low" | "medium" | "high";
-  kimi: "low" | "medium" | "high";
+  openrouter: "low" | "medium" | "high";
   claude: "low" | "medium" | "high";
 }
 

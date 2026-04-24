@@ -61,10 +61,10 @@ Implemented on top of the Week 1 foundation:
   - first-party Agora API keys for SDK, CI, and server-to-server callers
 - Provider hardening for dotenv, Secret Manager fallback, and late-bound credential resolution.
 - 4-model ensemble support in hosted/demo flows with explicit `agent_models_used` reporting.
-- Kimi K2 Thinking integrated as an active ensemble participant:
-  - vote diversity tier for 4-agent runs
-  - debate cross-exam / devil's-advocate role
-  - exposed in runtime/API result metadata
+- OpenRouter-compatible models integrated as an active ensemble lane:
+  - the canonical fourth vote tier for 4-agent runs
+  - the debate cross-exam / devil's-advocate lane
+  - surfaced in runtime/API result metadata with exact model IDs
 - Hosted mechanism forcing supports either:
   - request payload `mechanism_override=vote|debate`
   - env fallback `AGORA_API_FORCE_MECHANISM=vote|debate`
@@ -104,11 +104,11 @@ Model calls route through the shared AgentCaller abstraction with provider-speci
 
 - Gemini models use the direct Google GenAI SDK (`google-genai`) against Gemini Developer API (ai.google.dev).
 - Claude models use Anthropic's direct Python SDK (AsyncAnthropic).
-- Kimi models use OpenRouter via OpenAI-compatible AsyncOpenAI client.
+- OpenRouter-compatible models use OpenRouter via the OpenAI-compatible AsyncOpenAI client.
 
 - If `AGORA_GEMINI_API_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`) is configured, AGORA attempts live Gemini calls.
 - If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls through Anthropic API.
-- If `AGORA_OPENROUTER_API_KEY` (or `OPENROUTER_API_KEY`) is configured, AGORA attempts live Kimi calls through OpenRouter.
+- If `AGORA_OPENROUTER_API_KEY` (or `OPENROUTER_API_KEY`) is configured, AGORA attempts live OpenRouter calls through the configured OpenRouter model lane.
 - If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
 - If AgentCaller cannot initialize due to missing credentials, that is surfaced clearly in model-layer errors.
 
@@ -116,7 +116,7 @@ Model calls route through the shared AgentCaller abstraction with provider-speci
 
 ```text
 agora/
-  agent.py               # Unified caller (Gemini + Claude + OpenRouter/Kimi)
+  agent.py               # Unified caller (Gemini + Claude + OpenRouter-compatible)
   config.py              # Runtime config (models, thresholds, GCP project)
   types.py               # Shared pydantic models and enums
   selector/
@@ -267,9 +267,9 @@ What it covers:
 - Runs all Python tests (core modules + API/infra tests)
 - Runs a local orchestrator smoke task (your side)
 - Runs direct Gemini GenAI SDK smoke checks on configured Flash/Pro models
-- Runs direct Kimi/OpenRouter SDK smoke checks on configured Kimi model
+- Runs direct OpenRouter SDK smoke checks on the configured OpenRouter model
 - Runs a strict all-model 4-agent vote smoke when `RUN_ALL_MODELS_E2E=always`
-- Verifies Kimi appears as an active vote tier and debate challenger, not just a fallback
+- Verifies the OpenRouter lane appears as an active vote tier and debate challenger, not just a fallback
 - Prints `agent_models_used` so the participating ensemble is visible in demo output
 - Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
 - Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
@@ -284,20 +284,20 @@ Optional controls:
 - `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
 - `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
 - `RUN_CLAUDE_SMOKE=always|auto|never`: force or skip Claude SDK smoke checks
-- `RUN_KIMI_SMOKE=always|auto|never`: force or skip Kimi/OpenRouter SDK smoke checks
+- `RUN_OPENROUTER_SMOKE=always|auto|never`: force or skip OpenRouter SDK smoke checks
 - `RUN_ALL_MODELS_E2E=always|auto|never`: force or skip one local 4-provider vote ensemble run
 - `RUN_HOSTED_API_E2E=always|auto|never`: require hosted `/tasks` flow or downgrade hosted failures to a warning in auto mode
 - `RUN_HOSTED_ALL_MODELS_E2E=always|never`: require hosted API to report the full 4-model vote ensemble
 - `AGORA_API_FORCE_MECHANISM=vote|debate`: fallback mechanism pin for hosted strict demo validation
 - Task create payload field `mechanism_override=vote|debate`: request-level mechanism pin for hosted runs
 - `RUN_ORCHESTRATOR_SMOKE=always|auto|never`: control the natural selector-driven local orchestrator smoke
-- `DEMO_AGENT_COUNT`: orchestrator/hosted smoke agent count (defaults to 4 unless both Kimi and all-model smokes are disabled)
+- `DEMO_AGENT_COUNT`: orchestrator/hosted smoke agent count (defaults to 4 unless both OpenRouter and all-model smokes are disabled)
 - `DEMO_ORCHESTRATOR_TIMEOUT_SECONDS`, `DEMO_MODEL_TIMEOUT_SECONDS`, `DEMO_ALL_MODELS_TIMEOUT_SECONDS`: cap live provider waits so demo failures are clean
 - `DEMO_ALL_MODELS_MAX_ATTEMPTS`: retry the strict 4-provider vote smoke on transient provider failures
 - `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3.1-flash-lite-preview`)
 - `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3-flash-preview`)
 - `DEMO_CLAUDE_MODEL`: default Claude model used by script (defaults to `claude-sonnet-4-6`)
-- `DEMO_KIMI_MODEL`: default Kimi model used by script (defaults to `moonshotai/kimi-k2-thinking`)
+- `DEMO_OPENROUTER_MODEL`: default OpenRouter model used by script (defaults to `qwen/qwen3.5-flash-02-23`)
 - `PYTHON_BIN`: custom Python executable path
 
 Examples:
@@ -318,14 +318,14 @@ AGORA_TEST_API_KEY="agora_test_your_public_id.your_secret" ./scripts/week1_demo.
 # Enforce direct Gemini 3-series validation in demo
 RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh
 
-# Enforce Kimi via OpenRouter validation in demo
-RUN_KIMI_SMOKE=always ./scripts/week1_demo.sh
+# Enforce OpenRouter validation in demo
+RUN_OPENROUTER_SMOKE=always ./scripts/week1_demo.sh
 
-# Prove Gemini Pro, Kimi, Gemini Flash, and Claude all run in one local vote ensemble
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
+# Prove Gemini Pro, OpenRouter, Gemini Flash, and Claude all run in one local vote ensemble
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
 
 # Keep the demo local-only if hosted auth/runtime is drifting
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_API_E2E=never ./scripts/week1_demo.sh
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_API_E2E=never ./scripts/week1_demo.sh
 
 # Pass custom deliberation query from CLI
 ./scripts/week1_demo.sh --query "Should our team choose debate or vote for incident response decisions?"
@@ -336,30 +336,30 @@ RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODEL
 Use this sequence to verify the migrated stack concretely:
 
 ```bash
-cd /home/zahemen/projects/dl-lib/agora.worktrees/codex-openrouter-kimi-integration
+cd /home/zahemen/projects/dl-lib/agora
 
 # 1) Code quality and tests
 python -m ruff check agora api tests
 python -m pytest -s -q
 
-# Optional paid-provider Kimi/OpenRouter checks
+# Optional paid-provider OpenRouter checks
 ./scripts/run_paid_provider_tests.sh
 
 # 2) Strict local all-provider ensemble proof
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
 
 # 3) Optional direct provider smokes if you want per-provider diagnostics too
-RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_KIMI_SMOKE=always RUN_ALL_MODELS_E2E=never ./scripts/week1_demo.sh
+RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_OPENROUTER_SMOKE=always RUN_ALL_MODELS_E2E=never ./scripts/week1_demo.sh
 
 # 4) Strict model, Anchor, and hosted Week 1 E2E demo
 export GOOGLE_CLOUD_PROJECT="agora-ai-493714"
 export AGORA_API_URL="${AGORA_API_URL:-https://agora-api-dcro4pg6ca-uc.a.run.app}"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
 export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 
 # Optional hosted strict all-model check after deploying the API with AGORA_API_FORCE_MECHANISM=vote
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_KIMI_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
+RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
 ```
 
 Expected demo summary:
@@ -368,7 +368,7 @@ Expected demo summary:
 - `Orchestrator smoke`: `PASS` or `SKIPPED` in auto mode if a provider stalls
 - `Gemini 3 SDK smoke`: `PASS`
 - `Claude SDK smoke`: `PASS`
-- `Kimi K2 SDK smoke`: `PASS`
+- `OpenRouter SDK smoke`: `PASS`
 - `All-model E2E smoke`: `PASS`
 - `Local Anchor checks`: `PASS`
 - `Hosted API E2E`: `PASS`
@@ -444,7 +444,7 @@ python scripts/phase2_demo.py --target local
 
 What it requires:
 
-- real Gemini, Claude, and OpenRouter/Kimi credentials
+- real Gemini, Claude, and OpenRouter credentials
 - a real Helius devnet RPC URL
 - a real Solana keypair source for the API bridge
 
@@ -567,7 +567,7 @@ Required for live Gemini Developer API calls:
 - GEMINI_API_KEY: fallback key env var
 - GOOGLE_API_KEY: fallback key env var
 
-Required for live Kimi/OpenRouter calls:
+Required for live OpenRouter calls:
 
 - AGORA_OPENROUTER_API_KEY: preferred OpenRouter API key env var
 - OPENROUTER_API_KEY: fallback key env var
@@ -599,22 +599,21 @@ Optional model overrides:
 - DEMO_PRO_MODEL (default: gemini-2.5-pro for `week1_demo.sh`)
 - AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
 - AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
-- AGORA_KIMI_MODEL (default: moonshotai/kimi-k2-thinking)
+- AGORA_OPENROUTER_MODEL (default: qwen/qwen3.5-flash-02-23)
 - AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
 - AGORA_OPENROUTER_BASE_URL (default: https://openrouter.ai/api/v1)
 - AGORA_OPENROUTER_HTTP_REFERER (optional OpenRouter app attribution header)
 - AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
 - AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; also sends legacy `X-Title`)
-- AGORA_KIMI_REASONING_EFFORT (default: low)
-- AGORA_KIMI_REASONING_EXCLUDE (default: true)
-- AGORA_KIMI_MAX_TOKENS (default: 512)
+- AGORA_OPENROUTER_REASONING_EFFORT (default: low)
+- AGORA_OPENROUTER_REASONING_EXCLUDE (default: true)
+- AGORA_OPENROUTER_MAX_TOKENS (default: 512)
 - AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
 - AGORA_ANTHROPIC_THROTTLE_ENABLED (default: true)
 - AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
 - AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS (default: 60)
-- AGORA_KIMI_MAX_TOKENS (default: 512)
-- AGORA_KIMI_REASONING_EFFORT (default: low)
-- AGORA_KIMI_REASONING_EXCLUDE (default: true)
+- AGORA_KIMI_MODEL / AGORA_KIMI_REASONING_EFFORT / AGORA_KIMI_REASONING_EXCLUDE / AGORA_KIMI_MAX_TOKENS
+  Legacy compatibility aliases that now hydrate the canonical OpenRouter fields.
 - AGORA_OPENROUTER_HTTP_REFERER (optional attribution header)
 - AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
 - AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; keeps compatibility with legacy X-Title)

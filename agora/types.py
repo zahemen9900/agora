@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class MechanismType(StrEnum):
@@ -34,7 +34,7 @@ def mechanism_is_supported(mechanism: MechanismType) -> bool:
     return mechanism in SUPPORTED_MECHANISMS
 
 
-ProviderTierName = Literal["pro", "flash", "kimi", "claude"]
+ProviderTierName = Literal["pro", "flash", "openrouter", "claude"]
 LocalProviderName = Literal["gemini", "anthropic", "openrouter"]
 GeminiProReasoningPreset = Literal["low", "high"]
 ReasoningPresetName = Literal["low", "medium", "high"]
@@ -57,8 +57,17 @@ class ReasoningPresetOverrides(BaseModel):
 
     gemini_pro: GeminiProReasoningPreset | None = None
     gemini_flash: ReasoningPresetName | None = None
-    kimi: ReasoningPresetName | None = None
+    openrouter: ReasoningPresetName | None = Field(
+        default=None,
+        validation_alias=AliasChoices("openrouter", "kimi"),
+    )
     claude: ReasoningPresetName | None = None
+
+    @property
+    def kimi(self) -> ReasoningPresetName | None:
+        """Backward-compatible alias for historical stored payloads."""
+
+        return self.openrouter
 
 
 class ReasoningPresets(BaseModel):
@@ -68,8 +77,16 @@ class ReasoningPresets(BaseModel):
 
     gemini_pro: GeminiProReasoningPreset
     gemini_flash: ReasoningPresetName
-    kimi: ReasoningPresetName
+    openrouter: ReasoningPresetName = Field(
+        validation_alias=AliasChoices("openrouter", "kimi"),
+    )
     claude: ReasoningPresetName
+
+    @property
+    def kimi(self) -> ReasoningPresetName:
+        """Backward-compatible alias for historical runtime code paths."""
+
+        return self.openrouter
 
 
 class TaskFeatures(BaseModel):

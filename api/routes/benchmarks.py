@@ -430,6 +430,9 @@ def _merge_category_sections(
             derived_mechanisms,
             metric_keys=(
                 "accuracy",
+                "run_count",
+                "scored_run_count",
+                "proxy_run_count",
                 "avg_tokens",
                 "avg_latency_ms",
                 "avg_thinking_tokens",
@@ -940,6 +943,9 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
         derived_per_mode or derived_per_mechanism,
         metric_keys=(
             "accuracy",
+            "run_count",
+            "scored_run_count",
+            "proxy_run_count",
             "avg_tokens",
             "avg_latency_ms",
             "avg_rounds",
@@ -954,6 +960,9 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
         derived_per_mechanism or derived_per_mode,
         metric_keys=(
             "accuracy",
+            "run_count",
+            "scored_run_count",
+            "proxy_run_count",
             "avg_tokens",
             "avg_latency_ms",
             "avg_rounds",

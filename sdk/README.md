@@ -134,7 +134,7 @@ arbitrator = AgoraArbitrator(
     local_debate_config=LocalDebateConfig(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
-            model="moonshotai/kimi-k2-thinking",
+            model="qwen/qwen3.5-flash-02-23",
         )
     ),
     allow_offline_fallback=False,
@@ -244,5 +244,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a8`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a9`.
 - Preferred publish path is the trusted GitHub workflow in `.github/workflows/deploy-sdk.yml`.

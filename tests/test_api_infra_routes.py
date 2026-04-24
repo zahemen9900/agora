@@ -780,13 +780,13 @@ async def test_create_task_resolves_and_persists_reasoning_presets(
     assert captured["reasoning_presets"].model_dump(mode="json") == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
     assert fetched.reasoning_presets.model_dump(mode="json") == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
 
@@ -4166,7 +4166,7 @@ async def test_benchmark_detail_exposes_item_scoped_state_and_replay(
                         "fallback_events": [
                             {
                                 "component": "vote._VoteResponse",
-                                "reason": "provider_kimi_empty_response",
+                                "reason": "provider_openrouter_empty_response",
                                 "fallback_type": "schema_coercion",
                             }
                         ],
@@ -4627,13 +4627,13 @@ async def test_benchmark_run_status_exposes_effective_reasoning_presets(
     assert status_payload["reasoning_presets"] == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
     assert status_payload["request"]["reasoning_presets"] == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
 

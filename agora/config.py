@@ -36,6 +36,39 @@ def _env_optional_str(name: str, default: str | None = None) -> str | None:
     return value or None
 
 
+def _env_optional_str_alias(
+    primary: str,
+    *aliases: str,
+    default: str | None = None,
+) -> str | None:
+    """Read a stripped string from the first populated env name."""
+
+    for name in (primary, *aliases):
+        value = _env_optional_str(name)
+        if value is not None:
+            return value
+    return default
+
+
+def _env_bool_alias(primary: str, *aliases: str, default: bool) -> bool:
+    """Read a boolean from the first populated env name."""
+
+    for name in (primary, *aliases):
+        if os.getenv(name) is not None:
+            return _env_bool(name, default)
+    return default
+
+
+def _env_int_alias(primary: str, *aliases: str, default: int) -> int:
+    """Read an int from the first populated env name."""
+
+    for name in (primary, *aliases):
+        raw = os.getenv(name)
+        if raw is not None:
+            return int(raw)
+    return default
+
+
 def _parse_env_assignment(line: str) -> tuple[str, str] | None:
     """Parse one dotenv-style assignment line."""
 
@@ -287,8 +320,15 @@ class AgoraConfig(BaseModel):
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
     )
-    kimi_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_KIMI_MODEL", "moonshotai/kimi-k2-thinking")
+    openrouter_model: str = Field(
+        default_factory=lambda: (
+            _env_optional_str_alias(
+                "AGORA_OPENROUTER_MODEL",
+                "AGORA_KIMI_MODEL",
+                default="qwen/qwen3.5-flash-02-23",
+            )
+            or "qwen/qwen3.5-flash-02-23"
+        )
     )
     anthropic_api_key: str | None = Field(default_factory=_resolve_anthropic_api_key)
     anthropic_secret_name: str = Field(
@@ -347,14 +387,26 @@ class AgoraConfig(BaseModel):
     openrouter_legacy_x_title_enabled: bool = Field(
         default_factory=lambda: _env_bool("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", True)
     )
-    kimi_reasoning_effort: str | None = Field(
-        default_factory=lambda: _env_optional_str("AGORA_KIMI_REASONING_EFFORT", "low")
+    openrouter_reasoning_effort: str | None = Field(
+        default_factory=lambda: _env_optional_str_alias(
+            "AGORA_OPENROUTER_REASONING_EFFORT",
+            "AGORA_KIMI_REASONING_EFFORT",
+            default="low",
+        )
     )
-    kimi_reasoning_exclude: bool = Field(
-        default_factory=lambda: _env_bool("AGORA_KIMI_REASONING_EXCLUDE", True)
+    openrouter_reasoning_exclude: bool = Field(
+        default_factory=lambda: _env_bool_alias(
+            "AGORA_OPENROUTER_REASONING_EXCLUDE",
+            "AGORA_KIMI_REASONING_EXCLUDE",
+            default=True,
+        )
     )
-    kimi_max_tokens: int = Field(
-        default_factory=lambda: int(os.getenv("AGORA_KIMI_MAX_TOKENS", "512")),
+    openrouter_max_tokens: int = Field(
+        default_factory=lambda: _env_int_alias(
+            "AGORA_OPENROUTER_MAX_TOKENS",
+            "AGORA_KIMI_MAX_TOKENS",
+            default=512,
+        ),
         ge=1,
     )
     claude_effort: str = Field(
@@ -385,6 +437,30 @@ class AgoraConfig(BaseModel):
     quorum_threshold: float = 0.6
     plateau_threshold: float = 0.05
     plateau_rounds: int = 2
+
+    @property
+    def kimi_model(self) -> str:
+        """Backward-compatible alias for historical runtime code paths."""
+
+        return self.openrouter_model
+
+    @property
+    def kimi_reasoning_effort(self) -> str | None:
+        """Backward-compatible alias for historical runtime code paths."""
+
+        return self.openrouter_reasoning_effort
+
+    @property
+    def kimi_reasoning_exclude(self) -> bool:
+        """Backward-compatible alias for historical runtime code paths."""
+
+        return self.openrouter_reasoning_exclude
+
+    @property
+    def kimi_max_tokens(self) -> int:
+        """Backward-compatible alias for historical runtime code paths."""
+
+        return self.openrouter_max_tokens
 
 
 @lru_cache(maxsize=1)

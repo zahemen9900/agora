@@ -9,7 +9,7 @@ export function ProviderGlyph({
   provider: ProviderName;
   size?: number;
 }) {
-  if (provider !== "other") {
+  if (provider !== "other" && provider !== "openrouter") {
     return (
       <img
         src={`/models/${provider}.png`}

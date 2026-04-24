@@ -86,7 +86,7 @@ async def test_sdk_strict_verification_rejects_incomplete_completed_result(
                 "reasoning_presets": {
                     "gemini_pro": "high",
                     "gemini_flash": "medium",
-                    "kimi": "low",
+                    "openrouter": "low",
                     "claude": "medium",
                 },
                 "result": {
