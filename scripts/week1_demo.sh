@@ -6,7 +6,7 @@ API_URL="${AGORA_API_URL:-https://agora-api-dcro4pg6ca-uc.a.run.app}"
 RUN_ANCHOR_CHECKS="${RUN_ANCHOR_CHECKS:-auto}"
 RUN_GEMINI_SMOKE="${RUN_GEMINI_SMOKE:-auto}"
 RUN_CLAUDE_SMOKE="${RUN_CLAUDE_SMOKE:-auto}"
-RUN_KIMI_SMOKE="${RUN_KIMI_SMOKE:-auto}"
+RUN_OPENROUTER_SMOKE="${RUN_OPENROUTER_SMOKE:-${RUN_KIMI_SMOKE:-auto}}"
 RUN_ALL_MODELS_E2E="${RUN_ALL_MODELS_E2E:-auto}"
 RUN_HOSTED_API_E2E="${RUN_HOSTED_API_E2E:-auto}"
 RUN_HOSTED_ALL_MODELS_E2E="${RUN_HOSTED_ALL_MODELS_E2E:-never}"
@@ -19,12 +19,12 @@ DEMO_ALL_MODELS_MAX_ATTEMPTS="${DEMO_ALL_MODELS_MAX_ATTEMPTS:-3}"
 DEMO_FLASH_MODEL="${DEMO_FLASH_MODEL:-gemini-3.1-flash-lite-preview}"
 DEMO_PRO_MODEL="${DEMO_PRO_MODEL:-gemini-3-flash-preview}"
 DEMO_CLAUDE_MODEL="${DEMO_CLAUDE_MODEL:-claude-sonnet-4-6}"
-DEMO_KIMI_MODEL="${DEMO_KIMI_MODEL:-moonshotai/kimi-k2-thinking}"
+DEMO_OPENROUTER_MODEL="${DEMO_OPENROUTER_MODEL:-${DEMO_KIMI_MODEL:-qwen/qwen3.5-flash-02-23}}"
 DEMO_QUERY_DEFAULT="Week 1 demo: should teams use debate or vote?"
 DEMO_QUERY="${DEMO_QUERY:-$DEMO_QUERY_DEFAULT}"
 
 if [[ -z "${DEMO_AGENT_COUNT:-}" ]]; then
-  if [[ "$RUN_KIMI_SMOKE" == "never" && "$RUN_ALL_MODELS_E2E" == "never" ]]; then
+  if [[ "$RUN_OPENROUTER_SMOKE" == "never" && "$RUN_ALL_MODELS_E2E" == "never" ]]; then
     DEMO_AGENT_COUNT=3
   else
     DEMO_AGENT_COUNT=4
@@ -62,7 +62,7 @@ Environment controls still supported:
   AGORA_TEST_API_KEY=agora_test_<public_id>.<secret>
   RUN_GEMINI_SMOKE=always|auto|never
   RUN_CLAUDE_SMOKE=always|auto|never
-  RUN_KIMI_SMOKE=always|auto|never
+  RUN_OPENROUTER_SMOKE=always|auto|never
   RUN_ALL_MODELS_E2E=always|auto|never
   RUN_HOSTED_API_E2E=always|auto|never
   RUN_HOSTED_ALL_MODELS_E2E=always|never
@@ -175,7 +175,7 @@ ANCHOR_STATUS="SKIPPED"
 API_E2E_STATUS="PASS"
 GEMINI_SDK_STATUS="SKIPPED"
 CLAUDE_SDK_STATUS="SKIPPED"
-KIMI_SDK_STATUS="SKIPPED"
+OPENROUTER_SDK_STATUS="SKIPPED"
 ALL_MODELS_E2E_STATUS="SKIPPED"
 ORCHESTRATOR_STATUS="SKIPPED"
 GEMINI_KEY_SOURCE="none"
@@ -188,26 +188,26 @@ GCLOUD_ACTIVE_ACCOUNT="unknown"
 export AGORA_FLASH_MODEL="${AGORA_FLASH_MODEL:-$DEMO_FLASH_MODEL}"
 export AGORA_PRO_MODEL="${AGORA_PRO_MODEL:-$DEMO_PRO_MODEL}"
 export AGORA_CLAUDE_MODEL="${AGORA_CLAUDE_MODEL:-$DEMO_CLAUDE_MODEL}"
-export AGORA_KIMI_MODEL="${AGORA_KIMI_MODEL:-$DEMO_KIMI_MODEL}"
-export AGORA_KIMI_REASONING_EFFORT="${AGORA_KIMI_REASONING_EFFORT:-low}"
-export AGORA_KIMI_REASONING_EXCLUDE="${AGORA_KIMI_REASONING_EXCLUDE:-true}"
-export AGORA_KIMI_MAX_TOKENS="${AGORA_KIMI_MAX_TOKENS:-512}"
+export AGORA_OPENROUTER_MODEL="${AGORA_OPENROUTER_MODEL:-${AGORA_KIMI_MODEL:-$DEMO_OPENROUTER_MODEL}}"
+export AGORA_OPENROUTER_REASONING_EFFORT="${AGORA_OPENROUTER_REASONING_EFFORT:-${AGORA_KIMI_REASONING_EFFORT:-low}}"
+export AGORA_OPENROUTER_REASONING_EXCLUDE="${AGORA_OPENROUTER_REASONING_EXCLUDE:-${AGORA_KIMI_REASONING_EXCLUDE:-true}}"
+export AGORA_OPENROUTER_MAX_TOKENS="${AGORA_OPENROUTER_MAX_TOKENS:-${AGORA_KIMI_MAX_TOKENS:-512}}"
 export DEMO_AGENT_COUNT
-export RUN_GEMINI_SMOKE RUN_CLAUDE_SMOKE RUN_KIMI_SMOKE RUN_ALL_MODELS_E2E
+export RUN_GEMINI_SMOKE RUN_CLAUDE_SMOKE RUN_OPENROUTER_SMOKE RUN_ALL_MODELS_E2E
 export RUN_HOSTED_API_E2E RUN_HOSTED_ALL_MODELS_E2E RUN_ANCHOR_CHECKS
 export RUN_ORCHESTRATOR_SMOKE DEMO_ORCHESTRATOR_TIMEOUT_SECONDS
 export DEMO_MODEL_TIMEOUT_SECONDS DEMO_ALL_MODELS_TIMEOUT_SECONDS
 export DEMO_ALL_MODELS_MAX_ATTEMPTS
-export AGORA_DEMO_EXPECTED_MODELS="$AGORA_PRO_MODEL,$AGORA_KIMI_MODEL,$AGORA_FLASH_MODEL,$AGORA_CLAUDE_MODEL"
+export AGORA_DEMO_EXPECTED_MODELS="$AGORA_PRO_MODEL,$AGORA_OPENROUTER_MODEL,$AGORA_FLASH_MODEL,$AGORA_CLAUDE_MODEL"
 
 log_step "Configured Gemini models"
 printf "flash=%s\n" "$AGORA_FLASH_MODEL"
 printf "pro=%s\n" "$AGORA_PRO_MODEL"
 printf "claude=%s\n" "$AGORA_CLAUDE_MODEL"
-printf "kimi=%s\n" "$AGORA_KIMI_MODEL"
+printf "openrouter=%s\n" "$AGORA_OPENROUTER_MODEL"
 printf "agent_count=%s\n" "$DEMO_AGENT_COUNT"
-printf "kimi_reasoning_effort=%s\n" "$AGORA_KIMI_REASONING_EFFORT"
-printf "kimi_reasoning_exclude=%s\n" "$AGORA_KIMI_REASONING_EXCLUDE"
+printf "openrouter_reasoning_effort=%s\n" "$AGORA_OPENROUTER_REASONING_EFFORT"
+printf "openrouter_reasoning_exclude=%s\n" "$AGORA_OPENROUTER_REASONING_EXCLUDE"
 printf "query=%s\n" "$DEMO_QUERY"
 
 setup_gcloud_auth() {
@@ -511,23 +511,23 @@ async def main() -> None:
     cfg = get_config()
     gemini_key_loaded = bool(cfg.gemini_api_key)
     claude_key_loaded = bool(cfg.anthropic_api_key)
-    kimi_key_loaded = bool(cfg.openrouter_api_key)
+    openrouter_key_loaded = bool(cfg.openrouter_api_key)
     print("orchestrator_gemini_key_loaded:", gemini_key_loaded)
     print("orchestrator_claude_key_loaded:", claude_key_loaded)
-    print("orchestrator_kimi_key_loaded:", kimi_key_loaded)
+    print("orchestrator_openrouter_key_loaded:", openrouter_key_loaded)
     if os.environ.get("RUN_GEMINI_SMOKE") == "always" and not gemini_key_loaded:
         raise RuntimeError("Gemini key did not propagate to orchestrator smoke.")
     if os.environ.get("RUN_CLAUDE_SMOKE") == "always" and not claude_key_loaded:
         raise RuntimeError("Claude key did not propagate to orchestrator smoke.")
-    if os.environ.get("RUN_KIMI_SMOKE") == "always" and not kimi_key_loaded:
+    if os.environ.get("RUN_OPENROUTER_SMOKE") == "always" and not openrouter_key_loaded:
         raise RuntimeError("OpenRouter key did not propagate to orchestrator smoke.")
 
     orchestrator = AgoraOrchestrator(agent_count=agent_count)
     vote_tiers = [orchestrator.vote_engine._tier_for_agent(i) for i in range(agent_count)]
     print("orchestrator_agent_count:", agent_count)
     print("orchestrator_vote_tiers:", ",".join(vote_tiers))
-    print("orchestrator_kimi_active_vote_tier:", "kimi" in vote_tiers)
-    print("orchestrator_kimi_debate_challenger_model:", cfg.kimi_model)
+    print("orchestrator_openrouter_active_vote_tier:", "openrouter" in vote_tiers)
+    print("orchestrator_openrouter_debate_challenger_model:", cfg.openrouter_model)
     result = await orchestrator.run(query)
     print("mechanism_used:", result.mechanism_used.value)
     print("agent_models_used:", ",".join(result.agent_models_used))
@@ -666,11 +666,11 @@ PY
   CLAUDE_SDK_STATUS="PASS"
 }
 
-run_kimi_sdk_smoke() {
-  log_step "Running Kimi K2 Thinking via OpenRouter SDK smoke"
+run_openrouter_sdk_smoke() {
+  log_step "Running OpenRouter SDK smoke"
 
   if [[ -z "${AGORA_OPENROUTER_API_KEY:-}" && -z "${OPENROUTER_API_KEY:-}" ]]; then
-    log_warn "OpenRouter key unavailable for Kimi smoke test."
+    log_warn "OpenRouter key unavailable for OpenRouter smoke test."
     return 1
   fi
 
@@ -682,21 +682,21 @@ from agora.agent import AgentCaller
 from agora.config import get_config
 
 cfg = get_config()
-print("kimi_model:", cfg.kimi_model)
-print("kimi_reasoning_effort:", cfg.kimi_reasoning_effort)
-print("kimi_reasoning_exclude:", cfg.kimi_reasoning_exclude)
-print("kimi_max_tokens:", cfg.kimi_max_tokens)
+print("openrouter_model:", cfg.openrouter_model)
+print("openrouter_reasoning_effort:", cfg.openrouter_reasoning_effort)
+print("openrouter_reasoning_exclude:", cfg.openrouter_reasoning_exclude)
+print("openrouter_max_tokens:", cfg.openrouter_max_tokens)
 
 
 async def main() -> None:
-    kimi = AgentCaller(model=cfg.kimi_model, temperature=0.1)
-    response, usage = await kimi.call(
+    openrouter = AgentCaller(model=cfg.openrouter_model, temperature=0.1)
+    response, usage = await openrouter.call(
         system_prompt="Respond with one short token.",
-        user_prompt="Reply with KIMI",
+        user_prompt="Reply with OPENROUTER",
     )
-    print("kimi_response:", str(response)[:80])
+    print("openrouter_response:", str(response)[:80])
     print(
-        "kimi_usage:",
+        "openrouter_usage:",
         usage.get("input_tokens"),
         usage.get("output_tokens"),
         usage.get("reasoning_tokens"),
@@ -714,7 +714,7 @@ PY
     return 1
   fi
 
-  KIMI_SDK_STATUS="PASS"
+  OPENROUTER_SDK_STATUS="PASS"
 }
 
 if [[ "$RUN_GEMINI_SMOKE" == "always" ]]; then
@@ -745,17 +745,17 @@ else
   fi
 fi
 
-if [[ "$RUN_KIMI_SMOKE" == "always" ]]; then
-  run_kimi_sdk_smoke
-elif [[ "$RUN_KIMI_SMOKE" == "never" ]]; then
-  log_warn "RUN_KIMI_SMOKE=never set. Skipping Kimi SDK smoke."
-  KIMI_SDK_STATUS="SKIPPED"
+if [[ "$RUN_OPENROUTER_SMOKE" == "always" ]]; then
+  run_openrouter_sdk_smoke
+elif [[ "$RUN_OPENROUTER_SMOKE" == "never" ]]; then
+  log_warn "RUN_OPENROUTER_SMOKE=never set. Skipping OpenRouter SDK smoke."
+  OPENROUTER_SDK_STATUS="SKIPPED"
 else
-  if run_kimi_sdk_smoke; then
+  if run_openrouter_sdk_smoke; then
     :
   else
-    log_warn "Kimi SDK smoke failed in auto mode. Continuing with remaining checks."
-    KIMI_SDK_STATUS="SKIPPED"
+    log_warn "OpenRouter SDK smoke failed in auto mode. Continuing with remaining checks."
+    OPENROUTER_SDK_STATUS="SKIPPED"
   fi
 fi
 
@@ -779,7 +779,7 @@ run_all_models_e2e() {
 import asyncio
 import os
 
-from agora.agent import claude_caller, flash_caller, kimi_caller, pro_caller
+from agora.agent import claude_caller, flash_caller, openrouter_caller, pro_caller
 from agora.engines.vote import VoteEngine
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.types import MechanismType
@@ -815,7 +815,7 @@ async def main() -> None:
         orchestrator = AgoraOrchestrator(agent_count=agent_count)
         trackers = {
             "pro": TrackingCaller("pro", pro_caller()),
-            "kimi": TrackingCaller("kimi", kimi_caller()),
+            "openrouter": TrackingCaller("openrouter", openrouter_caller()),
             "flash": TrackingCaller("flash", flash_caller()),
             "claude": TrackingCaller("claude", claude_caller()),
         }
@@ -824,7 +824,7 @@ async def main() -> None:
             quorum_threshold=0.6,
             hasher=orchestrator.hasher,
             pro_agent=trackers["pro"],
-            kimi_agent=trackers["kimi"],
+            openrouter_agent=trackers["openrouter"],
             flash_agent=trackers["flash"],
             claude_agent=trackers["claude"],
         )
@@ -1164,11 +1164,11 @@ printf "  %-28s %s\n" "Gemini 3 SDK smoke" "$GEMINI_SDK_STATUS"
 printf "  %-28s %s\n" "Claude key source" "$CLAUDE_KEY_SOURCE"
 printf "  %-28s %s\n" "Claude Sonnet SDK smoke" "$CLAUDE_SDK_STATUS"
 printf "  %-28s %s\n" "OpenRouter key source" "$OPENROUTER_KEY_SOURCE"
-printf "  %-28s %s\n" "Kimi K2 SDK smoke" "$KIMI_SDK_STATUS"
+printf "  %-28s %s\n" "OpenRouter SDK smoke" "$OPENROUTER_SDK_STATUS"
 printf "  %-28s %s\n" "All-model E2E smoke" "$ALL_MODELS_E2E_STATUS"
 printf "  %-28s %s\n" "Local Anchor checks" "$ANCHOR_STATUS"
 printf "  %-28s %s\n" "Hosted API E2E" "$API_E2E_STATUS"
 printf "\nDemo complete.\n"
 printf "If you later install Solana/Anchor locally, rerun with RUN_ANCHOR_CHECKS=always to force local contract verification.\n"
 printf "If you want strict Gemini validation, run with RUN_GEMINI_SMOKE=always and a configured Gemini key source.\n"
-printf "If you want strict Kimi validation, run with RUN_KIMI_SMOKE=always and a configured OpenRouter key source.\n"
+printf "If you want strict OpenRouter validation, run with RUN_OPENROUTER_SMOKE=always and a configured OpenRouter key source.\n"

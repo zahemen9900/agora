@@ -14,7 +14,7 @@ from agora.types import (
     ReasoningPresets,
 )
 
-BASE_PARTICIPANT_CYCLE: tuple[ProviderTierName, ...] = ("pro", "flash", "kimi", "claude")
+BASE_PARTICIPANT_CYCLE: tuple[ProviderTierName, ...] = ("pro", "flash", "openrouter", "claude")
 
 
 def balanced_participant_tiers(agent_count: int) -> list[ProviderTierName]:
@@ -63,8 +63,8 @@ def resolve_reasoning_presets(
             resolved_config.gemini_flash_thinking_level,
             fallback="medium",
         ),
-        kimi=_normalize_standard_preset(
-            resolved_config.kimi_reasoning_effort,
+        openrouter=_normalize_standard_preset(
+            resolved_config.openrouter_reasoning_effort,
             fallback="low",
         ),
         claude=_normalize_standard_preset(
@@ -78,7 +78,7 @@ def resolve_reasoning_presets(
     return ReasoningPresets(
         gemini_pro=overrides.gemini_pro or defaults.gemini_pro,
         gemini_flash=overrides.gemini_flash or defaults.gemini_flash,
-        kimi=overrides.kimi or defaults.kimi,
+        openrouter=overrides.openrouter or defaults.openrouter,
         claude=overrides.claude or defaults.claude,
     )
 

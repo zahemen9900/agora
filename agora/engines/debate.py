@@ -27,7 +27,7 @@ from agora.agent import (
     AgentCallError,
     claude_caller,
     flash_caller,
-    kimi_caller,
+    openrouter_caller,
     pro_caller,
 )
 from agora.config import get_config
@@ -207,6 +207,7 @@ class DebateEngine:
         flash_agent: AgentCaller | None = None,
         pro_agent: AgentCaller | None = None,
         claude_agent: AgentCaller | None = None,
+        openrouter_agent: AgentCaller | None = None,
         kimi_agent: AgentCaller | None = None,
         monitor: StateMonitor | None = None,
         hasher: TranscriptHasher | None = None,
@@ -228,7 +229,7 @@ class DebateEngine:
             max_rounds: Maximum rounds before forced aggregation.
             flash_agent: Optional pre-configured generation caller.
             pro_agent: Optional pre-configured reasoning caller.
-            kimi_agent: Optional pre-configured challenger caller.
+            openrouter_agent: Optional pre-configured OpenRouter challenger caller.
             monitor: Optional convergence monitor instance.
             hasher: Optional transcript hasher instance.
         """
@@ -238,7 +239,7 @@ class DebateEngine:
         self._flash_agent = flash_agent
         self._pro_agent = pro_agent
         self._claude_agent = claude_agent
-        self._kimi_agent = kimi_agent
+        self._openrouter_agent = openrouter_agent or kimi_agent
         self.monitor = monitor or StateMonitor()
         self.hasher = hasher or TranscriptHasher()
         self.enable_devils_advocate = enable_devils_advocate
@@ -1026,7 +1027,9 @@ class DebateEngine:
                 "agent_model": "custom-agent"
                 if custom_agent is not None
                 else (
-                    explicit_model.model if explicit_model is not None else self._model_name("kimi")
+                    explicit_model.model
+                    if explicit_model is not None
+                    else self._model_name("openrouter")
                 ),
                 "role": "devil_advocate",
                 "round_number": round_number,
@@ -1073,7 +1076,9 @@ class DebateEngine:
                 "custom-agent"
                 if custom_agent is not None
                 else (
-                    explicit_model.model if explicit_model is not None else self._model_name("kimi")
+                    explicit_model.model
+                    if explicit_model is not None
+                    else self._model_name("openrouter")
                 )
             ),
             role="devil_advocate",
@@ -1466,10 +1471,10 @@ class DebateEngine:
                         response_text=str(response),
                         fallback=fallback,
                     )
-                    if fallback_used and not self.allow_offline_fallback:
+                    if fallback_used == "offline_fallback" and not self.allow_offline_fallback:
                         raise AgentCallError(
                             "Provider fallback disabled for "
-                            f"debate.{response_model.__name__}: provider_kimi_empty_response"
+                            f"debate.{response_model.__name__}: provider_openrouter_empty_response"
                         )
                 else:
                     raise AgentCallError(
@@ -1711,11 +1716,12 @@ class DebateEngine:
                 response_model=response_model.__name__,
                 error=str(exc),
             )
+            tier = "openrouter" if tier == "kimi" else tier
             fallback_reason = f"provider_{tier}_unavailable_or_invalid"
-            if tier != "kimi":
+            if tier != "openrouter":
                 try:
-                    kimi_response, kimi_usage = await self._call_provider(
-                        tier="kimi",
+                    openrouter_response, openrouter_usage = await self._call_provider(
+                        tier="openrouter",
                         system_prompt=system_prompt,
                         user_prompt=user_prompt,
                         response_format=response_model,
@@ -1723,35 +1729,35 @@ class DebateEngine:
                         stream=stream,
                         stream_callback=stream_callback,
                     )
-                    if isinstance(kimi_response, response_model):
+                    if isinstance(openrouter_response, response_model):
                         logger.info(
-                            "debate_agent_fallback_to_kimi_success",
+                            "debate_agent_fallback_to_openrouter_success",
                             response_model=response_model.__name__,
                             from_tier=tier,
                         )
-                        model_name = self._model_name("kimi")
-                        input_tokens = kimi_usage.get("input_tokens")
-                        output_tokens = kimi_usage.get("output_tokens")
-                        thinking_tokens = kimi_usage.get(
+                        model_name = self._model_name("openrouter")
+                        input_tokens = openrouter_usage.get("input_tokens")
+                        output_tokens = openrouter_usage.get("output_tokens")
+                        thinking_tokens = openrouter_usage.get(
                             "thinking_tokens",
-                            kimi_usage.get("reasoning_tokens"),
+                            openrouter_usage.get("reasoning_tokens"),
                         )
                         total_tokens = int(
-                            kimi_usage.get("tokens")
-                            or kimi_usage.get("total_tokens")
+                            openrouter_usage.get("tokens")
+                            or openrouter_usage.get("total_tokens")
                             or (
                                 int(input_tokens or 0)
                                 + int(output_tokens or 0)
                                 + int(thinking_tokens or 0)
                             )
                         )
-                        return kimi_response, {
+                        return openrouter_response, {
                             "tokens": total_tokens,
                             "total_tokens": total_tokens,
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
                             "thinking_tokens": thinking_tokens,
-                            "reasoning_tokens": kimi_usage.get("reasoning_tokens"),
+                            "reasoning_tokens": openrouter_usage.get("reasoning_tokens"),
                             "model_tokens": {model_name: total_tokens},
                             "model_input_tokens": (
                                 {model_name: int(input_tokens)}
@@ -1768,78 +1774,78 @@ class DebateEngine:
                                 if thinking_tokens is not None
                                 else {}
                             ),
-                            "latency_ms": float(kimi_usage.get("latency_ms", 0.0)),
+                            "latency_ms": float(openrouter_usage.get("latency_ms", 0.0)),
                             "model": model_name,
-                            "provider": kimi_usage.get(
+                            "provider": openrouter_usage.get(
                                 "provider",
-                                self._provider_for_tier("kimi"),
+                                self._provider_for_tier("openrouter"),
                             ),
                             "thinking_trace_present": bool(
-                                kimi_usage.get("thinking_trace_present", False)
+                                openrouter_usage.get("thinking_trace_present", False)
                             ),
                             "thinking_trace_chars": int(
-                                kimi_usage.get("thinking_trace_chars", 0) or 0
+                                openrouter_usage.get("thinking_trace_chars", 0) or 0
                             ),
                         }
-                    kimi_response, coercion_provenance = self._coerce_debate_response(
+                    openrouter_response, coercion_provenance = self._coerce_debate_response(
                         response_model=response_model,
-                        response_text=str(kimi_response),
+                        response_text=str(openrouter_response),
                         fallback=fallback,
                     )
-                    if coercion_provenance is not None and not self.allow_offline_fallback:
+                    if coercion_provenance == "offline_fallback" and not self.allow_offline_fallback:
                         logger.warning(
-                            "debate_kimi_response_retrying",
+                            "debate_openrouter_response_retrying",
                             from_tier=tier,
                             response_model=response_model.__name__,
                             provenance=coercion_provenance,
                         )
-                        kimi_response, kimi_usage = await self._call_provider(
-                            tier="kimi",
+                        openrouter_response, openrouter_usage = await self._call_provider(
+                            tier="openrouter",
                             system_prompt=system_prompt,
                             user_prompt=user_prompt,
                             response_format=None,
                             temperature=temperature,
                         )
-                        kimi_response, coercion_provenance = self._coerce_debate_response(
+                        openrouter_response, coercion_provenance = self._coerce_debate_response(
                             response_model=response_model,
-                            response_text=str(kimi_response),
+                            response_text=str(openrouter_response),
                             fallback=fallback,
                         )
-                        if coercion_provenance is not None and not self.allow_offline_fallback:
+                        if coercion_provenance == "offline_fallback" and not self.allow_offline_fallback:
                             raise AgentCallError(
                                 "Provider fallback disabled for "
                                 f"debate.{response_model.__name__}: "
-                                "provider_kimi_empty_response"
+                                "provider_openrouter_empty_response"
                             )
                     logger.info(
-                        "debate_agent_fallback_to_kimi_success",
+                        "debate_agent_fallback_to_openrouter_success",
                         response_model=response_model.__name__,
                         from_tier=tier,
                         coerced=True,
                     )
-                    model_name = self._model_name("kimi")
-                    input_tokens = kimi_usage.get("input_tokens")
-                    output_tokens = kimi_usage.get("output_tokens")
-                    thinking_tokens = kimi_usage.get(
+                    model_name = self._model_name("openrouter")
+                    input_tokens = openrouter_usage.get("input_tokens")
+                    output_tokens = openrouter_usage.get("output_tokens")
+                    thinking_tokens = openrouter_usage.get(
                         "thinking_tokens",
-                        kimi_usage.get("reasoning_tokens"),
+                        openrouter_usage.get("reasoning_tokens"),
                     )
                     total_tokens = int(
-                        kimi_usage.get("tokens")
-                        or kimi_usage.get("total_tokens")
+                        openrouter_usage.get("tokens")
+                        or openrouter_usage.get("total_tokens")
                         or (
                             int(input_tokens or 0)
                             + int(output_tokens or 0)
                             + int(thinking_tokens or 0)
                         )
                     )
-                    return kimi_response, {
+                    return openrouter_response, {
                         "tokens": total_tokens,
                         "total_tokens": total_tokens,
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
                         "thinking_tokens": thinking_tokens,
-                        "reasoning_tokens": kimi_usage.get("reasoning_tokens"),
+                        "reasoning_tokens": openrouter_usage.get("reasoning_tokens"),
                         "model_tokens": {model_name: total_tokens},
                         "model_input_tokens": (
                             {model_name: int(input_tokens)}
@@ -1856,33 +1862,33 @@ class DebateEngine:
                             if thinking_tokens is not None
                             else {}
                         ),
-                        "latency_ms": float(kimi_usage.get("latency_ms", 0.0)),
+                        "latency_ms": float(openrouter_usage.get("latency_ms", 0.0)),
                         "model": model_name,
-                        "provider": kimi_usage.get(
+                        "provider": openrouter_usage.get(
                             "provider",
-                            self._provider_for_tier("kimi"),
+                            self._provider_for_tier("openrouter"),
                         ),
                         "thinking_trace_present": bool(
-                            kimi_usage.get("thinking_trace_present", False)
+                            openrouter_usage.get("thinking_trace_present", False)
                         ),
                         "thinking_trace_chars": int(
-                            kimi_usage.get("thinking_trace_chars", 0) or 0
+                            openrouter_usage.get("thinking_trace_chars", 0) or 0
                         ),
                         **self._coercion_usage(
                             component=f"debate.{response_model.__name__}",
                             provenance=coercion_provenance,
                         ),
                     }
-                except AgentCallError as kimi_exc:
+                except AgentCallError as openrouter_exc:
                     logger.warning(
-                        "debate_kimi_fallback_failed",
+                        "debate_openrouter_fallback_failed",
                         response_model=response_model.__name__,
-                        error=str(kimi_exc),
+                        error=str(openrouter_exc),
                         from_tier=tier,
                     )
-                    fallback_reason = f"provider_{tier}_and_kimi_unavailable_or_invalid"
+                    fallback_reason = f"provider_{tier}_and_openrouter_unavailable_or_invalid"
 
-        if tier == "kimi" and response_model in {
+        if tier == "openrouter" and response_model in {
             _InitialAnswerResponse,
             _OpeningResponse,
             _RebuttalResponse,
@@ -1890,8 +1896,8 @@ class DebateEngine:
         }:
             try:
                 coercion_provenance = None
-                kimi_response, kimi_usage = await self._call_provider(
-                    tier="kimi",
+                openrouter_response, openrouter_usage = await self._call_provider(
+                    tier="openrouter",
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     response_format=response_model,
@@ -1899,21 +1905,21 @@ class DebateEngine:
                     stream=stream,
                     stream_callback=stream_callback,
                 )
-                if not isinstance(kimi_response, response_model):
-                    kimi_response, coercion_provenance = self._coerce_debate_response(
+                if not isinstance(openrouter_response, response_model):
+                    openrouter_response, coercion_provenance = self._coerce_debate_response(
                         response_model=response_model,
-                        response_text=str(kimi_response),
+                        response_text=str(openrouter_response),
                         fallback=fallback,
                     )
-                    if coercion_provenance is not None and not self.allow_offline_fallback:
+                    if coercion_provenance == "offline_fallback" and not self.allow_offline_fallback:
                         logger.warning(
-                            "debate_kimi_response_retrying",
+                            "debate_openrouter_response_retrying",
                             from_tier=tier,
                             response_model=response_model.__name__,
                             provenance=coercion_provenance,
                         )
-                        kimi_response, kimi_usage = await self._call_provider(
-                            tier="kimi",
+                        openrouter_response, openrouter_usage = await self._call_provider(
+                            tier="openrouter",
                             system_prompt=system_prompt,
                             user_prompt=user_prompt,
                             response_format=None,
@@ -1921,46 +1927,46 @@ class DebateEngine:
                             stream=stream,
                             stream_callback=stream_callback,
                         )
-                        kimi_response, coercion_provenance = self._coerce_debate_response(
+                        openrouter_response, coercion_provenance = self._coerce_debate_response(
                             response_model=response_model,
-                            response_text=str(kimi_response),
+                            response_text=str(openrouter_response),
                             fallback=fallback,
                         )
-                        if coercion_provenance is not None and not self.allow_offline_fallback:
+                        if coercion_provenance == "offline_fallback" and not self.allow_offline_fallback:
                             raise AgentCallError(
                                 "Provider fallback disabled for "
                                 f"debate.{response_model.__name__}: "
-                                "provider_kimi_empty_response"
+                                "provider_openrouter_empty_response"
                             )
                 logger.info(
-                    "debate_agent_fallback_to_kimi_success",
+                    "debate_agent_fallback_to_openrouter_success",
                     response_model=response_model.__name__,
                     from_tier=tier,
-                    coerced=not isinstance(kimi_response, response_model),
+                    coerced=not isinstance(openrouter_response, response_model),
                 )
-                model_name = self._model_name("kimi")
-                input_tokens = kimi_usage.get("input_tokens")
-                output_tokens = kimi_usage.get("output_tokens")
-                thinking_tokens = kimi_usage.get(
+                model_name = self._model_name("openrouter")
+                input_tokens = openrouter_usage.get("input_tokens")
+                output_tokens = openrouter_usage.get("output_tokens")
+                thinking_tokens = openrouter_usage.get(
                     "thinking_tokens",
-                    kimi_usage.get("reasoning_tokens"),
+                    openrouter_usage.get("reasoning_tokens"),
                 )
                 total_tokens = int(
-                    kimi_usage.get("tokens")
-                    or kimi_usage.get("total_tokens")
+                    openrouter_usage.get("tokens")
+                    or openrouter_usage.get("total_tokens")
                     or (
                         int(input_tokens or 0)
                         + int(output_tokens or 0)
                         + int(thinking_tokens or 0)
                     )
                 )
-                return kimi_response, {
+                return openrouter_response, {
                     "tokens": total_tokens,
                     "total_tokens": total_tokens,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "thinking_tokens": thinking_tokens,
-                    "reasoning_tokens": kimi_usage.get("reasoning_tokens"),
+                    "reasoning_tokens": openrouter_usage.get("reasoning_tokens"),
                     "model_tokens": {model_name: total_tokens},
                     "model_input_tokens": (
                         {model_name: int(input_tokens)}
@@ -1977,17 +1983,17 @@ class DebateEngine:
                         if thinking_tokens is not None
                         else {}
                     ),
-                    "latency_ms": float(kimi_usage.get("latency_ms", 0.0)),
+                    "latency_ms": float(openrouter_usage.get("latency_ms", 0.0)),
                     "model": model_name,
-                    "provider": kimi_usage.get(
+                    "provider": openrouter_usage.get(
                         "provider",
-                        self._provider_for_tier("kimi"),
+                        self._provider_for_tier("openrouter"),
                     ),
                     "thinking_trace_present": bool(
-                        kimi_usage.get("thinking_trace_present", False)
+                        openrouter_usage.get("thinking_trace_present", False)
                     ),
                     "thinking_trace_chars": int(
-                        kimi_usage.get("thinking_trace_chars", 0) or 0
+                        openrouter_usage.get("thinking_trace_chars", 0) or 0
                     ),
                     **self._coercion_usage(
                         component=f"debate.{response_model.__name__}",
@@ -1997,16 +2003,16 @@ class DebateEngine:
             except AgentCallError as exc:
                 logger.warning(
                     "debate_agent_fallback",
-                    tier="kimi",
+                    tier="openrouter",
                     response_model=response_model.__name__,
                     error=str(exc),
                 )
                 return self._offline_structured_fallback(
                     fallback=fallback,
                     component=f"debate.{response_model.__name__}",
-                    reason="provider_kimi_unavailable_or_invalid",
-                    model=self._model_name("kimi"),
-                    provider=self._provider_for_tier("kimi"),
+                    reason="provider_openrouter_unavailable_or_invalid",
+                    model=self._model_name("openrouter"),
+                    provider=self._provider_for_tier("openrouter"),
                 )
 
         return self._offline_structured_fallback(
@@ -2024,7 +2030,7 @@ class DebateEngine:
         response_text: str,
         fallback: BaseModel,
     ) -> tuple[BaseModel, str | None]:
-        """Coerce live Kimi text into one of the debate response schemas."""
+        """Coerce live OpenRouter text into one of the debate response schemas."""
 
         cleaned = response_text.strip()
         if not cleaned:
@@ -2180,10 +2186,10 @@ class DebateEngine:
         stream: bool = False,
         stream_callback: Callable[[str], None] | None = None,
     ) -> tuple[_CrossExamResponse, dict[str, Any]]:
-        """Call Kimi as a raw challenger and coerce output into transcript schema."""
+        """Call the OpenRouter challenger and coerce output into transcript schema."""
 
         try:
-            caller = self._get_caller("kimi")
+            caller = self._get_caller("openrouter")
             response, usage = await caller.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
@@ -2202,14 +2208,14 @@ class DebateEngine:
                 if fallback_used and not self.allow_offline_fallback:
                     raise AgentCallError(
                         "Provider fallback disabled for debate.cross_examination: "
-                        "provider_kimi_empty_response"
+                        "provider_openrouter_empty_response"
                     )
             total_tokens = int(
                 usage.get("tokens")
                 or usage.get("total_tokens")
                 or int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0)
             )
-            model_name = self._model_name("kimi")
+            model_name = self._model_name("openrouter")
             return parsed, {
                 "tokens": total_tokens,
                 "total_tokens": total_tokens,
@@ -2235,14 +2241,14 @@ class DebateEngine:
                 ),
                 "latency_ms": float(usage.get("latency_ms", 0.0)),
                 "model": model_name,
-                "provider": usage.get("provider", self._provider_for_tier("kimi")),
+                "provider": usage.get("provider", self._provider_for_tier("openrouter")),
                 "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
                 "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
             }
         except AgentCallError as exc:
             logger.warning(
                 "debate_agent_fallback",
-                tier="kimi",
+                tier="openrouter",
                 response_model=_CrossExamResponse.__name__,
                 error=str(exc),
             )
@@ -2250,9 +2256,9 @@ class DebateEngine:
         response, usage = self._offline_structured_fallback(
             fallback=fallback,
             component="debate.cross_examination",
-            reason="provider_kimi_unavailable_or_invalid",
-            model=self._model_name("kimi"),
-            provider=self._provider_for_tier("kimi"),
+            reason="provider_openrouter_unavailable_or_invalid",
+            model=self._model_name("openrouter"),
+            provider=self._provider_for_tier("openrouter"),
         )
         assert isinstance(response, _CrossExamResponse)
         return response, usage
@@ -2262,7 +2268,7 @@ class DebateEngine:
         response_text: str,
         fallback: _CrossExamResponse,
     ) -> tuple[_CrossExamResponse, bool]:
-        """Parse Kimi JSON when available, otherwise preserve its raw critique."""
+        """Parse OpenRouter JSON when available, otherwise preserve its raw critique."""
 
         cleaned = response_text.strip()
         if not cleaned:
@@ -2279,7 +2285,7 @@ class DebateEngine:
                 analyses=[
                     _CrossExamItem(
                         faction="pro",
-                        weakest_claim="kimi_unstructured_challenge",
+                        weakest_claim="openrouter_unstructured_challenge",
                         flaw=clipped,
                         attack_axis="evidence_gap",
                         counterexample=(
@@ -2290,13 +2296,13 @@ class DebateEngine:
                             "The challenge is meaningful even without a perfect schema round-trip."
                         ),
                         question=(
-                            "Which specific evidence would most directly answer Kimi's "
+                            "Which specific evidence would most directly answer the challenger "
                             "challenge, and what counterexample would still break it?"
                         ),
                     ),
                     _CrossExamItem(
                         faction="opp",
-                        weakest_claim="kimi_unstructured_challenge",
+                        weakest_claim="openrouter_unstructured_challenge",
                         flaw=clipped,
                         attack_axis="hidden_assumption",
                         counterexample=(
@@ -2308,7 +2314,7 @@ class DebateEngine:
                             "not guarantee."
                         ),
                         question=(
-                            "Which assumption survives Kimi's challenge, and what task-boundary "
+                            "Which assumption survives the challenger response, and what task-boundary "
                             "change would invalidate it?"
                         ),
                     ),
@@ -2568,9 +2574,13 @@ class DebateEngine:
                 self._claude_agent = claude_caller(effort=self.reasoning_presets.claude)
             return self._claude_agent
         if tier == "kimi":
-            if self._kimi_agent is None:
-                self._kimi_agent = kimi_caller(effort=self.reasoning_presets.kimi)
-            return self._kimi_agent
+            tier = "openrouter"
+        if tier == "openrouter":
+            if self._openrouter_agent is None:
+                self._openrouter_agent = openrouter_caller(
+                    effort=self.reasoning_presets.openrouter
+                )
+            return self._openrouter_agent
         if self._pro_agent is None:
             self._pro_agent = pro_caller(thinking_level=self.reasoning_presets.gemini_pro)
         return self._pro_agent
@@ -2587,8 +2597,8 @@ class DebateEngine:
                 return config.flash_model
             if tier == "claude":
                 return config.claude_model
-            if tier == "kimi":
-                return config.kimi_model
+            if tier in {"kimi", "openrouter"}:
+                return config.openrouter_model
             return config.pro_model
 
     @staticmethod
@@ -2600,6 +2610,7 @@ class DebateEngine:
             "pro": "gemini",
             "claude": "claude",
             "kimi": "openrouter",
+            "openrouter": "openrouter",
         }.get(tier, "unknown")
 
     @staticmethod

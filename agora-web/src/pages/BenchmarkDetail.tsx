@@ -24,31 +24,18 @@ import {
   setBenchmarkDetailCache,
   useBenchmarkDetailQuery,
 } from "../lib/benchmarkQueries";
+import {
+  buildDetailCategoryRows,
+  buildDetailMechanismRows,
+  buildDetailStageRows,
+  type BenchmarkCategoryRow,
+  type BenchmarkMetricRow,
+  type NormalizedSummary,
+  normalizeBenchmarkSummary,
+} from "../lib/benchmarkMetrics";
 import { useAuth } from "../lib/useAuth";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
-
-interface NormalizedMetric {
-  accuracy: number;
-  run_count: number;
-  scored_run_count: number;
-  proxy_run_count: number;
-  avg_tokens: number;
-  avg_thinking_tokens: number;
-  avg_latency_ms: number;
-  avg_estimated_cost_usd: number;
-}
-
-interface NormalizedSummary {
-  per_mode: Record<string, NormalizedMetric>;
-  per_mechanism: Record<string, NormalizedMetric>;
-  per_category: Record<string, Record<string, NormalizedMetric>>;
-  completed_run_count: number;
-  failed_run_count: number;
-  degraded_run_count: number;
-  scored_run_count: number;
-  proxy_run_count: number;
-}
 
 interface BenchmarkTimelineDescriptor {
   label: string;
@@ -70,17 +57,6 @@ interface BenchmarkReliabilitySummary {
   retryByProvider: Array<[string, number]>;
   phaseCounts: Array<[string, number]>;
 }
-
-const DEFAULT_METRIC: NormalizedMetric = {
-  accuracy: 0,
-  run_count: 0,
-  scored_run_count: 0,
-  proxy_run_count: 0,
-  avg_tokens: 0,
-  avg_thinking_tokens: 0,
-  avg_latency_ms: 0,
-  avg_estimated_cost_usd: 0,
-};
 
 const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
   "agent_output_delta",
@@ -217,49 +193,11 @@ export function BenchmarkDetail() {
   }, [benchmarkId, detailRunId, detailStatus, getAccessToken, queryClient]);
 
   const summary = useMemo<NormalizedSummary>(() => {
-    return normalizeSummary(detail?.summary, detail?.benchmark_payload);
+    return normalizeBenchmarkSummary(detail?.summary, detail?.benchmark_payload);
   }, [detail]);
-
-  const mechanismSource =
-    Object.keys(summary.per_mechanism).length > 0 ? summary.per_mechanism : summary.per_mode;
-
-  const modeRows = useMemo(() => {
-    const keys = Object.keys(mechanismSource);
-    return keys.map((mechanism) => {
-      const metric = mechanismSource[mechanism] ?? DEFAULT_METRIC;
-      const scoredRunCount = Math.round(metric.scored_run_count);
-      return {
-        mechanism: titleCase(mechanism),
-        accuracy: scoredRunCount > 0 ? Number((metric.accuracy * 100).toFixed(2)) : null,
-        runCount: Math.round(metric.run_count),
-        scoredRunCount,
-        proxyRunCount: Math.round(metric.proxy_run_count),
-        avgTokens: Math.round(metric.avg_tokens),
-        thinkingTokens: Math.round(metric.avg_thinking_tokens),
-        avgLatencyMs: Math.round(metric.avg_latency_ms),
-        avgCostUsd: Number(metric.avg_estimated_cost_usd.toFixed(6)),
-      };
-    });
-  }, [mechanismSource]);
-
-  const categoryRows = useMemo(() => {
-    const categories = Object.keys(summary.per_category);
-    return categories.map((category) => {
-      const perMode = summary.per_category[category] ?? {};
-      const debateScoredRuns = Math.round(perMode.debate?.scored_run_count ?? 0);
-      const voteScoredRuns = Math.round(perMode.vote?.scored_run_count ?? 0);
-      const selectorScoredRuns = Math.round(perMode.selector?.scored_run_count ?? 0);
-      return {
-        category: titleCase(category),
-        debate: debateScoredRuns > 0 ? Number(((perMode.debate?.accuracy ?? 0) * 100).toFixed(1)) : null,
-        vote: voteScoredRuns > 0 ? Number(((perMode.vote?.accuracy ?? 0) * 100).toFixed(1)) : null,
-        selector: selectorScoredRuns > 0 ? Number(((perMode.selector?.accuracy ?? 0) * 100).toFixed(1)) : null,
-        debateScoredRuns,
-        voteScoredRuns,
-        selectorScoredRuns,
-      };
-    });
-  }, [summary]);
+  const stageRows = useMemo<BenchmarkMetricRow[]>(() => buildDetailStageRows(summary), [summary]);
+  const mechanismRows = useMemo<BenchmarkMetricRow[]>(() => buildDetailMechanismRows(summary), [summary]);
+  const categoryRows = useMemo<BenchmarkCategoryRow[]>(() => buildDetailCategoryRows(summary), [summary]);
 
   const modelList = useMemo(() => {
     if (!detail) {
@@ -425,7 +363,7 @@ export function BenchmarkDetail() {
       proxyRuns: summary.proxy_run_count,
     };
   }, [benchmarkItems, reliabilityCards, summary]);
-  const frontierHighlights = useMemo(() => buildFrontierHighlights(modeRows), [modeRows]);
+  const frontierHighlights = useMemo(() => buildFrontierHighlights(stageRows), [stageRows]);
 
   useEffect(() => {
     followTimelineRef.current = true;
@@ -864,7 +802,7 @@ export function BenchmarkDetail() {
           <InlineMetricTile label="Fastest Mode" value={frontierHighlights.fastest} />
           <InlineMetricTile label="Cheapest Mode" value={frontierHighlights.cheapest} />
         </div>
-        {modeRows.length === 0 ? (
+        {stageRows.length === 0 ? (
           <div className="text-sm text-text-secondary">No per-mechanism scored-success metrics were stored for this benchmark artifact.</div>
         ) : (
           <div className="overflow-x-auto">
@@ -881,7 +819,7 @@ export function BenchmarkDetail() {
                 </tr>
               </thead>
               <tbody>
-                {modeRows.map((row) => (
+                {stageRows.map((row) => (
                   <tr key={row.mechanism} className="border-b border-border-subtle/70">
                     <td className="py-2 pr-3 text-sm text-text-primary">{row.mechanism}</td>
                     <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatRowAccuracy(row.accuracy)}</td>
@@ -978,11 +916,11 @@ export function BenchmarkDetail() {
       <div className="card p-4 sm:p-8 mb-8">
         <h3 className="mb-2 text-lg font-semibold">Mechanism Performance</h3>
         <p className="text-sm text-text-secondary mb-8">
-          Scored success rate by mechanism for the selected benchmark artifact.
+          Scored success by actual executed mechanism after selector choices and any mechanism switches.
         </p>
         <div className="w-full h-70">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={modeRows} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
+            <BarChart data={mechanismRows} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
               <XAxis
                 dataKey="mechanism"
@@ -1003,7 +941,9 @@ export function BenchmarkDetail() {
 
       <div className="card p-4 sm:p-8 mb-8 overflow-x-auto">
         <h3 className="mb-2 text-lg font-semibold">Category Accuracy Matrix</h3>
-        <p className="text-sm text-text-secondary mb-6">Per-category scored success percentage across debate, vote, and selector mechanisms.</p>
+        <p className="text-sm text-text-secondary mb-6">
+          Per-category scored success across requested benchmark stages. Creative and demo remain proxy-scored rather than exact-match truth.
+        </p>
 
         {categoryRows.length === 0 ? (
           <p className="text-sm text-text-secondary">No category metrics found in this artifact.</p>
@@ -1174,140 +1114,8 @@ function JsonPanel({ title, value }: { title: string; value: unknown }) {
   );
 }
 
-function normalizeSummary(summaryCandidate: unknown, benchmarkPayloadCandidate: unknown): NormalizedSummary {
-  const fromSummary = parseSummaryObject(summaryCandidate);
-  if (hasSummaryData(fromSummary)) {
-    return fromSummary;
-  }
-
-  const payloadSummary = extractSummaryFromBenchmarkPayload(benchmarkPayloadCandidate);
-  const fromPayload = parseSummaryObject(payloadSummary);
-  if (hasSummaryData(fromPayload)) {
-    return fromPayload;
-  }
-
-  return {
-    per_mode: {},
-    per_mechanism: {},
-    per_category: {},
-    completed_run_count: 0,
-    failed_run_count: 0,
-    degraded_run_count: 0,
-    scored_run_count: 0,
-    proxy_run_count: 0,
-  };
-}
-
-function parseSummaryObject(candidate: unknown): NormalizedSummary {
-  if (!isRecord(candidate)) {
-    return {
-      per_mode: {},
-      per_mechanism: {},
-      per_category: {},
-      completed_run_count: 0,
-      failed_run_count: 0,
-      degraded_run_count: 0,
-      scored_run_count: 0,
-      proxy_run_count: 0,
-    };
-  }
-
-  const perMode: Record<string, NormalizedMetric> = {};
-  const perModeSource = candidate.per_mode;
-  if (isRecord(perModeSource)) {
-    for (const [mechanism, value] of Object.entries(perModeSource)) {
-      perMode[mechanism] = parseMetric(value);
-    }
-  }
-
-  const perMechanism: Record<string, NormalizedMetric> = {};
-  const perMechanismSource = candidate.per_mechanism;
-  if (isRecord(perMechanismSource)) {
-    for (const [mechanism, value] of Object.entries(perMechanismSource)) {
-      perMechanism[mechanism] = parseMetric(value);
-    }
-  }
-
-  const perCategory: Record<string, Record<string, NormalizedMetric>> = {};
-  const perCategorySource = candidate.per_category;
-  if (isRecord(perCategorySource)) {
-    for (const [category, categoryValue] of Object.entries(perCategorySource)) {
-      if (!isRecord(categoryValue)) {
-        continue;
-      }
-      perCategory[category] = {};
-      for (const [mechanism, value] of Object.entries(categoryValue)) {
-        perCategory[category][mechanism] = parseMetric(value);
-      }
-    }
-  }
-
-  return {
-    per_mode: perMode,
-    per_mechanism: perMechanism,
-    per_category: perCategory,
-    completed_run_count: asNumber(candidate.completed_run_count),
-    failed_run_count: asNumber(candidate.failed_run_count),
-    degraded_run_count: asNumber(candidate.degraded_run_count),
-    scored_run_count: asNumber(candidate.scored_run_count),
-    proxy_run_count: asNumber(candidate.proxy_run_count),
-  };
-}
-
-function parseMetric(candidate: unknown): NormalizedMetric {
-  if (!isRecord(candidate)) {
-    return { ...DEFAULT_METRIC };
-  }
-
-  return {
-    accuracy: asNumber(candidate.accuracy),
-    run_count: asNumber(candidate.run_count),
-    scored_run_count: asNumber(candidate.scored_run_count),
-    proxy_run_count: asNumber(candidate.proxy_run_count),
-    avg_tokens: asNumber(candidate.avg_tokens),
-    avg_thinking_tokens: asNumber(candidate.avg_thinking_tokens),
-    avg_latency_ms: asNumber(candidate.avg_latency_ms),
-    avg_estimated_cost_usd: asNumber(candidate.avg_estimated_cost_usd),
-  };
-}
-
-function extractSummaryFromBenchmarkPayload(candidate: unknown): unknown {
-  if (!isRecord(candidate)) {
-    return null;
-  }
-
-  if (isRecord(candidate.summary)) {
-    return candidate.summary;
-  }
-
-  if (isRecord(candidate.post_learning) && isRecord(candidate.post_learning.summary)) {
-    return candidate.post_learning.summary;
-  }
-
-  if (isRecord(candidate.pre_learning) && isRecord(candidate.pre_learning.summary)) {
-    return candidate.pre_learning.summary;
-  }
-
-  return null;
-}
-
-function hasSummaryData(summary: NormalizedSummary): boolean {
-  return (
-    Object.keys(summary.per_mode).length > 0
-    || Object.keys(summary.per_mechanism).length > 0
-    || Object.keys(summary.per_category).length > 0
-  );
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function asNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  return 0;
 }
 
 function formatDateTime(value: string | null | undefined): string {

@@ -1,13 +1,13 @@
 import type { ProviderName } from "./modelProviders";
 
-export type ProviderTier = "pro" | "flash" | "kimi" | "claude";
+export type ProviderTier = "pro" | "flash" | "openrouter" | "claude";
 export type GeminiProPreset = "low" | "high";
 export type ReasoningPreset = "low" | "medium" | "high";
 
 export interface ReasoningPresetState {
   gemini_pro: GeminiProPreset;
   gemini_flash: ReasoningPreset;
-  kimi: ReasoningPreset;
+  openrouter: ReasoningPreset;
   claude: ReasoningPreset;
 }
 
@@ -35,7 +35,7 @@ interface TierDefinition {
   debateRole: string;
 }
 
-const BASE_PARTICIPANT_TIERS: ProviderTier[] = ["pro", "flash", "kimi", "claude"];
+const BASE_PARTICIPANT_TIERS: ProviderTier[] = ["pro", "flash", "openrouter", "claude"];
 
 const TIER_DEFINITIONS: Record<ProviderTier, TierDefinition> = {
   pro: {
@@ -50,10 +50,10 @@ const TIER_DEFINITIONS: Record<ProviderTier, TierDefinition> = {
     voteRole: "Fast voter",
     debateRole: "Debater",
   },
-  kimi: {
-    provider: "kimi",
-    model: "moonshotai/kimi-k2-thinking",
-    voteRole: "Adversarial voter",
+  openrouter: {
+    provider: "openrouter",
+    model: "qwen/qwen3.5-flash-02-23",
+    voteRole: "Diversity voter",
     debateRole: "Debater",
   },
   claude: {
@@ -67,7 +67,7 @@ const TIER_DEFINITIONS: Record<ProviderTier, TierDefinition> = {
 export const DEFAULT_REASONING_PRESETS: ReasoningPresetState = {
   gemini_pro: "high",
   gemini_flash: "medium",
-  kimi: "low",
+  openrouter: "low",
   claude: "medium",
 };
 
@@ -94,9 +94,9 @@ export const REASONING_CONTROL_DEFINITIONS: ReasoningControlDefinition[] = [
     ],
   },
   {
-    id: "kimi",
-    label: "Kimi",
-    provider: "kimi",
+    id: "openrouter",
+    label: "OpenRouter",
+    provider: "openrouter",
     help: "Reasoning effort",
     options: [
       { value: "low", label: "Low" },
@@ -126,7 +126,7 @@ export function buildProviderCounts(agentCount: number): Record<ProviderTier, nu
   const counts: Record<ProviderTier, number> = {
     pro: 0,
     flash: 0,
-    kimi: 0,
+    openrouter: 0,
     claude: 0,
   };
   for (const tier of buildBalancedTiers(agentCount)) {
@@ -186,11 +186,11 @@ export function buildDebateRoster(
     ...countedParticipants,
     {
       id: "debate-devils-advocate",
-      provider: "kimi",
-      model: TIER_DEFINITIONS.kimi.model,
+      provider: "openrouter",
+      model: TIER_DEFINITIONS.openrouter.model,
       role: "Devil's advocate",
       badge: "Specialist",
-      reasoningLabel: formatReasoningLabel("kimi", presets),
+      reasoningLabel: formatReasoningLabel("openrouter", presets),
     },
     {
       id: "debate-final-synthesis",
@@ -204,7 +204,7 @@ export function buildDebateRoster(
 }
 
 export function getDebateSpecialistSummary(): string {
-  return "Plus Kimi devil's advocate and Gemini Pro final synthesis.";
+  return "Plus an OpenRouter devil's advocate and Gemini Pro final synthesis.";
 }
 
 function formatReasoningLabel(
@@ -217,8 +217,8 @@ function formatReasoningLabel(
   if (tier === "flash") {
     return `Thinking level: ${titleCase(presets.gemini_flash)}`;
   }
-  if (tier === "kimi") {
-    return `Reasoning effort: ${titleCase(presets.kimi)}`;
+  if (tier === "openrouter") {
+    return `Reasoning effort: ${titleCase(presets.openrouter)}`;
   }
   return `Adaptive effort: ${titleCase(presets.claude)}`;
 }
@@ -230,8 +230,8 @@ function shortProviderLabel(tier: ProviderTier): string {
   if (tier === "flash") {
     return "Flash";
   }
-  if (tier === "kimi") {
-    return "Kimi";
+  if (tier === "openrouter") {
+    return "OpenRouter";
   }
   return "Claude";
 }

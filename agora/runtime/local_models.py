@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from agora.agent import AgentCaller
 from agora.config import get_config
+from agora.runtime.model_catalog import is_openrouter_model_id
 from agora.types import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
 
 
@@ -65,8 +66,8 @@ def build_local_model_caller(
         model=spec.model,
         temperature=0.5,
         openrouter_api_key=_provider_key(provider_keys, "openrouter"),
-        kimi_reasoning_effort=spec.reasoning_preset or config.kimi_reasoning_effort,
-        kimi_reasoning_exclude=config.kimi_reasoning_exclude,
+        openrouter_reasoning_effort=spec.reasoning_preset or config.openrouter_reasoning_effort,
+        openrouter_reasoning_exclude=config.openrouter_reasoning_exclude,
     )
 
 
@@ -75,9 +76,7 @@ def _validate_provider_model_match(spec: LocalModelSpec) -> None:
         return
     if spec.provider == "anthropic" and spec.model.startswith("claude"):
         return
-    if spec.provider == "openrouter" and (
-        spec.model.startswith("moonshotai/") or spec.model.startswith("openrouter/")
-    ):
+    if spec.provider == "openrouter" and is_openrouter_model_id(spec.model):
         return
     raise ValueError(
         f"Local model '{spec.model}' is not valid for provider '{spec.provider}'"

@@ -1104,7 +1104,7 @@ class BenchmarkRunner:
 
             per_mode[stage_key].append(run)
             per_mechanism[mechanism_key].append(run)
-            per_category[category_key][mechanism_key].append(run)
+            per_category[category_key][stage_key].append(run)
 
         def _metric_block(bucket_runs: list[dict[str, Any]]) -> dict[str, float | int]:
             run_count = len(bucket_runs)
