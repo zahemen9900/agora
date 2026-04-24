@@ -152,6 +152,101 @@ Do not combine `auth_token=` with `local_models=`. Every provider referenced in
 `local_models` or `devils_advocate_model` must also have a key in
 `LocalProviderKeys`.
 
+### Local provider keys from environment
+
+```python
+import os
+
+from agora.sdk import AgoraArbitrator, LocalProviderKeys
+
+
+provider_keys = LocalProviderKeys(
+    gemini_api_key=os.environ["GEMINI_API_KEY"],
+    anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
+    openrouter_api_key=os.environ["OPENROUTER_API_KEY"],
+)
+
+arbitrator = AgoraArbitrator(
+    mechanism="vote",
+    local_provider_keys=provider_keys,
+)
+```
+
+Use `LocalProviderKeys` whenever you want explicit BYOK control in local mode.
+You only need to provide keys for the providers you actually reference in
+`local_models` or `local_debate_config`.
+
+### Local 2-provider roster override
+
+If you do not want the default 4-slot balanced preset, pass an explicit roster.
+This example uses only Gemini + Claude.
+
+```python
+from agora.sdk import AgoraArbitrator, LocalModelSpec, LocalProviderKeys
+
+
+arbitrator = AgoraArbitrator(
+    mechanism="vote",
+    agent_count=2,
+    local_models=[
+        LocalModelSpec(provider="gemini", model="gemini-2.5-pro"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ],
+    local_provider_keys=LocalProviderKeys(
+        gemini_api_key="your-gemini-key",
+        anthropic_api_key="your-anthropic-key",
+    ),
+    allow_offline_fallback=False,
+)
+```
+
+### Local 3-provider roster override
+
+This is the cleanest way to mix Gemini, Claude, and one OpenRouter-family model
+without carrying the full 4-provider preset.
+
+```python
+from agora.sdk import AgoraArbitrator, LocalDebateConfig, LocalModelSpec, LocalProviderKeys
+
+
+arbitrator = AgoraArbitrator(
+    mechanism="debate",
+    agent_count=3,
+    local_models=[
+        LocalModelSpec(provider="gemini", model="gemini-2.5-flash"),
+        LocalModelSpec(provider="anthropic", model="claude-haiku-4-5"),
+        LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+    ],
+    local_provider_keys=LocalProviderKeys(
+        gemini_api_key="your-gemini-key",
+        anthropic_api_key="your-anthropic-key",
+        openrouter_api_key="your-openrouter-key",
+    ),
+    local_debate_config=LocalDebateConfig(
+        devils_advocate_model=LocalModelSpec(
+            provider="openrouter",
+            model="openai/gpt-oss-120b",
+        )
+    ),
+    allow_offline_fallback=False,
+)
+```
+
+### Swapping OpenRouter-family models
+
+The OpenRouter lane is model-configurable. These are valid examples for the
+same `provider="openrouter"` slot:
+
+- `qwen/qwen3.5-flash-02-23`
+- `openai/gpt-oss-120b`
+- `google/gemma-4-31b-it`
+- `deepseek/deepseek-v3.2-exp`
+- `moonshotai/kimi-k2-thinking`
+
+Some OpenRouter models are slower or weaker on structured outputs than others.
+If you care about benchmark reliability, prefer the cataloged stable lane first
+and promote alternates only after smoke-testing them in your own environment.
+
 ### Hosted benchmark runs
 
 Benchmarks are available through the SDK, but they use the benchmark API

@@ -34,6 +34,7 @@ import {
   normalizeBenchmarkSummary,
 } from "../lib/benchmarkMetrics";
 import { useAuth } from "../lib/useAuth";
+import { Flyout } from "../components/Flyout";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
 
@@ -88,6 +89,10 @@ export function BenchmarkDetail() {
   const followTimelineRef = useRef(true);
   const copyTimeoutRef = useRef<number | null>(null);
   const streamedEventKeysRef = useRef<Set<string>>(new Set());
+  const [showFailedFlyout, setShowFailedFlyout] = useState(false);
+  const [showSuccessFlyout, setShowSuccessFlyout] = useState(false);
+  const failedFlyoutShownRef = useRef(false);
+  const successFlyoutShownRef = useRef(false);
 
   const detailRunId = detail?.run_id ?? benchmarkId;
   const detailStatus = detail?.status;
@@ -366,6 +371,27 @@ export function BenchmarkDetail() {
   const frontierHighlights = useMemo(() => buildFrontierHighlights(stageRows), [stageRows]);
 
   useEffect(() => {
+    if (!detail || failedFlyoutShownRef.current) return;
+    if (detail.status === "failed") {
+      failedFlyoutShownRef.current = true;
+      setShowFailedFlyout(true);
+    }
+  }, [detail]);
+
+  useEffect(() => {
+    if (!detail || successFlyoutShownRef.current) return;
+    if (detail.status === "completed") {
+      const bestAcc = stageRows
+        .map((r) => r.accuracy ?? 0)
+        .reduce((max, v) => Math.max(max, v), 0);
+      if (bestAcc > 60) {
+        successFlyoutShownRef.current = true;
+        setShowSuccessFlyout(true);
+      }
+    }
+  }, [detail, stageRows]);
+
+  useEffect(() => {
     followTimelineRef.current = true;
   }, [detailRunId]);
 
@@ -459,6 +485,20 @@ export function BenchmarkDetail() {
 
   return (
     <div className="max-w-250 mx-auto pb-20 w-full">
+      <Flyout
+        show={showFailedFlyout}
+        variant="error"
+        title="Benchmark Failed"
+        body="This benchmark run encountered an error and did not complete."
+        onDismiss={() => setShowFailedFlyout(false)}
+      />
+      <Flyout
+        show={showSuccessFlyout}
+        variant="success"
+        title="Benchmark Succeeded"
+        body="Selector accuracy exceeded 60%. Results are ready to review."
+        onDismiss={() => setShowSuccessFlyout(false)}
+      />
       <header className="mb-8">
         <div className="flex flex-wrap gap-3 mb-5">
           <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>

@@ -1,40 +1,17 @@
 import { useState } from 'react';
 import { X, HelpCircle, ChevronDown } from 'lucide-react';
+import { ProviderGlyph } from '../ProviderGlyph';
+import type { ProviderName } from '../../lib/modelProviders';
 import {
   REASONING_CONTROL_DEFINITIONS,
   type ReasoningPresetState,
 } from '../../lib/deliberationConfig';
 
-// ─── Provider logo mapping ────────────────────────────────────────────────────
-const PROVIDER_LOGO: Record<string, string> = {
-  gemini: '/models/gemini.png',
-  openrouter: '/models/qwen.png',
-  kimi:   '/models/kimi.png',
-  gemma: '/models/gemma.png',
-  glm: '/models/glm.png',
-  gpt: '/models/gpt.png',
-  qwen: '/models/qwen.png',
-  claude: '/models/claude.png',
-};
-
 function ProviderLogo({ provider, size = 20 }: { provider: string; size?: number }) {
-  const src = PROVIDER_LOGO[provider];
-  if (!src) {
-    return (
-      <div style={{
-        width: size, height: size, borderRadius: '50%',
-        background: 'var(--border-strong)',
-        flexShrink: 0,
-      }} />
-    );
-  }
   return (
-    <img
-      src={src}
-      alt={provider}
-      style={{ width: size, height: size, objectFit: 'contain', flexShrink: 0 }}
-      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-    />
+    <div style={{ width: size, height: size, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <ProviderGlyph provider={provider as ProviderName} size={size} />
+    </div>
   );
 }
 

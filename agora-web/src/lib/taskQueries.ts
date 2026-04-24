@@ -10,6 +10,7 @@ import {
   releaseTaskPayment,
   submitTask,
   type TaskCreateResponse,
+  type TaskEvent,
   type TaskStatusResponse,
 } from "./api";
 import type { ReasoningPresetState } from "./deliberationConfig";
@@ -45,6 +46,25 @@ function sortTaskListSnapshots(tasks: TaskStatusResponse[]): TaskStatusResponse[
   return [...tasks].sort((a, b) => taskListTimestamp(b) - taskListTimestamp(a));
 }
 
+function taskEventTimestamp(event: TaskEvent): number {
+  const timestamp = Date.parse(event.timestamp ?? "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortTaskEvents(events: TaskEvent[]): TaskEvent[] {
+  return [...events].sort((a, b) => {
+    const timestampDelta = taskEventTimestamp(a) - taskEventTimestamp(b);
+    if (timestampDelta !== 0) {
+      return timestampDelta;
+    }
+    return eventSignature(a).localeCompare(eventSignature(b));
+  });
+}
+
+function eventSignature(event: TaskEvent): string {
+  return `${event.event}:${event.timestamp ?? ""}:${JSON.stringify(event.data)}`;
+}
+
 export function setTaskDetailCache(
   queryClient: QueryClient,
   task: TaskStatusResponse,
@@ -69,6 +89,29 @@ export function patchTaskDetailCache(
   if (nextValue) {
     syncTaskListCache(queryClient, nextValue);
   }
+}
+
+export function appendTaskDetailEventCache(
+  queryClient: QueryClient,
+  taskId: string,
+  event: TaskEvent,
+): void {
+  patchTaskDetailCache(queryClient, taskId, (current) => {
+    if (!current) {
+      return current;
+    }
+
+    const nextSignature = eventSignature(event);
+    const alreadyPresent = current.events.some((entry) => eventSignature(entry) === nextSignature);
+    if (alreadyPresent) {
+      return current;
+    }
+
+    return {
+      ...current,
+      events: sortTaskEvents([...current.events, event]),
+    };
+  });
 }
 
 export function syncTaskListCache(

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { ProviderGlyph } from "../../ProviderGlyph";
+import type { ProviderName } from "../../../lib/modelProviders";
 import type { GraphNode, NodeKind } from "./canvasTypes";
 
 export const NODE_WIDTH = 240;
@@ -130,14 +132,9 @@ export function CanvasStreamText({
 function ProviderImg({ provider, size = 16 }: { provider?: string; size?: number }) {
   if (!provider || provider === "other") return null;
   return (
-    <img
-      src={`/models/${provider}.png`}
-      alt={provider}
-      width={size}
-      height={size}
-      style={{ borderRadius: "3px", objectFit: "contain", flexShrink: 0 }}
-      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-    />
+    <div style={{ width: size, height: size, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+      <ProviderGlyph provider={provider as ProviderName} size={size} />
+    </div>
   );
 }
 
@@ -345,7 +342,11 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
       </div>
 
       {/* Body — always capped at PREVIEW_LIMIT; "show more" opens the modal */}
-      <div style={{ position: "relative", minHeight: "36px" }}>
+      <div style={{
+        position: "relative",
+        minHeight: `${Math.max(36, Math.ceil(previewText.length / 42) * 20)}px`,
+        transition: "min-height 0.38s ease-out",
+      }}>
         {isStreaming ? (
           <>
             <CanvasStreamText

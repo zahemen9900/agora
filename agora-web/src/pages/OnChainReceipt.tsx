@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "react-router-dom";
 import {
@@ -11,6 +11,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 
+import { Flyout } from "../components/Flyout";
 import { MerkleTree } from "../components/MerkleTree";
 import {
   verifyMerkleRoot,
@@ -202,6 +203,8 @@ export function OnChainReceipt() {
   const [isVerified, setIsVerified] = useState<boolean | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const [treeAnimKey, setTreeAnimKey] = useState(0);
+  const [showPaymentFlyout, setShowPaymentFlyout] = useState(false);
+  const paymentFlyoutShownRef = useRef(false);
   const task = taskQuery.data ?? null;
   const taskQueryError = taskQuery.error instanceof Error ? taskQuery.error.message : null;
 
@@ -214,6 +217,15 @@ export function OnChainReceipt() {
       console.error(taskQuery.error);
     }
   }, [taskQuery.error]);
+
+  useEffect(() => {
+    if (!task || paymentFlyoutShownRef.current) return;
+    const released = deriveReceiptPaymentState(task).paymentReleased;
+    if (released) {
+      paymentFlyoutShownRef.current = true;
+      setShowPaymentFlyout(true);
+    }
+  }, [task]);
 
   const handleVerify = async () => {
     if (!task?.result) return;
@@ -268,6 +280,13 @@ export function OnChainReceipt() {
 
   return (
     <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '0 0 80px', position: 'relative' }}>
+      <Flyout
+        show={showPaymentFlyout}
+        variant="success"
+        title="Payment Released"
+        body="The stake has been released to the winning validator."
+        onDismiss={() => setShowPaymentFlyout(false)}
+      />
 
       {/* Ambient glow */}
       <div style={{
