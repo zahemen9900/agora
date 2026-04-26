@@ -221,6 +221,12 @@ export function TaskSubmit() {
   const FONT = "'Commit Mono', 'SF Mono', monospace";
 
   return (
+    <>
+      <title>New Deliberation — Agora</title>
+      <meta
+        name="description"
+        content="Configure and submit a deliberation task. Choose your agents, mechanism, and models, then receive a cryptographic proof of the outcome."
+      />
     <div style={{ maxWidth: '760px', margin: '0 auto', padding: '40px 16px 80px' }}>
 
 
@@ -532,5 +538,6 @@ export function TaskSubmit() {
       />
 
     </div>
+    </>
   );
 }
