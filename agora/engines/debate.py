@@ -221,6 +221,7 @@ class DebateEngine:
         participant_models: Sequence[LocalModelSpec] | None = None,
         provider_keys: LocalProviderKeys | None = None,
         devils_advocate_model: LocalModelSpec | None = None,
+        tier_model_overrides: dict[ProviderTierName, str] | None = None,
     ) -> None:
         """Initialize debate engine dependencies.
 
@@ -249,6 +250,7 @@ class DebateEngine:
         self._participant_models = list(participant_models) if participant_models is not None else None
         self._local_provider_keys = provider_keys
         self._devils_advocate_model = devils_advocate_model
+        self._tier_model_overrides = dict(tier_model_overrides or {})
         self._participant_tiers = balanced_participant_tiers(self.agent_count)
         if self._participant_models is not None and len(self._participant_models) != self.agent_count:
             raise ValueError("participant_models must contain exactly agent_count items")
@@ -2567,22 +2569,32 @@ class DebateEngine:
 
         if tier == "flash":
             if self._flash_agent is None:
-                self._flash_agent = flash_caller(thinking_level=self.reasoning_presets.gemini_flash)
+                self._flash_agent = flash_caller(
+                    thinking_level=self.reasoning_presets.gemini_flash,
+                    model=self._tier_model_overrides.get("flash"),
+                )
             return self._flash_agent
         if tier == "claude":
             if self._claude_agent is None:
-                self._claude_agent = claude_caller(effort=self.reasoning_presets.claude)
+                self._claude_agent = claude_caller(
+                    effort=self.reasoning_presets.claude,
+                    model=self._tier_model_overrides.get("claude"),
+                )
             return self._claude_agent
         if tier == "kimi":
             tier = "openrouter"
         if tier == "openrouter":
             if self._openrouter_agent is None:
                 self._openrouter_agent = openrouter_caller(
-                    effort=self.reasoning_presets.openrouter
+                    effort=self.reasoning_presets.openrouter,
+                    model=self._tier_model_overrides.get("openrouter"),
                 )
             return self._openrouter_agent
         if self._pro_agent is None:
-            self._pro_agent = pro_caller(thinking_level=self.reasoning_presets.gemini_pro)
+            self._pro_agent = pro_caller(
+                thinking_level=self.reasoning_presets.gemini_pro,
+                model=self._tier_model_overrides.get("pro"),
+            )
         return self._pro_agent
 
     def _model_name(self, tier: str) -> str:
@@ -2594,12 +2606,12 @@ class DebateEngine:
         except AgentCallError:
             config = get_config()
             if tier == "flash":
-                return config.flash_model
+                return self._tier_model_overrides.get("flash", config.flash_model)
             if tier == "claude":
-                return config.claude_model
+                return self._tier_model_overrides.get("claude", config.claude_model)
             if tier in {"kimi", "openrouter"}:
-                return config.openrouter_model
-            return config.pro_model
+                return self._tier_model_overrides.get("openrouter", config.openrouter_model)
+            return self._tier_model_overrides.get("pro", config.pro_model)
 
     @staticmethod
     def _provider_for_tier(tier: str) -> str:

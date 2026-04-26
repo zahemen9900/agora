@@ -36,6 +36,23 @@ function fmtUsd(v: number | null | undefined): string {
   return `$${(v as number).toFixed(4)}`;
 }
 
+function fmtBudgetPerAgent(
+  cost: number | null | undefined,
+  agentCount: number | null | undefined,
+): string {
+  if (
+    cost == null
+    || !Number.isFinite(cost)
+    || cost <= 0
+    || agentCount == null
+    || !Number.isFinite(agentCount)
+    || agentCount <= 0
+  ) {
+    return "n/a";
+  }
+  return `$${(cost / agentCount).toFixed(4)}`;
+}
+
 function fmtDate(v: string | null | undefined): string {
   if (!v) return "";
   const d = new Date(v);
@@ -206,7 +223,9 @@ export function SkeletonRunRow({ delay = 0 }: { delay?: number }) {
 
 export function CatalogRunRow({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen: () => void }) {
   useEffect(() => { injectRowKeyframes(); }, []);
-  const models = entry.models ?? Object.keys(entry.model_counts);
+  const models = (entry.models?.length ? entry.models : Object.keys(entry.model_telemetry ?? {})).length
+    ? (entry.models?.length ? entry.models : Object.keys(entry.model_telemetry ?? {}))
+    : Object.keys(entry.model_counts);
   const mechanism = Object.keys(entry.mechanism_counts)[0] ?? entry.latest_mechanism ?? null;
   return (
     <RunShell onOpen={onOpen}>
@@ -225,8 +244,10 @@ export function CatalogRunRow({ entry, onOpen }: { entry: BenchmarkCatalogEntry;
       <StatsRow
         items={[
           { label: "Runs", value: fmt(entry.run_count) },
+          { label: "Thinking", value: fmt(entry.thinking_tokens) },
           { label: "Tokens", value: fmt(entry.total_tokens) },
           { label: "Cost", value: fmtUsd(entry.cost?.estimated_cost_usd) },
+          { label: "Budget/Agent", value: fmtBudgetPerAgent(entry.cost?.estimated_cost_usd, entry.agent_count) },
           { label: "Agents", value: String(entry.agent_count ?? "n/a") },
         ]}
         action="Open"
@@ -239,6 +260,7 @@ export function LiveRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; on
   useEffect(() => { injectRowKeyframes(); }, []);
   const isRunning = run.status === "running";
   const accentHex = isRunning ? "#22D38A" : run.status === "queued" ? "#FBBF24" : undefined;
+  const models = Object.keys(run.model_telemetry ?? {});
   return (
     <RunShell onOpen={onOpen} accentHex={accentHex}>
       <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "7px", flexWrap: "wrap" }}>
@@ -254,7 +276,8 @@ export function LiveRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; on
             live
           </span>
         )}
-        <div style={{ marginLeft: "auto" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          <ModelCluster models={models} />
           <span style={{ fontFamily: FONT, fontSize: "10px", color: "var(--text-muted)" }}>{fmtDate(run.updated_at)}</span>
         </div>
       </div>
@@ -263,6 +286,7 @@ export function LiveRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; on
           { label: "Tokens", value: fmt(run.total_tokens) },
           { label: "Thinking", value: fmt(run.thinking_tokens) },
           { label: "Cost", value: fmtUsd(run.cost?.estimated_cost_usd) },
+          { label: "Budget/Agent", value: fmtBudgetPerAgent(run.cost?.estimated_cost_usd, run.agent_count) },
           { label: "Agents", value: String(run.agent_count ?? "n/a") },
         ]}
         action={isRunning ? "Open live view" : "Open queued run"}
@@ -273,6 +297,7 @@ export function LiveRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; on
 
 export function FailedRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; onOpen: () => void }) {
   useEffect(() => { injectRowKeyframes(); }, []);
+  const models = Object.keys(run.model_telemetry ?? {});
   return (
     <RunShell onOpen={onOpen} accentHex="#F87171">
       <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: run.error ? "6px" : "7px", flexWrap: "wrap" }}>
@@ -282,7 +307,8 @@ export function FailedRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; 
         </span>
         <StatusBadge status="failed" />
         {run.latest_mechanism && <TagBadge label={titleCase(run.latest_mechanism)} />}
-        <div style={{ marginLeft: "auto" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          <ModelCluster models={models} />
           <span style={{ fontFamily: FONT, fontSize: "10px", color: "var(--text-muted)" }}>{fmtDate(run.updated_at)}</span>
         </div>
       </div>
@@ -297,7 +323,9 @@ export function FailedRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; 
       <StatsRow
         items={[
           { label: "Tokens", value: fmt(run.total_tokens) },
+          { label: "Thinking", value: fmt(run.thinking_tokens) },
           { label: "Cost", value: fmtUsd(run.cost?.estimated_cost_usd) },
+          { label: "Budget/Agent", value: fmtBudgetPerAgent(run.cost?.estimated_cost_usd, run.agent_count) },
           { label: "Agents", value: String(run.agent_count ?? "n/a") },
         ]}
         action="Open failed report"

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildOverviewAccuracyData,
   buildDetailMechanismRows,
   buildDetailStageRows,
   buildOverviewLearningCurve,
@@ -39,8 +40,8 @@ test("buildOverviewLearningCurve suppresses fake values for comparison artifacts
 
 test("buildOverviewLearningCurve emits real pre/post values for validation artifacts", () => {
   const learningCurve = buildOverviewLearningCurve({
-    pre_learning: { summary: { per_mode: { selector: { accuracy: 0.25 } } } },
-    post_learning: { summary: { per_mode: { selector: { accuracy: 0.75 } } } },
+    pre_learning: { summary: { per_mode: { selector: { accuracy: 0.25, scored_run_count: 3 } } } },
+    post_learning: { summary: { per_mode: { selector: { accuracy: 0.75, scored_run_count: 3 } } } },
   });
 
   assert.equal(learningCurve.available, true);
@@ -102,4 +103,42 @@ test("detail rows keep stage metrics separate from actual mechanism metrics", ()
   assert.equal(stageRows.find((row) => row.mechanism === "Selector")?.runCount, 6);
   assert.equal(mechanismRows.find((row) => row.mechanism === "Selector")?.accuracy, null);
   assert.equal(mechanismRows.find((row) => row.mechanism === "Vote")?.accuracy, 80);
+});
+
+test("overview accuracy data keeps truly absent coverage at null instead of fake zeroes", () => {
+  const summary = normalizeBenchmarkSummary(
+    {
+      per_category: {
+        demo: {
+          selector: {
+            accuracy: 1,
+            run_count: 1,
+            scored_run_count: 1,
+            proxy_run_count: 1,
+            avg_tokens: 10,
+            avg_thinking_tokens: 1,
+            avg_latency_ms: 20,
+            avg_estimated_cost_usd: 0.01,
+          },
+        },
+        math: {
+          debate: {
+            accuracy: 0,
+            run_count: 1,
+            scored_run_count: 0,
+            proxy_run_count: 0,
+            avg_tokens: 10,
+            avg_thinking_tokens: 0,
+            avg_latency_ms: 20,
+            avg_estimated_cost_usd: 0.01,
+          },
+        },
+      },
+    },
+    null,
+  );
+
+  const rows = buildOverviewAccuracyData(summary);
+  assert.equal(rows.find((row) => row.category === "Demo")?.selector, 100);
+  assert.equal(rows.find((row) => row.category === "Math")?.debate, null);
 });

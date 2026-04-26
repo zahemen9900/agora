@@ -40,14 +40,18 @@ import {
   type NormalizedSummary,
 } from "../lib/benchmarkMetrics";
 import {
+  buildTierModelOverridesPayload,
   buildDebateRoster,
   buildProviderCountBadges,
   buildVoteRoster,
   DEFAULT_REASONING_PRESETS,
   getBalancedEnsembleLabel,
   getDebateSpecialistSummary,
+  resolveDefaultReasoningPresets,
   type ReasoningPresetState,
+  type TierModelOverrideState,
 } from "../lib/deliberationConfig";
+import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
 
 type CatalogSortMode = "recent" | "frequency";
 
@@ -230,7 +234,7 @@ function SkeletonChartBlock({ h, delay = 0 }: { h: string; delay?: number }) {
 
 interface ChartTooltipPayload {
   name: string;
-  value: number;
+  value: number | null;
   color: string;
   dataKey: string;
 }
@@ -241,7 +245,7 @@ function ChartTooltip({
   active?: boolean;
   payload?: ChartTooltipPayload[];
   label?: string;
-  valueFormatter?: (v: number) => string;
+  valueFormatter?: (v: number | null) => string;
 }) {
   if (!active || !payload?.length) return null;
   return (
@@ -262,7 +266,7 @@ function ChartTooltip({
           <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: entry.color, flexShrink: 0, display: "inline-block" }} />
           <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-secondary)" }}>{entry.name}</span>
           <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-primary)", fontWeight: 600, marginLeft: "auto", paddingLeft: "12px" }}>
-            {valueFormatter ? valueFormatter(entry.value) : Math.round(entry.value)}
+            {valueFormatter ? valueFormatter(entry.value) : (entry.value == null ? "n/a" : Math.round(entry.value))}
           </span>
         </div>
       ))}
@@ -316,9 +320,11 @@ export function Benchmarks() {
   const benchmarkOverviewQuery = useBenchmarkOverviewQuery(true);
   const benchmarkCatalogQuery = useBenchmarkCatalogQuery(100);
   const benchmarkPromptTemplatesQuery = useBenchmarkPromptTemplatesQuery();
+  const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
   const triggerBenchmarkMutation = useTriggerBenchmarkMutation();
   const benchmarks = benchmarkOverviewQuery.data ?? null;
   const catalog = benchmarkCatalogQuery.data ?? null;
+  const runtimeConfig = runtimeConfigQuery.data;
   const templates = hasUsablePromptTemplates(benchmarkPromptTemplatesQuery.data)
     ? benchmarkPromptTemplatesQuery.data
     : FALLBACK_PROMPT_TEMPLATES;
@@ -335,6 +341,8 @@ export function Benchmarks() {
   const [reasoningPresets, setReasoningPresets] = useState<ReasoningPresetState>(
     DEFAULT_REASONING_PRESETS,
   );
+  const [tierModelOverrides, setTierModelOverrides] = useState<TierModelOverrideState>({});
+  const [runtimeDefaultsHydrated, setRuntimeDefaultsHydrated] = useState(false);
   const [domainPromptSelection, setDomainPromptSelection] = useState<
     Partial<Record<BenchmarkDomainName, DomainPromptSelection>>
   >({});
@@ -344,6 +352,13 @@ export function Benchmarks() {
     const frame = window.requestAnimationFrame(() => setChartsReady(true));
     return () => window.cancelAnimationFrame(frame);
   }, []);
+  useEffect(() => {
+    if (!runtimeConfig || runtimeDefaultsHydrated) {
+      return;
+    }
+    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
+    setRuntimeDefaultsHydrated(true);
+  }, [runtimeConfig, runtimeDefaultsHydrated]);
 
   const finalizeDomainSelection = useCallback(
     (
@@ -427,15 +442,13 @@ export function Benchmarks() {
   const learningCurveState = useMemo(() => buildOverviewLearningCurve(benchmarks), [benchmarks]);
 
   const costData = useMemo(() => {
-    const costSummary =
-      Object.keys(normalizedSummary.per_mechanism).length > 0
-        ? normalizedSummary.per_mechanism
-        : normalizedSummary.per_mode;
     return BENCHMARK_MECHANISMS.map((mechanism) => {
-      const metrics = costSummary[mechanism] ?? {};
+      const metrics = normalizedSummary.per_mode[mechanism] ?? {};
+      const runCount = asNumber(metrics.run_count);
+      const avgCost = asNumber(metrics.avg_estimated_cost_usd);
       return {
         mechanism: titleCase(mechanism),
-        estimatedCostUsd: asNumber(metrics.avg_estimated_cost_usd),
+        estimatedCostUsd: runCount > 0 && avgCost > 0 ? avgCost : null,
       };
     });
   }, [normalizedSummary]);
@@ -502,6 +515,7 @@ export function Benchmarks() {
       live_agents: true,
       domain_prompts: domainPrompts,
       reasoning_presets: reasoningPresets,
+      tier_model_overrides: buildTierModelOverridesPayload(tierModelOverrides, runtimeConfig),
     };
 
     return payload;
@@ -510,24 +524,30 @@ export function Benchmarks() {
     domainPromptSelection,
     holdoutPerCategory,
     reasoningPresets,
+    runtimeConfig,
+    tierModelOverrides,
     trainingPerCategory,
   ]);
 
   const benchmarkVoteRoster = useMemo(
-    () => buildVoteRoster(benchmarkAgentCount, reasoningPresets),
-    [benchmarkAgentCount, reasoningPresets],
+    () => buildVoteRoster(benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
+    [benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
   );
   const benchmarkDebateRoster = useMemo(
-    () => buildDebateRoster(benchmarkAgentCount, reasoningPresets),
-    [benchmarkAgentCount, reasoningPresets],
+    () => buildDebateRoster(benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
+    [benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
   );
   const benchmarkCountBadges = useMemo(
-    () => buildProviderCountBadges(benchmarkAgentCount),
-    [benchmarkAgentCount],
+    () => buildProviderCountBadges(benchmarkAgentCount, runtimeConfig, tierModelOverrides),
+    [benchmarkAgentCount, runtimeConfig, tierModelOverrides],
   );
   const benchmarkEnsembleLabel = useMemo(
-    () => getBalancedEnsembleLabel(benchmarkAgentCount),
-    [benchmarkAgentCount],
+    () => getBalancedEnsembleLabel(benchmarkAgentCount, runtimeConfig),
+    [benchmarkAgentCount, runtimeConfig],
+  );
+  const benchmarkDebateFooter = useMemo(
+    () => getDebateSpecialistSummary(runtimeConfig, tierModelOverrides),
+    [runtimeConfig, tierModelOverrides],
   );
 
   const openWizard = () => {
@@ -642,7 +662,7 @@ export function Benchmarks() {
                               active={props.active}
                               payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
                               label={props.label as string | undefined}
-                              valueFormatter={(v) => `${Math.round(v)}%`}
+                              valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
                             />
                           )}
                           cursor={{ fill: "rgba(255,255,255,0.025)" }}
@@ -714,7 +734,7 @@ export function Benchmarks() {
                             active={props.active}
                             payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
                             label={props.label as string | undefined}
-                            valueFormatter={(v) => `${Math.round(v)}%`}
+                            valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
                           />
                         )}
                       />
@@ -738,7 +758,7 @@ export function Benchmarks() {
           {/* Cost efficiency */}
           <ChartCard
             title="Cost Efficiency"
-            subtitle="Estimated USD cost per mechanism from token usage and model pricing."
+            subtitle="Estimated USD cost per requested benchmark stage from token usage and the internal pricing catalog."
           >
             {!benchmarks && !overviewError ? (
               <SkeletonChartBlock h="250px" delay={0.2} />
@@ -763,7 +783,7 @@ export function Benchmarks() {
                             active={props.active}
                             payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
                             label={props.label as string | undefined}
-                            valueFormatter={(v) => formatUsd(v)}
+                            valueFormatter={(v) => formatUsd(v ?? null)}
                           />
                         )}
                         cursor={{ fill: "rgba(255,255,255,0.025)" }}
@@ -949,11 +969,14 @@ export function Benchmarks() {
           onHoldoutChange={setHoldoutPerCategory}
           reasoningPresets={reasoningPresets}
           onPresetsChange={setReasoningPresets}
+          runtimeConfig={runtimeConfig}
+          tierModelOverrides={tierModelOverrides}
+          onTierModelOverridesChange={setTierModelOverrides}
           voteRoster={benchmarkVoteRoster}
           debateRoster={benchmarkDebateRoster}
           countBadges={benchmarkCountBadges}
           ensembleLabel={benchmarkEnsembleLabel}
-          debateFooter={getDebateSpecialistSummary()}
+          debateFooter={benchmarkDebateFooter}
           activeDomain={wizardDomain}
           onDomainChange={setWizardDomain}
           templates={templates}

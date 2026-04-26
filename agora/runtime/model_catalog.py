@@ -23,6 +23,7 @@ class ModelCatalogEntry:
     input_usd_per_million: float | None
     output_usd_per_million: float | None
     source_url: str
+    allowed_tiers: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
     supports_streaming: bool = True
     supports_json_schema: bool = True
@@ -43,6 +44,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.50,
         output_usd_per_million=3.00,
         source_url="https://ai.google.dev/pricing",
+        allowed_tiers=("pro",),
         aliases=("gemini-3-flash",),
         supports_reasoning_continuation=True,
         stability_tier="legacy",
@@ -54,6 +56,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=2.00,
         output_usd_per_million=12.00,
         source_url="https://ai.google.dev/pricing",
+        allowed_tiers=("pro",),
         aliases=("gemini-3.1-pro",),
         supports_reasoning_continuation=True,
         stability_tier="legacy",
@@ -65,6 +68,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.10,
         output_usd_per_million=0.40,
         source_url="https://ai.google.dev/pricing",
+        allowed_tiers=("flash",),
         aliases=("flash-lite",),
         supports_reasoning_continuation=True,
         stability_tier="legacy",
@@ -76,6 +80,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=1.25,
         output_usd_per_million=10.00,
         source_url="https://ai.google.dev/pricing",
+        allowed_tiers=("pro",),
         supports_reasoning_continuation=True,
         stability_tier="stable",
     ),
@@ -86,6 +91,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.30,
         output_usd_per_million=2.50,
         source_url="https://ai.google.dev/pricing",
+        allowed_tiers=("flash",),
         supports_reasoning_continuation=True,
         stability_tier="stable",
     ),
@@ -96,6 +102,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.10,
         output_usd_per_million=0.40,
         source_url="https://ai.google.dev/pricing",
+        allowed_tiers=("flash",),
         supports_reasoning_continuation=True,
         stability_tier="stable",
     ),
@@ -106,6 +113,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=3.00,
         output_usd_per_million=15.00,
         source_url="https://www.anthropic.com/pricing#anthropic-api",
+        allowed_tiers=("claude",),
         aliases=("claude-sonnet-4.6",),
         stability_tier="legacy",
     ),
@@ -116,6 +124,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=3.00,
         output_usd_per_million=15.00,
         source_url="https://www.anthropic.com/pricing#anthropic-api",
+        allowed_tiers=("claude",),
         aliases=("claude-sonnet-4.5", "claude-sonnet-4"),
         supports_reasoning=False,
         stability_tier="stable",
@@ -127,6 +136,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=1.00,
         output_usd_per_million=5.00,
         source_url="https://www.anthropic.com/pricing#anthropic-api",
+        allowed_tiers=("claude",),
         aliases=("claude-haiku-4.5",),
         supports_reasoning=False,
         stability_tier="stable",
@@ -138,6 +148,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.27,
         output_usd_per_million=0.41,
         source_url="https://openrouter.ai/deepseek/deepseek-v3.2-exp",
+        allowed_tiers=("openrouter",),
         stability_tier="candidate",
     ),
     ModelCatalogEntry(
@@ -147,6 +158,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.13,
         output_usd_per_million=0.38,
         source_url="https://openrouter.ai/google/gemma-4-31b-it",
+        allowed_tiers=("openrouter",),
         stability_tier="candidate",
     ),
     ModelCatalogEntry(
@@ -156,6 +168,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.039,
         output_usd_per_million=0.19,
         source_url="https://openrouter.ai/openai/gpt-oss-120b",
+        allowed_tiers=("openrouter",),
         stability_tier="candidate",
     ),
     ModelCatalogEntry(
@@ -165,6 +178,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.06,
         output_usd_per_million=0.40,
         source_url="https://openrouter.ai/z-ai/glm-4.7-flash",
+        allowed_tiers=("openrouter",),
         stability_tier="candidate",
     ),
     ModelCatalogEntry(
@@ -174,6 +188,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.065,
         output_usd_per_million=0.26,
         source_url="https://openrouter.ai/qwen/qwen3.5-flash-02-23",
+        allowed_tiers=("openrouter",),
         stability_tier="stable",
     ),
     ModelCatalogEntry(
@@ -183,6 +198,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         input_usd_per_million=0.60,
         output_usd_per_million=2.50,
         source_url="https://openrouter.ai/moonshotai/kimi-k2-thinking",
+        allowed_tiers=("openrouter",),
         aliases=("moonshotai/kimi-k2", "kimi-k2-thinking", "kimi-k2"),
         stability_tier="legacy",
         supports_reasoning_continuation=True,

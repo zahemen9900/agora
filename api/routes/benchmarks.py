@@ -16,8 +16,19 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
 
+from agora.config import get_config
 from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
-from agora.runtime.model_policy import resolve_reasoning_presets
+from agora.runtime.model_catalog import (
+    MODEL_CATALOG_CHECKED_AT,
+    MODEL_CATALOG_VERSION,
+    built_in_models_for_provider,
+    resolve_model_catalog_entry,
+)
+from agora.runtime.model_policy import (
+    BASE_PARTICIPANT_CYCLE,
+    normalize_tier_model_overrides,
+    resolve_reasoning_presets,
+)
 from agora.runtime.orchestrator import AgoraOrchestrator
 from api.auth import AuthenticatedUser, get_current_user, require_human_user
 from api.config import settings
@@ -37,7 +48,10 @@ from api.models import (
     BenchmarkRunStatusResponse,
     BenchmarkStoredRequest,
     BenchmarkSummaryResponse,
+    DeliberationRuntimeConfigResponse,
     ModelTelemetryResponse,
+    RuntimeModelOptionResponse,
+    RuntimeTierConfigResponse,
     TaskEvent,
 )
 from api.live_journal import BufferedEventJournal, BufferedStateWriter
@@ -662,6 +676,85 @@ def _domain_prompt_templates_response() -> BenchmarkPromptTemplatesResponse:
     )
 
 
+def _deliberation_runtime_config_response() -> DeliberationRuntimeConfigResponse:
+    config = get_config()
+    defaults = resolve_reasoning_presets(config=config)
+
+    tier_configs: dict[str, dict[str, str]] = {
+        "pro": {
+            "provider_family": "gemini",
+            "model_id": config.pro_model,
+            "vote_role": "Strategic voter",
+            "debate_role": "Debater",
+        },
+        "flash": {
+            "provider_family": "gemini",
+            "model_id": config.flash_model,
+            "vote_role": "Fast voter",
+            "debate_role": "Debater",
+        },
+        "openrouter": {
+            "provider_family": "openrouter",
+            "model_id": config.openrouter_model,
+            "vote_role": "Diversity voter",
+            "debate_role": "Debater",
+        },
+        "claude": {
+            "provider_family": "anthropic",
+            "model_id": config.claude_model,
+            "vote_role": "Challenge voter",
+            "debate_role": "Debater",
+        },
+    }
+
+    def _runtime_tier_response(tier: str, payload: dict[str, str]) -> RuntimeTierConfigResponse:
+        entry = resolve_model_catalog_entry(payload["model_id"])
+        return RuntimeTierConfigResponse(
+            tier=tier,  # type: ignore[arg-type]
+            provider_family=payload["provider_family"],  # type: ignore[arg-type]
+            model_id=payload["model_id"],
+            display_name=entry.display_name if entry is not None else payload["model_id"],
+            vote_role=payload["vote_role"],
+            debate_role=payload["debate_role"],
+        )
+
+    tiers = {
+        tier: _runtime_tier_response(tier, payload)
+        for tier, payload in tier_configs.items()
+    }
+
+    catalog = {
+        provider: [
+            RuntimeModelOptionResponse(
+                provider_family=entry.provider_family,
+                model_id=entry.model_id,
+                display_name=entry.display_name,
+                source_url=entry.source_url,
+                stability_tier=entry.stability_tier,
+                supports_streaming=entry.supports_streaming,
+                supports_json_schema=entry.supports_json_schema,
+                supports_reasoning=entry.supports_reasoning,
+                supports_reasoning_continuation=entry.supports_reasoning_continuation,
+                input_usd_per_million=entry.input_usd_per_million,
+                output_usd_per_million=entry.output_usd_per_million,
+                usage_telemetry_mode=entry.usage_telemetry_mode,
+                allowed_tiers=list(entry.allowed_tiers),
+            )
+            for entry in built_in_models_for_provider(provider)  # type: ignore[arg-type]
+        ]
+        for provider in ("gemini", "anthropic", "openrouter")
+    }
+
+    return DeliberationRuntimeConfigResponse(
+        model_catalog_version=MODEL_CATALOG_VERSION,
+        model_catalog_checked_at=MODEL_CATALOG_CHECKED_AT,
+        participant_cycle=list(BASE_PARTICIPANT_CYCLE),
+        default_reasoning_presets=defaults,
+        tiers=tiers,
+        catalog=catalog,  # type: ignore[arg-type]
+    )
+
+
 def _resolve_domain_prompt(
     domain: BenchmarkDomainName,
     template_id: str | None,
@@ -788,16 +881,31 @@ def _artifact_telemetry(payload: dict[str, Any]) -> dict[str, Any]:
                 model,
                 {
                     "total_tokens": 0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "thinking_tokens": 0,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "thinking_tokens": None,
                     "latency_ms": 0.0,
+                    "_missing_input_split": False,
+                    "_missing_output_split": False,
+                    "_missing_thinking_split": False,
                 },
             )
             bucket["total_tokens"] += telemetry.total_tokens or 0
-            bucket["input_tokens"] += telemetry.input_tokens or 0
-            bucket["output_tokens"] += telemetry.output_tokens or 0
-            bucket["thinking_tokens"] += telemetry.thinking_tokens or 0
+            if telemetry.input_tokens is None:
+                bucket["_missing_input_split"] = True
+                bucket["input_tokens"] = None
+            elif not bucket["_missing_input_split"]:
+                bucket["input_tokens"] = int(bucket["input_tokens"] or 0) + telemetry.input_tokens
+            if telemetry.output_tokens is None:
+                bucket["_missing_output_split"] = True
+                bucket["output_tokens"] = None
+            elif not bucket["_missing_output_split"]:
+                bucket["output_tokens"] = int(bucket["output_tokens"] or 0) + telemetry.output_tokens
+            if telemetry.thinking_tokens is None:
+                bucket["_missing_thinking_split"] = True
+                bucket["thinking_tokens"] = None
+            elif not bucket["_missing_thinking_split"]:
+                bucket["thinking_tokens"] = int(bucket["thinking_tokens"] or 0) + telemetry.thinking_tokens
             bucket["latency_ms"] += telemetry.latency_ms or 0.0
         cost_block = _cost_from_object(run)
         if cost_block is None:
@@ -978,6 +1086,18 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
     normalized_summary["per_mode"] = per_mode_complete
     normalized_summary["per_mechanism"] = per_mechanism_complete
     normalized_summary["per_category"] = per_category_complete
+    for key in (
+        "completed_run_count",
+        "failed_run_count",
+        "degraded_run_count",
+        "scored_run_count",
+        "proxy_run_count",
+        "failure_counts_by_category",
+        "failure_counts_by_reason",
+        "failure_counts_by_stage",
+    ):
+        if normalized_summary.get(key) in (None, {}, 0):
+            normalized_summary[key] = derived_summary.get(key, normalized_summary.get(key))
     cloned["summary"] = normalized_summary
     return cloned
 
@@ -1166,6 +1286,9 @@ def _build_benchmark_detail_response(
             else resolve_reasoning_presets(
                 record_request.get("reasoning_presets") if isinstance(record_request, dict) else None
             )
+        ),
+        tier_model_overrides=(
+            request_record.tier_model_overrides if request_record is not None else None
         ),
         model_telemetry=telemetry.get("model_telemetry", {}),
         events=[
@@ -1879,13 +2002,25 @@ def _runs_for_summary(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 "stage": mode,
                 "mechanism_used": mechanism,
                 "category": category,
+                "item_status": str(run.get("item_status") or "completed").strip().lower() or "completed",
+                "failure_reason": str(run.get("failure_reason") or "").strip() or None,
                 "correct": bool(run.get("correct")),
+                "scored": bool(run.get("scored")),
+                "scoring_mode": str(run.get("scoring_mode") or "").strip().lower() or None,
                 "tokens_used": _safe_int(run.get("tokens_used") or run.get("total_tokens_used")),
                 "latency_ms": _safe_float(run.get("latency_ms")),
                 "rounds": _safe_int(run.get("rounds")),
                 "switches": _safe_int(run.get("switches")),
                 "thinking_tokens_used": _safe_int(run.get("thinking_tokens_used")),
                 "estimated_cost_usd": _safe_float(run.get("estimated_cost_usd")),
+                "run_kind": str(run.get("run_kind") or run.get("phase") or run.get("mode") or "")
+                .strip()
+                .lower()
+                or None,
+                "phase": str(run.get("phase") or run.get("run_kind") or run.get("mode") or "")
+                .strip()
+                .lower()
+                or None,
             }
         )
     return normalized
@@ -2117,6 +2252,9 @@ def _to_run_status(
             else resolve_reasoning_presets(
                 request_payload.get("reasoning_presets") if isinstance(request_payload, dict) else None
             )
+        ),
+        tier_model_overrides=(
+            request_record.tier_model_overrides if request_record is not None else None
         ),
         latest_mechanism=(
             str(record.get("latest_mechanism")).strip() if record.get("latest_mechanism") else None
@@ -2380,6 +2518,9 @@ async def _execute_benchmark_run(
     updated_at = datetime.now(UTC).isoformat()
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
     resolved_domain_prompts = _resolved_domain_prompts(request)
+    tier_model_overrides = normalize_tier_model_overrides(
+        request.tier_model_overrides.present() if request.tier_model_overrides else None
+    )
 
     running_record = await store.get_user_test_result(workspace_id, run_id) or {}
     running_record.update(
@@ -2392,6 +2533,7 @@ async def _execute_benchmark_run(
                 **request.model_dump(mode="json"),
                 "reasoning_presets": reasoning_presets.model_dump(mode="json"),
                 "resolved_domain_prompts": resolved_domain_prompts,
+                "tier_model_overrides": tier_model_overrides or None,
             },
             "updated_at": updated_at,
         }
@@ -2431,6 +2573,7 @@ async def _execute_benchmark_run(
             agent_count=request.agent_count,
             allow_offline_fallback=True,
             reasoning_presets=reasoning_presets,
+            tier_model_overrides=tier_model_overrides,
         )
         selector_state = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
         if selector_state is not None:
@@ -2522,6 +2665,7 @@ async def _execute_benchmark_run(
             "seed": request.seed,
             "reasoning_presets": reasoning_presets.model_dump(mode="json"),
             "domain_prompts": resolved_domain_prompts,
+            "tier_model_overrides": tier_model_overrides or None,
         }
         telemetry = _artifact_telemetry(payload)
         benchmark_config = {
@@ -2532,6 +2676,7 @@ async def _execute_benchmark_run(
             "seed": request.seed,
             "reasoning_presets": reasoning_presets.model_dump(mode="json"),
             "domain_prompts": resolved_domain_prompts,
+            "tier_model_overrides": tier_model_overrides or None,
         }
         payload["benchmark_config"] = benchmark_config
 
@@ -2592,6 +2737,7 @@ async def _execute_benchmark_run(
                     **request.model_dump(mode="json"),
                     "reasoning_presets": reasoning_presets.model_dump(mode="json"),
                     "resolved_domain_prompts": resolved_domain_prompts,
+                    "tier_model_overrides": tier_model_overrides or None,
                 },
                 "mechanism_counts": telemetry["mechanism_counts"],
                 "model_counts": telemetry["model_counts"],
@@ -2867,6 +3013,18 @@ async def get_benchmark_prompt_templates(
     return _domain_prompt_templates_response()
 
 
+@router.get("/benchmarks/runtime-config", response_model=DeliberationRuntimeConfigResponse)
+async def get_benchmark_runtime_config(
+    user: CurrentUser,
+) -> DeliberationRuntimeConfigResponse:
+    """Return frontend-safe runtime model defaults and catalog metadata."""
+
+    if user.auth_method == "jwt":
+        require_human_user(user)
+
+    return _deliberation_runtime_config_response()
+
+
 async def _resolve_benchmark_detail(
     *,
     benchmark_id: str,
@@ -3023,6 +3181,12 @@ async def trigger_benchmark_run(
     created_at = datetime.now(UTC)
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
     resolved_domain_prompts = _resolved_domain_prompts(request)
+    try:
+        tier_model_overrides = normalize_tier_model_overrides(
+            request.tier_model_overrides.present() if request.tier_model_overrides else None
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     await store.save_user_test_result(
         user.workspace_id,
@@ -3038,6 +3202,7 @@ async def trigger_benchmark_run(
                 **request.model_dump(mode="json"),
                 "reasoning_presets": reasoning_presets.model_dump(mode="json"),
                 "resolved_domain_prompts": resolved_domain_prompts,
+                "tier_model_overrides": tier_model_overrides or None,
             },
             "label": "User-triggered benchmark",
         },

@@ -11,7 +11,13 @@ import pytest
 from agora.agent import AgentCallError
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
-from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
+from agora.sdk import (
+    AgoraArbitrator,
+    AgoraNode,
+    HostedBenchmarkRunRequest,
+    HostedTierModelOverrides,
+    ReceiptVerificationError,
+)
 from agora.sdk.config import CANONICAL_HOSTED_API_URL, resolve_hosted_api_url
 from api.auth import AuthenticatedUser
 from api.main import app
@@ -240,6 +246,79 @@ def test_with_complete_summary_preserves_count_fields() -> None:
     assert summary["per_category"]["math"]["selector"]["run_count"] == 1
     assert summary["per_category"]["math"]["selector"]["scored_run_count"] == 1
     assert summary["per_category"]["math"]["selector"]["proxy_run_count"] == 0
+
+
+def test_with_complete_summary_derives_scored_coverage_and_cost_from_runs() -> None:
+    payload = {
+        "artifact_version": "benchmark-tasklike-v2",
+        "runs": [
+            {
+                "item_status": "completed",
+                "mode": "selector",
+                "mechanism_used": "vote",
+                "category": "demo",
+                "correct": True,
+                "scored": True,
+                "scoring_mode": "proxy_success",
+                "tokens_used": 1200,
+                "latency_ms": 80.0,
+                "rounds": 1,
+                "switches": 0,
+                "thinking_tokens_used": 110,
+                "estimated_cost_usd": 0.0125,
+            }
+        ],
+    }
+
+    normalized = benchmark_routes._with_complete_summary(payload)
+    summary = normalized["summary"]
+
+    assert summary["completed_run_count"] == 1
+    assert summary["scored_run_count"] == 1
+    assert summary["proxy_run_count"] == 1
+    assert summary["per_mode"]["selector"]["run_count"] == 1
+    assert summary["per_mode"]["selector"]["scored_run_count"] == 1
+    assert summary["per_mode"]["selector"]["proxy_run_count"] == 1
+    assert summary["per_mode"]["selector"]["avg_estimated_cost_usd"] == pytest.approx(0.0125)
+    assert summary["per_category"]["demo"]["selector"]["scored_run_count"] == 1
+    assert summary["per_category"]["demo"]["selector"]["proxy_run_count"] == 1
+
+
+def test_artifact_telemetry_estimates_cost_from_total_tokens_without_split_counts() -> None:
+    payload = {
+        "artifact_version": "benchmark-tasklike-v2",
+        "runs": [
+            {
+                "item_status": "completed",
+                "mode": "vote",
+                "mechanism_used": "vote",
+                "category": "reasoning",
+                "tokens_used": 0,
+                "latency_ms": 25.0,
+                "rounds": 1,
+                "switches": 0,
+                "agent_models_used": ["qwen/qwen3.5-flash-02-23"],
+                "model_telemetry": {
+                    "qwen/qwen3.5-flash-02-23": {
+                        "total_tokens": 1000,
+                        "input_tokens": None,
+                        "output_tokens": None,
+                        "thinking_tokens": None,
+                        "latency_ms": 25.0,
+                    }
+                },
+            }
+        ],
+        "summary": {"per_mode": {}, "per_mechanism": {}, "per_category": {}},
+    }
+
+    telemetry = benchmark_routes._artifact_telemetry(payload)
+    cost = telemetry["cost"]
+
+    assert cost is not None
+    assert cost.estimated_cost_usd is not None
+    assert cost.estimated_cost_usd > 0
+    assert cost.estimation_mode in {"approx_total_tokens", "mixed"}
 
 
 def _assert_normalized_selector_summary(
@@ -1079,6 +1158,15 @@ async def test_phase2_validation_forwards_live_orchestrator_events_with_benchmar
     class _FakeSelector:
         bandit = _FakeBandit()
 
+        async def select(self, *, task_text: str, agent_count: int, stakes: float):
+            return make_selection(
+                mechanism=MechanismType.DEBATE,
+                topic_category="reasoning",
+            )
+
+        def update_with_mechanism(self, *args: object, **kwargs: object) -> None:
+            return None
+
     def _result(task: str) -> DeliberationResult:
         return DeliberationResult(
             task=task,
@@ -1337,6 +1425,12 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
     created = await arbitrator.create_task(
         "Should we use vote for the phase 2 demo?",
         stakes=0.01,
+        tier_model_overrides=HostedTierModelOverrides(
+            pro="gemini-2.5-pro",
+            flash="gemini-2.5-flash",
+            openrouter="openai/gpt-oss-120b",
+            claude="claude-haiku-4-5",
+        ),
     )
     run = await arbitrator.run_task("task-phase2-demo")
     status = await arbitrator.get_task_status("task-phase2-demo", detailed=True)
@@ -1358,8 +1452,14 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
         "agent_count": 4,
         "stakes": 0.01,
         "mechanism_override": "vote",
+        "tier_model_overrides": {
+            "pro": "gemini-2.5-pro",
+            "flash": "gemini-2.5-flash",
+            "openrouter": "openai/gpt-oss-120b",
+            "claude": "claude-haiku-4-5",
+        },
         "allow_mechanism_switch": True,
-        "allow_offline_fallback": False,
+        "allow_offline_fallback": True,
         "quorum_threshold": 0.6,
     }
     assert seen_calls[2][2]["params"] == {"detailed": "true"}
@@ -1667,6 +1767,12 @@ async def test_sdk_benchmark_helpers_cover_run_wait_detail_and_stream(
                     "source": "custom",
                 }
             },
+            tier_model_overrides=HostedTierModelOverrides(
+                pro="gemini-2.5-pro",
+                flash="gemini-2.5-flash-lite",
+                openrouter="google/gemma-4-31b-it",
+                claude="claude-sonnet-4-5",
+            ),
         )
     )
     completed = await arbitrator.wait_for_benchmark_run(
@@ -1698,6 +1804,12 @@ async def test_sdk_benchmark_helpers_cover_run_wait_detail_and_stream(
             }
         },
         "reasoning_presets": None,
+        "tier_model_overrides": {
+            "pro": "gemini-2.5-pro",
+            "flash": "gemini-2.5-flash-lite",
+            "openrouter": "google/gemma-4-31b-it",
+            "claude": "claude-sonnet-4-5",
+        },
     }
 
 

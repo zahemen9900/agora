@@ -164,12 +164,13 @@ function BenchmarkSection({
                 {entry.latest_mechanism ? <span className="badge">{titleCase(entry.latest_mechanism)}</span> : null}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-6 gap-2 text-xs text-text-secondary mb-3">
+              <div className="grid grid-cols-1 sm:grid-cols-7 gap-2 text-xs text-text-secondary mb-3">
                 <div>Runs {formatInt(entry.run_count)}</div>
                 <div>Agents {entry.agent_count ?? "n/a"}</div>
                 <div>Tokens {formatInt(entry.total_tokens ?? 0)}</div>
                 <div>Thinking {formatInt(entry.thinking_tokens ?? 0)}</div>
                 <div>Cost {formatUsd(entry.cost?.estimated_cost_usd ?? null)}</div>
+                <div>Budget/Agent {formatBudgetPerAgent(entry.cost?.estimated_cost_usd ?? null, entry.agent_count ?? null)}</div>
                 <div>Score {entry.frequency_score.toFixed(2)}</div>
               </div>
 
@@ -223,6 +224,20 @@ function formatInt(value: number | null | undefined): string {
     return "0";
   }
   return Math.round(value).toLocaleString();
+}
+
+function formatBudgetPerAgent(cost: number | null, agentCount: number | null): string {
+  if (
+    cost === null
+    || !Number.isFinite(cost)
+    || cost <= 0
+    || agentCount === null
+    || !Number.isFinite(agentCount)
+    || agentCount <= 0
+  ) {
+    return "n/a";
+  }
+  return `$${(cost / agentCount).toFixed(6)}`;
 }
 
 function titleCase(value: string): string {

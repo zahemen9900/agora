@@ -2135,12 +2135,12 @@ class AgentCaller:
         }
 
 
-def flash_caller(*, thinking_level: str | None = None) -> AgentCaller:
+def flash_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
     """Return cost-efficient generation caller for openings, voting, and rebuttals."""
 
     config = get_config()
     return AgentCaller(
-        model=config.flash_model,
+        model=model or config.flash_model,
         temperature=0.7,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=True,
@@ -2149,12 +2149,12 @@ def flash_caller(*, thinking_level: str | None = None) -> AgentCaller:
     )
 
 
-def pro_caller(*, thinking_level: str | None = None) -> AgentCaller:
+def pro_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
     """Return higher-quality reasoning caller for selection and synthesis."""
 
     config = get_config()
     return AgentCaller(
-        model=config.pro_model,
+        model=model or config.pro_model,
         temperature=0.5,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=config.gemini_enable_thinking,
@@ -2163,12 +2163,12 @@ def pro_caller(*, thinking_level: str | None = None) -> AgentCaller:
     )
 
 
-def claude_caller(*, effort: str | None = None) -> AgentCaller:
+def claude_caller(*, effort: str | None = None, model: str | None = None) -> AgentCaller:
     """Return direct Anthropic Claude caller for diversity or fallback routing."""
 
     config = get_config()
     return AgentCaller(
-        model=config.claude_model,
+        model=model or config.claude_model,
         temperature=1.0,
         claude_effort=effort or config.claude_effort,
     )
@@ -2178,12 +2178,13 @@ def openrouter_caller(
     *,
     effort: str | None = None,
     exclude: bool | None = None,
+    model: str | None = None,
 ) -> AgentCaller:
     """Return OpenRouter-compatible caller for challenger or fallback routing."""
 
     config = get_config()
     return AgentCaller(
-        model=config.openrouter_model,
+        model=model or config.openrouter_model,
         temperature=0.5,
         openrouter_reasoning_effort=effort or config.openrouter_reasoning_effort,
         openrouter_reasoning_exclude=(
@@ -2196,7 +2197,8 @@ def kimi_caller(
     *,
     effort: str | None = None,
     exclude: bool | None = None,
+    model: str | None = None,
 ) -> AgentCaller:
     """Backward-compatible alias for the legacy Kimi-specific helper."""
 
-    return openrouter_caller(effort=effort, exclude=exclude)
+    return openrouter_caller(effort=effort, exclude=exclude, model=model)

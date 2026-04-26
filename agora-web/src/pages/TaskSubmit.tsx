@@ -8,14 +8,19 @@ import { DecisionPopup } from "../components/task/DecisionPopup";
 import { RecentDeliberationsCarousel } from "../components/task/RecentDeliberationsCarousel";
 import { type TaskStatusResponse } from "../lib/api";
 import {
+  buildTierModelOverridesPayload,
+  buildProviderSummary,
   DEFAULT_REASONING_PRESETS,
+  resolveDefaultReasoningPresets,
   type ReasoningPresetState,
+  type TierModelOverrideState,
 } from "../lib/deliberationConfig";
 import {
   taskQueryKeys,
   useSubmitTaskMutation,
   useTaskListQuery,
 } from "../lib/taskQueries";
+import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
 
 // ── Example tasks (unchanged) ─────────────────────────────────────────────────
 const EXAMPLE_TASKS = [
@@ -47,6 +52,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
     quorum_reached: null,
     agent_count: 4,
     reasoning_presets: DEFAULT_REASONING_PRESETS,
+    tier_model_overrides: null,
     round_count: 0,
     mechanism_switches: 0,
     transcript_hashes: [],
@@ -74,6 +80,8 @@ export function TaskSubmit() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recentTasksQuery = useTaskListQuery();
   const submitTaskMutation = useSubmitTaskMutation();
+  const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
+  const runtimeConfig = runtimeConfigQuery.data;
 
   // ── All original state is preserved exactly ──
   const [taskText, setTaskText] = useState("");
@@ -82,6 +90,8 @@ export function TaskSubmit() {
   const [reasoningPresets, setReasoningPresets] = useState<ReasoningPresetState>(
     DEFAULT_REASONING_PRESETS,
   );
+  const [tierModelOverrides, setTierModelOverrides] = useState<TierModelOverrideState>({});
+  const [runtimeDefaultsHydrated, setRuntimeDefaultsHydrated] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [mechanismReveal, setMechanismReveal] = useState<{
@@ -105,6 +115,16 @@ export function TaskSubmit() {
     }
   }, [recentTasksQuery.error]);
 
+  useEffect(() => {
+    if (!runtimeConfig || runtimeDefaultsHydrated) {
+      return;
+    }
+    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
+    setRuntimeDefaultsHydrated(true);
+  }, [runtimeConfig, runtimeDefaultsHydrated]);
+
+  const providerSummary = buildProviderSummary(agentCount, runtimeConfig, tierModelOverrides);
+
   // ── Submit handler (original logic, adds taskId to reveal state) ──
   const handleSubmit = async () => {
     if (!taskText.trim()) return;
@@ -119,6 +139,7 @@ export function TaskSubmit() {
         agentCount,
         stakes: normalizedStake,
         reasoningPresets,
+        tierModelOverrides: buildTierModelOverridesPayload(tierModelOverrides, runtimeConfig),
       });
       setMechanismReveal({
         mechanism: response.mechanism.toUpperCase(),
@@ -341,6 +362,10 @@ export function TaskSubmit() {
         onAgentCountChange={setAgentCount}
         stakes={stakes}
         onStakesChange={setStakes}
+        providerSummary={providerSummary}
+        runtimeConfig={runtimeConfig}
+        tierModelOverrides={tierModelOverrides}
+        onTierModelOverridesChange={setTierModelOverrides}
       />
 
       {/* ── Decision popup (replaces sliding alert) ───────────────── */}

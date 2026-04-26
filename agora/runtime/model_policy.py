@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Any
 
 from agora.config import AgoraConfig, get_config
+from agora.runtime.model_catalog import canonical_model_name, resolve_model_catalog_entry
 from agora.types import (
     GeminiProReasoningPreset,
     ProviderTierName,
@@ -15,6 +16,65 @@ from agora.types import (
 )
 
 BASE_PARTICIPANT_CYCLE: tuple[ProviderTierName, ...] = ("pro", "flash", "openrouter", "claude")
+
+
+def default_tier_models(*, config: AgoraConfig | None = None) -> dict[ProviderTierName, str]:
+    """Return the canonical default model id for each counted participant tier."""
+
+    resolved_config = config or get_config()
+    return {
+        "pro": canonical_model_name(resolved_config.pro_model),
+        "flash": canonical_model_name(resolved_config.flash_model),
+        "openrouter": canonical_model_name(resolved_config.openrouter_model),
+        "claude": canonical_model_name(resolved_config.claude_model),
+    }
+
+
+def normalize_tier_model_overrides(
+    overrides: dict[str, str] | None,
+    *,
+    config: AgoraConfig | None = None,
+) -> dict[ProviderTierName, str]:
+    """Return validated per-tier model overrides using canonical catalog ids."""
+
+    if not overrides:
+        return {}
+
+    normalized: dict[ProviderTierName, str] = {}
+    for raw_tier, raw_model in overrides.items():
+        tier = "openrouter" if raw_tier == "kimi" else raw_tier
+        if tier not in BASE_PARTICIPANT_CYCLE:
+            raise ValueError(f"Unknown participant tier '{raw_tier}'")
+        model_id = canonical_model_name(str(raw_model or "").strip())
+        if not model_id:
+            continue
+        entry = resolve_model_catalog_entry(model_id)
+        if entry is None:
+            raise ValueError(f"Unknown model '{raw_model}'")
+        if tier not in entry.allowed_tiers:
+            raise ValueError(
+                f"Model '{entry.model_id}' is not allowed for participant tier '{tier}'"
+            )
+        normalized[tier] = entry.model_id
+
+    defaults = default_tier_models(config=config)
+    return {tier: model for tier, model in normalized.items() if model != defaults[tier]}
+
+
+def effective_tier_models(
+    overrides: dict[str, str] | None = None,
+    *,
+    config: AgoraConfig | None = None,
+) -> dict[ProviderTierName, str]:
+    """Resolve the effective tier model assignment after applying overrides."""
+
+    defaults = default_tier_models(config=config)
+    if not overrides:
+        return defaults
+    return {
+        **defaults,
+        **normalize_tier_model_overrides(overrides, config=config),
+    }
 
 
 def balanced_participant_tiers(agent_count: int) -> list[ProviderTierName]:

@@ -126,17 +126,20 @@ export function detectBenchmarkArtifactKind(payload: BenchmarkPayload | Record<s
 
 export function buildOverviewAccuracyData(summary: NormalizedSummary): Array<{
   category: string;
-  debate: number;
-  vote: number;
-  selector: number;
+  debate: number | null;
+  vote: number | null;
+  selector: number | null;
 }> {
   return BENCHMARK_DOMAIN_KEYS.map((domain) => {
     const metricsByMode = summary.per_category[domain] ?? {};
+    const debateScored = metricsByMode.debate?.scored_run_count ?? 0;
+    const voteScored = metricsByMode.vote?.scored_run_count ?? 0;
+    const selectorScored = metricsByMode.selector?.scored_run_count ?? 0;
     return {
       category: titleCase(domain),
-      debate: ((metricsByMode.debate?.accuracy ?? 0) as number) * 100,
-      vote: ((metricsByMode.vote?.accuracy ?? 0) as number) * 100,
-      selector: ((metricsByMode.selector?.accuracy ?? 0) as number) * 100,
+      debate: debateScored > 0 ? ((metricsByMode.debate?.accuracy ?? 0) as number) * 100 : null,
+      vote: voteScored > 0 ? ((metricsByMode.vote?.accuracy ?? 0) as number) * 100 : null,
+      selector: selectorScored > 0 ? ((metricsByMode.selector?.accuracy ?? 0) as number) * 100 : null,
     };
   });
 }
@@ -160,18 +163,34 @@ export function buildOverviewLearningCurve(
     record.pre_learning?.summary?.per_mode?.selector?.accuracy
     ?? record.pre_learning?.summary?.per_mode?.vote?.accuracy,
   ) * 100;
-  const post = asNumber(
-    record.post_learning?.summary?.per_mode?.selector?.accuracy
-    ?? record.post_learning?.summary?.per_mode?.vote?.accuracy
-    ?? pre,
-  ) * 100;
+  const rawPostAccuracy = record.post_learning?.summary?.per_mode?.selector?.accuracy
+    ?? record.post_learning?.summary?.per_mode?.vote?.accuracy;
+  const post = (rawPostAccuracy === undefined || rawPostAccuracy === null)
+    ? pre
+    : asNumber(rawPostAccuracy) * 100;
+  const preScored = asNumber(
+    record.pre_learning?.summary?.per_mode?.selector?.scored_run_count
+    ?? record.pre_learning?.summary?.per_mode?.vote?.scored_run_count,
+  );
+  const postScored = asNumber(
+    record.post_learning?.summary?.per_mode?.selector?.scored_run_count
+    ?? record.post_learning?.summary?.per_mode?.vote?.scored_run_count,
+  );
+
+  if (preScored <= 0 && postScored <= 0) {
+    return {
+      available: false,
+      data: [],
+      reason: "This validation artifact does not have scored selector coverage for the learning curve yet.",
+    };
+  }
 
   return {
     available: true,
-    data: [
-      { phase: "Pre", accuracy: pre },
-      { phase: "Post", accuracy: post || pre },
-    ],
+      data: [
+        { phase: "Pre", accuracy: pre },
+        { phase: "Post", accuracy: post },
+      ],
     reason: null,
   };
 }

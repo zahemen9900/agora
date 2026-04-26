@@ -45,6 +45,7 @@ ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
 BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
 BenchmarkDomainName = Literal["math", "factual", "reasoning", "code", "creative", "demo"]
 BenchmarkPromptSourceName = Literal["template", "custom"]
+ProviderTierName = Literal["pro", "flash", "openrouter", "claude"]
 DEFAULT_PROGRAM_ID = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
 
@@ -80,6 +81,7 @@ class ArbitratorConfig(BaseModel):
     mechanism: MechanismName | None = None
     agent_count: int = 4
     reasoning_presets: ReasoningPresetOverrides | None = None
+    tier_model_overrides: HostedTierModelOverrides | None = None
     allow_mechanism_switch: bool = True
     allow_offline_fallback: bool = True
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
@@ -91,6 +93,21 @@ class ArbitratorConfig(BaseModel):
     rpc_url: str = ""
     program_id: str = DEFAULT_PROGRAM_ID
     http_timeout_seconds: float = Field(default=DEFAULT_HTTP_TIMEOUT_SECONDS, gt=0)
+
+
+class HostedTierModelOverrides(BaseModel):
+    """Optional hosted per-tier model overrides for one task or benchmark run."""
+
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    pro: str | None = None
+    flash: str | None = None
+    openrouter: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("openrouter", "kimi"),
+        serialization_alias="openrouter",
+    )
+    claude: str | None = None
 
 
 class HostedTaskCreateResponse(BaseModel):
@@ -185,6 +202,7 @@ class HostedTaskStatus(BaseModel):
     quorum_reached: bool | None = None
     agent_count: int = 1
     reasoning_presets: ReasoningPresets | None = None
+    tier_model_overrides: HostedTierModelOverrides | None = None
     round_count: int = 0
     mechanism_switches: int = 0
     transcript_hashes: list[str] = Field(default_factory=list)
@@ -256,6 +274,7 @@ class HostedBenchmarkRunRequest(BaseModel):
         default_factory=dict
     )
     reasoning_presets: ReasoningPresetOverrides | None = None
+    tier_model_overrides: HostedTierModelOverrides | None = None
 
 
 class HostedBenchmarkRunResponse(BaseModel):
@@ -520,6 +539,7 @@ class AgoraArbitrator:
         mechanism: MechanismName | None = None,
         agent_count: int | None = None,
         reasoning_presets: ReasoningPresetOverrides | dict[str, Any] | None = None,
+        tier_model_overrides: HostedTierModelOverrides | dict[str, Any] | None = None,
         allow_mechanism_switch: bool | None = None,
         allow_offline_fallback: bool | None = None,
         quorum_threshold: float | None = None,
@@ -553,6 +573,13 @@ class AgoraArbitrator:
                 effective_reasoning_presets.model_dump(mode="json")
                 if isinstance(effective_reasoning_presets, BaseModel)
                 else effective_reasoning_presets
+            )
+        effective_tier_model_overrides = tier_model_overrides or self.config.tier_model_overrides
+        if effective_tier_model_overrides is not None:
+            payload["tier_model_overrides"] = (
+                effective_tier_model_overrides.model_dump(mode="json", by_alias=True)
+                if isinstance(effective_tier_model_overrides, BaseModel)
+                else effective_tier_model_overrides
             )
 
         response = await self._client.post(

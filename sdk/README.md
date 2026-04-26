@@ -64,6 +64,33 @@ await arbitrator.aclose()
 Use `wait_for_task_result()` after streaming. It gives you the final result on
 success and raises a structured SDK exception if the hosted task fails.
 
+### Hosted task with per-tier model overrides
+
+If you want the hosted runtime to keep the same 4-tier structure but swap the
+actual models used for this run, pass `tier_model_overrides` directly:
+
+```python
+from agora.sdk import AgoraArbitrator, HostedTierModelOverrides
+
+
+arbitrator = AgoraArbitrator(auth_token="agora_live_your_public_id.your_secret")
+created = await arbitrator.create_task(
+    "Should we move this service to async I/O?",
+    mechanism="debate",
+    tier_model_overrides=HostedTierModelOverrides(
+        pro="gemini-2.5-pro",
+        flash="gemini-2.5-flash",
+        openrouter="openai/gpt-oss-120b",
+        claude="claude-haiku-4-5",
+    ),
+)
+await arbitrator.start_task_run(created.task_id)
+result = await arbitrator.wait_for_task_result(created.task_id)
+
+print(result.agent_models_used)
+await arbitrator.aclose()
+```
+
 ### Hosted API mode (plain Python script)
 
 ```python
@@ -254,7 +281,7 @@ surface, which currently requires a human bearer token. Use a WorkOS-backed
 human session token here, not an Agora API key.
 
 ```python
-from agora.sdk import AgoraArbitrator, HostedBenchmarkRunRequest
+from agora.sdk import AgoraArbitrator, HostedBenchmarkRunRequest, HostedTierModelOverrides
 
 
 arbitrator = AgoraArbitrator(auth_token="workos_or_human_bearer_token")
@@ -264,6 +291,12 @@ run = await arbitrator.run_benchmark(
         live_agents=True,
         training_per_category=1,
         holdout_per_category=1,
+        tier_model_overrides=HostedTierModelOverrides(
+            pro="gemini-2.5-pro",
+            flash="gemini-2.5-flash-lite",
+            openrouter="google/gemma-4-31b-it",
+            claude="claude-sonnet-4-5",
+        ),
     )
 )
 

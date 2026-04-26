@@ -13,7 +13,10 @@ import {
   type TaskEvent,
   type TaskStatusResponse,
 } from "./api";
-import type { ReasoningPresetState } from "./deliberationConfig";
+import type {
+  ReasoningPresetState,
+  RuntimeTierModelOverridesPayload,
+} from "./deliberationConfig";
 import { useAuth } from "./useAuth";
 
 export const taskQueryKeys = {
@@ -27,6 +30,7 @@ export interface SubmitTaskInput {
   agentCount: number;
   stakes: number;
   reasoningPresets: Partial<ReasoningPresetState>;
+  tierModelOverrides?: RuntimeTierModelOverridesPayload;
 }
 
 function toTaskListSnapshot(task: TaskStatusResponse): TaskStatusResponse {
@@ -183,9 +187,9 @@ export function useSubmitTaskMutation() {
   const { getAccessToken } = useAuth();
 
   return useMutation<TaskCreateResponse, Error, SubmitTaskInput>({
-    mutationFn: async ({ taskText, agentCount, stakes, reasoningPresets }) => {
+    mutationFn: async ({ taskText, agentCount, stakes, reasoningPresets, tierModelOverrides }) => {
       const token = await getAccessToken();
-      return submitTask(taskText, agentCount, stakes, reasoningPresets, token);
+      return submitTask(taskText, agentCount, stakes, reasoningPresets, tierModelOverrides, token);
     },
   });
 }

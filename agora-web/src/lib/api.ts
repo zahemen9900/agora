@@ -18,12 +18,18 @@ import type {
   BenchmarkRunStatusResponse as GeneratedBenchmarkRunStatusResponse,
   BenchmarkSummaryResponse as GeneratedBenchmarkSummaryResponse,
   DeliberationResultResponse,
+  DeliberationRuntimeConfigResponse as GeneratedDeliberationRuntimeConfigResponse,
   ModelTelemetryResponse as GeneratedModelTelemetryResponse,
+  RuntimeModelOptionResponse as GeneratedRuntimeModelOptionResponse,
+  RuntimeTierConfigResponse as GeneratedRuntimeTierConfigResponse,
   TaskCreateResponse,
   TaskEvent,
   TaskStatusResponse,
 } from "./api.generated";
-import type { ReasoningPresetState } from "./deliberationConfig";
+import type {
+  ReasoningPresetState,
+  RuntimeTierModelOverridesPayload,
+} from "./deliberationConfig";
 
 export type {
   ApiKeyCreateResponse,
@@ -85,6 +91,12 @@ export interface BenchmarkDemoReport {
   status_after_pay?: Record<string, unknown>;
 }
 
+export type RuntimeModelOptionPayload = GeneratedRuntimeModelOptionResponse;
+export type RuntimeTierConfigPayload = GeneratedRuntimeTierConfigResponse;
+export type DeliberationRuntimeConfigPayload = GeneratedDeliberationRuntimeConfigResponse & {
+  default_reasoning_presets: ReasoningPresetState;
+};
+
 export interface BenchmarkPayload {
   runs?: Array<Record<string, unknown>>;
   summary?: BenchmarkSummary;
@@ -112,6 +124,7 @@ export type BenchmarkCatalogPayload = GeneratedBenchmarkCatalogResponse;
 export type BenchmarkRunRequestPayload = Partial<GeneratedBenchmarkRunRequest> & {
   domain_prompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>>;
   reasoning_presets?: Partial<ReasoningPresetState>;
+  tier_model_overrides?: RuntimeTierModelOverridesPayload;
 };
 
 export type BenchmarkRunResponsePayload = GeneratedBenchmarkRunResponse;
@@ -187,6 +200,7 @@ export async function submitTask(
   agentCount: number,
   stakes: number,
   reasoningPresets: Partial<ReasoningPresetState>,
+  tierModelOverrides: RuntimeTierModelOverridesPayload | undefined,
   token: string | null,
 ): Promise<TaskCreateResponse> {
   return requestJson<TaskCreateResponse>("/tasks", {
@@ -201,6 +215,7 @@ export async function submitTask(
       stakes,
       allow_offline_fallback: true,
       reasoning_presets: reasoningPresets,
+      tier_model_overrides: tierModelOverrides,
     }),
   });
 }
@@ -312,6 +327,14 @@ export async function getBenchmarkPromptTemplates(
   token: string | null,
 ): Promise<BenchmarkPromptTemplatesPayload> {
   return requestJson<BenchmarkPromptTemplatesPayload>("/benchmarks/prompt-templates", {
+    headers: authHeaders(token),
+  });
+}
+
+export async function getDeliberationRuntimeConfig(
+  token: string | null,
+): Promise<DeliberationRuntimeConfigPayload> {
+  return requestJson<DeliberationRuntimeConfigPayload>("/benchmarks/runtime-config", {
     headers: authHeaders(token),
   });
 }

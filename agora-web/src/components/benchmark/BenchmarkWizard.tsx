@@ -12,11 +12,14 @@ import {
 } from "lucide-react";
 import { EnsemblePlan } from "../EnsemblePlan";
 import { ReasoningPresetControls } from "../ReasoningPresetControls";
+import { TierModelSelectorGrid } from "../TierModelSelectorGrid";
 import type { BenchmarkDomainName, BenchmarkPromptTemplatesPayload } from "../../lib/api";
 import type {
+  DeliberationRuntimeConfigLike,
   EnsembleRosterItem,
   ProviderTier,
   ReasoningPresetState,
+  TierModelOverrideState,
 } from "../../lib/deliberationConfig";
 import type { ProviderName } from "../../lib/modelProviders";
 
@@ -62,6 +65,9 @@ export interface BenchmarkWizardProps {
   onHoldoutChange: (n: number) => void;
   reasoningPresets: ReasoningPresetState;
   onPresetsChange: (v: ReasoningPresetState) => void;
+  runtimeConfig?: DeliberationRuntimeConfigLike | null;
+  tierModelOverrides: TierModelOverrideState;
+  onTierModelOverridesChange: (next: TierModelOverrideState) => void;
   voteRoster: EnsembleRosterItem[];
   debateRoster: EnsembleRosterItem[];
   countBadges: Array<{ key: ProviderTier; provider: ProviderName; label: string; count: number }>;
@@ -334,10 +340,12 @@ function Step0({
   trainingPerCategory, onTrainingChange,
   holdoutPerCategory, onHoldoutChange,
   reasoningPresets, onPresetsChange,
+  runtimeConfig, tierModelOverrides, onTierModelOverridesChange,
   voteRoster, debateRoster, countBadges, ensembleLabel, debateFooter,
 }: Pick<BenchmarkWizardProps,
   "agentCount" | "onAgentCountChange" | "trainingPerCategory" | "onTrainingChange" |
   "holdoutPerCategory" | "onHoldoutChange" | "reasoningPresets" | "onPresetsChange" |
+  "runtimeConfig" | "tierModelOverrides" | "onTierModelOverridesChange" |
   "voteRoster" | "debateRoster" | "countBadges" | "ensembleLabel" | "debateFooter"
 >) {
   return (
@@ -406,7 +414,23 @@ function Step0({
         <div style={{ fontFamily: FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "12px" }}>
           Reasoning Presets
         </div>
-        <ReasoningPresetControls value={reasoningPresets} onChange={onPresetsChange} />
+        <ReasoningPresetControls
+          value={reasoningPresets}
+          onChange={onPresetsChange}
+          runtimeConfig={runtimeConfig}
+          tierModelOverrides={tierModelOverrides}
+        />
+      </div>
+
+      <div style={{ marginBottom: "24px" }}>
+        <div style={{ fontFamily: FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "12px" }}>
+          Tier Models
+        </div>
+        <TierModelSelectorGrid
+          runtimeConfig={runtimeConfig}
+          value={tierModelOverrides}
+          onChange={onTierModelOverridesChange}
+        />
       </div>
 
       {/* Ensemble plans — collapsible */}
@@ -711,6 +735,7 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
     open, onClose,
     agentCount, onAgentCountChange, trainingPerCategory, onTrainingChange,
     holdoutPerCategory, onHoldoutChange, reasoningPresets, onPresetsChange,
+    runtimeConfig, tierModelOverrides, onTierModelOverridesChange,
     voteRoster, debateRoster, countBadges, ensembleLabel, debateFooter,
     activeDomain, onDomainChange, templates, domainPromptSelection,
     onDomainUpdate, domainStatus, allDomainsConfigured,
@@ -783,6 +808,9 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
               trainingPerCategory={trainingPerCategory} onTrainingChange={onTrainingChange}
               holdoutPerCategory={holdoutPerCategory} onHoldoutChange={onHoldoutChange}
               reasoningPresets={reasoningPresets} onPresetsChange={onPresetsChange}
+              runtimeConfig={runtimeConfig}
+              tierModelOverrides={tierModelOverrides}
+              onTierModelOverridesChange={onTierModelOverridesChange}
               voteRoster={voteRoster} debateRoster={debateRoster}
               countBadges={countBadges} ensembleLabel={ensembleLabel} debateFooter={debateFooter}
             />

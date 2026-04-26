@@ -3925,6 +3925,80 @@ async def test_benchmark_prompt_templates_endpoint_returns_domain_catalog(
 
 
 @pytest.mark.asyncio
+async def test_benchmark_runtime_config_endpoint_exposes_resolved_tiers_and_catalog(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.get("/benchmarks/runtime-config")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["participant_cycle"] == ["pro", "flash", "openrouter", "claude"]
+    assert payload["default_reasoning_presets"]["openrouter"] in {"low", "medium", "high"}
+    assert payload["tiers"]["openrouter"]["model_id"]
+    assert payload["tiers"]["claude"]["model_id"]
+    assert payload["catalog"]["gemini"]
+    assert payload["catalog"]["openrouter"]
+    assert any(
+        entry["model_id"] == payload["tiers"]["openrouter"]["model_id"]
+        for entry in payload["catalog"]["openrouter"]
+    )
+    assert any(
+        "openrouter" in entry["allowed_tiers"]
+        for entry in payload["catalog"]["openrouter"]
+    )
+    assert any(
+        "pro" in entry["allowed_tiers"]
+        for entry in payload["catalog"]["gemini"]
+    )
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["gemini"] if "pro" in entry["allowed_tiers"]
+    } >= {"gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-pro"}
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["gemini"] if "flash" in entry["allowed_tiers"]
+    } >= {"gemini-3.1-flash-lite-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["anthropic"]
+    } >= {"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"}
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["openrouter"]
+    } >= {
+        "deepseek/deepseek-v3.2-exp",
+        "google/gemma-4-31b-it",
+        "openai/gpt-oss-120b",
+        "z-ai/glm-4.7-flash",
+        "qwen/qwen3.5-flash-02-23",
+        "moonshotai/kimi-k2-thinking",
+    }
+
+
+@pytest.mark.asyncio
+async def test_task_create_persists_tier_model_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+    create = await task_routes.create_task(
+        TaskCreateRequest(
+            task="override roster",
+            agent_count=4,
+            stakes=0.0,
+            tier_model_overrides={
+                "openrouter": "openai/gpt-oss-120b",
+                "claude": "claude-sonnet-4-5",
+            },
+        ),
+        _override_user(),
+    )
+
+    raw_task = await task_routes.get_task_store().get_task("user-1", create.task_id)
+    assert raw_task is not None
+    normalized = task_routes._to_status_response(raw_task, detailed=True)
+    assert normalized.tier_model_overrides is not None
+    assert normalized.tier_model_overrides.openrouter == "openai/gpt-oss-120b"
+    assert normalized.tier_model_overrides.claude == "claude-sonnet-4-5"
+
+
+@pytest.mark.asyncio
 async def test_benchmark_detail_endpoint_supports_artifact_and_run_id_lookup(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

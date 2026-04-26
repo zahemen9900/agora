@@ -20,7 +20,7 @@ from agora.runtime.task_execution import (
     execute_task_like_run,
     resolve_task_like_selection,
 )
-from agora.runtime.model_policy import resolve_reasoning_presets
+from agora.runtime.model_policy import normalize_tier_model_overrides, resolve_reasoning_presets
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
 from agora.types import (
@@ -1019,6 +1019,10 @@ def _to_status_response(raw_task: dict[str, Any], *, detailed: bool = False) -> 
         if isinstance(normalized.get("reasoning_presets"), dict)
         else None
     ).model_dump(mode="json")
+    if isinstance(normalized.get("tier_model_overrides"), dict):
+        normalized["tier_model_overrides"] = normalize_tier_model_overrides(
+            normalized["tier_model_overrides"]
+        )
 
     if not detailed:
         normalized["events"] = []
@@ -1286,6 +1290,7 @@ def _build_orchestrator(
     agent_count: int,
     allow_offline_fallback: bool,
     reasoning_presets: Any,
+    tier_model_overrides: dict[str, str] | None = None,
 ) -> AgoraOrchestrator:
     """Build orchestrator while tolerating older test doubles without fallback kwargs."""
 
@@ -1294,14 +1299,24 @@ def _build_orchestrator(
             agent_count=agent_count,
             allow_offline_fallback=allow_offline_fallback,
             reasoning_presets=reasoning_presets,
+            tier_model_overrides=normalize_tier_model_overrides(tier_model_overrides),
         )
     except TypeError as exc:
-        if "allow_offline_fallback" not in str(exc):
+        if "allow_offline_fallback" not in str(exc) and "tier_model_overrides" not in str(exc):
             raise
-        return AgoraOrchestrator(
-            agent_count=agent_count,
-            reasoning_presets=reasoning_presets,
-        )
+        try:
+            return AgoraOrchestrator(
+                agent_count=agent_count,
+                reasoning_presets=reasoning_presets,
+                tier_model_overrides=normalize_tier_model_overrides(tier_model_overrides),
+            )
+        except TypeError as nested_exc:
+            if "tier_model_overrides" not in str(nested_exc):
+                raise
+            return AgoraOrchestrator(
+                agent_count=agent_count,
+                reasoning_presets=reasoning_presets,
+            )
 
 
 @router.post("", response_model=TaskCreateResponse)
@@ -1321,11 +1336,18 @@ async def create_task(
     forced_override = _forced_mechanism()
     effective_override = forced_override or requested_override
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
+    try:
+        tier_model_overrides = normalize_tier_model_overrides(
+            request.tier_model_overrides.present() if request.tier_model_overrides else None
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     orchestrator = _build_orchestrator(
         agent_count=request.agent_count,
         allow_offline_fallback=request.allow_offline_fallback,
         reasoning_presets=reasoning_presets,
+        tier_model_overrides=tier_model_overrides,
     )
     await _load_selector_state(store, orchestrator)
     selection, selector_source, selector_fallback_path, mechanism_override_source = (
@@ -1370,6 +1392,11 @@ async def create_task(
         selector_confidence=selection.confidence,
         agent_count=request.agent_count,
         reasoning_presets=reasoning_presets,
+        tier_model_overrides=(
+            request.tier_model_overrides.model_validate(tier_model_overrides)
+            if tier_model_overrides
+            else None
+        ),
         payment_amount=request.stakes,
         payment_status="none",
     )
@@ -1626,6 +1653,11 @@ async def _execute_task_run(
         agent_count=task.agent_count,
         allow_offline_fallback=task.allow_offline_fallback,
         reasoning_presets=task.reasoning_presets,
+        tier_model_overrides=(
+            task.tier_model_overrides.present()
+            if task.tier_model_overrides is not None
+            else None
+        ),
     )
     await _load_selector_state(store, orchestrator)
     if hasattr(orchestrator, "build_vote_engine"):
