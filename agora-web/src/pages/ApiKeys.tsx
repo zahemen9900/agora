@@ -223,9 +223,12 @@ export function ApiKeys() {
   const FONT = "'Commit Mono', 'SF Mono', monospace";
 
   return (
-    /* position:relative on the outer wrapper so the ambient glow
-       is scoped to the page column and can bleed freely over both
-       the header and the card below it.                           */
+    <>
+      <title>API Keys — Agora</title>
+      <meta
+        name="description"
+        content="Create and manage API keys for programmatic access to Agora's deliberation protocol."
+      />
     <div className="max-w-225 mx-auto" style={{ position: 'relative' }}>
 
       {/* ── Ambient glow ─────────────────────────────────────────────────
@@ -386,6 +389,7 @@ export function ApiKeys() {
         />
       ) : null}
     </div>
+    </>
   );
 }
 
