@@ -19,7 +19,7 @@ from agora.agent import (
     AgentCallError,
     claude_caller,
     flash_caller,
-    kimi_caller,
+    openrouter_caller,
     pro_caller,
 )
 from agora.config import get_config
@@ -106,6 +106,7 @@ class VoteEngine:
         flash_agent: AgentCaller | None = None,
         pro_agent: AgentCaller | None = None,
         claude_agent: AgentCaller | None = None,
+        openrouter_agent: AgentCaller | None = None,
         kimi_agent: AgentCaller | None = None,
         hasher: TranscriptHasher | None = None,
         temperature_scaling: float = 1.5,
@@ -117,6 +118,7 @@ class VoteEngine:
         | None = None,
         participant_models: Sequence[LocalModelSpec] | None = None,
         provider_keys: LocalProviderKeys | None = None,
+        tier_model_overrides: dict[ProviderTierName, str] | None = None,
     ) -> None:
         """Initialize vote engine.
 
@@ -134,13 +136,14 @@ class VoteEngine:
         self._flash_agent = flash_agent
         self._pro_agent = pro_agent
         self._claude_agent = claude_agent
-        self._kimi_agent = kimi_agent
+        self._openrouter_agent = openrouter_agent or kimi_agent
         self.hasher = hasher or TranscriptHasher()
         self.aggregation_mode = aggregation_mode
         self.allow_offline_fallback = allow_offline_fallback
         self.reasoning_presets = resolve_reasoning_presets(reasoning_presets)
         self._participant_models = list(participant_models) if participant_models is not None else None
         self._local_provider_keys = provider_keys
+        self._tier_model_overrides = dict(tier_model_overrides or {})
         self._participant_tiers = balanced_participant_tiers(self.agent_count)
         if self._participant_models is not None and len(self._participant_models) != self.agent_count:
             raise ValueError("participant_models must contain exactly agent_count items")
@@ -769,10 +772,12 @@ class VoteEngine:
                 "fallback_events": fallback_events,
             }
 
-        if tier == "kimi" and response_model is _VoteResponse:
+        tier = "openrouter" if tier == "kimi" else tier
+
+        if tier == "openrouter" and response_model is _VoteResponse:
             assert isinstance(fallback, _VoteResponse)
             try:
-                return await self._call_kimi_vote(
+                return await self._call_openrouter_vote(
                     system_prompt,
                     user_prompt,
                     fallback,
@@ -788,7 +793,7 @@ class VoteEngine:
                 return self._offline_structured_fallback(
                     fallback=fallback,
                     component=f"vote.{response_model.__name__}",
-                    reason="provider_kimi_unavailable_or_invalid",
+                    reason="provider_openrouter_unavailable_or_invalid",
                     model=self._model_name(tier),
                     provider=self._provider_for_tier(tier),
                 )
@@ -858,10 +863,10 @@ class VoteEngine:
             )
 
             fallback_reason = f"provider_{tier}_unavailable_or_invalid"
-            if tier != "kimi":
+            if tier != "openrouter":
                 try:
                     assert isinstance(fallback, _VoteResponse)
-                    kimi_response, kimi_usage = await self._call_kimi_vote(
+                    openrouter_response, openrouter_usage = await self._call_openrouter_vote(
                         system_prompt,
                         user_prompt,
                         fallback,
@@ -869,19 +874,19 @@ class VoteEngine:
                         stream_callback=stream_callback,
                     )
                     logger.info(
-                        "vote_agent_fallback_to_kimi_success",
+                        "vote_agent_fallback_to_openrouter_success",
                         response_model=response_model.__name__,
                         from_tier=tier,
                     )
-                    return kimi_response, kimi_usage
-                except AgentCallError as kimi_exc:
+                    return openrouter_response, openrouter_usage
+                except AgentCallError as openrouter_exc:
                     logger.warning(
-                        "vote_kimi_fallback_failed",
-                        error=str(kimi_exc),
+                        "vote_openrouter_fallback_failed",
+                        error=str(openrouter_exc),
                         response_model=response_model.__name__,
                         from_tier=tier,
                     )
-                    fallback_reason = f"provider_{tier}_and_kimi_unavailable_or_invalid"
+                    fallback_reason = f"provider_{tier}_and_openrouter_unavailable_or_invalid"
 
         return self._offline_structured_fallback(
             fallback=fallback,
@@ -925,7 +930,7 @@ class VoteEngine:
             ],
         }
 
-    async def _call_kimi_vote(
+    async def _call_openrouter_vote(
         self,
         system_prompt: str,
         user_prompt: str,
@@ -935,9 +940,9 @@ class VoteEngine:
         stream_callback: Callable[[str], None] | None = None,
         temperature: float | None = None,
     ) -> tuple[_VoteResponse, dict[str, Any]]:
-        """Call Kimi as a raw voter and coerce output into vote schema."""
+        """Call an OpenRouter model as a raw voter and coerce output into vote schema."""
 
-        caller = self._get_caller("kimi")
+        caller = self._get_caller("openrouter")
         response: str | _VoteResponse
         usage: dict[str, Any]
         vote: _VoteResponse
@@ -956,19 +961,19 @@ class VoteEngine:
                 coercion_provenance = None
             else:
                 vote, coercion_provenance = self._coerce_vote_response(str(response), fallback)
-            if coercion_provenance is None or self.allow_offline_fallback:
+            if coercion_provenance != "offline_fallback" or self.allow_offline_fallback:
                 break
             if attempt == 0:
                 logger.warning(
-                    "vote_kimi_response_retrying",
-                    model=self._model_name("kimi"),
-                    provider=self._provider_for_tier("kimi"),
+                    "vote_openrouter_response_retrying",
+                    model=self._model_name("openrouter"),
+                    provider=self._provider_for_tier("openrouter"),
                     provenance=coercion_provenance,
                 )
                 continue
             raise AgentCallError(
                 "Provider fallback disabled for vote._VoteResponse: "
-                "provider_kimi_empty_response"
+                "provider_openrouter_empty_response"
             )
 
         input_tokens = usage.get("input_tokens")
@@ -979,7 +984,7 @@ class VoteEngine:
             or usage.get("total_tokens")
             or (int(input_tokens or 0) + int(output_tokens or 0) + int(thinking_tokens or 0))
         )
-        model_name = self._model_name("kimi")
+        model_name = self._model_name("openrouter")
         return vote, {
             "tokens": total_tokens,
             "total_tokens": total_tokens,
@@ -1005,7 +1010,7 @@ class VoteEngine:
             ),
             "latency_ms": float(usage.get("latency_ms", 0.0)),
             "model": model_name,
-            "provider": usage.get("provider", self._provider_for_tier("kimi")),
+            "provider": usage.get("provider", self._provider_for_tier("openrouter")),
             "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
             "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
             **self._coercion_usage(
@@ -1014,12 +1019,33 @@ class VoteEngine:
             ),
         }
 
+    async def _call_kimi_vote(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        fallback: _VoteResponse,
+        *,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+        temperature: float | None = None,
+    ) -> tuple[_VoteResponse, dict[str, Any]]:
+        """Backward-compatible alias for the legacy Kimi-specific vote helper."""
+
+        return await self._call_openrouter_vote(
+            system_prompt,
+            user_prompt,
+            fallback,
+            stream=stream,
+            stream_callback=stream_callback,
+            temperature=temperature,
+        )
+
     @staticmethod
     def _coerce_vote_response(
         response_text: str,
         fallback: _VoteResponse,
     ) -> tuple[_VoteResponse, str | None]:
-        """Parse Kimi JSON when present; otherwise use its raw answer text."""
+        """Parse OpenRouter JSON when present; otherwise use its raw answer text."""
 
         cleaned = response_text.strip()
         if not cleaned:
@@ -1070,21 +1096,36 @@ class VoteEngine:
 
         if tier == "pro":
             if self._pro_agent is None:
-                self._pro_agent = pro_caller(thinking_level=self.reasoning_presets.gemini_pro)
+                self._pro_agent = pro_caller(
+                    thinking_level=self.reasoning_presets.gemini_pro,
+                    model=self._tier_model_overrides.get("pro"),
+                )
             return self._pro_agent
 
         if tier == "claude":
             if self._claude_agent is None:
-                self._claude_agent = claude_caller(effort=self.reasoning_presets.claude)
+                self._claude_agent = claude_caller(
+                    effort=self.reasoning_presets.claude,
+                    model=self._tier_model_overrides.get("claude"),
+                )
             return self._claude_agent
 
         if tier == "kimi":
-            if self._kimi_agent is None:
-                self._kimi_agent = kimi_caller(effort=self.reasoning_presets.kimi)
-            return self._kimi_agent
+            tier = "openrouter"
+
+        if tier == "openrouter":
+            if self._openrouter_agent is None:
+                self._openrouter_agent = openrouter_caller(
+                    effort=self.reasoning_presets.openrouter,
+                    model=self._tier_model_overrides.get("openrouter"),
+                )
+            return self._openrouter_agent
 
         if self._flash_agent is None:
-            self._flash_agent = flash_caller(thinking_level=self.reasoning_presets.gemini_flash)
+            self._flash_agent = flash_caller(
+                thinking_level=self.reasoning_presets.gemini_flash,
+                model=self._tier_model_overrides.get("flash"),
+            )
         return self._flash_agent
 
     def _model_name(self, tier: str) -> str:
@@ -1095,12 +1136,12 @@ class VoteEngine:
         except AgentCallError:
             config = get_config()
             if tier == "claude":
-                return config.claude_model
-            if tier == "kimi":
-                return config.kimi_model
+                return self._tier_model_overrides.get("claude", config.claude_model)
+            if tier in {"kimi", "openrouter"}:
+                return self._tier_model_overrides.get("openrouter", config.openrouter_model)
             if tier == "pro":
-                return config.pro_model
-            return config.flash_model
+                return self._tier_model_overrides.get("pro", config.pro_model)
+            return self._tier_model_overrides.get("flash", config.flash_model)
 
     @staticmethod
     def _provider_for_tier(tier: str) -> str:
@@ -1111,6 +1152,7 @@ class VoteEngine:
             "pro": "gemini",
             "claude": "claude",
             "kimi": "openrouter",
+            "openrouter": "openrouter",
         }.get(tier, "unknown")
 
     async def _call_provider(

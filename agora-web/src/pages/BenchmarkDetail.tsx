@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Check, Clipboard, Loader2, RefreshCcw } from "lucide-react";
 import {
@@ -12,38 +13,30 @@ import {
 } from "recharts";
 
 import {
-  ApiRequestError,
-  getBenchmarkDetail,
   streamBenchmarkRun,
   type BenchmarkDetailPayload,
   type BenchmarkItemPayload,
   type TaskEvent,
 } from "../lib/api";
+import {
+  benchmarkQueryKeys,
+  patchBenchmarkDetailCache,
+  setBenchmarkDetailCache,
+  useBenchmarkDetailQuery,
+} from "../lib/benchmarkQueries";
+import {
+  buildDetailCategoryRows,
+  buildDetailMechanismRows,
+  buildDetailStageRows,
+  type BenchmarkCategoryRow,
+  type BenchmarkMetricRow,
+  type NormalizedSummary,
+  normalizeBenchmarkSummary,
+} from "../lib/benchmarkMetrics";
 import { useAuth } from "../lib/useAuth";
+import { Flyout } from "../components/Flyout";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
-
-interface NormalizedMetric {
-  accuracy: number;
-  run_count: number;
-  scored_run_count: number;
-  proxy_run_count: number;
-  avg_tokens: number;
-  avg_thinking_tokens: number;
-  avg_latency_ms: number;
-  avg_estimated_cost_usd: number;
-}
-
-interface NormalizedSummary {
-  per_mode: Record<string, NormalizedMetric>;
-  per_mechanism: Record<string, NormalizedMetric>;
-  per_category: Record<string, Record<string, NormalizedMetric>>;
-  completed_run_count: number;
-  failed_run_count: number;
-  degraded_run_count: number;
-  scored_run_count: number;
-  proxy_run_count: number;
-}
 
 interface BenchmarkTimelineDescriptor {
   label: string;
@@ -66,17 +59,6 @@ interface BenchmarkReliabilitySummary {
   phaseCounts: Array<[string, number]>;
 }
 
-const DEFAULT_METRIC: NormalizedMetric = {
-  accuracy: 0,
-  run_count: 0,
-  scored_run_count: 0,
-  proxy_run_count: 0,
-  avg_tokens: 0,
-  avg_thinking_tokens: 0,
-  avg_latency_ms: 0,
-  avg_estimated_cost_usd: 0,
-};
-
 const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
   "agent_output_delta",
   "cross_examination_delta",
@@ -87,11 +69,16 @@ const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
 export function BenchmarkDetail() {
   const navigate = useNavigate();
   const { benchmarkId } = useParams<{ benchmarkId: string }>();
-  const { authStatus, getAccessToken } = useAuth();
-
-  const [detail, setDetail] = useState<BenchmarkDetailPayload | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const { getAccessToken } = useAuth();
+  const queryClient = useQueryClient();
+  const detailQuery = useBenchmarkDetailQuery(benchmarkId);
+  const detail = detailQuery.data ?? null;
+  const loadError = !benchmarkId
+    ? "Benchmark id is required."
+    : !detail && detailQuery.error instanceof Error
+      ? detailQuery.error.message
+      : null;
+  const isRefreshing = detailQuery.isFetching && Boolean(detail);
   const [timeline, setTimeline] = useState<TaskEvent[]>([]);
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
@@ -101,41 +88,11 @@ export function BenchmarkDetail() {
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const followTimelineRef = useRef(true);
   const copyTimeoutRef = useRef<number | null>(null);
-
-  const loadDetail = useCallback(async () => {
-    if (!benchmarkId) {
-      setLoadError("Benchmark id is required.");
-      setDetail(null);
-      return;
-    }
-
-    setLoadError(null);
-    setIsRefreshing(true);
-    try {
-      const token = await getAccessToken();
-      const payload = await getBenchmarkDetail(token, benchmarkId);
-      setDetail(payload);
-      setTimeline(payload.events ?? []);
-      setSelectedItemId(payload.active_item_id ?? payload.benchmark_items?.[0]?.item_id ?? null);
-    } catch (error) {
-      if (error instanceof ApiRequestError) {
-        setLoadError(error.message);
-      } else {
-        console.error(error);
-        setLoadError("Unable to load benchmark report.");
-      }
-      setDetail(null);
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [benchmarkId, getAccessToken]);
-
-  useEffect(() => {
-    if (authStatus !== "authenticated") {
-      return;
-    }
-    void loadDetail();
-  }, [authStatus, loadDetail]);
+  const streamedEventKeysRef = useRef<Set<string>>(new Set());
+  const [showFailedFlyout, setShowFailedFlyout] = useState(false);
+  const [showSuccessFlyout, setShowSuccessFlyout] = useState(false);
+  const failedFlyoutShownRef = useRef(false);
+  const successFlyoutShownRef = useRef(false);
 
   const detailRunId = detail?.run_id ?? benchmarkId;
   const detailStatus = detail?.status;
@@ -143,6 +100,31 @@ export function BenchmarkDetail() {
     () => detail?.benchmark_items ?? [],
     [detail?.benchmark_items],
   );
+
+  useEffect(() => {
+    if (!detail || !benchmarkId) {
+      return;
+    }
+    setBenchmarkDetailCache(queryClient, detail, benchmarkId);
+  }, [benchmarkId, detail, queryClient]);
+
+  useEffect(() => {
+    if (!detail) {
+      return;
+    }
+
+    setTimeline((current) => {
+      const merged = mergeUniqueTaskEvents(current, detail.events ?? []);
+      streamedEventKeysRef.current = new Set(merged.map(buildTaskEventKey));
+      return merged;
+    });
+    setSelectedItemId((current) => {
+      if (current && detail.benchmark_items.some((item) => item.item_id === current)) {
+        return current;
+      }
+      return detail.active_item_id ?? detail.benchmark_items?.[0]?.item_id ?? null;
+    });
+  }, [detail]);
 
   useEffect(() => {
     if (detailStatus !== "queued" && detailStatus !== "running") {
@@ -167,7 +149,7 @@ export function BenchmarkDetail() {
   }, [benchmarkId, detail?.artifact_id, detail?.run_id, detail?.status, navigate]);
 
   useEffect(() => {
-    if (authStatus !== "authenticated" || !detailRunId) {
+    if (!detailRunId || !benchmarkId) {
       return;
     }
     if (detailStatus !== "queued" && detailStatus !== "running") {
@@ -182,86 +164,15 @@ export function BenchmarkDetail() {
         if (cancelled) {
           return;
         }
-        setTimeline((current) => {
-          const exists = current.some(
-            (entry) => entry.event === event.event && entry.timestamp === event.timestamp,
-          );
-          return exists ? current : [...current, event];
-        });
-        setDetail((current) => {
-          if (!current) {
-            return current;
-          }
-          const nextItems = mergeBenchmarkItemsFromEvent(current.benchmark_items ?? [], event);
-          const nextActiveItemId = benchmarkItemIdForEvent(event) ?? current.active_item_id ?? nextItems[0]?.item_id ?? null;
-          const nextActiveItem = nextItems.find((item) => item.item_id === nextActiveItemId) ?? null;
-          return {
-            ...current,
-            benchmark_items: nextItems,
-            active_item_id: nextActiveItemId,
-            active_item: nextActiveItem,
-          };
-        });
-
-        const data = event.data as Record<string, unknown>;
-        const telemetry = typeof data.telemetry === "object" && data.telemetry !== null
-          ? (data.telemetry as Record<string, unknown>)
-          : null;
-
-        if (telemetry) {
-          setDetail((current) => {
-            if (!current) {
-              return current;
-            }
-            const eventFailed = event.event === "failed" || event.event === "error";
-            const nextStatus = eventFailed
-              ? "failed"
-              : event.event === "complete"
-                ? "completed"
-                : event.event === "started"
-                  ? "running"
-                  : event.event === "queued"
-                    ? "queued"
-                    : current.status;
-            return {
-              ...current,
-              status: nextStatus,
-              latest_mechanism:
-                typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
-              agent_count: isPositiveInteger(telemetry.agent_count) ? telemetry.agent_count : current.agent_count,
-              total_tokens: typeof telemetry.total_tokens === "number" ? telemetry.total_tokens : current.total_tokens,
-              thinking_tokens:
-                typeof telemetry.thinking_tokens === "number" ? telemetry.thinking_tokens : current.thinking_tokens,
-              total_latency_ms:
-                typeof telemetry.total_latency_ms === "number" ? telemetry.total_latency_ms : current.total_latency_ms,
-              model_telemetry: (telemetry.model_telemetry as typeof current.model_telemetry) ?? current.model_telemetry,
-              cost: (telemetry.cost as typeof current.cost) ?? current.cost,
-              completed_item_count:
-                typeof telemetry.completed_item_count === "number" ? telemetry.completed_item_count : current.completed_item_count,
-              failed_item_count:
-                typeof telemetry.failed_item_count === "number" ? telemetry.failed_item_count : current.failed_item_count,
-              degraded_item_count:
-                typeof telemetry.degraded_item_count === "number" ? telemetry.degraded_item_count : current.degraded_item_count,
-            };
-          });
-        } else if (event.event === "queued" || event.event === "started" || event.event === "complete" || event.event === "failed" || event.event === "error") {
-          setDetail((current) => {
-            if (!current) {
-              return current;
-            }
-            return {
-              ...current,
-              status:
-                event.event === "queued"
-                  ? "queued"
-                  : event.event === "started"
-                    ? "running"
-                    : event.event === "complete"
-                      ? "completed"
-                      : "failed",
-            };
-          });
+        const eventKey = buildTaskEventKey(event);
+        if (streamedEventKeysRef.current.has(eventKey)) {
+          return;
         }
+        streamedEventKeysRef.current.add(eventKey);
+        setTimeline((current) => mergeUniqueTaskEvents(current, [event]));
+        patchBenchmarkDetailCache(queryClient, benchmarkId, (current) => (
+          current ? applyBenchmarkStreamEventToDetail(current, event) : current
+        ));
 
         if (
           event.event === "artifact_created"
@@ -269,7 +180,9 @@ export function BenchmarkDetail() {
           || event.event === "failed"
           || event.event === "error"
         ) {
-          void loadDetail();
+          void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(benchmarkId) });
+          void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() });
+          void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() });
         }
       });
     })().catch((error: unknown) => {
@@ -282,52 +195,14 @@ export function BenchmarkDetail() {
       cancelled = true;
       handle?.close();
     };
-  }, [authStatus, detailRunId, detailStatus, getAccessToken, loadDetail]);
+  }, [benchmarkId, detailRunId, detailStatus, getAccessToken, queryClient]);
 
   const summary = useMemo<NormalizedSummary>(() => {
-    return normalizeSummary(detail?.summary, detail?.benchmark_payload);
+    return normalizeBenchmarkSummary(detail?.summary, detail?.benchmark_payload);
   }, [detail]);
-
-  const mechanismSource =
-    Object.keys(summary.per_mechanism).length > 0 ? summary.per_mechanism : summary.per_mode;
-
-  const modeRows = useMemo(() => {
-    const keys = Object.keys(mechanismSource);
-    return keys.map((mechanism) => {
-      const metric = mechanismSource[mechanism] ?? DEFAULT_METRIC;
-      const scoredRunCount = Math.round(metric.scored_run_count);
-      return {
-        mechanism: titleCase(mechanism),
-        accuracy: scoredRunCount > 0 ? Number((metric.accuracy * 100).toFixed(2)) : null,
-        runCount: Math.round(metric.run_count),
-        scoredRunCount,
-        proxyRunCount: Math.round(metric.proxy_run_count),
-        avgTokens: Math.round(metric.avg_tokens),
-        thinkingTokens: Math.round(metric.avg_thinking_tokens),
-        avgLatencyMs: Math.round(metric.avg_latency_ms),
-        avgCostUsd: Number(metric.avg_estimated_cost_usd.toFixed(6)),
-      };
-    });
-  }, [mechanismSource]);
-
-  const categoryRows = useMemo(() => {
-    const categories = Object.keys(summary.per_category);
-    return categories.map((category) => {
-      const perMode = summary.per_category[category] ?? {};
-      const debateScoredRuns = Math.round(perMode.debate?.scored_run_count ?? 0);
-      const voteScoredRuns = Math.round(perMode.vote?.scored_run_count ?? 0);
-      const selectorScoredRuns = Math.round(perMode.selector?.scored_run_count ?? 0);
-      return {
-        category: titleCase(category),
-        debate: debateScoredRuns > 0 ? Number(((perMode.debate?.accuracy ?? 0) * 100).toFixed(1)) : null,
-        vote: voteScoredRuns > 0 ? Number(((perMode.vote?.accuracy ?? 0) * 100).toFixed(1)) : null,
-        selector: selectorScoredRuns > 0 ? Number(((perMode.selector?.accuracy ?? 0) * 100).toFixed(1)) : null,
-        debateScoredRuns,
-        voteScoredRuns,
-        selectorScoredRuns,
-      };
-    });
-  }, [summary]);
+  const stageRows = useMemo<BenchmarkMetricRow[]>(() => buildDetailStageRows(summary), [summary]);
+  const mechanismRows = useMemo<BenchmarkMetricRow[]>(() => buildDetailMechanismRows(summary), [summary]);
+  const categoryRows = useMemo<BenchmarkCategoryRow[]>(() => buildDetailCategoryRows(summary), [summary]);
 
   const modelList = useMemo(() => {
     if (!detail) {
@@ -360,7 +235,7 @@ export function BenchmarkDetail() {
     }
     return Object.entries(detail.cost.model_estimated_costs_usd)
       .sort((a, b) => b[1] - a[1]);
-  }, [detail?.cost?.model_estimated_costs_usd]);
+  }, [detail]);
 
   const costByModelMap = useMemo(() => new Map(costByModel), [costByModel]);
 
@@ -383,15 +258,21 @@ export function BenchmarkDetail() {
     }
     return grouped;
   }, [timeline]);
+  const effectiveSelectedItemId = useMemo(() => {
+    if (!selectedItemId || benchmarkItems.every((item) => item.item_id !== selectedItemId)) {
+      return detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null;
+    }
+    return selectedItemId;
+  }, [benchmarkItems, detail?.active_item_id, selectedItemId]);
   const selectedItem = useMemo(() => {
     if (benchmarkItems.length === 0) {
       return null;
     }
-    if (selectedItemId) {
-      return benchmarkItems.find((item) => item.item_id === selectedItemId) ?? benchmarkItems[0];
+    if (effectiveSelectedItemId) {
+      return benchmarkItems.find((item) => item.item_id === effectiveSelectedItemId) ?? benchmarkItems[0];
     }
     return detail?.active_item ?? benchmarkItems[0];
-  }, [benchmarkItems, detail?.active_item, selectedItemId]);
+  }, [benchmarkItems, detail?.active_item, effectiveSelectedItemId]);
   const selectedItemTimeline = useMemo(() => {
     if (!selectedItem) {
       return [];
@@ -416,29 +297,16 @@ export function BenchmarkDetail() {
     }
     return ["all", ...Array.from(phases)];
   }, [timeline]);
+  const effectivePhaseFilter = availablePhases.includes(phaseFilter) ? phaseFilter : "all";
   const filteredTimeline = useMemo(() => (
-    phaseFilter === "all"
+    effectivePhaseFilter === "all"
       ? timeline
-      : timeline.filter((event) => benchmarkPhaseForEvent(event) === phaseFilter)
-  ), [phaseFilter, timeline]);
+      : timeline.filter((event) => benchmarkPhaseForEvent(event) === effectivePhaseFilter)
+  ), [effectivePhaseFilter, timeline]);
   const aggregatedFilteredTimeline = useMemo(
     () => aggregateBenchmarkTimeline(filteredTimeline),
     [filteredTimeline],
   );
-  useEffect(() => {
-    if (!selectedItemId && benchmarkItems.length > 0) {
-      setSelectedItemId(detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null);
-      return;
-    }
-    if (selectedItemId && benchmarkItems.every((item) => item.item_id !== selectedItemId)) {
-      setSelectedItemId(detail?.active_item_id ?? benchmarkItems[0]?.item_id ?? null);
-    }
-  }, [benchmarkItems, detail?.active_item_id, selectedItemId]);
-  useEffect(() => {
-    if (!availablePhases.includes(phaseFilter)) {
-      setPhaseFilter("all");
-    }
-  }, [availablePhases, phaseFilter]);
   const lastTimelineEvent = timeline.length > 0 ? timeline[timeline.length - 1] : null;
   const streamState = useMemo(
     () => deriveBenchmarkStreamState(detail?.status, lastTimelineEvent, now),
@@ -500,7 +368,28 @@ export function BenchmarkDetail() {
       proxyRuns: summary.proxy_run_count,
     };
   }, [benchmarkItems, reliabilityCards, summary]);
-  const frontierHighlights = useMemo(() => buildFrontierHighlights(modeRows), [modeRows]);
+  const frontierHighlights = useMemo(() => buildFrontierHighlights(stageRows), [stageRows]);
+
+  useEffect(() => {
+    if (!detail || failedFlyoutShownRef.current) return;
+    if (detail.status === "failed") {
+      failedFlyoutShownRef.current = true;
+      setShowFailedFlyout(true);
+    }
+  }, [detail]);
+
+  useEffect(() => {
+    if (!detail || successFlyoutShownRef.current) return;
+    if (detail.status === "completed") {
+      const bestAcc = stageRows
+        .map((r) => r.accuracy ?? 0)
+        .reduce((max, v) => Math.max(max, v), 0);
+      if (bestAcc > 60) {
+        successFlyoutShownRef.current = true;
+        setShowSuccessFlyout(true);
+      }
+    }
+  }, [detail, stageRows]);
 
   useEffect(() => {
     followTimelineRef.current = true;
@@ -596,6 +485,20 @@ export function BenchmarkDetail() {
 
   return (
     <div className="max-w-250 mx-auto pb-20 w-full">
+      <Flyout
+        show={showFailedFlyout}
+        variant="error"
+        title="Benchmark Failed"
+        body="This benchmark run encountered an error and did not complete."
+        onDismiss={() => setShowFailedFlyout(false)}
+      />
+      <Flyout
+        show={showSuccessFlyout}
+        variant="success"
+        title="Benchmark Succeeded"
+        body="Selector accuracy exceeded 60%. Results are ready to review."
+        onDismiss={() => setShowSuccessFlyout(false)}
+      />
       <header className="mb-8">
         <div className="flex flex-wrap gap-3 mb-5">
           <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
@@ -604,7 +507,7 @@ export function BenchmarkDetail() {
           <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => navigate("/benchmarks/all") }>
             <ArrowLeft size={14} /> All artifacts
           </button>
-          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void loadDetail()}>
+          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void detailQuery.refetch()}>
             {isRefreshing ? <RefreshCcw size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
             Refresh
           </button>
@@ -939,7 +842,7 @@ export function BenchmarkDetail() {
           <InlineMetricTile label="Fastest Mode" value={frontierHighlights.fastest} />
           <InlineMetricTile label="Cheapest Mode" value={frontierHighlights.cheapest} />
         </div>
-        {modeRows.length === 0 ? (
+        {stageRows.length === 0 ? (
           <div className="text-sm text-text-secondary">No per-mechanism scored-success metrics were stored for this benchmark artifact.</div>
         ) : (
           <div className="overflow-x-auto">
@@ -956,7 +859,7 @@ export function BenchmarkDetail() {
                 </tr>
               </thead>
               <tbody>
-                {modeRows.map((row) => (
+                {stageRows.map((row) => (
                   <tr key={row.mechanism} className="border-b border-border-subtle/70">
                     <td className="py-2 pr-3 text-sm text-text-primary">{row.mechanism}</td>
                     <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatRowAccuracy(row.accuracy)}</td>
@@ -1003,7 +906,7 @@ export function BenchmarkDetail() {
                   type="button"
                   onClick={() => setPhaseFilter(phase)}
                   className={`mono px-3 py-1.5 text-[11px] rounded-full border transition-colors ${
-                    phaseFilter === phase
+                    effectivePhaseFilter === phase
                       ? "bg-accent-muted text-accent border-accent"
                       : "bg-void text-text-secondary border-border-subtle hover:border-accent/40"
                   }`}
@@ -1053,11 +956,11 @@ export function BenchmarkDetail() {
       <div className="card p-4 sm:p-8 mb-8">
         <h3 className="mb-2 text-lg font-semibold">Mechanism Performance</h3>
         <p className="text-sm text-text-secondary mb-8">
-          Scored success rate by mechanism for the selected benchmark artifact.
+          Scored success by actual executed mechanism after selector choices and any mechanism switches.
         </p>
         <div className="w-full h-70">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={modeRows} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
+            <BarChart data={mechanismRows} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
               <XAxis
                 dataKey="mechanism"
@@ -1078,7 +981,9 @@ export function BenchmarkDetail() {
 
       <div className="card p-4 sm:p-8 mb-8 overflow-x-auto">
         <h3 className="mb-2 text-lg font-semibold">Category Accuracy Matrix</h3>
-        <p className="text-sm text-text-secondary mb-6">Per-category scored success percentage across debate, vote, and selector mechanisms.</p>
+        <p className="text-sm text-text-secondary mb-6">
+          Per-category scored success across requested benchmark stages. Creative and demo remain proxy-scored rather than exact-match truth.
+        </p>
 
         {categoryRows.length === 0 ? (
           <p className="text-sm text-text-secondary">No category metrics found in this artifact.</p>
@@ -1249,140 +1154,8 @@ function JsonPanel({ title, value }: { title: string; value: unknown }) {
   );
 }
 
-function normalizeSummary(summaryCandidate: unknown, benchmarkPayloadCandidate: unknown): NormalizedSummary {
-  const fromSummary = parseSummaryObject(summaryCandidate);
-  if (hasSummaryData(fromSummary)) {
-    return fromSummary;
-  }
-
-  const payloadSummary = extractSummaryFromBenchmarkPayload(benchmarkPayloadCandidate);
-  const fromPayload = parseSummaryObject(payloadSummary);
-  if (hasSummaryData(fromPayload)) {
-    return fromPayload;
-  }
-
-  return {
-    per_mode: {},
-    per_mechanism: {},
-    per_category: {},
-    completed_run_count: 0,
-    failed_run_count: 0,
-    degraded_run_count: 0,
-    scored_run_count: 0,
-    proxy_run_count: 0,
-  };
-}
-
-function parseSummaryObject(candidate: unknown): NormalizedSummary {
-  if (!isRecord(candidate)) {
-    return {
-      per_mode: {},
-      per_mechanism: {},
-      per_category: {},
-      completed_run_count: 0,
-      failed_run_count: 0,
-      degraded_run_count: 0,
-      scored_run_count: 0,
-      proxy_run_count: 0,
-    };
-  }
-
-  const perMode: Record<string, NormalizedMetric> = {};
-  const perModeSource = candidate.per_mode;
-  if (isRecord(perModeSource)) {
-    for (const [mechanism, value] of Object.entries(perModeSource)) {
-      perMode[mechanism] = parseMetric(value);
-    }
-  }
-
-  const perMechanism: Record<string, NormalizedMetric> = {};
-  const perMechanismSource = candidate.per_mechanism;
-  if (isRecord(perMechanismSource)) {
-    for (const [mechanism, value] of Object.entries(perMechanismSource)) {
-      perMechanism[mechanism] = parseMetric(value);
-    }
-  }
-
-  const perCategory: Record<string, Record<string, NormalizedMetric>> = {};
-  const perCategorySource = candidate.per_category;
-  if (isRecord(perCategorySource)) {
-    for (const [category, categoryValue] of Object.entries(perCategorySource)) {
-      if (!isRecord(categoryValue)) {
-        continue;
-      }
-      perCategory[category] = {};
-      for (const [mechanism, value] of Object.entries(categoryValue)) {
-        perCategory[category][mechanism] = parseMetric(value);
-      }
-    }
-  }
-
-  return {
-    per_mode: perMode,
-    per_mechanism: perMechanism,
-    per_category: perCategory,
-    completed_run_count: asNumber(candidate.completed_run_count),
-    failed_run_count: asNumber(candidate.failed_run_count),
-    degraded_run_count: asNumber(candidate.degraded_run_count),
-    scored_run_count: asNumber(candidate.scored_run_count),
-    proxy_run_count: asNumber(candidate.proxy_run_count),
-  };
-}
-
-function parseMetric(candidate: unknown): NormalizedMetric {
-  if (!isRecord(candidate)) {
-    return { ...DEFAULT_METRIC };
-  }
-
-  return {
-    accuracy: asNumber(candidate.accuracy),
-    run_count: asNumber(candidate.run_count),
-    scored_run_count: asNumber(candidate.scored_run_count),
-    proxy_run_count: asNumber(candidate.proxy_run_count),
-    avg_tokens: asNumber(candidate.avg_tokens),
-    avg_thinking_tokens: asNumber(candidate.avg_thinking_tokens),
-    avg_latency_ms: asNumber(candidate.avg_latency_ms),
-    avg_estimated_cost_usd: asNumber(candidate.avg_estimated_cost_usd),
-  };
-}
-
-function extractSummaryFromBenchmarkPayload(candidate: unknown): unknown {
-  if (!isRecord(candidate)) {
-    return null;
-  }
-
-  if (isRecord(candidate.summary)) {
-    return candidate.summary;
-  }
-
-  if (isRecord(candidate.post_learning) && isRecord(candidate.post_learning.summary)) {
-    return candidate.post_learning.summary;
-  }
-
-  if (isRecord(candidate.pre_learning) && isRecord(candidate.pre_learning.summary)) {
-    return candidate.pre_learning.summary;
-  }
-
-  return null;
-}
-
-function hasSummaryData(summary: NormalizedSummary): boolean {
-  return (
-    Object.keys(summary.per_mode).length > 0
-    || Object.keys(summary.per_mechanism).length > 0
-    || Object.keys(summary.per_category).length > 0
-  );
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function asNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  return 0;
 }
 
 function formatDateTime(value: string | null | undefined): string {
@@ -1517,6 +1290,102 @@ function benchmarkItemIdForEvent(event: TaskEvent): string | null {
     return null;
   }
   return `${phase}:${runKind}:${taskIndex}`;
+}
+
+function buildTaskEventKey(event: TaskEvent): string {
+  return benchmarkEventKey(event);
+}
+
+function mergeUniqueTaskEvents(current: TaskEvent[], incoming: TaskEvent[]): TaskEvent[] {
+  if (incoming.length === 0) {
+    return current;
+  }
+
+  const seen = new Set(current.map(buildTaskEventKey));
+  const next = [...current];
+
+  for (const event of incoming) {
+    const key = buildTaskEventKey(event);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(event);
+  }
+
+  return next;
+}
+
+function statusFromBenchmarkEvent(
+  currentStatus: BenchmarkDetailPayload["status"],
+  eventType: TaskEvent["event"],
+): BenchmarkDetailPayload["status"] {
+  if (eventType === "queued") {
+    return "queued";
+  }
+  if (eventType === "started") {
+    return "running";
+  }
+  if (eventType === "complete") {
+    return "completed";
+  }
+  if (eventType === "failed" || eventType === "error") {
+    return "failed";
+  }
+  return currentStatus;
+}
+
+function applyBenchmarkStreamEventToDetail(
+  current: BenchmarkDetailPayload,
+  event: TaskEvent,
+): BenchmarkDetailPayload {
+  const data = isRecord(event.data) ? event.data : {};
+  const telemetry = isRecord(data.telemetry) ? data.telemetry : null;
+  const nextItems = mergeBenchmarkItemsFromEvent(current.benchmark_items ?? [], event);
+  const nextActiveItemId = benchmarkItemIdForEvent(event) ?? current.active_item_id ?? nextItems[0]?.item_id ?? null;
+  const nextActiveItem = nextItems.find((item) => item.item_id === nextActiveItemId) ?? null;
+
+  return {
+    ...current,
+    status: statusFromBenchmarkEvent(current.status, event.event),
+    artifact_id: typeof data.artifact_id === "string" ? data.artifact_id : current.artifact_id,
+    updated_at: event.timestamp ?? current.updated_at,
+    latest_mechanism:
+      typeof data.latest_mechanism === "string" ? data.latest_mechanism : current.latest_mechanism,
+    agent_count: telemetry && isPositiveInteger(telemetry.agent_count) ? telemetry.agent_count : current.agent_count,
+    total_tokens: telemetry && typeof telemetry.total_tokens === "number" ? telemetry.total_tokens : current.total_tokens,
+    thinking_tokens:
+      telemetry && typeof telemetry.thinking_tokens === "number"
+        ? telemetry.thinking_tokens
+        : current.thinking_tokens,
+    total_latency_ms:
+      telemetry && typeof telemetry.total_latency_ms === "number"
+        ? telemetry.total_latency_ms
+        : current.total_latency_ms,
+    model_telemetry:
+      telemetry && isRecord(telemetry.model_telemetry)
+        ? (telemetry.model_telemetry as typeof current.model_telemetry)
+        : current.model_telemetry,
+    cost:
+      telemetry && isRecord(telemetry.cost)
+        ? (telemetry.cost as unknown as typeof current.cost)
+        : current.cost,
+    benchmark_items: nextItems,
+    active_item_id: nextActiveItemId,
+    active_item: nextActiveItem,
+    completed_item_count:
+      telemetry && typeof telemetry.completed_item_count === "number"
+        ? telemetry.completed_item_count
+        : current.completed_item_count,
+    failed_item_count:
+      telemetry && typeof telemetry.failed_item_count === "number"
+        ? telemetry.failed_item_count
+        : current.failed_item_count,
+    degraded_item_count:
+      telemetry && typeof telemetry.degraded_item_count === "number"
+        ? telemetry.degraded_item_count
+        : current.degraded_item_count,
+  };
 }
 
 function benchmarkItemStatusTone(status: BenchmarkItemPayload["status"]): string {
@@ -1655,7 +1524,7 @@ function mergeBenchmarkItemsFromEvent(
   const existing = currentItems.find((item) => item.item_id === itemId);
   const nextEvents = existing?.events ?? [];
   const alreadyPresent = nextEvents.some(
-    (entry) => entry.event === event.event && entry.timestamp === event.timestamp,
+    (entry) => buildTaskEventKey(entry) === buildTaskEventKey(event),
   );
   const mergedEvents = alreadyPresent ? nextEvents : [...nextEvents, event];
   const existingSummary = isRecord(existing?.summary) ? existing.summary : {};

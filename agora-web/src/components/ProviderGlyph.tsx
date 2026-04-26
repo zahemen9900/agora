@@ -2,6 +2,17 @@ import { Cpu } from "lucide-react";
 
 import type { ProviderName } from "../lib/modelProviders";
 
+const MODEL_ICON_SOURCES: Partial<Record<ProviderName, string>> = {
+  gemini: "/models/gemini.png",
+  claude: "/models/claude.png",
+  kimi: "/models/kimi.png",
+  gemma: "/models/gemma.png",
+  gpt: "/models/gpt.png",
+  glm: "/models/glm.png",
+  qwen: "/models/qwen.png",
+  deepseek: "/models/deepseek.png",
+};
+
 export function ProviderGlyph({
   provider,
   size = 12,
@@ -9,10 +20,11 @@ export function ProviderGlyph({
   provider: ProviderName;
   size?: number;
 }) {
-  if (provider !== "other") {
+  const source = MODEL_ICON_SOURCES[provider];
+  if (source) {
     return (
       <img
-        src={`/models/${provider}.png`}
+        src={source}
         alt={provider}
         width={size}
         height={size}

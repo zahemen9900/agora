@@ -1,14 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ChevronRight, RefreshCcw, Search } from "lucide-react";
 
-import {
-  ApiRequestError,
-  getBenchmarkCatalog,
-  type BenchmarkCatalogEntry,
-  type BenchmarkCatalogPayload,
-} from "../lib/api";
-import { useAuth } from "../lib/useAuth";
+import { type BenchmarkCatalogEntry } from "../lib/api";
+import { useBenchmarkCatalogQuery } from "../lib/benchmarkQueries";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
 
@@ -16,41 +11,15 @@ type SortMode = "recent" | "frequency";
 
 export function BenchmarksAll() {
   const navigate = useNavigate();
-  const { authStatus, getAccessToken } = useAuth();
-
-  const [catalog, setCatalog] = useState<BenchmarkCatalogPayload | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const catalogQuery = useBenchmarkCatalogQuery(100);
   const [yourSortMode, setYourSortMode] = useState<SortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<SortMode>("recent");
   const [query, setQuery] = useState("");
-
-  const loadCatalog = useCallback(async () => {
-    setLoadError(null);
-    setIsRefreshing(true);
-    try {
-      const token = await getAccessToken();
-      const payload = await getBenchmarkCatalog(token, 100);
-      setCatalog(payload);
-    } catch (error) {
-      if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-        setLoadError(error.message);
-      } else {
-        console.error(error);
-        setLoadError("Benchmark catalog is currently unavailable.");
-      }
-      setCatalog(null);
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, [getAccessToken]);
-
-  useEffect(() => {
-    if (authStatus !== "authenticated") {
-      return;
-    }
-    void loadCatalog();
-  }, [authStatus, loadCatalog]);
+  const catalog = catalogQuery.data ?? null;
+  const loadError = !catalog && catalogQuery.error instanceof Error
+    ? catalogQuery.error.message
+    : null;
+  const isRefreshing = catalogQuery.isFetching && Boolean(catalog);
 
   const filterEntries = useCallback((entries: BenchmarkCatalogEntry[]) => {
     const loweredQuery = query.trim().toLowerCase();
@@ -104,7 +73,7 @@ export function BenchmarksAll() {
             </div>
           </label>
 
-          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void loadCatalog()}>
+          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void catalogQuery.refetch()}>
             {isRefreshing ? <RefreshCcw size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
             Refresh
           </button>
@@ -195,12 +164,13 @@ function BenchmarkSection({
                 {entry.latest_mechanism ? <span className="badge">{titleCase(entry.latest_mechanism)}</span> : null}
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-6 gap-2 text-xs text-text-secondary mb-3">
+              <div className="grid grid-cols-1 sm:grid-cols-7 gap-2 text-xs text-text-secondary mb-3">
                 <div>Runs {formatInt(entry.run_count)}</div>
                 <div>Agents {entry.agent_count ?? "n/a"}</div>
                 <div>Tokens {formatInt(entry.total_tokens ?? 0)}</div>
                 <div>Thinking {formatInt(entry.thinking_tokens ?? 0)}</div>
                 <div>Cost {formatUsd(entry.cost?.estimated_cost_usd ?? null)}</div>
+                <div>Budget/Agent {formatBudgetPerAgent(entry.cost?.estimated_cost_usd ?? null, entry.agent_count ?? null)}</div>
                 <div>Score {entry.frequency_score.toFixed(2)}</div>
               </div>
 
@@ -254,6 +224,20 @@ function formatInt(value: number | null | undefined): string {
     return "0";
   }
   return Math.round(value).toLocaleString();
+}
+
+function formatBudgetPerAgent(cost: number | null, agentCount: number | null): string {
+  if (
+    cost === null
+    || !Number.isFinite(cost)
+    || cost <= 0
+    || agentCount === null
+    || !Number.isFinite(agentCount)
+    || agentCount <= 0
+  ) {
+    return "n/a";
+  }
+  return `$${(cost / agentCount).toFixed(6)}`;
 }
 
 function titleCase(value: string): string {

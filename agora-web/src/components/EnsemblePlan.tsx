@@ -1,5 +1,5 @@
 import { ProviderGlyph } from "./ProviderGlyph";
-import { providerTone } from "../lib/modelProviders";
+import { providerTone, type ProviderName } from "../lib/modelProviders";
 import type { EnsembleRosterItem, ProviderTier } from "../lib/deliberationConfig";
 
 interface EnsemblePlanProps {
@@ -8,7 +8,7 @@ interface EnsemblePlanProps {
   items: EnsembleRosterItem[];
   countBadges: Array<{
     key: ProviderTier;
-    provider: "gemini" | "claude" | "kimi" | "other";
+    provider: ProviderName;
     label: string;
     count: number;
   }>;

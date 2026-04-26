@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { ProviderGlyph } from "../../ProviderGlyph";
+import type { ProviderName } from "../../../lib/modelProviders";
 
 // Track which node IDs have already received their entrance animation so that
 // re-renders caused by streaming (position/content updates) don't re-trigger it.
@@ -96,7 +100,9 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
       {/* Header */}
       <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: "12px", flexShrink: 0 }}>
         {node.provider && (
-          <img src={`/models/${node.provider}.png`} alt={node.provider} width={16} height={16} style={{ borderRadius: "4px", objectFit: "contain" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          <div style={{ width: "16px", height: "16px", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <ProviderGlyph provider={node.provider as ProviderName} size={16} />
+          </div>
         )}
         <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", fontWeight: 600, color, textTransform: "uppercase", letterSpacing: "0.08em", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.agentModel ?? node.title}</span>
         <button
@@ -123,12 +129,44 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
       {/* Scrollable content */}
       <div style={{ overflowY: "auto", flex: 1, padding: "20px", position: "relative" }}>
         <div style={{ marginBottom: "20px" }}>
-          <CanvasStreamText
-            text={node.content || "—"}
-            isActive={node.status === "active"}
-            fontSize="13px"
-            color="var(--text-primary)"
-          />
+          {node.status === "active" ? (
+            <CanvasStreamText
+              text={node.content || "—"}
+              isActive
+              fontSize="13px"
+              color="var(--text-primary)"
+            />
+          ) : (
+            <div style={{ fontSize: "13px", lineHeight: 1.65, color: "var(--text-primary)" }}>
+              <Markdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  p: ({ children }) => <p style={{ margin: "0 0 10px" }}>{children}</p>,
+                  h1: ({ children }) => <h1 style={{ fontSize: "16px", fontWeight: 700, margin: "0 0 8px", color: "var(--text-primary)" }}>{children}</h1>,
+                  h2: ({ children }) => <h2 style={{ fontSize: "14px", fontWeight: 700, margin: "0 0 8px", color: "var(--text-primary)" }}>{children}</h2>,
+                  h3: ({ children }) => <h3 style={{ fontSize: "13px", fontWeight: 600, margin: "0 0 6px", color: "var(--text-primary)" }}>{children}</h3>,
+                  ul: ({ children }) => <ul style={{ margin: "0 0 10px", paddingLeft: "18px", listStyleType: "disc" }}>{children}</ul>,
+                  ol: ({ children }) => <ol style={{ margin: "0 0 10px", paddingLeft: "18px", listStyleType: "decimal" }}>{children}</ol>,
+                  li: ({ children }) => <li style={{ marginBottom: "3px" }}>{children}</li>,
+                  strong: ({ children }) => <strong style={{ fontWeight: 700, color: "var(--text-primary)" }}>{children}</strong>,
+                  em: ({ children }) => <em style={{ fontStyle: "italic", color: "var(--text-secondary)" }}>{children}</em>,
+                  blockquote: ({ children }) => <blockquote style={{ borderLeft: "2px solid var(--accent-emerald)", paddingLeft: "10px", margin: "0 0 10px", color: "var(--text-secondary)", fontStyle: "italic" }}>{children}</blockquote>,
+                  code: (props) => {
+                    const { children, className } = props as { children?: React.ReactNode; className?: string };
+                    const isBlock = className?.includes("language-");
+                    return isBlock
+                      ? <code style={{ display: "block", fontFamily: "'Commit Mono', monospace", fontSize: "11px", background: "var(--bg-base)", border: "1px solid var(--border-subtle)", borderRadius: "8px", padding: "10px 12px", overflowX: "auto", whiteSpace: "pre", color: "var(--text-secondary)", margin: "0 0 10px" }}>{children}</code>
+                      : <code style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", background: "var(--bg-base)", borderRadius: "4px", padding: "1px 5px", color: "var(--text-primary)" }}>{children}</code>;
+                  },
+                  pre: ({ children }) => <pre style={{ margin: "0 0 10px", overflow: "hidden" }}>{children}</pre>,
+                  a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer" style={{ color: "var(--accent-emerald)", textDecoration: "underline", textUnderlineOffset: "2px" }}>{children}</a>,
+                  hr: () => <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "12px 0" }} />,
+                }}
+              >
+                {node.content || "—"}
+              </Markdown>
+            </div>
+          )}
         </div>
 
         {/* Thinking stream */}
@@ -243,17 +281,42 @@ function Stat({ label, value }: { label: string; value: string }) {
 function Dot() { return <span style={{ color: "var(--border-strong)", fontSize: "10px" }}>·</span>; }
 
 // ─── Empty state ───────────────────────────────────────────────────────────────
-function EmptyCanvas() {
+function EmptyCanvas({ awaitingStream }: { awaitingStream: boolean }) {
   return (
     <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "16px", color: "var(--text-muted)", pointerEvents: "none" }}>
-      <style>{`@keyframes c-orbit{from{transform:rotate(0deg) translateX(22px) rotate(0deg)}to{transform:rotate(360deg) translateX(22px) rotate(-360deg)}}`}</style>
-      <div style={{ position: "relative", width: "56px", height: "56px" }}>
-        <div style={{ position: "absolute", inset: 0, border: "1.5px dashed var(--border-default)", borderRadius: "50%", opacity: 0.5 }} />
-        <div style={{ position: "absolute", top: "50%", left: "50%", width: "8px", height: "8px", borderRadius: "50%", background: "#34d399", marginTop: "-4px", marginLeft: "-4px", animation: "c-orbit 2.2s linear infinite" }} />
-      </div>
+      {awaitingStream ? (
+        <>
+          <style>{`@keyframes c-orbit{from{transform:rotate(0deg) translateX(22px) rotate(0deg)}to{transform:rotate(360deg) translateX(22px) rotate(-360deg)}}`}</style>
+          <div style={{ position: "relative", width: "56px", height: "56px" }}>
+            <div style={{ position: "absolute", inset: 0, border: "1.5px dashed var(--border-default)", borderRadius: "50%", opacity: 0.5 }} />
+            <div style={{ position: "absolute", top: "50%", left: "50%", width: "8px", height: "8px", borderRadius: "50%", background: "#34d399", marginTop: "-4px", marginLeft: "-4px", animation: "c-orbit 2.2s linear infinite" }} />
+          </div>
+        </>
+      ) : (
+        <div style={{
+          width: "56px",
+          height: "56px",
+          borderRadius: "50%",
+          border: "1.5px solid var(--border-default)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "'Commit Mono', monospace",
+          fontSize: "18px",
+          color: "#f59e0b",
+        }}>
+          !
+        </div>
+      )}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", letterSpacing: "0.06em", marginBottom: "6px" }}>AWAITING STREAM</div>
-        <div style={{ fontSize: "12px" }}>Nodes will appear as the deliberation runs</div>
+        <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", letterSpacing: "0.06em", marginBottom: "6px" }}>
+          {awaitingStream ? "AWAITING STREAM" : "EVENT HISTORY MISSING"}
+        </div>
+        <div style={{ fontSize: "12px" }}>
+          {awaitingStream
+            ? "Nodes will appear as the deliberation runs"
+            : "We have the result, but the event graph is still being recovered."}
+        </div>
       </div>
     </div>
   );
@@ -288,26 +351,42 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
 
   // Track actual rendered card heights so edge source Y exits from the real card bottom.
-  const nodeHeightsRef = useRef(new Map<string, number>());
-  const [, bumpHeights] = useState(0);
+  const [nodeHeights, setNodeHeights] = useState(() => new Map<string, number>());
   const resizeObsRef = useRef<ResizeObserver | null>(null);
-  if (!resizeObsRef.current) {
-    resizeObsRef.current = new ResizeObserver((entries) => {
-      let changed = false;
-      for (const e of entries) {
-        const id = (e.target as HTMLElement).dataset.cardId;
-        if (!id) continue;
-        const h = Math.round(e.contentRect.height);
-        if (nodeHeightsRef.current.get(id) !== h) {
-          nodeHeightsRef.current.set(id, h);
-          changed = true;
-        }
-      }
-      if (changed) bumpHeights((n) => n + 1);
-    });
-  }
-  useEffect(() => () => resizeObsRef.current?.disconnect(), []);
 
+  const ensureResizeObserver = useCallback(() => {
+    if (!resizeObsRef.current && typeof ResizeObserver !== "undefined") {
+      resizeObsRef.current = new ResizeObserver((entries) => {
+        setNodeHeights((prev) => {
+          let next: Map<string, number> | null = null;
+          for (const e of entries) {
+            const id = (e.target as HTMLElement).dataset.cardId;
+            if (!id) continue;
+            const h = Math.round(e.contentRect.height);
+            if ((next ?? prev).get(id) !== h) {
+              next ??= new Map(prev);
+              next.set(id, h);
+            }
+          }
+          return next ?? prev;
+        });
+      });
+    }
+    return resizeObsRef.current;
+  }, []);
+
+  const observeNodeCard = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    ensureResizeObserver()?.observe(el);
+  }, [ensureResizeObserver]);
+
+  useEffect(() => {
+    const observer = resizeObsRef.current;
+    return () => {
+      observer?.disconnect();
+      resizeObsRef.current = null;
+    };
+  }, []);
   // Detect theme for grid
   const [isDarkMode, setIsDarkMode] = useState(true);
   useEffect(() => {
@@ -463,6 +542,7 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
   }, [onWheel]);
 
   const isEmpty = nodes.length <= 1;
+  const awaitingStream = isEmpty && !finalAnswer;
   const expandedNode = expandedNodeId ? nodes.find((n) => n.id === expandedNodeId) ?? null : null;
 
   return (
@@ -491,13 +571,13 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
           cursor: "grab",
         }}
       >
-        {isEmpty ? <EmptyCanvas /> : (
+        {isEmpty ? <EmptyCanvas awaitingStream={awaitingStream} /> : (
           <div style={{
             position: "absolute", transformOrigin: "0 0",
             transform: `translate(${transform.x}px,${transform.y}px) scale(${transform.scale})`,
             width: canvasW, height: canvasH, willChange: "transform",
           }}>
-            <GraphEdges edges={edges} positions={positions} nodeHeights={nodeHeightsRef.current} totalWidth={canvasW} totalHeight={canvasH} />
+            <GraphEdges edges={edges} positions={positions} nodeHeights={nodeHeights} totalWidth={canvasW} totalHeight={canvasH} />
             {nodes.map((node: GraphNode) => {
               const { x, y } = finalPos(node);
               const isNew = !_animatedNodeIds.has(node.id);
@@ -506,7 +586,7 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
                 <div
                   key={node.id}
                   data-card-id={node.id}
-                  ref={(el) => { if (el) resizeObsRef.current?.observe(el); }}
+                  ref={observeNodeCard}
                   style={{
                     position: "absolute",
                     left: x,

@@ -305,8 +305,8 @@ async def test_final_debate_aggregation_still_uses_gemini_pro() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_structured_flash_raw_text_falls_back_to_kimi() -> None:
-    """Non-Kimi debate providers should fall through to Kimi when they ignore schema."""
+async def test_call_structured_flash_raw_text_falls_back_to_openrouter() -> None:
+    """Non-OpenRouter debate providers should fall through to OpenRouter when they ignore schema."""
 
     flash = _RawTextDebateCaller("gemini-3.1-flash-lite-preview", "flash raw text")
     kimi = _RawTextDebateCaller("moonshotai/kimi-k2-thinking", "Kimi fallback answer")
@@ -322,7 +322,7 @@ async def test_call_structured_flash_raw_text_falls_back_to_kimi() -> None:
     )
 
     assert response.answer == "Kimi fallback answer"
-    assert response.confidence == pytest.approx(0.2)
+    assert response.confidence == pytest.approx(0.5)
     assert usage["model"] == "moonshotai/kimi-k2-thinking"
     assert len(flash.calls) == 1
     assert len(kimi.calls) == 1
@@ -391,8 +391,8 @@ async def test_explicit_local_debate_roster_preserves_selected_model_order(
 
 
 @pytest.mark.asyncio
-async def test_call_structured_kimi_native_response_initializes_coercion_provenance() -> None:
-    """Native Kimi debate responses should not hit unbound coercion provenance paths."""
+async def test_call_structured_openrouter_native_response_initializes_coercion_provenance() -> None:
+    """Native OpenRouter debate responses should not hit unbound coercion provenance paths."""
 
     engine = DebateEngine(
         agent_count=3,
@@ -401,7 +401,7 @@ async def test_call_structured_kimi_native_response_initializes_coercion_provena
     fallback = _InitialAnswerResponse(answer="deterministic fallback", confidence=0.2)
 
     response, usage = await engine._call_structured(
-        tier="kimi",
+        tier="openrouter",
         system_prompt="Return JSON.",
         user_prompt="Debate on the best option",
         response_model=_InitialAnswerResponse,
@@ -413,8 +413,8 @@ async def test_call_structured_kimi_native_response_initializes_coercion_provena
 
 
 @pytest.mark.asyncio
-async def test_call_structured_kimi_retry_then_native_response_does_not_crash() -> None:
-    """Second-attempt native Kimi responses should not hit unbound coercion provenance."""
+async def test_call_structured_openrouter_retry_then_native_response_does_not_crash() -> None:
+    """Second-attempt native OpenRouter responses should not hit unbound coercion provenance."""
 
     engine = DebateEngine(
         agent_count=3,
@@ -426,7 +426,7 @@ async def test_call_structured_kimi_retry_then_native_response_does_not_crash() 
     fallback = _InitialAnswerResponse(answer="deterministic fallback", confidence=0.2)
 
     response, usage = await engine._call_structured(
-        tier="kimi",
+        tier="openrouter",
         system_prompt="Return JSON.",
         user_prompt="Debate on the best option",
         response_model=_InitialAnswerResponse,

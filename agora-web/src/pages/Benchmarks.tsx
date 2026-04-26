@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
   Bar,
@@ -12,68 +13,53 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  ArrowRight,
-  ChevronLeft,
-  ChevronRight,
-  Loader2,
-  RefreshCcw,
-  X,
-} from "lucide-react";
+import { ChevronDown, Filter } from "lucide-react";
 
-import { EnsemblePlan } from "../components/EnsemblePlan";
+import { BenchmarkWizard, type DomainPromptSelection } from "../components/benchmark/BenchmarkWizard";
+import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
 import {
-  ApiRequestError,
-  getBenchmarkCatalog,
-  getBenchmarkRunStatus,
-  getBenchmarks,
-  triggerBenchmarkRun,
-  type BenchmarkCatalogEntry,
-  type BenchmarkCatalogPayload,
   type BenchmarkDomainName,
-  type BenchmarkPayload,
   type BenchmarkPromptTemplatesPayload,
   type BenchmarkRunRequestPayload,
   type BenchmarkRunStatusPayload,
-  type BenchmarkSummary,
 } from "../lib/api";
-import { useAuth } from "../lib/useAuth";
-import { ProviderGlyph } from "../components/ProviderGlyph";
-import { ReasoningPresetControls } from "../components/ReasoningPresetControls";
 import {
+  benchmarkQueryKeys,
+  seedTriggeredBenchmarkRunCache,
+  useBenchmarkCatalogQuery,
+  useBenchmarkOverviewQuery,
+  useBenchmarkPromptTemplatesQuery,
+  useTriggerBenchmarkMutation,
+} from "../lib/benchmarkQueries";
+import {
+  BENCHMARK_DOMAIN_KEYS,
+  buildOverviewAccuracyData,
+  buildOverviewLearningCurve,
+  detectBenchmarkArtifactKind,
+  normalizeBenchmarkSummary,
+  type NormalizedSummary,
+} from "../lib/benchmarkMetrics";
+import {
+  buildTierModelOverridesPayload,
   buildDebateRoster,
   buildProviderCountBadges,
   buildVoteRoster,
   DEFAULT_REASONING_PRESETS,
   getBalancedEnsembleLabel,
   getDebateSpecialistSummary,
+  resolveDefaultReasoningPresets,
   type ReasoningPresetState,
+  type TierModelOverrideState,
 } from "../lib/deliberationConfig";
-import { providerFromModel, providerTone } from "../lib/modelProviders";
+import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
 
 type CatalogSortMode = "recent" | "frequency";
-type WizardStep = 0 | 1 | 2;
-
-interface DomainPromptSelection {
-  templateId: string | null;
-  templateTitle: string | null;
-  question: string;
-  useCustomPrompt: boolean;
-  customQuestion: string;
-}
 
 function normalizeText(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [
-  "math",
-  "factual",
-  "reasoning",
-  "code",
-  "creative",
-  "demo",
-];
+const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [...BENCHMARK_DOMAIN_KEYS];
 const BENCHMARK_MECHANISMS = ["debate", "vote", "selector"] as const;
 const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
   domains: {
@@ -212,27 +198,142 @@ const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
   },
 };
 
+function hasUsablePromptTemplates(
+  payload: BenchmarkPromptTemplatesPayload | undefined,
+): payload is BenchmarkPromptTemplatesPayload {
+  if (!payload || typeof payload.domains !== "object" || payload.domains === null) {
+    return false;
+  }
+
+  return BENCHMARK_DOMAINS.every((domain) => Array.isArray(payload.domains[domain]));
+}
+
+// ── Chart primitives ───────────────────────────────────────────────────────────
+
+const CHART_KF_ID = "bm-chart-kf";
+const CHART_FONT = "'Commit Mono', 'SF Mono', monospace";
+
+function injectChartKeyframes() {
+  if (document.getElementById(CHART_KF_ID)) return;
+  const s = document.createElement("style");
+  s.id = CHART_KF_ID;
+  s.textContent = `@keyframes bm-shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } }`;
+  document.head.appendChild(s);
+}
+
+function SkeletonChartBlock({ h, delay = 0 }: { h: string; delay?: number }) {
+  return (
+    <div style={{
+      width: "100%", height: h, borderRadius: "8px",
+      background: "linear-gradient(90deg, var(--bg-base) 0%, var(--border-strong) 40%, var(--bg-base) 80%)",
+      backgroundSize: "600px 100%",
+      animation: `bm-shimmer 1.8s ease-in-out ${delay}s infinite`,
+    }} />
+  );
+}
+
+interface ChartTooltipPayload {
+  name: string;
+  value: number | null;
+  color: string;
+  dataKey: string;
+}
+
+function ChartTooltip({
+  active, payload, label, valueFormatter,
+}: {
+  active?: boolean;
+  payload?: ChartTooltipPayload[];
+  label?: string;
+  valueFormatter?: (v: number | null) => string;
+}) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{
+      background: "var(--bg-elevated)", border: "1px solid var(--border-strong)",
+      borderRadius: "8px", padding: "10px 14px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+    }}>
+      {label && (
+        <div style={{
+          fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em",
+          textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: "7px",
+        }}>
+          {label}
+        </div>
+      )}
+      {payload.map((entry) => (
+        <div key={entry.dataKey} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "3px" }}>
+          <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: entry.color, flexShrink: 0, display: "inline-block" }} />
+          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-secondary)" }}>{entry.name}</span>
+          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-primary)", fontWeight: 600, marginLeft: "auto", paddingLeft: "12px" }}>
+            {valueFormatter ? valueFormatter(entry.value) : (entry.value == null ? "n/a" : Math.round(entry.value))}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChartCard({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+  return (
+    <div className="card" style={{ padding: "20px 24px 16px" }}>
+      <div style={{ marginBottom: "16px" }}>
+        <div style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "4px" }}>
+          {title}
+        </div>
+        <div style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: "12px", color: "var(--text-muted)" }}>
+          {subtitle}
+        </div>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SectionHeader({ label, count, countColor }: { label: string; count: number; countColor?: string }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+      <span style={{
+        fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em",
+        textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600,
+      }}>
+        {label}
+      </span>
+      <span style={{
+        fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.08em",
+        padding: "1px 8px", borderRadius: "10px",
+        background: countColor ? `${countColor}1a` : "var(--bg-subtle)",
+        color: countColor ?? "var(--text-tertiary)",
+        border: `1px solid ${countColor ? `${countColor}44` : "var(--border-default)"}`,
+      }}>
+        {count}
+      </span>
+    </div>
+  );
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────────
+
 export function Benchmarks() {
   const navigate = useNavigate();
-  const { authStatus, getAccessToken } = useAuth();
+  const queryClient = useQueryClient();
+  const benchmarkOverviewQuery = useBenchmarkOverviewQuery(true);
+  const benchmarkCatalogQuery = useBenchmarkCatalogQuery(100);
+  const benchmarkPromptTemplatesQuery = useBenchmarkPromptTemplatesQuery();
+  const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
+  const triggerBenchmarkMutation = useTriggerBenchmarkMutation();
+  const benchmarks = benchmarkOverviewQuery.data ?? null;
+  const catalog = benchmarkCatalogQuery.data ?? null;
+  const runtimeConfig = runtimeConfigQuery.data;
+  const templates = hasUsablePromptTemplates(benchmarkPromptTemplatesQuery.data)
+    ? benchmarkPromptTemplatesQuery.data
+    : FALLBACK_PROMPT_TEMPLATES;
 
-  const [benchmarks, setBenchmarks] = useState<BenchmarkPayload | null>(null);
-  const [catalog, setCatalog] = useState<BenchmarkCatalogPayload | null>(null);
-  const templates = FALLBACK_PROMPT_TEMPLATES;
-
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
-
   const [chartsReady, setChartsReady] = useState(false);
-  const [activeBenchmarkRun, setActiveBenchmarkRun] = useState<BenchmarkRunStatusPayload | null>(null);
-  const [isTriggeringBenchmark, setIsTriggeringBenchmark] = useState(false);
-
   const [yourSortMode, setYourSortMode] = useState<CatalogSortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<CatalogSortMode>("recent");
-
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [wizardStep, setWizardStep] = useState<WizardStep>(0);
   const [wizardDomain, setWizardDomain] = useState<BenchmarkDomainName>("math");
   const [benchmarkAgentCount, setBenchmarkAgentCount] = useState(4);
   const [trainingPerCategory, setTrainingPerCategory] = useState(1);
@@ -240,14 +341,24 @@ export function Benchmarks() {
   const [reasoningPresets, setReasoningPresets] = useState<ReasoningPresetState>(
     DEFAULT_REASONING_PRESETS,
   );
+  const [tierModelOverrides, setTierModelOverrides] = useState<TierModelOverrideState>({});
+  const [runtimeDefaultsHydrated, setRuntimeDefaultsHydrated] = useState(false);
   const [domainPromptSelection, setDomainPromptSelection] = useState<
     Partial<Record<BenchmarkDomainName, DomainPromptSelection>>
   >({});
 
+  useEffect(() => { injectChartKeyframes(); }, []);
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setChartsReady(true));
     return () => window.cancelAnimationFrame(frame);
   }, []);
+  useEffect(() => {
+    if (!runtimeConfig || runtimeDefaultsHydrated) {
+      return;
+    }
+    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
+    setRuntimeDefaultsHydrated(true);
+  }, [runtimeConfig, runtimeDefaultsHydrated]);
 
   const finalizeDomainSelection = useCallback(
     (
@@ -308,146 +419,36 @@ export function Benchmarks() {
     [createDefaultDomainSelection, finalizeDomainSelection],
   );
 
-  const loadBenchmarkData = useCallback(async (): Promise<void> => {
-    setLoadError(null);
-    setCatalogError(null);
+  const overviewError = !benchmarks && benchmarkOverviewQuery.error instanceof Error
+    ? benchmarkOverviewQuery.error.message
+    : null;
+  const catalogError = !catalog && benchmarkCatalogQuery.error instanceof Error
+    ? benchmarkCatalogQuery.error.message
+    : null;
 
-    try {
-      const token = await getAccessToken();
-      if (!token) {
-        setLoadError("Authentication token is unavailable.");
-        return;
-      }
-
-      const benchmarkPayload = await getBenchmarks(token);
-      setBenchmarks(benchmarkPayload);
-
-      const catalogPayload = await getBenchmarkCatalog(token, 100);
-      setCatalog(catalogPayload);
-      setCatalogError(null);
-    } catch (error) {
-      if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-        setLoadError(error.message);
-      } else {
-        console.error(error);
-        setLoadError("Benchmark data is currently unavailable.");
-      }
-    }
-  }, [getAccessToken]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        await loadBenchmarkData();
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        if (error instanceof ApiRequestError && (error.status === 401 || error.status === 403)) {
-          setLoadError(error.message);
-          setBenchmarks(null);
-          setCatalog(null);
-          return;
-        }
-        console.error(error);
-        setLoadError("Benchmark data is currently unavailable.");
-        setBenchmarks(null);
-        setCatalog(null);
-      }
-    }
-
-    if (authStatus !== "authenticated") {
-      return;
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [authStatus, loadBenchmarkData]);
-
-  useEffect(() => {
-    if (!activeBenchmarkRun) {
-      return;
-    }
-    if (activeBenchmarkRun.status === "completed" || activeBenchmarkRun.status === "failed") {
-      return;
-    }
-
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      void (async () => {
-        try {
-          const token = await getAccessToken();
-          if (!token) {
-            return;
-          }
-          const status = await getBenchmarkRunStatus(token, activeBenchmarkRun.run_id);
-          if (cancelled) {
-            return;
-          }
-          setActiveBenchmarkRun(status);
-          if (status.status === "completed" || status.status === "failed") {
-            await loadBenchmarkData();
-          }
-        } catch (error) {
-          if (!cancelled) {
-            console.error(error);
-          }
-        }
-      })();
-    }, 4000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [activeBenchmarkRun, getAccessToken, loadBenchmarkData]);
-
-  const normalizedSummary = useMemo<BenchmarkSummary>(() => ensureCompleteSummary(deriveSummary(benchmarks)), [benchmarks]);
+  const normalizedSummary = useMemo<NormalizedSummary>(
+    () => normalizeBenchmarkSummary(benchmarks?.summary, benchmarks),
+    [benchmarks],
+  );
+  const benchmarkArtifactKind = useMemo(
+    () => detectBenchmarkArtifactKind(benchmarks),
+    [benchmarks],
+  );
 
   const accuracyData = useMemo(() => {
-    return BENCHMARK_DOMAINS.map((domain) => {
-      const metricsByMode = normalizedSummary.per_category[domain] ?? {};
-      return {
-        category: titleCase(domain),
-        debate: ((metricsByMode.debate?.accuracy ?? 0) as number) * 100,
-        vote: ((metricsByMode.vote?.accuracy ?? 0) as number) * 100,
-        selector: ((metricsByMode.selector?.accuracy ?? 0) as number) * 100,
-      };
-    });
+    return buildOverviewAccuracyData(normalizedSummary);
   }, [normalizedSummary]);
 
-  const learningCurveData = useMemo(() => {
-    const pre = Number(
-      benchmarks?.pre_learning?.summary?.per_mode?.selector?.accuracy
-      ?? benchmarks?.pre_learning?.summary?.per_mode?.vote?.accuracy
-      ?? 0,
-    ) * 100;
-    const post = Number(
-      benchmarks?.post_learning?.summary?.per_mode?.selector?.accuracy
-      ?? benchmarks?.post_learning?.summary?.per_mode?.vote?.accuracy
-      ?? pre,
-    ) * 100;
-    return [
-      { phase: "Pre", accuracy: pre },
-      { phase: "Post", accuracy: post || pre },
-    ];
-  }, [benchmarks]);
+  const learningCurveState = useMemo(() => buildOverviewLearningCurve(benchmarks), [benchmarks]);
 
   const costData = useMemo(() => {
-    const costSummary =
-      Object.keys(normalizedSummary.per_mechanism).length > 0
-        ? normalizedSummary.per_mechanism
-        : normalizedSummary.per_mode;
     return BENCHMARK_MECHANISMS.map((mechanism) => {
-      const metrics = costSummary[mechanism] ?? {};
+      const metrics = normalizedSummary.per_mode[mechanism] ?? {};
+      const runCount = asNumber(metrics.run_count);
+      const avgCost = asNumber(metrics.avg_estimated_cost_usd);
       return {
         mechanism: titleCase(mechanism),
-        estimatedCostUsd: asNumber(metrics.avg_estimated_cost_usd),
+        estimatedCostUsd: runCount > 0 && avgCost > 0 ? avgCost : null,
       };
     });
   }, [normalizedSummary]);
@@ -460,26 +461,15 @@ export function Benchmarks() {
   }, [catalog, yourSortMode]);
 
   const inProgressBenchmarkRuns = useMemo(() => {
-    const merged = new Map<string, BenchmarkRunStatusPayload>();
     const catalogRuns = catalog
       ? (yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency)
       : [];
 
-    for (const run of catalogRuns) {
-      if (run.status === "queued" || run.status === "running") {
-        merged.set(run.run_id, run);
-      }
-    }
-
-    if (activeBenchmarkRun && (activeBenchmarkRun.status === "queued" || activeBenchmarkRun.status === "running")) {
-      const existing = merged.get(activeBenchmarkRun.run_id);
-      merged.set(activeBenchmarkRun.run_id, existing ? { ...existing, ...activeBenchmarkRun } : activeBenchmarkRun);
-    }
-
-    return Array.from(merged.values())
+    return catalogRuns
+      .filter((run) => run.status === "queued" || run.status === "running")
       .sort((left, right) => new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime())
       .slice(0, 3);
-  }, [activeBenchmarkRun, catalog, yourSortMode]);
+  }, [catalog, yourSortMode]);
 
   const failedBenchmarkRuns = useMemo(() => {
     if (!catalog) {
@@ -488,6 +478,10 @@ export function Benchmarks() {
     const runs = yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency;
     return runs.filter((run) => run.status === "failed").slice(0, 3);
   }, [catalog, yourSortMode]);
+
+  const featuredBenchmarkRun = useMemo<BenchmarkRunStatusPayload | null>(() => {
+    return inProgressBenchmarkRuns[0] ?? failedBenchmarkRuns[0] ?? null;
+  }, [failedBenchmarkRuns, inProgressBenchmarkRuns]);
 
   const globalEntries = useMemo(() => {
     if (!catalog) {
@@ -521,6 +515,7 @@ export function Benchmarks() {
       live_agents: true,
       domain_prompts: domainPrompts,
       reasoning_presets: reasoningPresets,
+      tier_model_overrides: buildTierModelOverridesPayload(tierModelOverrides, runtimeConfig),
     };
 
     return payload;
@@ -529,29 +524,34 @@ export function Benchmarks() {
     domainPromptSelection,
     holdoutPerCategory,
     reasoningPresets,
+    runtimeConfig,
+    tierModelOverrides,
     trainingPerCategory,
   ]);
 
   const benchmarkVoteRoster = useMemo(
-    () => buildVoteRoster(benchmarkAgentCount, reasoningPresets),
-    [benchmarkAgentCount, reasoningPresets],
+    () => buildVoteRoster(benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
+    [benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
   );
   const benchmarkDebateRoster = useMemo(
-    () => buildDebateRoster(benchmarkAgentCount, reasoningPresets),
-    [benchmarkAgentCount, reasoningPresets],
+    () => buildDebateRoster(benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
+    [benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
   );
   const benchmarkCountBadges = useMemo(
-    () => buildProviderCountBadges(benchmarkAgentCount),
-    [benchmarkAgentCount],
+    () => buildProviderCountBadges(benchmarkAgentCount, runtimeConfig, tierModelOverrides),
+    [benchmarkAgentCount, runtimeConfig, tierModelOverrides],
   );
   const benchmarkEnsembleLabel = useMemo(
-    () => getBalancedEnsembleLabel(benchmarkAgentCount),
-    [benchmarkAgentCount],
+    () => getBalancedEnsembleLabel(benchmarkAgentCount, runtimeConfig),
+    [benchmarkAgentCount, runtimeConfig],
+  );
+  const benchmarkDebateFooter = useMemo(
+    () => getDebateSpecialistSummary(runtimeConfig, tierModelOverrides),
+    [runtimeConfig, tierModelOverrides],
   );
 
   const openWizard = () => {
     syncDomainPromptSelection(templates);
-    setWizardStep(0);
     setWizardDomain("math");
     setRunError(null);
     setWizardOpen(true);
@@ -559,58 +559,28 @@ export function Benchmarks() {
 
   const closeWizard = () => {
     setWizardOpen(false);
-    setWizardStep(0);
   };
 
   const handleTriggerBenchmark = useCallback(async () => {
     try {
       setRunError(null);
-      setIsTriggeringBenchmark(true);
-      const token = await getAccessToken();
-      if (!token) {
-        throw new Error("Authentication token is unavailable.");
-      }
-
-      const run = await triggerBenchmarkRun(token, runPayloadPreview);
-      setActiveBenchmarkRun({
-        run_id: run.run_id,
-        status: run.status,
-        created_at: run.created_at,
-        updated_at: run.created_at,
-        error: null,
-        artifact_id: null,
-        request: null,
-        reasoning_presets: null,
-        latest_mechanism: null,
-        agent_count: null,
-        total_tokens: null,
-        thinking_tokens: null,
-        total_latency_ms: null,
-        model_telemetry: {},
-        cost: null,
-        completed_item_count: 0,
-        failed_item_count: 0,
-        degraded_item_count: 0,
-        failure_counts_by_category: {},
-        failure_counts_by_reason: {},
-        failure_counts_by_stage: {},
-      });
+      const run = await triggerBenchmarkMutation.mutateAsync(runPayloadPreview);
+      seedTriggeredBenchmarkRunCache(queryClient, run);
+      void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() });
+      void queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() });
       closeWizard();
       navigate(`/benchmarks/${run.run_id}`);
     } catch (error) {
-      console.error(error);
-      setRunError("Unable to start benchmark run right now.");
-    } finally {
-      setIsTriggeringBenchmark(false);
+      setRunError(error instanceof Error ? error.message : "Unable to start benchmark run right now.");
     }
-  }, [getAccessToken, navigate, runPayloadPreview]);
+  }, [navigate, queryClient, runPayloadPreview, triggerBenchmarkMutation]);
 
   const updateDomainSelection = (
     domain: BenchmarkDomainName,
     updater: (current: DomainPromptSelection) => DomainPromptSelection,
   ) => {
-      setDomainPromptSelection((current) => {
-        const existing = current[domain] ?? createDefaultDomainSelection(domain, templates);
+    setDomainPromptSelection((current) => {
+      const existing = current[domain] ?? createDefaultDomainSelection(domain, templates);
       const nextSelection = updater(existing);
       return {
         ...current,
@@ -646,35 +616,6 @@ export function Benchmarks() {
   }, [domainPromptSelection]);
 
   const allDomainsConfigured = BENCHMARK_DOMAINS.every((domain) => domainStatus[domain].complete);
-  const wizardCurrentSelection = domainPromptSelection[wizardDomain];
-  const wizardTemplates = templates.domains[wizardDomain] ?? [];
-  const wizardSelectedTemplate = wizardTemplates.find((template) => template.id === wizardCurrentSelection?.templateId);
-
-  if (loadError) {
-    return (
-      <div className="max-w-225 mx-auto pb-20 w-full">
-        <header className="mb-10">
-          <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
-        </header>
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">{loadError}</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!benchmarks) {
-    return (
-      <div className="max-w-225 mx-auto pb-20 w-full">
-        <header className="mb-10">
-          <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
-        </header>
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">Loading benchmark data...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <>
@@ -686,107 +627,182 @@ export function Benchmarks() {
           </p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8 w-full">
-          <div className="card p-4 sm:p-8 col-span-1 lg:col-span-2">
-            <h3 className="mb-2 text-lg font-semibold">Accuracy by Task Category x Mechanism</h3>
-            <p className="text-sm text-text-secondary mb-8">
-              Selector runs should dominate category-specific fixed strategies after learning.
-            </p>
-            <div className="w-full h-75">
-              {chartsReady ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
-                    <XAxis
-                      dataKey="category"
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <YAxis
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <Tooltip cursor={{ fill: "var(--color-elevated)" }} />
-                    <Legend iconType="circle" wrapperStyle={{ fontFamily: "JetBrains Mono", fontSize: "12px" }} />
-                    <Bar dataKey="debate" name="Debate" fill="var(--color-border-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                    <Bar dataKey="vote" name="Vote" fill="var(--color-text-muted)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                    <Bar dataKey="selector" name="Selector" fill="var(--color-accent)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                  </BarChart>
-                </ResponsiveContainer>
+        {/* ── Charts ──────────────────────────────────────────────────────── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8 w-full">
+          {/* Accuracy by category — full width */}
+          <div className="col-span-1 lg:col-span-2">
+            <ChartCard
+              title="Accuracy by Task Category × Stage"
+              subtitle="Requested benchmark-stage success by category for the active artifact. This chart is stage-level, not actual executed-mechanism telemetry."
+            >
+              {overviewError ? (
+                <div style={{ padding: "32px 0", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>
+                  {overviewError}
+                </div>
+              ) : !benchmarks ? (
+                <SkeletonChartBlock h="300px" />
               ) : (
-                <div className="w-full h-full" />
+                <div className="w-full h-75">
+                  {chartsReady && (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
+                        <XAxis
+                          dataKey="category"
+                          stroke="transparent"
+                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                        />
+                        <YAxis
+                          stroke="transparent"
+                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                        />
+                        <Tooltip
+                          content={(props) => (
+                            <ChartTooltip
+                              active={props.active}
+                              payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
+                              label={props.label as string | undefined}
+                              valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
+                            />
+                          )}
+                          cursor={{ fill: "rgba(255,255,255,0.025)" }}
+                        />
+                        <Legend
+                          iconType="circle"
+                          wrapperStyle={{ fontFamily: CHART_FONT, fontSize: "10px", paddingTop: "14px", color: "var(--text-tertiary)" }}
+                        />
+                        <Bar
+                          dataKey="debate" name="Debate"
+                          fill="var(--text-muted)"
+                          radius={[4, 4, 0, 0]} minPointSize={4}
+                          isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
+                        />
+                        <Bar
+                          dataKey="vote" name="Vote"
+                          fill="var(--accent-amber)"
+                          radius={[4, 4, 0, 0]} minPointSize={4}
+                          isAnimationActive animationBegin={200} animationDuration={700} animationEasing="ease-out"
+                        />
+                        <Bar
+                          dataKey="selector" name="Selector"
+                          fill="var(--accent-emerald)"
+                          radius={[4, 4, 0, 0]} minPointSize={4}
+                          isAnimationActive animationBegin={300} animationDuration={700} animationEasing="ease-out"
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
               )}
-            </div>
+            </ChartCard>
           </div>
 
-          <div className="card p-4 sm:p-8">
-            <h3 className="mb-2 text-lg font-semibold">Selector Learning Curve</h3>
-            <p className="text-sm text-text-secondary mb-8">Accuracy before and after the learning update cycle.</p>
-            <div className="w-full h-62.5">
-              {chartsReady ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={learningCurveData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
-                    <XAxis
-                      dataKey="phase"
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <YAxis
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                      domain={[0, 100]}
-                    />
-                    <Tooltip />
-                    <Line
-                      type="monotone"
-                      dataKey="accuracy"
-                      stroke="var(--color-accent)"
-                      strokeWidth={3}
-                      dot={{ fill: "var(--color-void)", stroke: "var(--color-accent)", strokeWidth: 2, r: 4 }}
-                      activeDot={{ r: 6, fill: "var(--color-accent)" }}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="w-full h-full" />
-              )}
-            </div>
-          </div>
+          {/* Learning curve */}
+          <ChartCard
+            title="Selector Learning Curve"
+            subtitle={
+              benchmarkArtifactKind === "validation"
+                ? "Accuracy before and after the learning update cycle."
+                : "Only validation artifacts with explicit pre/post stages can populate this curve honestly."
+            }
+          >
+            {!benchmarks && !overviewError ? (
+              <SkeletonChartBlock h="250px" delay={0.1} />
+            ) : learningCurveState.reason ? (
+              <div className="w-full h-62.5 rounded-md border border-border-subtle bg-void px-4 py-5 flex items-center justify-center text-center text-sm text-text-secondary">
+                {learningCurveState.reason}
+              </div>
+            ) : (
+              <div className="w-full h-62.5">
+                {chartsReady && benchmarks && learningCurveState.available && (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={learningCurveState.data} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
+                      <XAxis
+                        dataKey="phase"
+                        stroke="transparent"
+                        tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                      />
+                      <YAxis
+                        stroke="transparent"
+                        tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                        domain={[0, 100]}
+                      />
+                      <Tooltip
+                        content={(props) => (
+                          <ChartTooltip
+                            active={props.active}
+                            payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
+                            label={props.label as string | undefined}
+                            valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
+                          />
+                        )}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="accuracy"
+                        name="Accuracy"
+                        stroke="var(--accent-emerald)"
+                        strokeWidth={2}
+                        dot={{ fill: "var(--bg-base)", stroke: "var(--accent-emerald)", strokeWidth: 2, r: 4 }}
+                        activeDot={{ r: 6, fill: "var(--accent-emerald)" }}
+                        isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            )}
+          </ChartCard>
 
-          <div className="card p-4 sm:p-8">
-            <h3 className="mb-2 text-lg font-semibold">Cost Efficiency</h3>
-            <p className="text-sm text-text-secondary mb-8">
-              Estimated USD cost per mechanism from token usage and model pricing.
-            </p>
-            <div className="w-full h-62.5">
-              {chartsReady ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-subtle)" vertical={false} />
-                    <XAxis
-                      dataKey="mechanism"
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <YAxis
-                      stroke="var(--color-text-muted)"
-                      tick={{ fill: "var(--color-text-muted)", fontSize: 12, fontFamily: "JetBrains Mono" }}
-                    />
-                    <Tooltip
-                      formatter={(value) => formatUsd(Number(value))}
-                      cursor={{ fill: "var(--color-elevated)" }}
-                    />
-                    <Bar dataKey="estimatedCostUsd" name="Estimated USD" fill="var(--color-text-primary)" radius={[4, 4, 0, 0]} minPointSize={4} />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <div className="w-full h-full" />
-              )}
-            </div>
-          </div>
+          {/* Cost efficiency */}
+          <ChartCard
+            title="Cost Efficiency"
+            subtitle="Estimated USD cost per requested benchmark stage from token usage and the internal pricing catalog."
+          >
+            {!benchmarks && !overviewError ? (
+              <SkeletonChartBlock h="250px" delay={0.2} />
+            ) : (
+              <div className="w-full h-62.5">
+                {chartsReady && benchmarks && (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
+                      <XAxis
+                        dataKey="mechanism"
+                        stroke="transparent"
+                        tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                      />
+                      <YAxis
+                        stroke="transparent"
+                        tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                      />
+                      <Tooltip
+                        content={(props) => (
+                          <ChartTooltip
+                            active={props.active}
+                            payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
+                            label={props.label as string | undefined}
+                            valueFormatter={(v) => formatUsd(v ?? null)}
+                          />
+                        )}
+                        cursor={{ fill: "rgba(255,255,255,0.025)" }}
+                      />
+                      <Bar
+                        dataKey="estimatedCostUsd" name="Estimated USD"
+                        fill="var(--accent-emerald)"
+                        radius={[4, 4, 0, 0]} minPointSize={4}
+                        isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            )}
+          </ChartCard>
         </div>
 
+        {/* ── Run CTA ─────────────────────────────────────────────────────── */}
         <div className="card p-4 sm:p-8 mb-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
             <div>
@@ -800,117 +816,63 @@ export function Benchmarks() {
             </button>
           </div>
 
-          {activeBenchmarkRun ? (
-            <div className="border border-border-subtle rounded-md px-4 py-3 bg-void">
-              <div className="flex flex-wrap gap-3 items-center mb-2">
-                <span className="mono text-xs text-text-muted">RUN ID</span>
-                <span className="mono text-xs text-text-primary break-all">{activeBenchmarkRun.run_id}</span>
-                <span className="badge">{titleCase(activeBenchmarkRun.status)}</span>
-                {activeBenchmarkRun.status === "queued" || activeBenchmarkRun.status === "running" ? (
-                  <span className="inline-flex items-center gap-2 mono text-[11px] text-accent">
-                    <Loader2 size={12} className="animate-spin" />
-                    live benchmark running
-                  </span>
-                ) : null}
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-text-secondary mb-2">
-                <div>Tokens {formatInt(activeBenchmarkRun.total_tokens ?? 0)}</div>
-                <div>Thinking {formatInt(activeBenchmarkRun.thinking_tokens ?? 0)}</div>
-                <div>Latency {formatLatency(activeBenchmarkRun.total_latency_ms ?? null)}</div>
-                <div>Cost {formatUsd(activeBenchmarkRun.cost?.estimated_cost_usd ?? null)}</div>
-              </div>
-              <div className="mono text-xs text-text-muted">
-                Updated {formatDateTime(activeBenchmarkRun.updated_at)}
-                {activeBenchmarkRun.artifact_id ? ` • artifact ${activeBenchmarkRun.artifact_id}` : ""}
-              </div>
-              {activeBenchmarkRun.status === "completed" ? (
-                <div className="mt-3">
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => navigate(`/benchmarks/${activeBenchmarkRun.artifact_id ?? activeBenchmarkRun.run_id}`)}
-                  >
-                    Open Report
-                  </button>
-                </div>
+          {featuredBenchmarkRun && (
+            <div style={{ marginTop: "4px" }}>
+              {featuredBenchmarkRun.status === "failed" ? (
+                <FailedRunRow
+                  run={featuredBenchmarkRun}
+                  onOpen={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
+                />
               ) : (
-                <div className="mt-3">
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => navigate(`/benchmarks/${activeBenchmarkRun.run_id}`)}
-                  >
-                    {activeBenchmarkRun.status === "failed" ? "Open Failed Report" : "Open Live View"}
-                  </button>
-                </div>
+                <LiveRunRow
+                  run={featuredBenchmarkRun}
+                  onOpen={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
+                />
               )}
-              {activeBenchmarkRun.error ? <div className="mono text-xs text-red-300 mt-2">{activeBenchmarkRun.error}</div> : null}
             </div>
-          ) : (
-            <p className="text-sm text-text-secondary">No active benchmark run yet.</p>
           )}
 
-          {runError ? <p className="text-sm text-red-300 mt-2">{runError}</p> : null}
+          {!catalog && !featuredBenchmarkRun && (
+            <SkeletonRunRow />
+          )}
+
+          {runError && (
+            <div style={{
+              fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)",
+              marginTop: "10px", padding: "8px 12px", borderRadius: "8px",
+              background: "var(--accent-rose-soft)", border: "1px solid rgba(248,113,113,0.3)",
+            }}>
+              {runError}
+            </div>
+          )}
         </div>
 
+        {/* ── Your Benchmarks ──────────────────────────────────────────────── */}
         <div className="card p-4 sm:p-6 mb-6">
-          <div className="flex items-center justify-between gap-3 mb-4">
+          <div className="flex items-center justify-between gap-3 mb-5">
             <h3 className="text-lg font-semibold">Your Benchmarks</h3>
             <div className="flex items-center gap-2">
-              <SortToggle value={yourSortMode} onChange={setYourSortMode} />
+              <FilterButton value={yourSortMode} onChange={setYourSortMode} />
               <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
             </div>
           </div>
+
           {catalogError ? (
             <p className="text-sm text-text-secondary">{catalogError}</p>
+          ) : !catalog ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <SkeletonRunRow delay={0} />
+              <SkeletonRunRow delay={0.08} />
+              <SkeletonRunRow delay={0.16} />
+            </div>
           ) : (
-            <div className="space-y-5">
-              {inProgressBenchmarkRuns.length > 0 ? (
-                <div className="space-y-3">
-                  <div>
-                    <h4 className="text-base font-semibold">Live Runs</h4>
-                    <p className="text-xs text-text-secondary">
-                      Queued and running benchmarks stay visible here until they settle into an artifact or failed report.
-                    </p>
-                  </div>
-                  {inProgressBenchmarkRuns.map((run) => (
-                    <RunningBenchmarkRunCard
-                      key={run.run_id}
-                      run={run}
-                      onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
-                    />
-                  ))}
-                </div>
-              ) : null}
-
-              {yourEntries.length > 0 ? (
-                <div className={`space-y-3 ${inProgressBenchmarkRuns.length > 0 ? "pt-5 border-t border-border-subtle" : ""}`}>
-                  {yourEntries.map((entry) => (
-                    <BenchmarkCatalogCard
-                      key={entry.artifact_id}
-                      entry={entry}
-                      onOpen={() => navigate(`/benchmarks/${entry.artifact_id}`)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <p className="text-sm text-text-secondary">No user benchmark artifacts yet.</p>
-              )}
-
-              {failedBenchmarkRuns.length > 0 ? (
-                <div className="pt-5 border-t border-border-subtle">
-                  <div className="flex items-center justify-between gap-3 mb-3">
-                    <div>
-                      <h4 className="text-base font-semibold">Failed Runs</h4>
-                      <p className="text-xs text-text-secondary">
-                        Persisted benchmark failures stay visible here with their error details.
-                      </p>
-                    </div>
-                    <span className="badge">{titleCase(yourSortMode)}</span>
-                  </div>
-                  <div className="space-y-3">
-                    {failedBenchmarkRuns.map((run) => (
-                      <FailedBenchmarkRunCard
+            <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+              {inProgressBenchmarkRuns.length > 0 && (
+                <div>
+                  <SectionHeader label="Live Runs" count={inProgressBenchmarkRuns.length} countColor="var(--accent-emerald)" />
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {inProgressBenchmarkRuns.map((run) => (
+                      <LiveRunRow
                         key={run.run_id}
                         run={run}
                         onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
@@ -918,27 +880,72 @@ export function Benchmarks() {
                     ))}
                   </div>
                 </div>
-              ) : null}
+              )}
+
+              {yourEntries.length > 0 ? (
+                <div>
+                  {inProgressBenchmarkRuns.length > 0 && (
+                    <div style={{ height: "1px", background: "var(--border-default)", marginBottom: "20px" }} />
+                  )}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {yourEntries.map((entry) => (
+                      <CatalogRunRow
+                        key={entry.artifact_id}
+                        entry={entry}
+                        onOpen={() => navigate(`/benchmarks/${entry.artifact_id}`)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                inProgressBenchmarkRuns.length === 0 && (
+                  <p className="text-sm text-text-secondary">No user benchmark artifacts yet.</p>
+                )
+              )}
+
+              {failedBenchmarkRuns.length > 0 && (
+                <div>
+                  <div style={{ height: "1px", background: "var(--border-default)", marginBottom: "20px" }} />
+                  <SectionHeader label="Failed Runs" count={failedBenchmarkRuns.length} countColor="var(--accent-rose)" />
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    {failedBenchmarkRuns.map((run) => (
+                      <FailedRunRow
+                        key={run.run_id}
+                        run={run}
+                        onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
 
+        {/* ── Global Benchmarks ────────────────────────────────────────────── */}
         <div className="card p-4 sm:p-6">
-          <div className="flex items-center justify-between gap-3 mb-4">
+          <div className="flex items-center justify-between gap-3 mb-5">
             <h3 className="text-lg font-semibold">Global Benchmarks</h3>
             <div className="flex items-center gap-2">
-              <SortToggle value={globalSortMode} onChange={setGlobalSortMode} />
+              <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
               <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
             </div>
           </div>
+
           {catalogError ? (
             <p className="text-sm text-text-secondary">{catalogError}</p>
+          ) : !catalog ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+              <SkeletonRunRow delay={0} />
+              <SkeletonRunRow delay={0.08} />
+              <SkeletonRunRow delay={0.16} />
+            </div>
           ) : globalEntries.length === 0 ? (
             <p className="text-sm text-text-secondary">No global benchmark artifacts yet.</p>
           ) : (
-            <div className="space-y-3">
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               {globalEntries.map((entry) => (
-                <BenchmarkCatalogCard
+                <CatalogRunRow
                   key={entry.artifact_id}
                   entry={entry}
                   onOpen={() => navigate(`/benchmarks/${entry.artifact_id}`)}
@@ -949,615 +956,121 @@ export function Benchmarks() {
         </div>
       </div>
 
+      {/* ── Wizard ────────────────────────────────────────────────────────── */}
       {wizardOpen ? (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-start justify-center p-4 sm:p-8 overflow-y-auto">
-          <div className="card max-w-240 w-full p-4 sm:p-6 border border-border-subtle">
-            <div className="flex items-center justify-between gap-4 mb-4">
-              <div>
-                <h2 className="text-xl font-semibold mb-1">Benchmark Run Wizard</h2>
-                <p className="text-sm text-text-secondary">Configure per-domain questions, then launch a comprehensive run.</p>
-              </div>
-              <button type="button" className="btn-secondary" onClick={closeWizard} aria-label="Close benchmark wizard">
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="mono text-xs text-text-muted mb-4">Step {wizardStep + 1} of 3</div>
-
-            {wizardStep === 0 ? (
-              <div className="space-y-6">
-                <div>
-                  <div className="mono text-xs text-text-muted mb-2">AGENT COUNT</div>
-                  <div className="flex gap-2">
-                    {[4, 8, 12].map((count) => (
-                      <button
-                        key={count}
-                        type="button"
-                        onClick={() => setBenchmarkAgentCount(count)}
-                        className={`mono px-3 py-1.5 text-xs rounded-md border transition-colors ${
-                          benchmarkAgentCount === count
-                            ? "border-accent text-accent bg-accent-muted"
-                            : "border-border-muted text-text-secondary hover:border-accent"
-                        }`}
-                      >
-                        {count}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <label className="block">
-                    <span className="mono text-xs text-text-muted">TRAINING / DOMAIN</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={20}
-                      value={trainingPerCategory}
-                      onChange={(event) => setTrainingPerCategory(Math.max(1, Math.min(20, Number(event.target.value) || 1)))}
-                      className="input mt-2"
-                    />
-                  </label>
-                  <label className="block">
-                    <span className="mono text-xs text-text-muted">HOLDOUT / DOMAIN</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={10}
-                      value={holdoutPerCategory}
-                      onChange={(event) => setHoldoutPerCategory(Math.max(1, Math.min(10, Number(event.target.value) || 1)))}
-                      className="input mt-2"
-                    />
-                  </label>
-                </div>
-
-                <ReasoningPresetControls
-                  value={reasoningPresets}
-                  onChange={setReasoningPresets}
-                />
-
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  <EnsemblePlan
-                    title="VOTE MODEL PLAN"
-                    label={benchmarkEnsembleLabel}
-                    items={benchmarkVoteRoster}
-                    countBadges={benchmarkCountBadges}
-                  />
-                  <EnsemblePlan
-                    title="DEBATE MODEL PLAN"
-                    label={benchmarkEnsembleLabel}
-                    items={benchmarkDebateRoster}
-                    countBadges={benchmarkCountBadges}
-                    footer={getDebateSpecialistSummary()}
-                  />
-                </div>
-              </div>
-            ) : null}
-
-            {wizardStep === 1 ? (
-              <div className="grid grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] gap-5">
-                <div className="border border-border-subtle rounded-md p-3 bg-void space-y-2">
-                  <div className="mono text-xs text-text-muted mb-1">DOMAIN COVERAGE</div>
-                  {BENCHMARK_DOMAINS.map((domain) => (
-                    <button
-                      key={domain}
-                      type="button"
-                      className={`w-full text-left rounded-md border px-3 py-2 transition-colors ${
-                        wizardDomain === domain
-                          ? "border-accent bg-accent-muted"
-                          : "border-border-subtle hover:border-accent"
-                      }`}
-                      onClick={() => setWizardDomain(domain)}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm text-text-primary">{titleCase(domain)}</span>
-                        <span className={`mono text-[10px] ${domainStatus[domain].complete ? "text-accent" : "text-text-muted"}`}>
-                          {domainStatus[domain].complete ? "READY" : "OPEN"}
-                        </span>
-                      </div>
-                      <div className="mono text-[10px] text-text-muted mt-1 truncate">
-                        {domainStatus[domain].label}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                <div className="border border-border-subtle rounded-md p-4 bg-void">
-                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-4">
-                    <div>
-                      <h4 className="text-sm font-semibold mb-1">{titleCase(wizardDomain)} Question</h4>
-                      <p className="text-xs text-text-secondary">
-                        Pick a question template or write your own debate question for this domain.
-                      </p>
-                    </div>
-                    <div className="inline-flex border border-border-subtle rounded-md overflow-hidden">
-                    <button
-                      type="button"
-                      onClick={() => updateDomainSelection(wizardDomain, (existing) => ({
-                        ...existing,
-                        useCustomPrompt: false,
-                        question: wizardSelectedTemplate?.question ?? existing.question,
-                        templateTitle: wizardSelectedTemplate?.title ?? existing.templateTitle,
-                      }))}
-                      className={`mono px-3 py-1.5 text-xs ${!domainPromptSelection[wizardDomain]?.useCustomPrompt ? "bg-accent-muted text-accent" : "text-text-secondary"}`}
-                    >
-                      Template
-                    </button>
-                      <button
-                        type="button"
-                        onClick={() => updateDomainSelection(wizardDomain, (existing) => {
-                          if (existing.useCustomPrompt) {
-                            return existing;
-                          }
-                          const seededQuestion = normalizeText(existing.customQuestion).length > 0
-                            ? normalizeText(existing.customQuestion)
-                            : (normalizeText(wizardSelectedTemplate?.question) || normalizeText(existing.question));
-                          return {
-                            ...existing,
-                            useCustomPrompt: true,
-                            customQuestion: seededQuestion,
-                            question: seededQuestion || existing.question,
-                          };
-                        })}
-                        className={`mono px-3 py-1.5 text-xs ${domainPromptSelection[wizardDomain]?.useCustomPrompt ? "bg-accent-muted text-accent" : "text-text-secondary"}`}
-                      >
-                        Custom
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                    {wizardTemplates.map((template) => {
-                      const active = wizardCurrentSelection?.templateId === template.id
-                        && !wizardCurrentSelection?.useCustomPrompt;
-                      return (
-                        <button
-                          key={template.id}
-                          type="button"
-                          onClick={() => updateDomainSelection(wizardDomain, (existing) => ({
-                            ...existing,
-                            templateId: template.id,
-                            templateTitle: template.title,
-                            question: template.question,
-                            useCustomPrompt: false,
-                            customQuestion: existing.customQuestion,
-                          }))}
-                          className={`text-left border rounded-md p-3 transition-colors ${
-                            active ? "border-accent bg-accent-muted" : "border-border-subtle hover:border-accent"
-                          }`}
-                          >
-                            <div className="flex items-center justify-between gap-3 mb-2">
-                              <div className="mono text-xs text-text-muted">{template.title}</div>
-                              {active ? <span className="mono text-[10px] text-accent">SELECTED</span> : null}
-                            </div>
-                          <div className="text-xs text-text-secondary whitespace-pre-wrap line-clamp-5">{template.question}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <div className="mt-4 space-y-3">
-                    {wizardCurrentSelection?.useCustomPrompt ? (
-                      <>
-                        <div className="rounded-md border border-border-subtle bg-elevated/40 p-3">
-                          <div className="mono text-xs text-text-muted mb-1">CUSTOM QUESTION</div>
-                          <p className="text-xs text-text-secondary">
-                            Write the exact question the models should debate. The template picker stays available if you want to switch back.
-                          </p>
-                          {wizardSelectedTemplate ? (
-                            <div className="mt-3 rounded-md border border-border-subtle bg-void p-2">
-                              <div className="mono text-[10px] text-text-muted mb-1">
-                                STARTING FROM {wizardSelectedTemplate.title.toUpperCase()}
-                              </div>
-                              <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word">
-                                {wizardSelectedTemplate.question}
-                              </p>
-                            </div>
-                          ) : null}
-                        </div>
-                        <textarea
-                          value={wizardCurrentSelection?.customQuestion ?? ""}
-                          onChange={(event) =>
-                            updateDomainSelection(wizardDomain, (existing) => ({
-                              ...existing,
-                              customQuestion: event.target.value,
-                              question: event.target.value,
-                              useCustomPrompt: true,
-                            }))
-                          }
-                          placeholder={`Write the exact benchmark question for ${titleCase(wizardDomain)}.`}
-                          rows={10}
-                          className="w-full rounded-md border border-border-subtle bg-void px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-accent"
-                        />
-                      </>
-                    ) : (
-                      <div className="rounded-md border border-border-subtle bg-elevated/40 p-3">
-                        <div className="mono text-xs text-text-muted mb-1">SELECTED QUESTION</div>
-                        <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word">
-                          {normalizeText(wizardCurrentSelection?.question) || "Choose a question above or switch to custom mode."}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            {wizardStep === 2 ? (
-              <div className="space-y-4">
-                <div className="border border-border-subtle rounded-md p-4 bg-void">
-                  <div className="mono text-xs text-text-muted mb-2">RUN CONFIGURATION</div>
-                  <div className="text-sm text-text-secondary">
-                    {benchmarkAgentCount} agents • training {trainingPerCategory}/domain • holdout {holdoutPerCategory}/domain
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {Object.entries(reasoningPresets).map(([key, value]) => (
-                      <span key={key} className="badge">
-                        {key.replace("_", " ")} {value}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-                  {BENCHMARK_DOMAINS.map((domain) => {
-                    const selection = domainPromptSelection[domain];
-                    if (!selection) {
-                      return null;
-                    }
-                    return (
-                      <div key={domain} className="border border-border-subtle rounded-md p-3 bg-void">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <span className="text-sm text-text-primary">{titleCase(domain)}</span>
-                          <span className="mono text-xs text-text-muted">
-                            {selection.useCustomPrompt ? "custom" : selection.templateTitle ?? selection.templateId ?? "template"}
-                          </span>
-                        </div>
-                        <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word line-clamp-4">
-                          {normalizeText(selection.question) || "No question selected."}
-                        </p>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="mt-6 flex items-center justify-between gap-3">
-              <button
-                type="button"
-                className="btn-secondary inline-flex items-center gap-2"
-                onClick={() =>
-                  setWizardStep((step) => {
-                    if (step === 2) {
-                      return 1;
-                    }
-                    return 0;
-                  })
-                }
-                disabled={wizardStep === 0 || isTriggeringBenchmark}
-              >
-                <ChevronLeft size={14} /> Back
-              </button>
-
-              {wizardStep < 2 ? (
-                <button
-                  type="button"
-                  className="btn-primary inline-flex items-center gap-2"
-                  onClick={() =>
-                    setWizardStep((step) => {
-                      if (step === 0) {
-                        return 1;
-                      }
-                      return 2;
-                    })
-                  }
-                  disabled={wizardStep === 1 && !allDomainsConfigured}
-                >
-                  Next <ChevronRight size={14} />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn-primary inline-flex items-center gap-2"
-                  onClick={() => {
-                    void handleTriggerBenchmark();
-                  }}
-                  disabled={isTriggeringBenchmark}
-                >
-                  {isTriggeringBenchmark ? <RefreshCcw size={14} className="animate-spin" /> : <ArrowRight size={14} />}
-                  {isTriggeringBenchmark ? "Starting..." : "Submit Benchmark"}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
+        <BenchmarkWizard
+          open={wizardOpen}
+          onClose={closeWizard}
+          agentCount={benchmarkAgentCount}
+          onAgentCountChange={setBenchmarkAgentCount}
+          trainingPerCategory={trainingPerCategory}
+          onTrainingChange={setTrainingPerCategory}
+          holdoutPerCategory={holdoutPerCategory}
+          onHoldoutChange={setHoldoutPerCategory}
+          reasoningPresets={reasoningPresets}
+          onPresetsChange={setReasoningPresets}
+          runtimeConfig={runtimeConfig}
+          tierModelOverrides={tierModelOverrides}
+          onTierModelOverridesChange={setTierModelOverrides}
+          voteRoster={benchmarkVoteRoster}
+          debateRoster={benchmarkDebateRoster}
+          countBadges={benchmarkCountBadges}
+          ensembleLabel={benchmarkEnsembleLabel}
+          debateFooter={benchmarkDebateFooter}
+          activeDomain={wizardDomain}
+          onDomainChange={setWizardDomain}
+          templates={templates}
+          domainPromptSelection={domainPromptSelection}
+          onDomainUpdate={updateDomainSelection}
+          domainStatus={domainStatus}
+          allDomainsConfigured={allDomainsConfigured}
+          isSubmitting={triggerBenchmarkMutation.isPending}
+          onSubmit={() => { void handleTriggerBenchmark(); }}
+          submitError={runError}
+        />
       ) : null}
     </>
   );
 }
 
-function SortToggle({ value, onChange }: { value: CatalogSortMode; onChange: (value: CatalogSortMode) => void }) {
+// ── Sub-components ─────────────────────────────────────────────────────────────
+
+function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (value: CatalogSortMode) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
   return (
-    <div className="inline-flex border border-border-subtle rounded-md overflow-hidden">
-      {(["recent", "frequency"] as CatalogSortMode[]).map((option) => (
-        <button
-          key={option}
-          type="button"
-          onClick={() => onChange(option)}
-          className={`mono px-3 py-1.5 text-xs transition-colors ${
-            value === option ? "bg-accent-muted text-accent" : "text-text-secondary hover:text-text-primary"
-          }`}
-        >
-          {titleCase(option)}
-        </button>
-      ))}
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "6px",
+          fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
+          padding: "5px 10px", borderRadius: "7px",
+          border: `1px solid ${open ? "var(--border-strong)" : "var(--border-default)"}`,
+          background: open ? "var(--bg-subtle)" : "var(--bg-base)",
+          color: "var(--text-secondary)", cursor: "pointer",
+          transition: "all 0.15s ease",
+        }}
+      >
+        <Filter size={11} />
+        {titleCase(value)}
+        <ChevronDown
+          size={11}
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s ease" }}
+        />
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 100,
+          background: "var(--bg-elevated)", border: "1px solid var(--border-strong)",
+          borderRadius: "8px", overflow: "hidden", minWidth: "130px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+        }}>
+          {(["recent", "frequency"] as CatalogSortMode[]).map((option, i) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => { onChange(option); setOpen(false); }}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                padding: "9px 13px",
+                fontFamily: CHART_FONT, fontSize: "11px",
+                color: value === option ? "var(--accent-emerald)" : "var(--text-secondary)",
+                background: value === option ? "var(--accent-emerald-soft)" : "transparent",
+                border: "none",
+                borderBottom: i === 0 ? "1px solid var(--border-default)" : "none",
+                cursor: "pointer",
+                transition: "background 0.1s ease",
+              }}
+            >
+              {titleCase(option)}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function BenchmarkCatalogCard({
-  entry,
-  onOpen,
-}: {
-  entry: BenchmarkCatalogEntry;
-  onOpen: () => void;
-}) {
-  const dominantMechanism = dominantCountEntry(entry.mechanism_counts)?.[0] ?? entry.latest_mechanism ?? null;
-  const dominantModel = dominantCountEntry(entry.model_counts)?.[0] ?? entry.models?.[0] ?? null;
-  const dominantProvider = dominantModel ? providerFromModel(dominantModel) : null;
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="w-full text-left border border-border-subtle rounded-md px-4 py-4 bg-void hover:border-accent transition-colors"
-    >
-      <div className="flex flex-wrap gap-2 items-center mb-2">
-        <span className="mono text-xs text-text-muted">{entry.artifact_id.slice(0, 18)}...</span>
-        <span className="badge">{titleCase(entry.scope)}</span>
-        {entry.latest_mechanism ? <span className="badge">{titleCase(entry.latest_mechanism)}</span> : null}
-        {dominantMechanism ? <span className="badge">mix {titleCase(dominantMechanism)}</span> : null}
-        {dominantProvider ? <span className="badge">{titleCase(dominantProvider)} heavy</span> : null}
-        <span className="badge">{frequencyBucket(entry.frequency_score)}</span>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs text-text-secondary mb-3">
-        <div>Runs {formatInt(entry.run_count)}</div>
-        <div>Agents {entry.agent_count ?? "n/a"}</div>
-        <div>Tokens {formatInt(entry.total_tokens ?? 0)}</div>
-        <div>Thinking {formatInt(entry.thinking_tokens ?? 0)}</div>
-        <div>Cost {formatUsd(entry.cost?.estimated_cost_usd ?? null)}</div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 text-[11px] text-text-muted mb-3">
-        <div>Latency class {latencyBucket(entry.total_latency_ms ?? null)}</div>
-        <div>Cost class {costBucket(entry.cost?.estimated_cost_usd ?? null)}</div>
-        <div>Mechanisms {Object.keys(entry.mechanism_counts).length || 0}</div>
-        <div>Models {Object.keys(entry.model_counts).length || 0}</div>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2 mb-2">
-        {(entry.models ?? Object.keys(entry.model_counts)).slice(0, 5).map((model) => {
-          const provider = providerFromModel(model);
-          return (
-            <span key={model} className={`inline-flex items-center gap-1.5 border rounded-full px-2 py-1 mono text-[11px] ${providerTone(provider)}`}>
-              <ProviderGlyph provider={provider} />
-              <span className="truncate max-w-44">{model}</span>
-            </span>
-          );
-        })}
-      </div>
-
-      <div className="flex items-center justify-between text-xs text-text-muted">
-        <span>{formatDateTime(entry.created_at)}</span>
-        <span className="inline-flex items-center gap-1">Open <ChevronRight size={12} /></span>
-      </div>
-    </button>
-  );
-}
-
-function FailedBenchmarkRunCard({
-  run,
-  onOpen,
-}: {
-  run: BenchmarkRunStatusPayload;
-  onOpen: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="w-full text-left border border-red-400/30 rounded-md px-4 py-4 bg-red-400/10 hover:border-red-300 transition-colors"
-    >
-      <div className="flex flex-wrap gap-2 items-center mb-2">
-        <span className="mono text-xs text-text-muted break-all">{run.run_id}</span>
-        <span className="badge bg-red-500/15 text-red-200 border-red-500/30">failed</span>
-        {run.artifact_id ? <span className="badge">artifact {run.artifact_id}</span> : null}
-        {run.latest_mechanism ? <span className="badge">{titleCase(run.latest_mechanism)}</span> : null}
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs text-text-secondary mb-3">
-        <div>Tokens {formatInt(run.total_tokens ?? 0)}</div>
-        <div>Agents {run.agent_count ?? "n/a"}</div>
-        <div>Thinking {formatInt(run.thinking_tokens ?? 0)}</div>
-        <div>Cost {formatUsd(run.cost?.estimated_cost_usd ?? null)}</div>
-        <div>Updated {formatDateTime(run.updated_at)}</div>
-      </div>
-
-      {run.error ? (
-        <div className="mono text-xs text-red-200 mb-3 wrap-break-word whitespace-pre-wrap">
-          {run.error}
-        </div>
-      ) : null}
-
-      <div className="flex items-center justify-between text-xs text-text-muted">
-        <span>{formatDateTime(run.created_at)}</span>
-        <span className="inline-flex items-center gap-1">Open failed report <ChevronRight size={12} /></span>
-      </div>
-    </button>
-  );
-}
-
-function RunningBenchmarkRunCard({
-  run,
-  onOpen,
-}: {
-  run: BenchmarkRunStatusPayload;
-  onOpen: () => void;
-}) {
-  const running = run.status === "running";
-  return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className={`w-full text-left rounded-md px-4 py-4 transition-colors ${
-        running
-          ? "border border-accent/40 bg-accent/5 hover:border-accent"
-          : "border border-border-subtle bg-void hover:border-accent/40"
-      }`}
-    >
-      <div className="flex flex-wrap gap-2 items-center mb-2">
-        <span className="mono text-xs text-text-muted break-all">{run.run_id}</span>
-        <span className={`badge ${running ? "bg-accent-muted text-accent border-accent/40" : ""}`}>
-          {titleCase(run.status)}
-        </span>
-        {run.latest_mechanism ? <span className="badge">{titleCase(run.latest_mechanism)}</span> : null}
-        {run.artifact_id ? <span className="badge">artifact {run.artifact_id}</span> : null}
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 text-xs text-text-secondary mb-3">
-        <div>Tokens {formatInt(run.total_tokens ?? 0)}</div>
-        <div>Agents {run.agent_count ?? "n/a"}</div>
-        <div>Thinking {formatInt(run.thinking_tokens ?? 0)}</div>
-        <div>Cost {formatUsd(run.cost?.estimated_cost_usd ?? null)}</div>
-        <div>Updated {formatDateTime(run.updated_at)}</div>
-      </div>
-
-      <div className="flex items-center justify-between text-xs text-text-muted">
-        <span>{running ? "Live stream attached to this run." : "Queued for execution."}</span>
-        <span className="inline-flex items-center gap-1">
-          {running ? "Open live view" : "Open queued run"} <ChevronRight size={12} />
-        </span>
-      </div>
-    </button>
-  );
-}
-
-function deriveSummary(payload: BenchmarkPayload | null): BenchmarkSummary {
-  const fallback = {
-    per_mode: {},
-    per_mechanism: {},
-    per_category: {},
-    completed_run_count: 0,
-    failed_run_count: 0,
-    degraded_run_count: 0,
-    scored_run_count: 0,
-    proxy_run_count: 0,
-  } satisfies BenchmarkSummary;
-  if (!payload) {
-    return fallback;
-  }
-
-  if (payload.summary) {
-    return payload.summary;
-  }
-
-  if (payload.post_learning?.summary) {
-    return payload.post_learning.summary;
-  }
-
-  if (payload.pre_learning?.summary) {
-    return payload.pre_learning.summary;
-  }
-
-  return fallback;
-}
-
-function ensureCompleteSummary(summary: Partial<BenchmarkSummary>): BenchmarkSummary {
-  const safePerMode = summary.per_mode || {};
-  const safePerMechanism = summary.per_mechanism || safePerMode;
-  const perMode: Record<string, Record<string, number>> = {};
-  const perMechanism: Record<string, Record<string, number>> = {};
-  for (const mechanism of BENCHMARK_MECHANISMS) {
-    const metrics = safePerMode[mechanism] ?? {};
-    perMode[mechanism] = {
-      accuracy: asNumber(metrics.accuracy),
-      run_count: asNumber(metrics.run_count),
-      scored_run_count: asNumber(metrics.scored_run_count),
-      proxy_run_count: asNumber(metrics.proxy_run_count),
-      avg_tokens: asNumber(metrics.avg_tokens),
-      avg_latency_ms: asNumber(metrics.avg_latency_ms),
-      avg_rounds: asNumber(metrics.avg_rounds),
-      switch_rate: asNumber(metrics.switch_rate),
-      avg_thinking_tokens: asNumber(metrics.avg_thinking_tokens),
-      avg_estimated_cost_usd: asNumber(metrics.avg_estimated_cost_usd),
-    };
-
-    const mechanismMetrics = safePerMechanism[mechanism] ?? {};
-    perMechanism[mechanism] = {
-      accuracy: asNumber(mechanismMetrics.accuracy),
-      run_count: asNumber(mechanismMetrics.run_count),
-      scored_run_count: asNumber(mechanismMetrics.scored_run_count),
-      proxy_run_count: asNumber(mechanismMetrics.proxy_run_count),
-      avg_tokens: asNumber(mechanismMetrics.avg_tokens),
-      avg_latency_ms: asNumber(mechanismMetrics.avg_latency_ms),
-      avg_rounds: asNumber(mechanismMetrics.avg_rounds),
-      switch_rate: asNumber(mechanismMetrics.switch_rate),
-      avg_thinking_tokens: asNumber(mechanismMetrics.avg_thinking_tokens),
-      avg_estimated_cost_usd: asNumber(mechanismMetrics.avg_estimated_cost_usd),
-    };
-  }
-
-  const safePerCategory = summary.per_category || {};
-  const perCategory: Record<string, Record<string, Record<string, number>>> = {};
-  const categories = new Set<string>(BENCHMARK_DOMAINS);
-  Object.keys(safePerCategory).forEach((category) => categories.add(category));
-
-  for (const category of categories) {
-    perCategory[category] = {};
-    for (const mechanism of BENCHMARK_MECHANISMS) {
-      const metrics = safePerCategory[category]?.[mechanism] ?? {};
-      perCategory[category][mechanism] = {
-        accuracy: asNumber(metrics.accuracy),
-        run_count: asNumber(metrics.run_count),
-        scored_run_count: asNumber(metrics.scored_run_count),
-        proxy_run_count: asNumber(metrics.proxy_run_count),
-        avg_tokens: asNumber(metrics.avg_tokens),
-        avg_latency_ms: asNumber(metrics.avg_latency_ms),
-        avg_thinking_tokens: asNumber(metrics.avg_thinking_tokens),
-        avg_estimated_cost_usd: asNumber(metrics.avg_estimated_cost_usd),
-      };
-    }
-  }
-
-  return {
-    per_mode: perMode,
-    per_mechanism: perMechanism,
-    per_category: perCategory,
-    completed_run_count: asNumber(summary.completed_run_count),
-    failed_run_count: asNumber(summary.failed_run_count),
-    degraded_run_count: asNumber(summary.degraded_run_count),
-    scored_run_count: asNumber(summary.scored_run_count),
-    proxy_run_count: asNumber(summary.proxy_run_count),
-  };
-}
+// ── Data helpers ───────────────────────────────────────────────────────────────
 
 function asNumber(value: unknown): number {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
   return 0;
-}
-
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) {
-    return "n/a";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleString();
 }
 
 function formatUsd(value: number | null): string {
@@ -1567,71 +1080,10 @@ function formatUsd(value: number | null): string {
   return `$${value.toFixed(6)}`;
 }
 
-function formatLatency(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
-    return "n/a";
-  }
-  return `${Math.round(value)} ms`;
-}
-
-function formatInt(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "0";
-  }
-  return Math.round(value).toLocaleString();
-}
-
 function titleCase(value: string): string {
   return value
     .split(/[_\s-]+/)
     .filter(Boolean)
     .map((part) => part[0].toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function dominantCountEntry(record: Record<string, number> | null | undefined): [string, number] | null {
-  if (!record) {
-    return null;
-  }
-  const entries = Object.entries(record).sort((left, right) => right[1] - left[1]);
-  return entries[0] ?? null;
-}
-
-function frequencyBucket(score: number | null | undefined): string {
-  if (score === null || score === undefined || !Number.isFinite(score) || score <= 0) {
-    return "rare config";
-  }
-  if (score < 12) {
-    return "rare config";
-  }
-  if (score < 30) {
-    return "steady config";
-  }
-  return "high-frequency config";
-}
-
-function costBucket(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
-    return "n/a";
-  }
-  if (value < 0.005) {
-    return "lean";
-  }
-  if (value < 0.02) {
-    return "balanced";
-  }
-  return "heavy";
-}
-
-function latencyBucket(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
-    return "n/a";
-  }
-  if (value < 90_000) {
-    return "fast";
-  }
-  if (value < 240_000) {
-    return "medium";
-  }
-  return "slow";
 }

@@ -17,6 +17,7 @@ import structlog
 from pydantic import BaseModel, ValidationError
 
 from agora.config import get_config
+from agora.runtime.model_catalog import is_openrouter_model_id, resolve_model_catalog_entry
 
 try:
     from anthropic import APIConnectionError as AnthropicAPIConnectionError
@@ -165,8 +166,8 @@ class AgentCaller:
         enable_thinking: bool | None = None,
         thinking_budget: int | None = None,
         thinking_level: str | None = None,
-        kimi_reasoning_effort: str | None = None,
-        kimi_reasoning_exclude: bool | None = None,
+        openrouter_reasoning_effort: str | None = None,
+        openrouter_reasoning_exclude: bool | None = None,
         claude_effort: str | None = None,
         claude_thinking_display: str | None = None,
     ) -> None:
@@ -217,15 +218,17 @@ class AgentCaller:
         )
         self.openrouter_base_url = config.openrouter_base_url
         self._openrouter_default_headers = self._build_openrouter_headers(config)
-        self._kimi_reasoning_effort = (
-            config.kimi_reasoning_effort if kimi_reasoning_effort is None else kimi_reasoning_effort
+        self._openrouter_reasoning_effort = (
+            config.openrouter_reasoning_effort
+            if openrouter_reasoning_effort is None
+            else openrouter_reasoning_effort
         )
-        self._kimi_reasoning_exclude = (
-            config.kimi_reasoning_exclude
-            if kimi_reasoning_exclude is None
-            else kimi_reasoning_exclude
+        self._openrouter_reasoning_exclude = (
+            config.openrouter_reasoning_exclude
+            if openrouter_reasoning_exclude is None
+            else openrouter_reasoning_exclude
         )
-        self._kimi_max_tokens = config.kimi_max_tokens
+        self._openrouter_max_tokens = config.openrouter_max_tokens
         self._anthropic_max_tokens = config.anthropic_max_tokens
         self._anthropic_throttle_enabled = config.anthropic_throttle_enabled
         self._anthropic_requests_per_minute = config.anthropic_requests_per_minute
@@ -284,14 +287,14 @@ class AgentCaller:
                 raise AgentCallError(
                     "Failed to initialize AsyncAnthropic. Ensure ANTHROPIC_API_KEY is valid."
                 ) from exc
-        elif model.startswith("moonshotai/") or model.startswith("openrouter/"):
+        elif is_openrouter_model_id(model):
             self.provider = "openrouter"
             if AsyncOpenAI is None:
                 raise AgentCallError("openai SDK is not installed; AsyncOpenAI unavailable")
             if not self.openrouter_api_key:
                 raise AgentCallError(
                     "OPENROUTER_API_KEY is not set. Configure AGORA_OPENROUTER_API_KEY "
-                    "or OPENROUTER_API_KEY for Kimi access."
+                    "or OPENROUTER_API_KEY for OpenRouter model access."
                 )
             try:
                 # Keep SDK retries disabled because AGORA applies its own retry policy.
@@ -704,7 +707,7 @@ class AgentCaller:
                     "model": self.model,
                     "messages": messages,
                     "temperature": effective_temperature,
-                    "max_tokens": self._kimi_max_tokens,
+                    "max_tokens": self._openrouter_max_tokens,
                     "extra_body": {"reasoning": self._build_openrouter_reasoning_payload()},
                 }
 
@@ -1195,7 +1198,7 @@ class AgentCaller:
                     "model": self.model,
                     "messages": messages,
                     "temperature": effective_temperature,
-                    "max_tokens": self._kimi_max_tokens,
+                    "max_tokens": self._openrouter_max_tokens,
                     "extra_body": {"reasoning": self._build_openrouter_reasoning_payload()},
                 }
 
@@ -1435,11 +1438,11 @@ class AgentCaller:
         return headers
 
     def _build_openrouter_reasoning_payload(self) -> dict[str, Any]:
-        """Return explicit Kimi reasoning controls to avoid provider defaults."""
+        """Return explicit OpenRouter reasoning controls to avoid provider defaults."""
 
-        reasoning: dict[str, Any] = {"exclude": self._kimi_reasoning_exclude}
-        if self._kimi_reasoning_effort:
-            reasoning["effort"] = self._kimi_reasoning_effort
+        reasoning: dict[str, Any] = {"exclude": self._openrouter_reasoning_exclude}
+        if self._openrouter_reasoning_effort:
+            reasoning["effort"] = self._openrouter_reasoning_effort
         return reasoning
 
     def _build_gemini_thinking_config(self) -> Any | None:
@@ -1490,9 +1493,12 @@ class AgentCaller:
                 )
         return None
 
-    def _build_claude_thinking_config(self) -> dict[str, str]:
+    def _build_claude_thinking_config(self) -> dict[str, str] | None:
         """Return adaptive thinking settings for Claude 4.6 models."""
 
+        entry = resolve_model_catalog_entry(self.model)
+        if entry is not None and entry.provider_family == "anthropic" and not entry.supports_reasoning:
+            return None
         return {
             "type": "adaptive",
             "display": self._claude_thinking_display,
@@ -1525,7 +1531,12 @@ class AgentCaller:
     ) -> dict[str, Any]:
         """Add Claude output config only when supported by the installed SDK method."""
 
-        if self._supports_callable_argument(callable_obj, "output_config"):
+        kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        entry = resolve_model_catalog_entry(self.model)
+        can_attach_output_config = not (
+            entry is not None and entry.provider_family == "anthropic" and not entry.supports_reasoning
+        )
+        if can_attach_output_config and self._supports_callable_argument(callable_obj, "output_config"):
             kwargs["output_config"] = self._build_claude_output_config()
         return kwargs
 
@@ -1682,11 +1693,11 @@ class AgentCaller:
         return headers
 
     def _build_openrouter_reasoning_payload(self) -> dict[str, Any]:
-        """Return explicit Kimi reasoning controls to avoid provider defaults."""
+        """Return explicit OpenRouter reasoning controls to avoid provider defaults."""
 
-        reasoning: dict[str, Any] = {"exclude": self._kimi_reasoning_exclude}
-        if self._kimi_reasoning_effort:
-            reasoning["effort"] = self._kimi_reasoning_effort
+        reasoning: dict[str, Any] = {"exclude": self._openrouter_reasoning_exclude}
+        if self._openrouter_reasoning_effort:
+            reasoning["effort"] = self._openrouter_reasoning_effort
         return reasoning
 
     @staticmethod
@@ -2124,12 +2135,12 @@ class AgentCaller:
         }
 
 
-def flash_caller(*, thinking_level: str | None = None) -> AgentCaller:
+def flash_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
     """Return cost-efficient generation caller for openings, voting, and rebuttals."""
 
     config = get_config()
     return AgentCaller(
-        model=config.flash_model,
+        model=model or config.flash_model,
         temperature=0.7,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=True,
@@ -2138,12 +2149,12 @@ def flash_caller(*, thinking_level: str | None = None) -> AgentCaller:
     )
 
 
-def pro_caller(*, thinking_level: str | None = None) -> AgentCaller:
+def pro_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
     """Return higher-quality reasoning caller for selection and synthesis."""
 
     config = get_config()
     return AgentCaller(
-        model=config.pro_model,
+        model=model or config.pro_model,
         temperature=0.5,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=config.gemini_enable_thinking,
@@ -2152,14 +2163,33 @@ def pro_caller(*, thinking_level: str | None = None) -> AgentCaller:
     )
 
 
-def claude_caller(*, effort: str | None = None) -> AgentCaller:
+def claude_caller(*, effort: str | None = None, model: str | None = None) -> AgentCaller:
     """Return direct Anthropic Claude caller for diversity or fallback routing."""
 
     config = get_config()
     return AgentCaller(
-        model=config.claude_model,
+        model=model or config.claude_model,
         temperature=1.0,
         claude_effort=effort or config.claude_effort,
+    )
+
+
+def openrouter_caller(
+    *,
+    effort: str | None = None,
+    exclude: bool | None = None,
+    model: str | None = None,
+) -> AgentCaller:
+    """Return OpenRouter-compatible caller for challenger or fallback routing."""
+
+    config = get_config()
+    return AgentCaller(
+        model=model or config.openrouter_model,
+        temperature=0.5,
+        openrouter_reasoning_effort=effort or config.openrouter_reasoning_effort,
+        openrouter_reasoning_exclude=(
+            config.openrouter_reasoning_exclude if exclude is None else exclude
+        ),
     )
 
 
@@ -2167,13 +2197,8 @@ def kimi_caller(
     *,
     effort: str | None = None,
     exclude: bool | None = None,
+    model: str | None = None,
 ) -> AgentCaller:
-    """Return OpenRouter Kimi caller for challenger or fallback routing."""
+    """Backward-compatible alias for the legacy Kimi-specific helper."""
 
-    config = get_config()
-    return AgentCaller(
-        model=config.kimi_model,
-        temperature=0.5,
-        kimi_reasoning_effort=effort or config.kimi_reasoning_effort,
-        kimi_reasoning_exclude=config.kimi_reasoning_exclude if exclude is None else exclude,
-    )
+    return openrouter_caller(effort=effort, exclude=exclude, model=model)

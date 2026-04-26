@@ -408,7 +408,9 @@ class BenchmarkRunner:
         event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         learn: bool = False,
     ) -> TaskLikeExecutionOutcome:
-        stakes = float(task_item.get("stakes", self.orchestrator.default_stakes) or 0.0)
+        default_stakes = getattr(self.orchestrator, "default_stakes", 0.0)
+        agent_count = int(task_item.get("agent_count") or getattr(self.orchestrator, "agent_count", 4) or 4)
+        stakes = float(task_item.get("stakes", default_stakes) or 0.0)
         requested_override = (
             MechanismType(mechanism_override)
             if isinstance(mechanism_override, str) and mechanism_override
@@ -418,7 +420,7 @@ class BenchmarkRunner:
             await resolve_task_like_selection(
                 orchestrator=self.orchestrator,
                 task_text=question,
-                agent_count=self.orchestrator.agent_count,
+                agent_count=agent_count,
                 stakes=stakes,
                 requested_override=requested_override,
             )
@@ -1059,13 +1061,21 @@ class BenchmarkRunner:
 
         failure_counts_by_category: dict[str, int] = {}
         failure_counts_by_reason: dict[str, int] = {}
+        failure_counts_by_stage: dict[str, int] = {}
         for run in failed_runs:
             category_key = str(run.get("category") or "unknown").strip().lower() or "unknown"
             reason_key = str(run.get("failure_reason") or "unknown").strip() or "unknown"
+            stage_key = (
+                str(run.get("run_kind") or run.get("phase") or run.get("mode") or "unknown")
+                .strip()
+                .lower()
+                or "unknown"
+            )
             failure_counts_by_category[category_key] = (
                 failure_counts_by_category.get(category_key, 0) + 1
             )
             failure_counts_by_reason[reason_key] = failure_counts_by_reason.get(reason_key, 0) + 1
+            failure_counts_by_stage[stage_key] = failure_counts_by_stage.get(stage_key, 0) + 1
 
         if not completed_runs:
             return {
@@ -1079,6 +1089,7 @@ class BenchmarkRunner:
                 "proxy_run_count": 0,
                 "failure_counts_by_category": failure_counts_by_category,
                 "failure_counts_by_reason": failure_counts_by_reason,
+                "failure_counts_by_stage": failure_counts_by_stage,
             }
 
         per_mode: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1104,7 +1115,7 @@ class BenchmarkRunner:
 
             per_mode[stage_key].append(run)
             per_mechanism[mechanism_key].append(run)
-            per_category[category_key][mechanism_key].append(run)
+            per_category[category_key][stage_key].append(run)
 
         def _metric_block(bucket_runs: list[dict[str, Any]]) -> dict[str, float | int]:
             run_count = len(bucket_runs)
@@ -1164,4 +1175,5 @@ class BenchmarkRunner:
             "proxy_run_count": len(proxy_runs),
             "failure_counts_by_category": failure_counts_by_category,
             "failure_counts_by_reason": failure_counts_by_reason,
+            "failure_counts_by_stage": failure_counts_by_stage,
         }

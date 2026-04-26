@@ -10,14 +10,14 @@ export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "api_keys:read" | "
 export interface ReasoningPresetOverrides {
   gemini_pro: "low" | "high" | null;
   gemini_flash: "low" | "medium" | "high" | null;
-  kimi: "low" | "medium" | "high" | null;
+  openrouter: "low" | "medium" | "high" | null;
   claude: "low" | "medium" | "high" | null;
 }
 
 export interface ReasoningPresets {
   gemini_pro: "low" | "high";
   gemini_flash: "low" | "medium" | "high";
-  kimi: "low" | "medium" | "high";
+  openrouter: "low" | "medium" | "high";
   claude: "low" | "medium" | "high";
 }
 
@@ -30,6 +30,14 @@ export interface TaskCreateRequest {
   allow_offline_fallback: boolean;
   quorum_threshold: number;
   reasoning_presets: ReasoningPresetOverrides | null;
+  tier_model_overrides: RuntimeTierModelOverrides | null;
+}
+
+export interface RuntimeTierModelOverrides {
+  pro: string | null;
+  flash: string | null;
+  openrouter: string | null;
+  claude: string | null;
 }
 
 export interface TaskEvent {
@@ -116,6 +124,7 @@ export interface TaskStatusResponse {
   quorum_reached: boolean | null;
   agent_count: number;
   reasoning_presets: ReasoningPresets;
+  tier_model_overrides: RuntimeTierModelOverrides | null;
   round_count: number;
   mechanism_switches: number;
   transcript_hashes: Array<string>;
@@ -208,6 +217,7 @@ export interface BenchmarkRunRequest {
   seed: number;
   domain_prompts: Record<string, BenchmarkDomainPrompt>;
   reasoning_presets: ReasoningPresetOverrides | null;
+  tier_model_overrides: RuntimeTierModelOverrides | null;
 }
 
 export interface BenchmarkDomainPrompt {
@@ -231,6 +241,7 @@ export interface BenchmarkRunStatusResponse {
   artifact_id: string | null;
   request: BenchmarkStoredRequest | null;
   reasoning_presets: ReasoningPresets | null;
+  tier_model_overrides: RuntimeTierModelOverrides | null;
   latest_mechanism: string | null;
   agent_count: number | null;
   total_tokens: number | null;
@@ -254,6 +265,7 @@ export interface BenchmarkStoredRequest {
   seed: number;
   domain_prompts: Record<string, BenchmarkDomainPrompt>;
   reasoning_presets: ReasoningPresets | null;
+  tier_model_overrides: RuntimeTierModelOverrides | null;
   resolved_domain_prompts: Record<string, ResolvedBenchmarkDomainPrompt>;
 }
 
@@ -316,6 +328,7 @@ export interface BenchmarkDetailResponse {
   run_id: string | null;
   request: BenchmarkStoredRequest | null;
   reasoning_presets: ReasoningPresets | null;
+  tier_model_overrides: RuntimeTierModelOverrides | null;
   model_telemetry: Record<string, ModelTelemetryResponse>;
   events: Array<TaskEvent>;
   summary: BenchmarkSummaryResponse;
@@ -359,12 +372,26 @@ export interface BenchmarkItemResponse {
 }
 
 export interface BenchmarkSummaryResponse {
-  per_mode: Record<string, Record<string, number>>;
-  per_mechanism: Record<string, Record<string, number>>;
-  per_category: Record<string, Record<string, Record<string, number>>>;
+  per_mode: Record<string, BenchmarkMetricSummaryResponse>;
+  per_mechanism: Record<string, BenchmarkMetricSummaryResponse>;
+  per_category: Record<string, Record<string, BenchmarkMetricSummaryResponse>>;
   completed_run_count: number;
   failed_run_count: number;
   degraded_run_count: number;
+  scored_run_count: number;
+  proxy_run_count: number;
+  failure_counts_by_category: Record<string, number>;
+  failure_counts_by_reason: Record<string, number>;
+  failure_counts_by_stage: Record<string, number>;
+}
+
+export interface BenchmarkMetricSummaryResponse {
+  accuracy: number;
+  avg_tokens: number;
+  avg_thinking_tokens: number;
+  avg_latency_ms: number;
+  avg_estimated_cost_usd: number;
+  run_count: number;
   scored_run_count: number;
   proxy_run_count: number;
 }
@@ -383,4 +410,38 @@ export interface BenchmarkPromptTemplate {
   id: string;
   title: string;
   question: string;
+}
+
+export interface DeliberationRuntimeConfigResponse {
+  model_catalog_version: string;
+  model_catalog_checked_at: string;
+  participant_cycle: Array<"pro" | "flash" | "openrouter" | "claude">;
+  default_reasoning_presets: ReasoningPresets;
+  tiers: Record<string, RuntimeTierConfigResponse>;
+  catalog: Record<string, Array<RuntimeModelOptionResponse>>;
+}
+
+export interface RuntimeModelOptionResponse {
+  provider_family: "gemini" | "anthropic" | "openrouter";
+  model_id: string;
+  display_name: string;
+  source_url: string;
+  stability_tier: "stable" | "candidate" | "legacy";
+  allowed_tiers: Array<"pro" | "flash" | "openrouter" | "claude">;
+  supports_streaming: boolean;
+  supports_json_schema: boolean;
+  supports_reasoning: boolean;
+  supports_reasoning_continuation: boolean;
+  input_usd_per_million: number | null;
+  output_usd_per_million: number | null;
+  usage_telemetry_mode: string;
+}
+
+export interface RuntimeTierConfigResponse {
+  tier: "pro" | "flash" | "openrouter" | "claude";
+  provider_family: "gemini" | "anthropic" | "openrouter";
+  model_id: string;
+  display_name: string;
+  vote_role: string;
+  debate_role: string;
 }

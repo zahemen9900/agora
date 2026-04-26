@@ -33,6 +33,7 @@ SCHEMA_NAMES = [
     "BenchmarkDetailResponse",
     "BenchmarkItemEventsResponse",
     "BenchmarkPromptTemplatesResponse",
+    "DeliberationRuntimeConfigResponse",
 ]
 
 

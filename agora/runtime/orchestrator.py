@@ -57,6 +57,7 @@ class AgoraOrchestrator:
         local_models: list[LocalModelSpec] | None = None,
         local_provider_keys: LocalProviderKeys | None = None,
         local_debate_config: LocalDebateConfig | None = None,
+        tier_model_overrides: dict[ProviderTierName, str] | None = None,
     ) -> None:
         """Initialize orchestrator dependencies.
 
@@ -73,6 +74,7 @@ class AgoraOrchestrator:
         self.local_models = list(local_models) if local_models is not None else None
         self.local_provider_keys = local_provider_keys
         self.local_debate_config = local_debate_config
+        self.tier_model_overrides = dict(tier_model_overrides or {})
         validate_local_model_config(
             local_models=self.local_models,
             provider_keys=self.local_provider_keys,
@@ -81,7 +83,10 @@ class AgoraOrchestrator:
 
         self.selector = AgoraSelector(
             bandit_state_path=bandit_state_path,
-            reasoning_caller=pro_caller(thinking_level=self.reasoning_presets.gemini_pro),
+            reasoning_caller=pro_caller(
+                thinking_level=self.reasoning_presets.gemini_pro,
+                model=self.tier_model_overrides.get("pro"),
+            ),
         )
         self.hasher = TranscriptHasher()
         self.monitor = StateMonitor()
@@ -102,6 +107,7 @@ class AgoraOrchestrator:
             reasoning_presets=self.reasoning_presets,
             participant_models=self.local_models,
             provider_keys=self.local_provider_keys,
+            tier_model_overrides=self.tier_model_overrides,
             devils_advocate_model=(
                 None
                 if self.local_debate_config is None
@@ -123,6 +129,7 @@ class AgoraOrchestrator:
             reasoning_presets=self.reasoning_presets,
             participant_models=self.local_models,
             provider_keys=self.local_provider_keys,
+            tier_model_overrides=self.tier_model_overrides,
             **engine_kwargs,
         )
 

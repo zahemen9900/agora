@@ -1,9 +1,10 @@
-import { Routes, Route, Navigate, useLocation } from "react-router-dom";
+import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, storeReturnTo } from "./lib/auth";
 import { useAuth } from "./lib/useAuth";
 import { ThemeProvider } from "./hooks/ThemeProvider";
 import { AgoraLoader } from "./components/ui/AgoraLoader";
 import { SessionRecoveryPage } from "./pages/SessionRecovery";
+import { AuthQueryBoundary } from "./lib/AuthQueryBoundary";
 
 // Page components
 import { DashboardLayout } from "./layouts/DashboardLayout";
@@ -32,6 +33,16 @@ function RedirectToAuth() {
   storeReturnTo(`${location.pathname}${location.search}${location.hash}`);
   const label = pathToLabel(location.pathname);
   return <Navigate to={`/?from=${encodeURIComponent(label)}`} replace />;
+}
+
+function KeyedLiveDeliberation() {
+  const { taskId } = useParams();
+  return <LiveDeliberation key={taskId ?? "task"} />;
+}
+
+function KeyedBenchmarkDetail() {
+  const { benchmarkId } = useParams();
+  return <BenchmarkDetail key={benchmarkId ?? "benchmark"} />;
 }
 
 function AppRoutes() {
@@ -70,7 +81,7 @@ function AppRoutes() {
         <>
           <Route path="/" element={<LoginPage />} />
           <Route path="/tasks" element={<DashboardLayout><TaskSubmit /></DashboardLayout>} />
-          <Route path="/task/:taskId" element={<DashboardLayout><LiveDeliberation /></DashboardLayout>} />
+          <Route path="/task/:taskId" element={<DashboardLayout><KeyedLiveDeliberation /></DashboardLayout>} />
           <Route path="/task/:taskId/receipt" element={<DashboardLayout><OnChainReceipt /></DashboardLayout>} />
           <Route
             path="/api-keys"
@@ -100,7 +111,7 @@ function AppRoutes() {
             path="/benchmarks/:benchmarkId"
             element={
               canViewBenchmarks
-                ? <DashboardLayout><BenchmarkDetail /></DashboardLayout>
+                ? <DashboardLayout><KeyedBenchmarkDetail /></DashboardLayout>
                 : <Navigate to="/tasks" replace />
             }
           />
@@ -115,7 +126,9 @@ function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <AppRoutes />
+        <AuthQueryBoundary>
+          <AppRoutes />
+        </AuthQueryBoundary>
       </AuthProvider>
     </ThemeProvider>
   );

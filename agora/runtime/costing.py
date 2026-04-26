@@ -3,96 +3,33 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
+from agora.runtime.model_catalog import (
+    MODEL_CATALOG_CHECKED_AT,
+    MODEL_CATALOG_VERSION,
+    ModelCatalogEntry,
+    iter_model_catalog,
+    resolve_model_catalog_entry,
+)
 from agora.types import CostEstimate, CostEstimationMode, ModelTelemetry
 
 PricingMode = CostEstimationMode
 
-PRICING_CATALOG_VERSION = "2026-04-18"
-PRICING_CHECKED_AT = datetime(2026, 4, 18, tzinfo=UTC)
+PRICING_CATALOG_VERSION = MODEL_CATALOG_VERSION
+PRICING_CHECKED_AT = MODEL_CATALOG_CHECKED_AT
 
 
-@dataclass(frozen=True)
-class PricingCatalogEntry:
-    """Versioned provider pricing metadata for a model family."""
-
-    family: str
-    aliases: tuple[str, ...]
-    input_usd_per_million: float
-    output_usd_per_million: float
-    thinking_billed_as_output: bool
-    source_url: str
-    checked_at: datetime = PRICING_CHECKED_AT
-    version: str = PRICING_CATALOG_VERSION
-
-    @property
-    def blended_usd_per_million(self) -> float:
-        return (self.input_usd_per_million + self.output_usd_per_million) / 2.0
+def _blended_usd_per_million(entry: ModelCatalogEntry) -> float | None:
+    if entry.input_usd_per_million is None or entry.output_usd_per_million is None:
+        return None
+    return (entry.input_usd_per_million + entry.output_usd_per_million) / 2.0
 
 
-_PRICING_CATALOG: tuple[PricingCatalogEntry, ...] = (
-    PricingCatalogEntry(
-        family="gemini-3-flash-preview",
-        aliases=("gemini-3-flash-preview", "gemini-3-flash"),
-        input_usd_per_million=0.50,
-        output_usd_per_million=3.00,
-        thinking_billed_as_output=True,
-        source_url="https://ai.google.dev/pricing",
-    ),
-    PricingCatalogEntry(
-        family="gemini-3.1-flash-lite-preview",
-        aliases=("gemini-3.1-flash-lite-preview", "gemini-2.5-flash-lite", "flash-lite"),
-        input_usd_per_million=0.10,
-        output_usd_per_million=0.40,
-        thinking_billed_as_output=True,
-        source_url="https://ai.google.dev/pricing",
-    ),
-    PricingCatalogEntry(
-        family="claude-sonnet-4-6",
-        aliases=("claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-4", "claude-sonnet"),
-        input_usd_per_million=3.00,
-        output_usd_per_million=15.00,
-        thinking_billed_as_output=True,
-        source_url="https://claude.com/pricing",
-    ),
-    PricingCatalogEntry(
-        family="moonshotai/kimi-k2-thinking",
-        aliases=(
-            "moonshotai/kimi-k2-thinking",
-            "moonshotai/kimi-k2",
-            "kimi-k2-thinking",
-            "kimi-k2",
-        ),
-        input_usd_per_million=0.60,
-        output_usd_per_million=2.50,
-        thinking_billed_as_output=True,
-        source_url="https://openrouter.ai/moonshotai/kimi-k2-thinking",
-    ),
-)
-
-_DEFAULT_PRICING = PricingCatalogEntry(
-    family="default",
-    aliases=(),
-    input_usd_per_million=1.00,
-    output_usd_per_million=4.00,
-    thinking_billed_as_output=True,
-    source_url="https://ai.google.dev/pricing",
-)
-
-
-def resolve_pricing_entry(model_name: str) -> PricingCatalogEntry:
+def resolve_pricing_entry(model_name: str) -> ModelCatalogEntry | None:
     """Resolve pricing metadata for a concrete model name."""
 
-    normalized = model_name.strip().lower()
-    if not normalized:
-        return _DEFAULT_PRICING
-    for entry in _PRICING_CATALOG:
-        if any(alias in normalized for alias in entry.aliases):
-            return entry
-    return _DEFAULT_PRICING
+    return resolve_model_catalog_entry(model_name)
 
 
 def pricing_catalog_metadata() -> dict[str, Any]:
@@ -101,6 +38,7 @@ def pricing_catalog_metadata() -> dict[str, Any]:
     return {
         "pricing_version": PRICING_CATALOG_VERSION,
         "estimated_at": PRICING_CHECKED_AT,
+        "catalog_size": len(iter_model_catalog()),
     }
 
 
@@ -111,7 +49,7 @@ def estimate_model_cost(
     output_tokens: int | None = None,
     thinking_tokens: int | None = None,
     total_tokens: int | None = None,
-) -> tuple[float | None, PricingMode, PricingCatalogEntry]:
+) -> tuple[float | None, PricingMode, ModelCatalogEntry | None]:
     """Estimate one model's USD cost from detailed or coarse token telemetry."""
 
     entry = resolve_pricing_entry(model_name)
@@ -119,6 +57,9 @@ def estimate_model_cost(
     clean_output = None if output_tokens is None else max(0, int(output_tokens))
     clean_thinking = None if thinking_tokens is None else max(0, int(thinking_tokens))
     clean_total = None if total_tokens is None else max(0, int(total_tokens))
+
+    if entry is None or entry.input_usd_per_million is None or entry.output_usd_per_million is None:
+        return None, "unavailable", entry
 
     if (
         clean_input is not None
@@ -135,7 +76,10 @@ def estimate_model_cost(
     if clean_total is None or clean_total <= 0:
         return None, "unavailable", entry
 
-    cost = (clean_total / 1_000_000) * entry.blended_usd_per_million
+    blended = _blended_usd_per_million(entry)
+    if blended is None:
+        return None, "unavailable", entry
+    cost = (clean_total / 1_000_000) * blended
     return round(cost, 8), "approx_total_tokens", entry
 
 
@@ -164,7 +108,8 @@ def estimate_cost_for_models(
             thinking_tokens=_telemetry_value(telemetry, "thinking_tokens"),
             total_tokens=_telemetry_value(telemetry, "total_tokens"),
         )
-        source_urls[model_name] = entry.source_url
+        if entry is not None:
+            source_urls[model_name] = entry.source_url
         observed_modes.add(mode)
         if cost is not None and cost > 0:
             model_costs[model_name] = cost

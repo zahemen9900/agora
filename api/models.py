@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from agora.types import ReasoningPresetOverrides, ReasoningPresets
+from agora.types import ProviderTierName, ReasoningPresetOverrides, ReasoningPresets
 
 MechanismName = Literal["debate", "vote"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
@@ -28,6 +28,7 @@ class TaskCreateRequest(BaseModel):
     allow_offline_fallback: bool = True
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     reasoning_presets: ReasoningPresetOverrides | None = None
+    tier_model_overrides: RuntimeTierModelOverrides | None = None
 
 
 class TaskCreateResponse(BaseModel):
@@ -126,6 +127,7 @@ class TaskStatusResponse(BaseModel):
     quorum_reached: bool | None = None
     agent_count: int
     reasoning_presets: ReasoningPresets
+    tier_model_overrides: RuntimeTierModelOverrides | None = None
     round_count: int = Field(default=0, ge=0)
     mechanism_switches: int = Field(default=0, ge=0)
     transcript_hashes: list[str] = Field(default_factory=list)
@@ -217,6 +219,52 @@ class AuthConfigResponse(BaseModel):
     auth_jwks_url: str
 
 
+ModelProviderFamilyName = Literal["gemini", "anthropic", "openrouter"]
+ModelStabilityTierName = Literal["stable", "candidate", "legacy"]
+
+
+class RuntimeModelOptionResponse(BaseModel):
+    """One built-in model option exposed for dashboard/runtime configuration views."""
+
+    provider_family: ModelProviderFamilyName
+    model_id: str
+    display_name: str
+    source_url: str
+    stability_tier: ModelStabilityTierName
+    allowed_tiers: list[ProviderTierName] = Field(default_factory=list)
+    supports_streaming: bool = True
+    supports_json_schema: bool = True
+    supports_reasoning: bool = True
+    supports_reasoning_continuation: bool = False
+    input_usd_per_million: float | None = Field(default=None, ge=0.0)
+    output_usd_per_million: float | None = Field(default=None, ge=0.0)
+    usage_telemetry_mode: str = "provider_dependent"
+
+
+class RuntimeTierConfigResponse(BaseModel):
+    """Resolved runtime model assignment for one counted participant tier."""
+
+    tier: ProviderTierName
+    provider_family: ModelProviderFamilyName
+    model_id: str
+    display_name: str
+    vote_role: str
+    debate_role: str
+
+
+class DeliberationRuntimeConfigResponse(BaseModel):
+    """Frontend-safe runtime model configuration plus built-in catalog metadata."""
+
+    model_catalog_version: str
+    model_catalog_checked_at: datetime
+    participant_cycle: list[ProviderTierName] = Field(default_factory=list)
+    default_reasoning_presets: ReasoningPresets
+    tiers: dict[ProviderTierName, RuntimeTierConfigResponse] = Field(default_factory=dict)
+    catalog: dict[ModelProviderFamilyName, list[RuntimeModelOptionResponse]] = Field(
+        default_factory=dict
+    )
+
+
 BenchmarkScopeName = Literal["global", "user"]
 BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
 BenchmarkDomainName = Literal["math", "factual", "reasoning", "code", "creative", "demo"]
@@ -257,6 +305,37 @@ class BenchmarkCostEstimateResponse(BaseModel):
     pricing_sources: dict[str, str] = Field(default_factory=dict)
 
 
+class RuntimeTierModelOverrides(BaseModel):
+    """Optional per-run model overrides for counted participant tiers."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    pro: str | None = Field(default=None, min_length=1)
+    flash: str | None = Field(default=None, min_length=1)
+    openrouter: str | None = Field(
+        default=None,
+        min_length=1,
+        validation_alias=AliasChoices("openrouter", "kimi"),
+    )
+    claude: str | None = Field(default=None, min_length=1)
+
+    @property
+    def kimi(self) -> str | None:
+        return self.openrouter
+
+    def present(self) -> dict[ProviderTierName, str]:
+        return {
+            tier: value
+            for tier, value in {
+                "pro": self.pro,
+                "flash": self.flash,
+                "openrouter": self.openrouter,
+                "claude": self.claude,
+            }.items()
+            if isinstance(value, str) and value.strip()
+        }
+
+
 class ModelTelemetryResponse(BaseModel):
     """Normalized per-model telemetry shared by task and benchmark surfaces."""
 
@@ -279,6 +358,7 @@ class BenchmarkRunRequest(BaseModel):
     seed: int = 42
     domain_prompts: dict[BenchmarkDomainName, BenchmarkDomainPrompt] = Field(default_factory=dict)
     reasoning_presets: ReasoningPresetOverrides | None = None
+    tier_model_overrides: RuntimeTierModelOverrides | None = None
 
 
 class BenchmarkStoredRequest(BaseModel):
@@ -291,6 +371,7 @@ class BenchmarkStoredRequest(BaseModel):
     seed: int = 42
     domain_prompts: dict[BenchmarkDomainName, BenchmarkDomainPrompt] = Field(default_factory=dict)
     reasoning_presets: ReasoningPresets | None = None
+    tier_model_overrides: RuntimeTierModelOverrides | None = None
     resolved_domain_prompts: dict[BenchmarkDomainName, ResolvedBenchmarkDomainPrompt] = Field(
         default_factory=dict
     )
@@ -315,6 +396,7 @@ class BenchmarkRunStatusResponse(BaseModel):
     artifact_id: str | None = None
     request: BenchmarkStoredRequest | None = None
     reasoning_presets: ReasoningPresets | None = None
+    tier_model_overrides: RuntimeTierModelOverrides | None = None
     latest_mechanism: str | None = None
     agent_count: int | None = Field(default=None, ge=1)
     total_tokens: int | None = Field(default=None, ge=0)
@@ -367,12 +449,28 @@ class BenchmarkCatalogResponse(BaseModel):
 class BenchmarkSummaryResponse(BaseModel):
     """Structured aggregate summary for benchmark result views."""
 
-    per_mode: dict[str, dict[str, float]] = Field(default_factory=dict)
-    per_mechanism: dict[str, dict[str, float]] = Field(default_factory=dict)
-    per_category: dict[str, dict[str, dict[str, float]]] = Field(default_factory=dict)
+    per_mode: dict[str, BenchmarkMetricSummaryResponse] = Field(default_factory=dict)
+    per_mechanism: dict[str, BenchmarkMetricSummaryResponse] = Field(default_factory=dict)
+    per_category: dict[str, dict[str, BenchmarkMetricSummaryResponse]] = Field(default_factory=dict)
     completed_run_count: int = Field(default=0, ge=0)
     failed_run_count: int = Field(default=0, ge=0)
     degraded_run_count: int = Field(default=0, ge=0)
+    scored_run_count: int = Field(default=0, ge=0)
+    proxy_run_count: int = Field(default=0, ge=0)
+    failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
+    failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
+
+
+class BenchmarkMetricSummaryResponse(BaseModel):
+    """Typed aggregate metric bucket for benchmark summary views."""
+
+    accuracy: float = Field(default=0.0)
+    avg_tokens: float = Field(default=0.0, ge=0.0)
+    avg_thinking_tokens: float = Field(default=0.0, ge=0.0)
+    avg_latency_ms: float = Field(default=0.0, ge=0.0)
+    avg_estimated_cost_usd: float = Field(default=0.0, ge=0.0)
+    run_count: int = Field(default=0, ge=0)
     scored_run_count: int = Field(default=0, ge=0)
     proxy_run_count: int = Field(default=0, ge=0)
 
@@ -437,6 +535,7 @@ class BenchmarkDetailResponse(BaseModel):
     run_id: str | None = None
     request: BenchmarkStoredRequest | None = None
     reasoning_presets: ReasoningPresets | None = None
+    tier_model_overrides: RuntimeTierModelOverrides | None = None
     model_telemetry: dict[str, ModelTelemetryResponse] = Field(default_factory=dict)
     events: list[TaskEvent] = Field(default_factory=list)
     summary: BenchmarkSummaryResponse = Field(default_factory=BenchmarkSummaryResponse)

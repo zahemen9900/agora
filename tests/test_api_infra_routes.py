@@ -780,13 +780,13 @@ async def test_create_task_resolves_and_persists_reasoning_presets(
     assert captured["reasoning_presets"].model_dump(mode="json") == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
     assert fetched.reasoning_presets.model_dump(mode="json") == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
 
@@ -3531,6 +3531,95 @@ async def test_release_payment_prefers_result_quorum_when_summary_field_is_stale
         task_routes._store = None
 
 
+@pytest.mark.asyncio
+async def test_release_payment_recomputes_stale_result_quorum_from_confidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "stale-result-quorum-data"))
+
+    completed_result = DeliberationResult(
+        task="stale result quorum",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=make_selection(mechanism=MechanismType.VOTE, topic_category="factual"),
+        final_answer="Accepted.",
+        confidence=0.91,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=4,
+        mechanism_switches=0,
+        merkle_root=hashlib.sha256(b"stale-result-quorum-root").hexdigest(),
+        transcript_hashes=[hashlib.sha256(b"leaf-1").hexdigest()],
+        agent_models_used=[],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=8,
+        total_latency_ms=2.0,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return make_selection(mechanism=MechanismType.VOTE, topic_category="factual")
+
+    class _FakeOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None):
+            del reasoning_presets
+            self.agent_count = agent_count
+            self.selector = _FakeSelector()
+
+        async def run(self, task: str, **_kwargs: object) -> DeliberationResult:
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def receipt_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "receipt_tx", "explorer_url": "https://explorer/receipt_tx"}
+
+    async def pay_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "pay_tx", "explorer_url": "https://explorer/pay_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
+        monkeypatch.setattr(task_routes.bridge, "release_payment", pay_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="stale result quorum", agent_count=4, stakes=0.2),
+            _override_user(),
+        )
+        await task_routes.run_task(create.task_id, _override_user())
+
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["quorum_reached"] = False
+        result = dict(task["result"])
+        result["quorum_reached"] = False
+        task["result"] = result
+        await store.save_task("user-1", create.task_id, task)
+
+        fetched = await task_routes.get_task_status(create.task_id, _override_user(), detailed=True)
+        assert fetched.quorum_reached is True
+        assert fetched.result is not None
+        assert fetched.result.quorum_reached is True
+
+        pay_resp = await task_routes.release_payment(create.task_id, _override_user())
+        assert pay_resp["released"] is True
+        assert pay_resp["tx_hash"] == "pay_tx"
+    finally:
+        task_routes._store = None
+
+
 def test_task_id_to_bytes_is_32_bytes() -> None:
     task_id = task_routes._build_task_id("A long enough task")
     task_bytes = bytes.fromhex(task_id)
@@ -3836,6 +3925,80 @@ async def test_benchmark_prompt_templates_endpoint_returns_domain_catalog(
 
 
 @pytest.mark.asyncio
+async def test_benchmark_runtime_config_endpoint_exposes_resolved_tiers_and_catalog(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.get("/benchmarks/runtime-config")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert payload["participant_cycle"] == ["pro", "flash", "openrouter", "claude"]
+    assert payload["default_reasoning_presets"]["openrouter"] in {"low", "medium", "high"}
+    assert payload["tiers"]["openrouter"]["model_id"]
+    assert payload["tiers"]["claude"]["model_id"]
+    assert payload["catalog"]["gemini"]
+    assert payload["catalog"]["openrouter"]
+    assert any(
+        entry["model_id"] == payload["tiers"]["openrouter"]["model_id"]
+        for entry in payload["catalog"]["openrouter"]
+    )
+    assert any(
+        "openrouter" in entry["allowed_tiers"]
+        for entry in payload["catalog"]["openrouter"]
+    )
+    assert any(
+        "pro" in entry["allowed_tiers"]
+        for entry in payload["catalog"]["gemini"]
+    )
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["gemini"] if "pro" in entry["allowed_tiers"]
+    } >= {"gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-pro"}
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["gemini"] if "flash" in entry["allowed_tiers"]
+    } >= {"gemini-3.1-flash-lite-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["anthropic"]
+    } >= {"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"}
+    assert {
+        entry["model_id"] for entry in payload["catalog"]["openrouter"]
+    } >= {
+        "deepseek/deepseek-v3.2-exp",
+        "google/gemma-4-31b-it",
+        "openai/gpt-oss-120b",
+        "z-ai/glm-4.7-flash",
+        "qwen/qwen3.5-flash-02-23",
+        "moonshotai/kimi-k2-thinking",
+    }
+
+
+@pytest.mark.asyncio
+async def test_task_create_persists_tier_model_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+    create = await task_routes.create_task(
+        TaskCreateRequest(
+            task="override roster",
+            agent_count=4,
+            stakes=0.0,
+            tier_model_overrides={
+                "openrouter": "openai/gpt-oss-120b",
+                "claude": "claude-sonnet-4-5",
+            },
+        ),
+        _override_user(),
+    )
+
+    raw_task = await task_routes.get_task_store().get_task("user-1", create.task_id)
+    assert raw_task is not None
+    normalized = task_routes._to_status_response(raw_task, detailed=True)
+    assert normalized.tier_model_overrides is not None
+    assert normalized.tier_model_overrides.openrouter == "openai/gpt-oss-120b"
+    assert normalized.tier_model_overrides.claude == "claude-sonnet-4-5"
+
+
+@pytest.mark.asyncio
 async def test_benchmark_detail_endpoint_supports_artifact_and_run_id_lookup(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -4077,7 +4240,7 @@ async def test_benchmark_detail_exposes_item_scoped_state_and_replay(
                         "fallback_events": [
                             {
                                 "component": "vote._VoteResponse",
-                                "reason": "provider_kimi_empty_response",
+                                "reason": "provider_openrouter_empty_response",
                                 "fallback_type": "schema_coercion",
                             }
                         ],
@@ -4538,13 +4701,13 @@ async def test_benchmark_run_status_exposes_effective_reasoning_presets(
     assert status_payload["reasoning_presets"] == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
     assert status_payload["request"]["reasoning_presets"] == {
         "gemini_pro": "low",
         "gemini_flash": "medium",
-        "kimi": "low",
+        "openrouter": "low",
         "claude": "high",
     }
 

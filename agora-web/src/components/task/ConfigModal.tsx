@@ -1,35 +1,21 @@
 import { useState } from 'react';
 import { X, HelpCircle, ChevronDown } from 'lucide-react';
+import { ProviderGlyph } from '../ProviderGlyph';
+import { TierModelSelectorGrid } from '../TierModelSelectorGrid';
+import type { ProviderName } from '../../lib/modelProviders';
 import {
-  REASONING_CONTROL_DEFINITIONS,
+  buildReasoningControlDefinitions,
+  type DeliberationRuntimeConfigLike,
+  type ProviderSummaryItem,
   type ReasoningPresetState,
+  type TierModelOverrideState,
 } from '../../lib/deliberationConfig';
 
-// ─── Provider logo mapping ────────────────────────────────────────────────────
-const PROVIDER_LOGO: Record<string, string> = {
-  gemini: '/models/gemini.png',
-  kimi:   '/models/kimi.png',
-  claude: '/models/claude.png',
-};
-
 function ProviderLogo({ provider, size = 20 }: { provider: string; size?: number }) {
-  const src = PROVIDER_LOGO[provider];
-  if (!src) {
-    return (
-      <div style={{
-        width: size, height: size, borderRadius: '50%',
-        background: 'var(--border-strong)',
-        flexShrink: 0,
-      }} />
-    );
-  }
   return (
-    <img
-      src={src}
-      alt={provider}
-      style={{ width: size, height: size, objectFit: 'contain', flexShrink: 0 }}
-      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-    />
+    <div style={{ width: size, height: size, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+      <ProviderGlyph provider={provider as ProviderName} size={size} />
+    </div>
   );
 }
 
@@ -154,6 +140,10 @@ interface ConfigModalProps {
   onAgentCountChange: (n: number) => void;
   stakes: string;
   onStakesChange: (v: string) => void;
+  providerSummary: ProviderSummaryItem[];
+  runtimeConfig?: DeliberationRuntimeConfigLike | null;
+  tierModelOverrides: TierModelOverrideState;
+  onTierModelOverridesChange: (next: TierModelOverrideState) => void;
 }
 
 export function ConfigModal({
@@ -165,8 +155,13 @@ export function ConfigModal({
   onAgentCountChange,
   stakes,
   onStakesChange,
+  providerSummary,
+  runtimeConfig,
+  tierModelOverrides,
+  onTierModelOverridesChange,
 }: ConfigModalProps) {
   const [activeTab, setActiveTab] = useState<TabId>('Effort & Stakes');
+  const reasoningDefinitions = buildReasoningControlDefinitions(runtimeConfig, tierModelOverrides);
 
   // Stakes validation
   const stakesNum = parseFloat(stakes);
@@ -355,7 +350,7 @@ export function ConfigModal({
                   Reasoning Presets
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '10px' }}>
-                  {REASONING_CONTROL_DEFINITIONS.map((def) => (
+                  {reasoningDefinitions.map((def) => (
                     <div
                       key={def.id}
                       style={{
@@ -376,9 +371,13 @@ export function ConfigModal({
                             {def.label}
                           </div>
                           <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontFamily: "'Commit Mono', monospace" }}>
-                            {def.help}
+                            {def.modelId}
                           </div>
                         </div>
+                      </div>
+
+                      <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', fontFamily: "'Commit Mono', monospace" }}>
+                        {def.help}
                       </div>
 
                       {/* Option pills */}
@@ -520,15 +519,25 @@ export function ConfigModal({
                   color: 'var(--text-tertiary)', textTransform: 'uppercase',
                   letterSpacing: '0.08em', marginBottom: '12px',
                 }}>
+                  Tier Models
+                </div>
+                <TierModelSelectorGrid
+                  runtimeConfig={runtimeConfig}
+                  value={tierModelOverrides}
+                  onChange={onTierModelOverridesChange}
+                />
+              </div>
+
+              <div>
+                <div style={{
+                  fontSize: '11px', fontFamily: "'Commit Mono', monospace",
+                  color: 'var(--text-tertiary)', textTransform: 'uppercase',
+                  letterSpacing: '0.08em', marginBottom: '12px',
+                }}>
                   Model Mix
                 </div>
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                  {[
-                    { provider: 'gemini', label: 'Gemini Pro', count: Math.ceil(agentCount / 4), sublabel: 'gemini-3-flash-preview' },
-                    { provider: 'gemini', label: 'Gemini Flash', count: Math.ceil(agentCount / 4), sublabel: 'gemini-3.1-flash-lite-preview' },
-                    { provider: 'kimi',   label: 'Kimi',   count: Math.ceil(agentCount / 4), sublabel: 'kimi-k2-thinking' },
-                    { provider: 'claude', label: 'Claude', count: Math.floor(agentCount / 4), sublabel: 'claude-sonnet-4-6' },
-                  ].map((m) => (
+                  {providerSummary.map((m) => (
                     <div key={m.label} style={{
                       display: 'flex', alignItems: 'center', gap: '8px',
                       padding: '8px 12px',

@@ -22,10 +22,41 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 }
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
+function isActiveStatus(status: TaskStatusResponse['status']): boolean {
+  return status === 'pending' || status === 'in_progress';
+}
+
 function statusColor(status: TaskStatusResponse['status']): string {
+  if (isActiveStatus(status)) return '#f59e0b';
   if (status === 'completed' || status === 'paid') return 'var(--accent-emerald)';
   if (status === 'failed') return '#f87171';
   return 'var(--text-tertiary)';
+}
+
+function statusLabel(status: TaskStatusResponse['status']): string {
+  if (status === 'pending') return 'queued';
+  if (status === 'in_progress') return 'running';
+  return status;
+}
+
+function statusRank(status: TaskStatusResponse['status']): number {
+  if (isActiveStatus(status)) return 0;
+  if (status === 'completed' || status === 'paid') return 1;
+  if (status === 'failed') return 2;
+  return 3;
+}
+
+function taskTimestamp(task: TaskStatusResponse): number {
+  const timestamp = Date.parse(task.completed_at ?? task.created_at);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function sortTasksForCarousel(tasks: TaskStatusResponse[]): TaskStatusResponse[] {
+  return [...tasks].sort((a, b) => {
+    const rankDelta = statusRank(a.status) - statusRank(b.status);
+    if (rankDelta !== 0) return rankDelta;
+    return taskTimestamp(b) - taskTimestamp(a);
+  });
 }
 
 // ─── Skeleton card ────────────────────────────────────────────────────────────
@@ -89,6 +120,7 @@ interface CardProps {
 function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps) {
   const navigate = useNavigate();
   const color = statusColor(task.status);
+  const isActive = !isExample && isActiveStatus(task.status);
 
   const handleClick = () => {
     if (isExample) onExampleClick?.();
@@ -112,6 +144,7 @@ function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps
         flexDirection: 'column',
         gap: '10px',
         transition: 'border-color 0.15s ease, background 0.15s ease',
+        boxShadow: isActive ? '0 0 0 1px rgba(245,158,11,0.16)' : undefined,
       }}
       onMouseEnter={(e) => {
         (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent-emerald)';
@@ -123,8 +156,29 @@ function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps
         (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-elevated)';
       }}
     >
-      <div style={{ color: 'var(--accent-emerald)' }}>
+      <div
+        style={{
+          color,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px',
+        }}
+      >
         <Play size={14} strokeWidth={2} />
+        {isActive && (
+          <span
+            style={{
+              fontSize: '9px',
+              fontFamily: "'Commit Mono', monospace",
+              textTransform: 'uppercase',
+              letterSpacing: '0.08em',
+              color,
+              fontWeight: 700,
+            }}
+          >
+            live
+          </span>
+        )}
       </div>
 
       <p
@@ -173,7 +227,7 @@ function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps
             fontFamily: "'Commit Mono', monospace",
           }}
         >
-          {isExample ? 'try it' : task.status}
+          {isExample ? 'try it' : statusLabel(task.status)}
         </span>
       </div>
     </button>
@@ -432,7 +486,7 @@ function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
                       marginTop: '2px',
                     }}
                   >
-                    {task.mechanism?.toUpperCase()} · {task.status} ·{' '}
+                    {task.mechanism?.toUpperCase()} · {statusLabel(task.status)} ·{' '}
                     {new Date(task.created_at).toLocaleDateString()}
                   </div>
                 </div>
@@ -464,6 +518,7 @@ export function RecentDeliberationsCarousel({
   const [showAll, setShowAll] = useState(false);
 
   const hasRealTasks = tasks.length > 0;
+  const displayTasks = hasRealTasks ? sortTasksForCarousel(tasks) : [];
 
   return (
     <div style={{ marginTop: '48px' }}>
@@ -536,7 +591,7 @@ export function RecentDeliberationsCarousel({
           ) : hasRealTasks ? (
             // ── Real tasks ──
             <>
-              {tasks.map((task) => (
+              {displayTasks.map((task) => (
                 <DeliberationCard key={task.task_id} task={task} />
               ))}
             </>
@@ -561,7 +616,7 @@ export function RecentDeliberationsCarousel({
 
       {/* All tasks modal */}
       {showAll && (
-        <AllTasksModal tasks={tasks} onClose={() => setShowAll(false)} />
+        <AllTasksModal tasks={displayTasks} onClose={() => setShowAll(false)} />
       )}
     </div>
   );

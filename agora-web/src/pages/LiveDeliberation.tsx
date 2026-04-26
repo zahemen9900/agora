@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import Markdown, { type Components } from "react-markdown";
@@ -9,6 +10,7 @@ import {
   Coins,
   FileText,
   Loader2,
+  ScrollText,
   Zap,
 } from "lucide-react";
 
@@ -84,10 +86,10 @@ function StreamingText({ text, isActive }: { text: string; isActive: boolean }) 
 import remarkGfm from "remark-gfm";
 
 import { ConvergenceMeter } from "../components/ConvergenceMeter";
+import { Flyout } from "../components/Flyout";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { CanvasView } from "../components/task/canvas/CanvasView";
 import {
-  getTask,
   startTaskRun,
   streamDeliberation,
   type TaskEvent,
@@ -99,6 +101,13 @@ import {
   providerTone,
   type ProviderName,
 } from "../lib/modelProviders";
+import {
+  appendTaskDetailEventCache,
+  patchTaskDetailCache,
+  setTaskDetailCache,
+  taskQueryKeys,
+  useTaskDetailQuery,
+} from "../lib/taskQueries";
 
 interface TimelineEvent {
   key: string;
@@ -113,6 +122,41 @@ interface TimelineEvent {
   stage?: string;
   draftKey?: string;
   isDraft?: boolean;
+}
+
+interface FinalAnswerState {
+  text: string;
+  confidence: number;
+  mechanism: string;
+}
+
+const EMPTY_TIMELINE: TimelineEvent[] = [];
+
+function useTaskScopedState<T>(
+  taskId: string | undefined,
+  initialValue: T,
+): [T, (value: SetStateAction<T>) => void] {
+  const scopedTaskId = taskId ?? null;
+  const [state, setState] = useState<{ taskId: string | null; value: T }>(() => ({
+    taskId: scopedTaskId,
+    value: initialValue,
+  }));
+
+  const value = state.taskId === scopedTaskId ? state.value : initialValue;
+  const setScopedState = useCallback((nextValue: SetStateAction<T>) => {
+    setState((current) => {
+      const currentValue = current.taskId === scopedTaskId ? current.value : initialValue;
+      const resolvedValue = typeof nextValue === "function"
+        ? (nextValue as (previous: T) => T)(currentValue)
+        : nextValue;
+      return {
+        taskId: scopedTaskId,
+        value: resolvedValue,
+      };
+    });
+  }, [initialValue, scopedTaskId]);
+
+  return [value, setScopedState];
 }
 
 interface ModelUsageSummary {
@@ -430,6 +474,137 @@ function eventKeyForTimeline(event: TaskEvent): string {
   return draftKeyForEvent(event) ?? buildEventKey(event);
 }
 
+function sortTaskEvents(events: TaskEvent[]): TaskEvent[] {
+  return [...events].sort((a, b) => {
+    const timestampA = Date.parse(a.timestamp ?? "");
+    const timestampB = Date.parse(b.timestamp ?? "");
+    const normalizedA = Number.isFinite(timestampA) ? timestampA : 0;
+    const normalizedB = Number.isFinite(timestampB) ? timestampB : 0;
+    if (normalizedA !== normalizedB) {
+      return normalizedA - normalizedB;
+    }
+    return buildEventKey(a).localeCompare(buildEventKey(b));
+  });
+}
+
+function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
+  const events = [...task.events];
+  const hasEventType = (eventType: string) => events.some((event) => event.event === eventType);
+
+  if (!hasEventType("mechanism_selected")) {
+    events.push({
+      event: "mechanism_selected",
+      timestamp: task.created_at,
+      data: {
+        task_id: task.task_id,
+        mechanism: task.mechanism,
+        confidence: task.selector_confidence,
+        reasoning: task.selector_reasoning,
+        selector_reasoning_hash: task.selector_reasoning_hash,
+        selector_source: task.selector_source,
+        selector_fallback_path: task.selector_fallback_path,
+        mechanism_override: task.mechanism_override,
+        mechanism_override_source: task.mechanism_override_source,
+      },
+    });
+  }
+
+  if (!hasEventType("quorum_reached") && task.result) {
+    events.push({
+      event: "quorum_reached",
+      timestamp: task.completed_at ?? task.created_at,
+      data: {
+        task_id: task.task_id,
+        final_answer: task.result.final_answer,
+        confidence: task.result.confidence,
+        mechanism: task.result.mechanism,
+        quorum_reached: task.result.quorum_reached,
+      },
+    });
+  }
+
+  if (task.result) {
+    const mechanismTrace = Array.isArray(task.result.mechanism_trace) ? task.result.mechanism_trace : [];
+    for (let index = 1; index < mechanismTrace.length; index += 1) {
+      const previous = asRecord(mechanismTrace[index - 1]);
+      const current = asRecord(mechanismTrace[index]);
+      if (!previous || !current) {
+        continue;
+      }
+      events.push({
+        event: "mechanism_switch",
+        timestamp: task.completed_at ?? task.created_at,
+        data: {
+          task_id: task.task_id,
+          from_mechanism: safeString(previous.mechanism, task.mechanism),
+          to_mechanism: safeString(current.mechanism, task.result.mechanism),
+          reason: safeString(current.switch_reason, "switch recorded"),
+          switch_reason: safeString(current.switch_reason, "switch recorded"),
+          start_round: current.start_round,
+          end_round: current.end_round,
+        },
+      });
+    }
+
+    const convergenceHistory = Array.isArray(task.result.convergence_history)
+      ? task.result.convergence_history
+      : [];
+    for (const entry of convergenceHistory) {
+      const metric = asRecord(entry);
+      if (!metric) {
+        continue;
+      }
+      events.push({
+        event: "convergence_update",
+        timestamp: task.completed_at ?? task.created_at,
+        data: metric,
+      });
+    }
+  }
+
+  if (!hasEventType("receipt_committed") && task.solana_tx_hash) {
+    events.push({
+      event: "receipt_committed",
+      timestamp: task.completed_at ?? task.created_at,
+      data: {
+        task_id: task.task_id,
+        solana_tx_hash: task.solana_tx_hash,
+        explorer_url: task.explorer_url,
+      },
+    });
+  }
+
+  if (!hasEventType("payment_released") && (task.payment_status === "released" || task.status === "paid")) {
+    const paymentOperation = task.chain_operations.release_payment;
+    events.push({
+      event: "payment_released",
+      timestamp: paymentOperation?.updated_at ?? task.completed_at ?? task.created_at,
+      data: {
+        task_id: task.task_id,
+        tx_hash: paymentOperation?.tx_hash ?? task.solana_tx_hash,
+        explorer_url: paymentOperation?.explorer_url ?? task.explorer_url,
+      },
+    });
+  }
+
+  if (!hasEventType("error") && task.status === "failed") {
+    if (task.latest_error_event) {
+      events.push(task.latest_error_event);
+    } else if (task.failure_reason) {
+      events.push({
+        event: "error",
+        timestamp: task.completed_at ?? task.created_at,
+        data: {
+          task_id: task.task_id,
+          message: task.failure_reason,
+        },
+      });
+    }
+  }
+
+  return sortTaskEvents(events);
+}
+
 function mapTaskEvent(event: TaskEvent): TimelineEvent {
   const data = asRecord(event.data) ?? {};
   const fallbackSummary = JSON.stringify(data);
@@ -437,11 +612,13 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
   if (event.event === "mechanism_selected") {
     const mechanism = safeString(data.mechanism, "unknown").toUpperCase();
     const confidence = safeNumber(data.confidence, 0);
+    const reasoning = safeString(data.reasoning, "");
+    const selectionLine = `${mechanism} selected (${(confidence * 100).toFixed(1)}% confidence)`;
     return {
       key: buildEventKey(event),
       type: event.event,
       title: "Mechanism selected",
-      summary: `${mechanism} selected (${(confidence * 100).toFixed(1)}% confidence)`,
+      summary: reasoning ? `${selectionLine}\n\n${reasoning}` : selectionLine,
       timestamp: event.timestamp,
       details: data,
       confidence,
@@ -685,44 +862,44 @@ export function LiveDeliberation() {
   const { taskId } = useParams();
   const navigate = useNavigate();
   const { getAccessToken } = useAuth();
+  const queryClient = useQueryClient();
+  const taskQuery = useTaskDetailQuery(taskId);
 
   const [activeTab, setActiveTab] = useState<"logs" | "canvas">("canvas");
-  const [task, setTask] = useState<TaskStatusResponse | null>(null);
-  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
-  const [switchBanner, setSwitchBanner] = useState<string | null>(null);
-  const [retryNotice, setRetryNotice] = useState<string | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [timeline, setTimeline] = useTaskScopedState<TimelineEvent[]>(taskId, EMPTY_TIMELINE);
+  const [switchBanner, setSwitchBanner] = useTaskScopedState<string | null>(taskId, null);
+  const [retryNotice, setRetryNotice] = useTaskScopedState<string | null>(taskId, null);
+  const [errorMessage, setErrorMessage] = useTaskScopedState<string | null>(taskId, null);
   const [convergence, setConvergence] = useState({
     entropy: 1.0,
     prevEntropy: 1.0,
     infoGain: 0.0,
     lockedClaims: [] as Array<Record<string, unknown>>,
   });
-  const [finalAnswer, setFinalAnswer] = useState<{
-    text: string;
-    confidence: number;
-    mechanism: string;
-  } | null>(null);
+  const [finalAnswer, setFinalAnswer] = useTaskScopedState<FinalAnswerState | null>(taskId, null);
+  const [showQuorumFlyout, setShowQuorumFlyout] = useState(false);
+  const quorumFlyoutShownRef = useRef(false);
 
   const seenEventKeysRef = useRef<Set<string>>(new Set());
   const taskMechanismRef = useRef("debate");
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const autoScrollStartedRef = useRef(false);
-  const [followLiveUpdates, setFollowLiveUpdates] = useState(true);
+  const streamTaskIdRef = useRef<string | null>(null);
+  const streamHandleRef = useRef<{ close: () => void } | null>(null);
+  const historyRepairAttemptedRef = useRef<string | null>(null);
+  const [followLiveUpdates, setFollowLiveUpdates] = useTaskScopedState<boolean>(taskId, true);
+  const task = taskQuery.data ?? null;
 
   useEffect(() => {
     injectLdKeyframes();
   }, []);
 
   useEffect(() => {
-    autoScrollStartedRef.current = false;
-    const resetFrame = window.requestAnimationFrame(() => {
-      setFollowLiveUpdates(true);
-    });
-    return () => {
-      window.cancelAnimationFrame(resetFrame);
-    };
-  }, [taskId]);
+    if (finalAnswer && !quorumFlyoutShownRef.current) {
+      quorumFlyoutShownRef.current = true;
+      setShowQuorumFlyout(true);
+    }
+  }, [finalAnswer]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -741,24 +918,7 @@ export function LiveDeliberation() {
     return () => {
       window.removeEventListener("scroll", handleScroll);
     };
-  }, []);
-
-  const setConvergenceFromEvents = useCallback((eventList: TaskEvent[]) => {
-    const latest = [...eventList].reverse().find((event) => event.event === "convergence_update");
-    if (!latest) {
-      return;
-    }
-
-    const data = latest.data as Record<string, unknown>;
-    setConvergence({
-      prevEntropy: Number(data.disagreement_entropy ?? 1),
-      entropy: Number(data.disagreement_entropy ?? 1),
-      infoGain: Number(data.information_gain_delta ?? 0),
-      lockedClaims: Array.isArray(data.locked_claims)
-        ? (data.locked_claims as Array<Record<string, unknown>>)
-        : [],
-    });
-  }, []);
+  }, [setFollowLiveUpdates]);
 
   const handleStreamEvent = useCallback((event: TaskEvent) => {
     const eventWithTimestamp: TaskEvent = {
@@ -770,6 +930,11 @@ export function LiveDeliberation() {
       return;
     }
     seenEventKeysRef.current.add(eventKey);
+
+    if (taskId) {
+      appendTaskDetailEventCache(queryClient, taskId, eventWithTimestamp);
+    }
+
     const mappedEvent = mapTaskEvent(eventWithTimestamp);
     setTimeline((current) => upsertTimelineEvent(current, mappedEvent));
 
@@ -814,9 +979,32 @@ export function LiveDeliberation() {
     }
 
     if (event.event === "quorum_reached") {
-      const mechanism = safeString(data.mechanism, taskMechanismRef.current);
+      const mechanism = safeString(data.mechanism, taskMechanismRef.current) === "vote"
+        ? "vote"
+        : "debate";
       taskMechanismRef.current = mechanism;
-      setTask((current) => (current ? { ...current, status: "completed" } : current));
+      if (taskId) {
+        patchTaskDetailCache(queryClient, taskId, (current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            status: "completed",
+            mechanism,
+            quorum_reached: true,
+            result: current.result
+              ? {
+                ...current.result,
+                final_answer: safeString(data.final_answer, current.result.final_answer),
+                confidence: safeNumber(data.confidence, current.result.confidence),
+                mechanism,
+                quorum_reached: true,
+              }
+              : current.result,
+          };
+        });
+      }
       setFinalAnswer({
         text: safeString(data.final_answer, ""),
         confidence: safeNumber(data.confidence, 0),
@@ -826,91 +1014,162 @@ export function LiveDeliberation() {
     }
 
     if (event.event === "error") {
-      setTask((current) => (current ? { ...current, status: "failed" } : current));
+      if (taskId) {
+        patchTaskDetailCache(queryClient, taskId, (current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            status: "failed",
+            failure_reason: safeString(data.message, current.failure_reason ?? ""),
+            latest_error_event: eventWithTimestamp,
+          };
+        });
+        void queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
+      }
       setErrorMessage(safeString(data.message, "An error occurred"));
       setRetryNotice(null);
       return;
     }
 
     if (event.event === "complete" && taskId) {
-      setTask((current) => (current ? { ...current, status: "completed" } : current));
+      patchTaskDetailCache(queryClient, taskId, (current) => (
+        current ? { ...current, status: "completed" } : current
+      ));
       setRetryNotice(null);
-      const resolvedTaskId = taskId;
-      void (async () => {
-        const token = await getAccessToken();
-        const status = await getTask(resolvedTaskId, token, true);
-        taskMechanismRef.current = status.mechanism;
-        setTask(status);
-      })().catch(() => undefined);
+      void queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
     }
-  }, [getAccessToken, taskId]);
+  }, [
+    queryClient,
+    setErrorMessage,
+    setFinalAnswer,
+    setRetryNotice,
+    setSwitchBanner,
+    setTimeline,
+    taskId,
+  ]);
 
   useEffect(() => {
-    if (!taskId) return;
-    const resolvedTaskId = taskId;
+    streamHandleRef.current?.close();
+    streamHandleRef.current = null;
+    streamTaskIdRef.current = null;
+    historyRepairAttemptedRef.current = null;
+    seenEventKeysRef.current = new Set();
+    taskMechanismRef.current = "debate";
+    autoScrollStartedRef.current = false;
+  }, [taskId]);
 
-    let streamHandle: { close: () => void } | null = null;
-    let cancelled = false;
+  useEffect(() => {
+    if (!task) return;
 
-    async function bootstrap() {
-      const token = await getAccessToken();
-      const status = await getTask(resolvedTaskId, token, true);
-      if (cancelled) return;
-      taskMechanismRef.current = status.mechanism;
-      setTask(status);
-      seenEventKeysRef.current = new Set();
-      let hydratedTimeline: TimelineEvent[] = [];
-      for (const persistedEvent of status.events) {
+    const taskEvents = deriveTaskEvents(task);
+
+    taskMechanismRef.current = task.mechanism;
+
+    setTimeline((current) => {
+      let nextTimeline = current;
+      for (const persistedEvent of taskEvents) {
         const eventKey = buildEventKey(persistedEvent);
         if (seenEventKeysRef.current.has(eventKey)) {
           continue;
         }
         seenEventKeysRef.current.add(eventKey);
-        hydratedTimeline = upsertTimelineEvent(hydratedTimeline, mapTaskEvent(persistedEvent));
+        nextTimeline = upsertTimelineEvent(nextTimeline, mapTaskEvent(persistedEvent));
       }
-      setTimeline(hydratedTimeline);
+      return nextTimeline;
+    });
 
-      if (status.result) {
-        setFinalAnswer({
-          text: status.result.final_answer,
-          confidence: status.result.confidence,
-          mechanism: status.result.mechanism,
-        });
-      }
-      setConvergenceFromEvents(status.events);
+    if (task.result) {
+      setFinalAnswer({
+        text: task.result.final_answer,
+        confidence: task.result.confidence,
+        mechanism: task.result.mechanism,
+      });
+    }
+  }, [setFinalAnswer, setTimeline, task]);
 
-      streamHandle = await streamDeliberation(resolvedTaskId, getAccessToken, (event) => {
+  useEffect(() => {
+    if (!taskId || !task) return;
+    if (historyRepairAttemptedRef.current === taskId) return;
+
+    const isSettled = task.status === "completed" || task.status === "failed" || task.status === "paid";
+    if (!isSettled || task.events.length > 0 || !task.result || taskQuery.isFetching) {
+      return;
+    }
+
+    historyRepairAttemptedRef.current = taskId;
+    void taskQuery.refetch();
+  }, [task, taskId, taskQuery]);
+
+  useEffect(() => {
+    if (!taskId || !task?.task_id) return;
+    if (streamTaskIdRef.current === taskId) return;
+
+    const resolvedTaskId = taskId;
+    const cachedTask = queryClient.getQueryData<TaskStatusResponse>(
+      taskQueryKeys.detail(resolvedTaskId),
+    );
+    const initialStatus = cachedTask?.status;
+    if (initialStatus !== "pending" && initialStatus !== "in_progress") return;
+
+    streamTaskIdRef.current = taskId;
+
+    let cancelled = false;
+
+    async function attachLiveStream() {
+      const streamHandle = await streamDeliberation(resolvedTaskId, getAccessToken, (event) => {
         handleStreamEvent(event);
       });
 
-      if (status.status === "pending") {
-        void (async () => {
-          const runToken = await getAccessToken();
-          const nextStatus = await startTaskRun(resolvedTaskId, runToken);
-          if (cancelled) {
-            return;
-          }
-          setTask(
-            nextStatus.status === "pending"
-              ? { ...nextStatus, status: "in_progress" }
-              : nextStatus,
-          );
-        })().catch((error: unknown) => {
-          setTask((current) => (current ? { ...current, status: "failed" } : current));
-          setErrorMessage(error instanceof Error ? error.message : "Run failed");
-        });
+      if (cancelled) {
+        streamHandle.close();
+        return;
       }
+      streamHandleRef.current = streamHandle;
+
+      const latestTask = queryClient.getQueryData<TaskStatusResponse>(
+        taskQueryKeys.detail(resolvedTaskId),
+      );
+      const shouldStartRun = (latestTask?.status ?? initialStatus) === "pending";
+      if (!shouldStartRun) {
+        return;
+      }
+
+      void (async () => {
+        const runToken = await getAccessToken();
+        const nextStatus = await startTaskRun(resolvedTaskId, runToken);
+        if (cancelled) {
+          return;
+        }
+        setTaskDetailCache(
+          queryClient,
+          nextStatus.status === "pending"
+            ? { ...nextStatus, status: "in_progress" }
+            : nextStatus,
+        );
+      })().catch((error: unknown) => {
+        patchTaskDetailCache(queryClient, resolvedTaskId, (current) => (
+          current ? { ...current, status: "failed" } : current
+        ));
+        setErrorMessage(error instanceof Error ? error.message : "Run failed");
+      });
     }
 
-    void bootstrap().catch((error: unknown) => {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to load task");
+    void attachLiveStream().catch((error: unknown) => {
+      streamTaskIdRef.current = null;
+      setErrorMessage(error instanceof Error ? error.message : "Failed to attach live stream");
     });
 
     return () => {
       cancelled = true;
-      streamHandle?.close();
+      streamHandleRef.current?.close();
+      streamHandleRef.current = null;
+      if (streamTaskIdRef.current === resolvedTaskId) {
+        streamTaskIdRef.current = null;
+      }
     };
-  }, [getAccessToken, handleStreamEvent, setConvergenceFromEvents, taskId]);
+  }, [getAccessToken, handleStreamEvent, queryClient, setErrorMessage, task?.task_id, taskId]);
 
   const modelUsage = useMemo<ModelUsageSummary[]>(() => {
     const result = task?.result;
@@ -951,7 +1210,26 @@ export function LiveDeliberation() {
     });
   }, [task]);
 
+  const recoveredTimeline = useMemo<TimelineEvent[]>(() => {
+    if (!task) {
+      return [];
+    }
+
+    return deriveTaskEvents(task).reduce<TimelineEvent[]>((current, event) => (
+      upsertTimelineEvent(current, mapTaskEvent(event))
+    ), []);
+  }, [task]);
+
+  const displayTimeline = useMemo<TimelineEvent[]>(() => {
+    return timeline.reduce<TimelineEvent[]>((current, event) => (
+      upsertTimelineEvent(current, event)
+    ), recoveredTimeline);
+  }, [recoveredTimeline, timeline]);
+
   const taskResult = task?.result ?? null;
+  const resolvedErrorMessage = errorMessage ?? (
+    taskQuery.error instanceof Error ? taskQuery.error.message : null
+  );
   const mechanismTrace = taskResult?.mechanism_trace ?? [];
   const convergenceHistory = taskResult?.convergence_history ?? [];
   const lockedClaims = taskResult?.locked_claims ?? [];
@@ -987,7 +1265,7 @@ export function LiveDeliberation() {
     : "The deliberation is still in flight. Fresh events should keep landing in the timeline below.";
 
   useEffect(() => {
-    if (!followLiveUpdates || timeline.length === 0) {
+    if (!followLiveUpdates || displayTimeline.length === 0) {
       return;
     }
 
@@ -999,10 +1277,17 @@ export function LiveDeliberation() {
     return () => {
       window.cancelAnimationFrame(animationFrame);
     };
-  }, [followLiveUpdates, timeline]);
+  }, [displayTimeline, followLiveUpdates]);
 
   return (
     <div className="relative">
+      <Flyout
+        show={showQuorumFlyout}
+        variant="success"
+        title="Quorum Reached"
+        body="The agents have reached consensus. A final answer has been recorded."
+        onDismiss={() => setShowQuorumFlyout(false)}
+      />
       {/* ── Top bar: back button + tab switcher ─────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
         <button
@@ -1021,7 +1306,12 @@ export function LiveDeliberation() {
               onClick={() => setActiveTab(tab)}
               style={{ padding: "6px 18px", borderRadius: "7px", border: "none", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: activeTab === tab ? 700 : 400, background: activeTab === tab ? "var(--accent-emerald)" : "transparent", color: activeTab === tab ? "#000" : "var(--text-muted)", transition: "all 0.15s ease" }}
             >
-              {tab === "canvas" ? "🗺 Canvas" : "📋 Logs"}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
+                {tab === "canvas"
+                  ? <><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.22" y1="4.22" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.78" y2="19.78"/><line x1="4.22" y1="19.78" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.78" y2="4.22"/></svg> Canvas</>
+                  : <><ScrollText size={12} /> Logs</>
+                }
+              </span>
             </button>
           ))}
         </div>
@@ -1029,7 +1319,7 @@ export function LiveDeliberation() {
 
       {/* ── Global banners (always visible regardless of tab) ──────────── */}
       <AnimatePresence>
-        {retryNotice && !errorMessage && (
+        {retryNotice && !resolvedErrorMessage && (
           <motion.div
             initial={{ opacity: 0, y: -16 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1054,11 +1344,11 @@ export function LiveDeliberation() {
         )}
       </AnimatePresence>
 
-      {errorMessage && (
+      {resolvedErrorMessage && (
         <div className="p-4 mb-6 border border-danger rounded-lg bg-[rgba(255,93,93,0.08)] text-danger">
           <div className="flex items-center gap-2">
             <AlertTriangle size={16} />
-            <span>{errorMessage}</span>
+            <span>{resolvedErrorMessage}</span>
           </div>
         </div>
       )}
@@ -1073,9 +1363,9 @@ export function LiveDeliberation() {
                 <div className="text-sm text-text-secondary">{taskActivityCopy}</div>
               </div>
             </div>
-            <div className="rounded-full border border-accent/40 bg-accent/10 px-3 py-1 mono text-[11px] text-accent">
-              {timeline.length > 0 ? `${timeline.length} events captured` : "waiting for first event"}
-            </div>
+              <div className="rounded-full border border-accent/40 bg-accent/10 px-3 py-1 mono text-[11px] text-accent">
+              {displayTimeline.length > 0 ? `${displayTimeline.length} events captured` : "waiting for first event"}
+              </div>
           </div>
         </div>
       ) : null}
@@ -1084,13 +1374,13 @@ export function LiveDeliberation() {
       {activeTab === "canvas" && (
         <div style={{ border: "1px solid var(--border-subtle)", borderRadius: "14px", overflow: "hidden", minHeight: "600px", marginBottom: "32px", position: "relative" }}>
           <CanvasView
-            timeline={timeline}
+            timeline={displayTimeline}
             finalAnswer={finalAnswer}
             taskId={taskId}
             taskText={task?.task_text ?? ""}
             mechanism={task?.mechanism ?? finalAnswer?.mechanism ?? "debate"}
             roundCount={task?.round_count || Math.max(1, convergence.lockedClaims.length)}
-            eventCount={timeline.length}
+            eventCount={displayTimeline.length}
             entropy={convergence.entropy}
           />
         </div>
@@ -1395,8 +1685,8 @@ export function LiveDeliberation() {
             <div className="mono text-xs text-text-muted mb-3">RESILIENCE & DEGRADATION</div>
             <div className="grid grid-cols-2 gap-3 mb-4">
               <MetricTile label="Fallback Events" value={String(fallbackEvents.length)} />
-              <MetricTile label="Stream Errors" value={String(timeline.filter((entry) => entry.type === "error").length)} />
-              <MetricTile label="Retries Seen" value={String(timeline.filter((entry) => entry.type === "provider_retrying").length)} />
+              <MetricTile label="Stream Errors" value={String(displayTimeline.filter((entry) => entry.type === "error").length)} />
+              <MetricTile label="Retries Seen" value={String(displayTimeline.filter((entry) => entry.type === "provider_retrying").length)} />
               <MetricTile label="Selector Override" value={(taskResult.mechanism_override_source ?? "none").replace(/_/g, " ")} />
             </div>
             {fallbackEvents.length === 0 ? (
@@ -1428,8 +1718,8 @@ export function LiveDeliberation() {
       <div className="mb-10">
         <h3 className="mono text-sm mb-4 text-accent tracking-widest">LIVE DELIBERATION TIMELINE</h3>
         <div className="space-y-3">
-          {timeline.map((entry) => {
-            const isLatestEntry = entry.key === timeline[timeline.length - 1]?.key;
+          {displayTimeline.map((entry) => {
+            const isLatestEntry = entry.key === displayTimeline[displayTimeline.length - 1]?.key;
             const isActiveStream = Boolean(entry.isDraft && isLatestEntry);
             const provider = providerFromModel(entry.agentModel ?? "");
             const usageLine = formatUsageLine(entry.details);
@@ -1466,14 +1756,7 @@ export function LiveDeliberation() {
                       <span
                         className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${providerTone(provider)}`}
                       >
-                        <img
-                          src={`/models/${provider}.png`}
-                          alt={provider}
-                          width={13}
-                          height={13}
-                          style={{ borderRadius: "2px", objectFit: "contain", flexShrink: 0 }}
-                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                        />
+                        <ProviderGlyph provider={provider} size={13} />
                         <span className="mono text-[10px]">{entry.agentModel}</span>
                       </span>
                     ) : null}
