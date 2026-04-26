@@ -619,6 +619,11 @@ export function Benchmarks() {
 
   return (
     <>
+      <title>Benchmarks — Agora</title>
+      <meta
+        name="description"
+        content="Performance dashboard for Agora's deliberation mechanisms — accuracy, latency, and cost across reasoning tasks."
+      />
       <div className="max-w-250 mx-auto pb-20 w-full">
         <header className="mb-10">
           <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
