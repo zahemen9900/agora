@@ -1443,6 +1443,8 @@ async def create_task(
             "selector_reasoning_hash": selection.reasoning_hash,
             "selector_source": selector_source,
             "selector_fallback_path": selector_fallback_path,
+            "execution_segment": 0,
+            "segment_mechanism": selection.mechanism.value,
         },
     )
 
@@ -1629,16 +1631,86 @@ async def _execute_task_run(
         await _release_task_run_lock(run_key, lease_id=current_lease.lease_id)
         run_lock_released = True
 
+    active_execution_segment = 0
+    active_segment_mechanism = task.mechanism
+
+    def _coerce_segment_number(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and float(value).is_integer():
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                try:
+                    numeric = float(stripped)
+                except ValueError:
+                    return None
+                if numeric.is_integer():
+                    return int(numeric)
+        return None
+
     async def runtime_event_sink(event_type: str, data: dict[str, Any]) -> None:
+        nonlocal active_execution_segment, active_segment_mechanism
         if lease_lost:
             raise RuntimeError("Task execution lease lost")
+
+        payload = dict(data)
+        event_segment = _coerce_segment_number(payload.get("execution_segment"))
+        if event_segment is None:
+            event_segment = active_execution_segment
+        payload["execution_segment"] = event_segment
+
+        if event_type == "mechanism_switch":
+            from_mechanism = str(
+                payload.get("from_mechanism")
+                or payload.get("segment_mechanism")
+                or active_segment_mechanism
+            )
+            to_mechanism = str(
+                payload.get("to_mechanism")
+                or payload.get("next_segment_mechanism")
+                or from_mechanism
+            )
+            payload.setdefault("segment_mechanism", from_mechanism)
+            payload.setdefault("mechanism", from_mechanism)
+            switch_round = _coerce_segment_number(payload.get("segment_round"))
+            if switch_round is None:
+                switch_round = _coerce_segment_number(payload.get("round_number"))
+            if switch_round is not None:
+                payload["segment_round"] = switch_round
+            next_segment = _coerce_segment_number(payload.get("next_execution_segment"))
+            if next_segment is None:
+                next_segment = event_segment + 1
+            payload["next_execution_segment"] = next_segment
+            payload.setdefault("next_segment_mechanism", to_mechanism)
+            active_execution_segment = next_segment
+            active_segment_mechanism = to_mechanism
+        else:
+            segment_mechanism = str(
+                payload.get("segment_mechanism")
+                or payload.get("mechanism")
+                or active_segment_mechanism
+            )
+            payload["segment_mechanism"] = segment_mechanism
+            payload["mechanism"] = str(payload.get("mechanism") or segment_mechanism)
+            segment_round = _coerce_segment_number(payload.get("segment_round"))
+            if segment_round is None:
+                segment_round = _coerce_segment_number(payload.get("round_number"))
+            if segment_round is not None:
+                payload["segment_round"] = segment_round
+            active_execution_segment = event_segment
+            active_segment_mechanism = segment_mechanism
+
         await persist_and_emit(
             store=store,
             stream=stream,
             workspace_id=workspace_id,
             task_id=task_id,
             event_type=event_type,
-            event_data=data,
+            event_data=payload,
             journal=journal,
         )
 

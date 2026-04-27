@@ -6,11 +6,22 @@ from datetime import UTC, datetime
 
 import pytest
 
+import agora.runtime.orchestrator as orchestrator_module
 from agora.engines.debate import DebateEngineOutcome
 from agora.engines.vote import VoteEngineOutcome
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.types import DebateState, DeliberationResult, MechanismType, VoteState
 from tests.helpers import make_features, make_selection
+
+DEBATE_TEST_MODEL = "gemini-3-flash-preview"
+VOTE_TEST_MODEL = "moonshotai/kimi-k2-thinking"
+
+
+@pytest.fixture(autouse=True)
+def _stub_selector_reasoning_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep orchestrator construction deterministic without provider credentials."""
+
+    monkeypatch.setattr(orchestrator_module, "pro_caller", lambda **_kwargs: None)
 
 
 @pytest.mark.asyncio
@@ -70,12 +81,12 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             switch_to_vote=True,
             suggested_mechanism=MechanismType.VOTE,
             reason="forced switch",
-            agent_models_used=["debate-model"],
-            model_token_usage={"debate-model": 7},
-            model_latency_ms={"debate-model": 3.0},
-            model_input_token_usage={"debate-model": 2},
-            model_output_token_usage={"debate-model": 3},
-            model_thinking_token_usage={"debate-model": 2},
+            agent_models_used=[DEBATE_TEST_MODEL],
+            model_token_usage={DEBATE_TEST_MODEL: 7},
+            model_latency_ms={DEBATE_TEST_MODEL: 3.0},
+            model_input_token_usage={DEBATE_TEST_MODEL: 2},
+            model_output_token_usage={DEBATE_TEST_MODEL: 3},
+            model_thinking_token_usage={DEBATE_TEST_MODEL: 2},
             total_tokens_used=7,
             input_tokens_used=2,
             output_tokens_used=3,
@@ -98,11 +109,12 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             mechanism_switches=0,
             merkle_root="abc123",
             transcript_hashes=["h1", "h2"],
-            model_token_usage={"vote-model": 5},
-            model_latency_ms={"vote-model": 2.0},
-            model_input_token_usage={"vote-model": 1},
-            model_output_token_usage={"vote-model": 2},
-            model_thinking_token_usage={"vote-model": 2},
+            agent_models_used=[VOTE_TEST_MODEL],
+            model_token_usage={VOTE_TEST_MODEL: 5},
+            model_latency_ms={VOTE_TEST_MODEL: 2.0},
+            model_input_token_usage={VOTE_TEST_MODEL: 1},
+            model_output_token_usage={VOTE_TEST_MODEL: 2},
+            model_thinking_token_usage={VOTE_TEST_MODEL: 2},
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=5,
@@ -117,12 +129,12 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
             result=result,
             switch_to_debate=False,
             reason="quorum_reached",
-            agent_models_used=["vote-model"],
-            model_token_usage={"vote-model": 5},
-            model_latency_ms={"vote-model": 2.0},
-            model_input_token_usage={"vote-model": 1},
-            model_output_token_usage={"vote-model": 2},
-            model_thinking_token_usage={"vote-model": 2},
+            agent_models_used=[VOTE_TEST_MODEL],
+            model_token_usage={VOTE_TEST_MODEL: 5},
+            model_latency_ms={VOTE_TEST_MODEL: 2.0},
+            model_input_token_usage={VOTE_TEST_MODEL: 1},
+            model_output_token_usage={VOTE_TEST_MODEL: 2},
+            model_thinking_token_usage={VOTE_TEST_MODEL: 2},
             total_tokens_used=5,
             input_tokens_used=1,
             output_tokens_used=2,
@@ -145,16 +157,141 @@ async def test_switch_from_debate_to_vote(monkeypatch) -> None:
     assert result.mechanism_trace[0].mechanism == MechanismType.DEBATE
     assert result.mechanism_trace[0].switch_reason == "forced switch"
     assert result.mechanism_trace[0].switch_reason_hash is not None
-    assert result.model_token_usage == {"debate-model": 7, "vote-model": 5}
-    assert result.model_input_token_usage == {"debate-model": 2, "vote-model": 1}
-    assert result.model_output_token_usage == {"debate-model": 3, "vote-model": 2}
-    assert result.model_thinking_token_usage == {"debate-model": 2, "vote-model": 2}
+    assert result.model_token_usage == {DEBATE_TEST_MODEL: 7, VOTE_TEST_MODEL: 5}
+    assert result.model_input_token_usage == {DEBATE_TEST_MODEL: 2, VOTE_TEST_MODEL: 1}
+    assert result.model_output_token_usage == {DEBATE_TEST_MODEL: 3, VOTE_TEST_MODEL: 2}
+    assert result.model_thinking_token_usage == {DEBATE_TEST_MODEL: 2, VOTE_TEST_MODEL: 2}
     assert result.total_tokens_used == 12
     assert result.input_tokens_used == 3
     assert result.output_tokens_used == 5
     assert result.thinking_tokens_used == 4
     assert result.cost is not None
-    assert set(result.model_telemetry) == {"debate-model", "vote-model"}
+    assert set(result.model_telemetry) == {DEBATE_TEST_MODEL, VOTE_TEST_MODEL}
+
+
+@pytest.mark.asyncio
+async def test_debate_to_vote_switch_events_include_execution_segment_metadata(
+    monkeypatch,
+) -> None:
+    """Switched runtime streams should tag each engine segment explicitly."""
+
+    monkeypatch.setattr(orchestrator_module, "pro_caller", lambda **_kwargs: None)
+    orchestrator = AgoraOrchestrator(agent_count=3)
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    captured_events: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_select(task_text: str, agent_count: int, stakes: float):
+        del task_text, agent_count, stakes
+        return selection
+
+    async def fake_debate_run(
+        task: str,
+        selection,
+        event_sink=None,
+        allow_switch: bool = True,
+    ):
+        del task, selection, allow_switch
+        if event_sink is not None:
+            await event_sink(
+                "agent_output",
+                {
+                    "agent_id": "agent-1",
+                    "stage": "opening",
+                    "round_number": 1,
+                    "content": "pre-switch",
+                },
+            )
+        debate_state = DebateState(
+            task="switch test",
+            task_features=make_features("reasoning"),
+            factions={"pro": [], "opp": []},
+            rebuttals={"pro": [], "opp": []},
+            transcript_hashes=["d0"],
+            round=1,
+        )
+        return DebateEngineOutcome(
+            state=debate_state,
+            result=None,
+            switch_to_vote=True,
+            suggested_mechanism=MechanismType.VOTE,
+            reason="forced switch",
+        )
+
+    async def fake_vote_run(task: str, selection, event_sink=None):
+        del task
+        if event_sink is not None:
+            await event_sink(
+                "agent_output",
+                {
+                    "agent_id": "agent-1",
+                    "stage": "vote",
+                    "round_number": 1,
+                    "content": "post-switch",
+                },
+            )
+        vote_state = VoteState(task="switch test", task_features=make_features("reasoning"))
+        result = DeliberationResult(
+            task="switch test",
+            mechanism_used=MechanismType.VOTE,
+            mechanism_selection=selection,
+            final_answer="Option A",
+            confidence=0.75,
+            quorum_reached=True,
+            round_count=1,
+            agent_count=3,
+            mechanism_switches=0,
+            merkle_root="abc123",
+            transcript_hashes=["h1", "h2"],
+            convergence_history=[],
+            locked_claims=[],
+            total_tokens_used=0,
+            total_latency_ms=0.0,
+            timestamp=datetime.now(UTC),
+        )
+        return VoteEngineOutcome(
+            state=vote_state,
+            result=result,
+            switch_to_debate=False,
+            reason="quorum_reached",
+        )
+
+    async def event_sink(event_type: str, payload: dict[str, object]) -> None:
+        captured_events.append((event_type, payload))
+
+    monkeypatch.setattr(orchestrator.selector, "select", fake_select)
+    monkeypatch.setattr(orchestrator.debate_engine, "run", fake_debate_run)
+    monkeypatch.setattr(orchestrator.vote_engine, "run", fake_vote_run)
+
+    await orchestrator.run("switch me", event_sink=event_sink)
+
+    pre_switch = next(
+        payload
+        for event_type, payload in captured_events
+        if event_type == "agent_output" and payload.get("content") == "pre-switch"
+    )
+    switch = next(
+        payload for event_type, payload in captured_events if event_type == "mechanism_switch"
+    )
+    post_switch = next(
+        payload
+        for event_type, payload in captured_events
+        if event_type == "agent_output" and payload.get("content") == "post-switch"
+    )
+
+    assert pre_switch["execution_segment"] == 0
+    assert pre_switch["mechanism"] == "debate"
+    assert pre_switch["segment_mechanism"] == "debate"
+    assert pre_switch["segment_round"] == 1
+    assert switch["execution_segment"] == 0
+    assert switch["mechanism"] == "debate"
+    assert switch["segment_mechanism"] == "debate"
+    assert switch["next_execution_segment"] == 1
+    assert switch["next_segment_mechanism"] == "vote"
+    assert switch["segment_round"] == 1
+    assert post_switch["execution_segment"] == 1
+    assert post_switch["mechanism"] == "vote"
+    assert post_switch["segment_mechanism"] == "vote"
+    assert post_switch["segment_round"] == 1
 
 
 @pytest.mark.asyncio
@@ -187,11 +324,12 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             mechanism_switches=0,
             merkle_root="vote-root",
             transcript_hashes=["v1"],
-            model_token_usage={"vote-model": 4},
-            model_latency_ms={"vote-model": 2.0},
-            model_input_token_usage={"vote-model": 2},
-            model_output_token_usage={"vote-model": 1},
-            model_thinking_token_usage={"vote-model": 1},
+            agent_models_used=[VOTE_TEST_MODEL],
+            model_token_usage={VOTE_TEST_MODEL: 4},
+            model_latency_ms={VOTE_TEST_MODEL: 2.0},
+            model_input_token_usage={VOTE_TEST_MODEL: 2},
+            model_output_token_usage={VOTE_TEST_MODEL: 1},
+            model_thinking_token_usage={VOTE_TEST_MODEL: 1},
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=4,
@@ -206,12 +344,12 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             result=vote_result,
             switch_to_debate=True,
             reason="quorum_not_reached",
-            agent_models_used=["vote-model"],
-            model_token_usage={"vote-model": 4},
-            model_latency_ms={"vote-model": 2.0},
-            model_input_token_usage={"vote-model": 2},
-            model_output_token_usage={"vote-model": 1},
-            model_thinking_token_usage={"vote-model": 1},
+            agent_models_used=[VOTE_TEST_MODEL],
+            model_token_usage={VOTE_TEST_MODEL: 4},
+            model_latency_ms={VOTE_TEST_MODEL: 2.0},
+            model_input_token_usage={VOTE_TEST_MODEL: 2},
+            model_output_token_usage={VOTE_TEST_MODEL: 1},
+            model_thinking_token_usage={VOTE_TEST_MODEL: 1},
             total_tokens_used=4,
             input_tokens_used=2,
             output_tokens_used=1,
@@ -239,11 +377,12 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
             mechanism_switches=0,
             merkle_root="debate-root",
             transcript_hashes=["d1", "d2"],
-            model_token_usage={"debate-model": 8},
-            model_latency_ms={"debate-model": 6.0},
-            model_input_token_usage={"debate-model": 3},
-            model_output_token_usage={"debate-model": 3},
-            model_thinking_token_usage={"debate-model": 2},
+            agent_models_used=[DEBATE_TEST_MODEL],
+            model_token_usage={DEBATE_TEST_MODEL: 8},
+            model_latency_ms={DEBATE_TEST_MODEL: 6.0},
+            model_input_token_usage={DEBATE_TEST_MODEL: 3},
+            model_output_token_usage={DEBATE_TEST_MODEL: 3},
+            model_thinking_token_usage={DEBATE_TEST_MODEL: 2},
             convergence_history=[],
             locked_claims=[],
             total_tokens_used=8,
@@ -275,14 +414,161 @@ async def test_switch_from_vote_to_debate(monkeypatch) -> None:
     assert result.merkle_root == orchestrator.hasher.build_merkle_tree(result.transcript_hashes)
     assert result.mechanism_trace[0].mechanism == MechanismType.VOTE
     assert result.mechanism_trace[0].switch_reason == "quorum_not_reached"
-    assert result.model_token_usage == {"vote-model": 4, "debate-model": 8}
-    assert result.model_input_token_usage == {"vote-model": 2, "debate-model": 3}
-    assert result.model_output_token_usage == {"vote-model": 1, "debate-model": 3}
-    assert result.model_thinking_token_usage == {"vote-model": 1, "debate-model": 2}
+    assert result.model_token_usage == {VOTE_TEST_MODEL: 4, DEBATE_TEST_MODEL: 8}
+    assert result.model_input_token_usage == {VOTE_TEST_MODEL: 2, DEBATE_TEST_MODEL: 3}
+    assert result.model_output_token_usage == {VOTE_TEST_MODEL: 1, DEBATE_TEST_MODEL: 3}
+    assert result.model_thinking_token_usage == {VOTE_TEST_MODEL: 1, DEBATE_TEST_MODEL: 2}
     assert result.input_tokens_used == 5
     assert result.output_tokens_used == 4
     assert result.thinking_tokens_used == 3
     assert result.cost is not None
+
+
+@pytest.mark.asyncio
+async def test_vote_to_debate_switch_events_include_execution_segment_metadata(
+    monkeypatch,
+) -> None:
+    """Vote-to-debate switches should stream the second debate in a new segment."""
+
+    monkeypatch.setattr(orchestrator_module, "pro_caller", lambda **_kwargs: None)
+    orchestrator = AgoraOrchestrator(agent_count=3)
+    selection = make_selection(mechanism=MechanismType.VOTE, topic_category="reasoning")
+    captured_events: list[tuple[str, dict[str, object]]] = []
+
+    async def fake_select(task_text: str, agent_count: int, stakes: float):
+        del task_text, agent_count, stakes
+        return selection
+
+    async def fake_vote_run(task: str, selection, event_sink=None):
+        del task
+        if event_sink is not None:
+            await event_sink(
+                "agent_output",
+                {
+                    "agent_id": "agent-1",
+                    "stage": "vote",
+                    "round_number": 1,
+                    "content": "pre-switch",
+                },
+            )
+        vote_state = VoteState(
+            task="switch test",
+            task_features=make_features("reasoning"),
+            transcript_hashes=["v1"],
+        )
+        vote_result = DeliberationResult(
+            task="switch test",
+            mechanism_used=MechanismType.VOTE,
+            mechanism_selection=selection,
+            final_answer="Option A",
+            confidence=0.45,
+            quorum_reached=False,
+            round_count=1,
+            agent_count=3,
+            mechanism_switches=0,
+            merkle_root="vote-root",
+            transcript_hashes=["v1"],
+            convergence_history=[],
+            locked_claims=[],
+            total_tokens_used=0,
+            total_latency_ms=0.0,
+            timestamp=datetime.now(UTC),
+        )
+        return VoteEngineOutcome(
+            state=vote_state,
+            result=vote_result,
+            switch_to_debate=True,
+            reason="quorum_not_reached",
+        )
+
+    async def fake_debate_run(
+        task: str,
+        selection,
+        event_sink=None,
+        allow_switch: bool = True,
+    ):
+        del task, allow_switch
+        if event_sink is not None:
+            await event_sink(
+                "agent_output",
+                {
+                    "agent_id": "agent-1",
+                    "stage": "opening",
+                    "round_number": 1,
+                    "content": "post-switch",
+                },
+            )
+        debate_state = DebateState(
+            task="switch test",
+            task_features=make_features("reasoning"),
+            factions={"pro": [], "opp": []},
+            rebuttals={"pro": [], "opp": []},
+            transcript_hashes=["d1"],
+            round=1,
+        )
+        debate_result = DeliberationResult(
+            task="switch test",
+            mechanism_used=MechanismType.DEBATE,
+            mechanism_selection=selection,
+            final_answer="Debated answer",
+            confidence=0.8,
+            quorum_reached=True,
+            round_count=1,
+            agent_count=3,
+            mechanism_switches=0,
+            merkle_root="debate-root",
+            transcript_hashes=["d1"],
+            convergence_history=[],
+            locked_claims=[],
+            total_tokens_used=0,
+            total_latency_ms=0.0,
+            timestamp=datetime.now(UTC),
+        )
+        return DebateEngineOutcome(
+            state=debate_state,
+            result=debate_result,
+            switch_to_vote=False,
+            suggested_mechanism=None,
+            reason="completed",
+        )
+
+    async def event_sink(event_type: str, payload: dict[str, object]) -> None:
+        captured_events.append((event_type, payload))
+
+    monkeypatch.setattr(orchestrator.selector, "select", fake_select)
+    monkeypatch.setattr(orchestrator.vote_engine, "run", fake_vote_run)
+    monkeypatch.setattr(orchestrator.debate_engine, "run", fake_debate_run)
+
+    await orchestrator.run("switch me", event_sink=event_sink)
+
+    pre_switch = next(
+        payload
+        for event_type, payload in captured_events
+        if event_type == "agent_output" and payload.get("content") == "pre-switch"
+    )
+    switch = next(
+        payload for event_type, payload in captured_events if event_type == "mechanism_switch"
+    )
+    post_switch = next(
+        payload
+        for event_type, payload in captured_events
+        if event_type == "agent_output" and payload.get("content") == "post-switch"
+    )
+
+    assert pre_switch["execution_segment"] == 0
+    assert pre_switch["mechanism"] == "vote"
+    assert pre_switch["segment_mechanism"] == "vote"
+    assert pre_switch["segment_round"] == 1
+    assert switch["execution_segment"] == 0
+    assert switch["mechanism"] == "vote"
+    assert switch["segment_mechanism"] == "vote"
+    assert switch["next_execution_segment"] == 1
+    assert switch["next_segment_mechanism"] == "debate"
+    assert switch["segment_round"] == 1
+    assert post_switch["execution_segment"] == 1
+    assert post_switch["mechanism"] == "debate"
+    assert post_switch["segment_mechanism"] == "debate"
+    assert post_switch["segment_round"] == 1
 
 
 @pytest.mark.asyncio

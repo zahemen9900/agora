@@ -28,6 +28,7 @@ from agora.types import (
     MechanismSelection,
     MechanismTraceSegment,
     MechanismType,
+    ProviderTierName,
     ReasoningPresetOverrides,
     ReasoningPresets,
     mechanism_is_supported,
@@ -342,7 +343,11 @@ class AgoraOrchestrator:
         if selection.mechanism == MechanismType.DEBATE:
             debate_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
             if event_sink is not None:
-                debate_run_kwargs["event_sink"] = event_sink
+                debate_run_kwargs["event_sink"] = self._segment_event_sink(
+                    event_sink,
+                    execution_segment=0,
+                    mechanism=MechanismType.DEBATE,
+                )
             if agents is not None:
                 debate_run_kwargs["custom_agents"] = agents
             debate_run_kwargs["allow_switch"] = allow_switch
@@ -356,11 +361,21 @@ class AgoraOrchestrator:
                         "to_mechanism": MechanismType.VOTE.value,
                         "reason": debate_outcome.reason,
                         "round_number": debate_outcome.state.round,
+                        "execution_segment": 0,
+                        "mechanism": MechanismType.DEBATE.value,
+                        "segment_mechanism": MechanismType.DEBATE.value,
+                        "segment_round": debate_outcome.state.round,
+                        "next_execution_segment": 1,
+                        "next_segment_mechanism": MechanismType.VOTE.value,
                     },
                 )
                 vote_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
                 if event_sink is not None:
-                    vote_run_kwargs["event_sink"] = event_sink
+                    vote_run_kwargs["event_sink"] = self._segment_event_sink(
+                        event_sink,
+                        execution_segment=1,
+                        mechanism=MechanismType.VOTE,
+                    )
                 if agents is not None:
                     vote_run_kwargs["custom_agents"] = agents
                 vote_outcome = await self.vote_engine.run(**vote_run_kwargs)
@@ -393,7 +408,11 @@ class AgoraOrchestrator:
         if selection.mechanism == MechanismType.VOTE:
             vote_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
             if event_sink is not None:
-                vote_run_kwargs["event_sink"] = event_sink
+                vote_run_kwargs["event_sink"] = self._segment_event_sink(
+                    event_sink,
+                    execution_segment=0,
+                    mechanism=MechanismType.VOTE,
+                )
             if agents is not None:
                 vote_run_kwargs["custom_agents"] = agents
             vote_outcome = await self.vote_engine.run(**vote_run_kwargs)
@@ -406,11 +425,21 @@ class AgoraOrchestrator:
                         "to_mechanism": MechanismType.DEBATE.value,
                         "reason": vote_outcome.reason,
                         "round_number": 1,
+                        "execution_segment": 0,
+                        "mechanism": MechanismType.VOTE.value,
+                        "segment_mechanism": MechanismType.VOTE.value,
+                        "segment_round": 1,
+                        "next_execution_segment": 1,
+                        "next_segment_mechanism": MechanismType.DEBATE.value,
                     },
                 )
                 debate_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
                 if event_sink is not None:
-                    debate_run_kwargs["event_sink"] = event_sink
+                    debate_run_kwargs["event_sink"] = self._segment_event_sink(
+                        event_sink,
+                        execution_segment=1,
+                        mechanism=MechanismType.DEBATE,
+                    )
                 if agents is not None:
                     debate_run_kwargs["custom_agents"] = agents
                 debate_outcome = await self.debate_engine.run(**debate_run_kwargs)
@@ -443,6 +472,26 @@ class AgoraOrchestrator:
             f"Mechanism '{selection.mechanism.value}' is not currently supported. "
             f"Supported mechanisms: {_SUPPORTED_MECHANISMS_TEXT}."
         )
+
+    @staticmethod
+    def _segment_event_sink(
+        event_sink: EventSink,
+        *,
+        execution_segment: int,
+        mechanism: MechanismType,
+    ) -> EventSink:
+        """Add execution-segment metadata to engine-emitted runtime events."""
+
+        async def emit_segment_event(event_type: str, data: dict[str, Any]) -> None:
+            payload = dict(data)
+            payload.setdefault("execution_segment", execution_segment)
+            payload.setdefault("mechanism", mechanism.value)
+            payload.setdefault("segment_mechanism", mechanism.value)
+            if "segment_round" not in payload and "round_number" in payload:
+                payload["segment_round"] = payload["round_number"]
+            await event_sink(event_type, payload)
+
+        return emit_segment_event
 
     def _combine_switched_result(
         self,
