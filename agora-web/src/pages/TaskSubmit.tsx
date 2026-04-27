@@ -155,6 +155,7 @@ export function TaskSubmit() {
 
   // ── Rotating prompt set — random on mount, re-randomise on each data refresh ──
   const [activeSetIdx, setActiveSetIdx] = useState(() => Math.floor(Math.random() * PROMPT_SETS.length));
+  const [hoveredPrompt, setHoveredPrompt] = useState<{ text: string; rect: DOMRect } | null>(null);
   const prevDataUpdatedAt = useRef(recentTasksQuery.dataUpdatedAt);
   useEffect(() => {
     if (recentTasksQuery.dataUpdatedAt !== prevDataUpdatedAt.current) {
@@ -227,6 +228,38 @@ export function TaskSubmit() {
         name="description"
         content="Configure and submit a deliberation task. Choose your agents, mechanism, and models, then receive a cryptographic proof of the outcome."
       />
+      <style>{`@keyframes pill-tip-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+
+      {/* ── Prompt pill hover tooltip (fixed so overflowX container doesn't clip) ── */}
+      {hoveredPrompt && (() => {
+        const r = hoveredPrompt.rect;
+        const tipW = 300;
+        const left = Math.max(16, Math.min(r.left + r.width / 2 - tipW / 2, window.innerWidth - tipW - 16));
+        const bottom = window.innerHeight - r.top + 10;
+        return (
+          <div style={{
+            position: 'fixed',
+            left,
+            bottom,
+            width: `${tipW}px`,
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-strong)',
+            borderRadius: '8px',
+            padding: '8px 12px',
+            color: 'var(--text-primary)',
+            fontFamily: FONT,
+            fontSize: '11px',
+            lineHeight: '1.5',
+            zIndex: 9000,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.35)',
+            pointerEvents: 'none',
+            animation: 'pill-tip-in 0.15s ease-out',
+          }}>
+            {hoveredPrompt.text}
+          </div>
+        );
+      })()}
+
     <div style={{ maxWidth: '760px', margin: '0 auto', padding: '40px 16px 80px' }}>
 
 
@@ -478,6 +511,7 @@ export function TaskSubmit() {
                 key={p.label}
                 type="button"
                 onClick={() => {
+                  setHoveredPrompt(null);
                   setTaskText(p.fullPrompt);
                   if (textareaRef.current) {
                     textareaRef.current.style.height = 'auto';
@@ -505,11 +539,13 @@ export function TaskSubmit() {
                   const b = e.currentTarget as HTMLButtonElement;
                   b.style.borderColor = 'var(--accent-emerald)';
                   b.style.color = 'var(--text-secondary)';
+                  setHoveredPrompt({ text: p.label, rect: b.getBoundingClientRect() });
                 }}
                 onMouseLeave={(e) => {
                   const b = e.currentTarget as HTMLButtonElement;
                   b.style.borderColor = 'var(--border-default)';
                   b.style.color = 'var(--text-tertiary)';
+                  setHoveredPrompt(null);
                 }}
               >
                 {p.label}
