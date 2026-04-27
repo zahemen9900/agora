@@ -34,6 +34,7 @@ import {
 import {
   BENCHMARK_DOMAIN_KEYS,
   buildOverviewAccuracyData,
+  buildOverviewCostData,
   buildOverviewLearningCurve,
   detectBenchmarkArtifactKind,
   normalizeBenchmarkSummary,
@@ -60,7 +61,6 @@ function normalizeText(value: string | null | undefined): string {
 }
 
 const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [...BENCHMARK_DOMAIN_KEYS];
-const BENCHMARK_MECHANISMS = ["debate", "vote", "selector"] as const;
 const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
   domains: {
     math: [
@@ -442,15 +442,7 @@ export function Benchmarks() {
   const learningCurveState = useMemo(() => buildOverviewLearningCurve(benchmarks), [benchmarks]);
 
   const costData = useMemo(() => {
-    return BENCHMARK_MECHANISMS.map((mechanism) => {
-      const metrics = normalizedSummary.per_mode[mechanism] ?? {};
-      const runCount = asNumber(metrics.run_count);
-      const avgCost = asNumber(metrics.avg_estimated_cost_usd);
-      return {
-        mechanism: titleCase(mechanism),
-        estimatedCostUsd: runCount > 0 && avgCost > 0 ? avgCost : null,
-      };
-    });
+    return buildOverviewCostData(normalizedSummary);
   }, [normalizedSummary]);
 
   const yourEntries = useMemo(() => {
@@ -632,8 +624,8 @@ export function Benchmarks() {
           {/* Accuracy by category — full width */}
           <div className="col-span-1 lg:col-span-2">
             <ChartCard
-              title="Accuracy by Task Category × Stage"
-              subtitle="Requested benchmark-stage success by category for the active artifact. This chart is stage-level, not actual executed-mechanism telemetry."
+              title="Scored Success by Category × Executed Mechanism"
+              subtitle="Actual mechanism success by category after selector decisions and switches. Creative and demo are proxy-scored; one-sample buckets are directional, not proof."
             >
               {overviewError ? (
                 <div style={{ padding: "32px 0", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>
@@ -758,7 +750,7 @@ export function Benchmarks() {
           {/* Cost efficiency */}
           <ChartCard
             title="Cost Efficiency"
-            subtitle="Estimated USD cost per requested benchmark stage from token usage and the internal pricing catalog."
+            subtitle="Estimated USD cost per actual executed mechanism from token usage and the internal pricing catalog."
           >
             {!benchmarks && !overviewError ? (
               <SkeletonChartBlock h="250px" delay={0.2} />
@@ -1065,13 +1057,6 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
 }
 
 // ── Data helpers ───────────────────────────────────────────────────────────────
-
-function asNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  return 0;
-}
 
 function formatUsd(value: number | null): string {
   if (value === null || !Number.isFinite(value) || value <= 0) {

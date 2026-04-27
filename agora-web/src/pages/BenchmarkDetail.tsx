@@ -980,9 +980,9 @@ export function BenchmarkDetail() {
       </div>
 
       <div className="card p-4 sm:p-8 mb-8 overflow-x-auto">
-        <h3 className="mb-2 text-lg font-semibold">Category Accuracy Matrix</h3>
+        <h3 className="mb-2 text-lg font-semibold">Category × Executed Mechanism Matrix</h3>
         <p className="text-sm text-text-secondary mb-6">
-          Per-category scored success across requested benchmark stages. Creative and demo remain proxy-scored rather than exact-match truth.
+          Per-category scored success by the mechanism that actually ran after selector decisions and switches. Creative and demo remain proxy-scored rather than exact-match truth.
         </p>
 
         {categoryRows.length === 0 ? (
