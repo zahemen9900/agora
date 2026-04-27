@@ -7,8 +7,11 @@ export function Callback() {
 
   if (!isLoading && authStatus === "unauthenticated") {
     return (
-      <div
-        style={{
+      <>
+        <title>Completing sign-in — Agora</title>
+        <meta name="description" content="Finalising OAuth authentication for your Agora account." />
+        <div
+          style={{
           display: "flex",
           flexDirection: "column",
           justifyContent: "center",
@@ -34,31 +37,36 @@ export function Callback() {
           </button>
         </div>
       </div>
+      </>
     );
   }
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        alignItems: "center",
-        height: "100vh",
-        width: "100vw",
-        gap: "1rem",
-      }}
-    >
-      <h1
-        className="wordmark"
+    <>
+      <title>Completing sign-in — Agora</title>
+      <meta name="description" content="Finalising OAuth authentication for your Agora account." />
+      <div
         style={{
-          animation: "shimmer 2s infinite ease-in-out",
-          color: "var(--text-muted)",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100vh",
+          width: "100vw",
+          gap: "1rem",
         }}
       >
-        AGORA
-      </h1>
-      <p style={{ color: "var(--text-secondary)" }}>Completing sign in...</p>
-    </div>
+        <h1
+          className="wordmark"
+          style={{
+            animation: "shimmer 2s infinite ease-in-out",
+            color: "var(--text-muted)",
+          }}
+        >
+          AGORA
+        </h1>
+        <p style={{ color: "var(--text-secondary)" }}>Completing sign in...</p>
+      </div>
+    </>
   );
 }

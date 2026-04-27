@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ChevronDown, Filter } from "lucide-react";
+import { ChevronDown, Filter, RotateCcw } from "lucide-react";
 
 import { BenchmarkWizard, type DomainPromptSelection } from "../components/benchmark/BenchmarkWizard";
 import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
@@ -217,7 +217,7 @@ function injectChartKeyframes() {
   if (document.getElementById(CHART_KF_ID)) return;
   const s = document.createElement("style");
   s.id = CHART_KF_ID;
-  s.textContent = `@keyframes bm-shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } }`;
+  s.textContent = `@keyframes bm-shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } } @keyframes bm-spin { to { transform: rotate(360deg); } }`;
   document.head.appendChild(s);
 }
 
@@ -611,6 +611,11 @@ export function Benchmarks() {
 
   return (
     <>
+      <title>Benchmarks — Agora</title>
+      <meta
+        name="description"
+        content="Performance dashboard for Agora's deliberation mechanisms — accuracy, latency, and cost across reasoning tasks."
+      />
       <div className="max-w-250 mx-auto pb-20 w-full">
         <header className="mb-10">
           <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
@@ -844,6 +849,14 @@ export function Benchmarks() {
           <div className="flex items-center justify-between gap-3 mb-5">
             <h3 className="text-lg font-semibold">Your Benchmarks</h3>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void benchmarkCatalogQuery.refetch()}
+                title="Refresh"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
+              >
+                <RotateCcw size={13} style={{ animation: benchmarkCatalogQuery.isFetching ? "bm-spin 0.8s linear infinite" : "none" }} />
+              </button>
               <FilterButton value={yourSortMode} onChange={setYourSortMode} />
               <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
             </div>
@@ -919,6 +932,14 @@ export function Benchmarks() {
           <div className="flex items-center justify-between gap-3 mb-5">
             <h3 className="text-lg font-semibold">Global Benchmarks</h3>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void benchmarkCatalogQuery.refetch()}
+                title="Refresh"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
+              >
+                <RotateCcw size={13} style={{ animation: benchmarkCatalogQuery.isFetching ? "bm-spin 0.8s linear infinite" : "none" }} />
+              </button>
               <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
               <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
             </div>

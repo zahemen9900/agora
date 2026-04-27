@@ -279,6 +279,12 @@ export function OnChainReceipt() {
   const isPaying = releasePaymentMutation.isPending;
 
   return (
+    <>
+      <title>{taskId ? `Receipt · ${taskId} — Agora` : "On-Chain Receipt — Agora"}</title>
+      <meta
+        name="description"
+        content="On-chain proof of deliberation for this task — Merkle root, transcript hash, and chain submission status."
+      />
     <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '0 0 80px', position: 'relative' }}>
       <Flyout
         show={showPaymentFlyout}
@@ -869,6 +875,7 @@ export function OnChainReceipt() {
         )}
       </div>
     </div>
+    </>
   );
 }
 

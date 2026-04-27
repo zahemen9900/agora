@@ -47,6 +47,12 @@ export function BenchmarksAll() {
   );
 
   return (
+    <>
+      <title>All Benchmarks — Agora</title>
+      <meta
+        name="description"
+        content="Full catalog of Agora benchmark runs. Compare outcomes across tasks, mechanisms, and model configurations."
+      />
     <div className="max-w-250 mx-auto pb-20 w-full">
       <header className="mb-8">
         <button type="button" onClick={() => navigate("/benchmarks")} className="btn-secondary mb-4 inline-flex items-center gap-2">
@@ -111,6 +117,7 @@ export function BenchmarksAll() {
         </div>
       )}
     </div>
+    </>
   );
 }
 
