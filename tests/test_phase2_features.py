@@ -174,6 +174,9 @@ def test_benchmark_summary_categories_follow_requested_stage_axis() -> None:
     assert summary["per_category"]["math"]["selector"]["run_count"] == 1
     assert summary["per_category"]["math"]["selector"]["scored_run_count"] == 1
     assert summary["per_category"]["math"]["selector"]["accuracy"] == pytest.approx(1.0)
+    assert summary["per_category_by_mechanism"]["math"]["vote"]["run_count"] == 1
+    assert summary["per_category_by_mechanism"]["math"]["vote"]["scored_run_count"] == 1
+    assert summary["per_category_by_mechanism"]["math"]["vote"]["accuracy"] == pytest.approx(1.0)
 
 
 def test_with_complete_summary_preserves_count_fields() -> None:
@@ -227,6 +230,20 @@ def test_with_complete_summary_preserves_count_fields() -> None:
                     }
                 }
             },
+            "per_category_by_mechanism": {
+                "math": {
+                    "vote": {
+                        "accuracy": 0.5,
+                        "run_count": 4,
+                        "scored_run_count": 4,
+                        "proxy_run_count": 0,
+                        "avg_tokens": 11.0,
+                        "avg_latency_ms": 21.0,
+                        "avg_thinking_tokens": 6.0,
+                        "avg_estimated_cost_usd": 0.02,
+                    }
+                }
+            },
             "completed_run_count": 2,
             "failed_run_count": 0,
             "degraded_run_count": 0,
@@ -246,6 +263,8 @@ def test_with_complete_summary_preserves_count_fields() -> None:
     assert summary["per_category"]["math"]["selector"]["run_count"] == 1
     assert summary["per_category"]["math"]["selector"]["scored_run_count"] == 1
     assert summary["per_category"]["math"]["selector"]["proxy_run_count"] == 0
+    assert summary["per_category_by_mechanism"]["math"]["vote"]["run_count"] == 4
+    assert summary["per_category_by_mechanism"]["math"]["vote"]["scored_run_count"] == 4
 
 
 def test_with_complete_summary_derives_scored_coverage_and_cost_from_runs() -> None:
@@ -282,6 +301,8 @@ def test_with_complete_summary_derives_scored_coverage_and_cost_from_runs() -> N
     assert summary["per_mode"]["selector"]["avg_estimated_cost_usd"] == pytest.approx(0.0125)
     assert summary["per_category"]["demo"]["selector"]["scored_run_count"] == 1
     assert summary["per_category"]["demo"]["selector"]["proxy_run_count"] == 1
+    assert summary["per_category_by_mechanism"]["demo"]["vote"]["scored_run_count"] == 1
+    assert summary["per_category_by_mechanism"]["demo"]["vote"]["proxy_run_count"] == 1
 
 
 def test_artifact_telemetry_estimates_cost_from_total_tokens_without_split_counts() -> None:
