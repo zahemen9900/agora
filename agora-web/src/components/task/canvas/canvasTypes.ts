@@ -44,6 +44,10 @@ export interface GraphNode {
   taskId?: string;
   /** selection rationale for mechanism_selected nodes */
   reason?: string;
+  /** compact causal label shown at outgoing split points */
+  transitionLabel?: string;
+  /** detailed causal copy for transition affordances */
+  transitionDescription?: string;
 }
 
 export interface GraphEdge {

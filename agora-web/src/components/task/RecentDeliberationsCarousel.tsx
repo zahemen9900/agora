@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, ChevronRight, X, ArrowRight, Search } from 'lucide-react';
+import { Play, ChevronRight, RotateCcw, X, ArrowRight, Search } from 'lucide-react';
 import type { TaskStatusResponse } from '../../lib/api';
 
 // ─── Keyframes injected once ──────────────────────────────────────────────────
@@ -16,6 +16,9 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
     @keyframes sk-fade {
       0%, 100% { opacity: 0.6; }
       50%       { opacity: 0.25; }
+    }
+    @keyframes carousel-refresh-spin {
+      to { transform: rotate(360deg); }
     }
   `;
   document.head.appendChild(s);
@@ -506,6 +509,8 @@ interface RecentDeliberationsCarouselProps {
   exampleTasks: TaskStatusResponse[];
   isLoading: boolean;
   onExampleSelect: (text: string) => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
 }
 
 export function RecentDeliberationsCarousel({
@@ -513,6 +518,8 @@ export function RecentDeliberationsCarousel({
   exampleTasks,
   isLoading,
   onExampleSelect,
+  onRefresh,
+  isRefreshing = false,
 }: RecentDeliberationsCarouselProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showAll, setShowAll] = useState(false);
@@ -543,26 +550,49 @@ export function RecentDeliberationsCarousel({
         >
           Recent Deliberations
         </div>
-        {hasRealTasks && !isLoading && (
-          <button
-            type="button"
-            onClick={() => setShowAll(true)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              fontSize: '11px',
-              fontFamily: "'Commit Mono', monospace",
-              color: 'var(--accent-emerald)',
-              padding: 0,
-            }}
-          >
-            See all <ChevronRight size={12} />
-          </button>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {!isLoading && (
+            <button
+              type="button"
+              onClick={onRefresh}
+              title="Refresh"
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                color: 'var(--text-muted)',
+                padding: '2px',
+                display: 'flex',
+                alignItems: 'center',
+              }}
+            >
+              <RotateCcw
+                size={13}
+                style={{ animation: isRefreshing ? 'carousel-refresh-spin 0.8s linear infinite' : 'none' }}
+              />
+            </button>
+          )}
+          {hasRealTasks && !isLoading && (
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '11px',
+                fontFamily: "'Commit Mono', monospace",
+                color: 'var(--accent-emerald)',
+                padding: 0,
+              }}
+            >
+              See all <ChevronRight size={12} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Carousel or skeleton */}

@@ -108,6 +108,14 @@ import {
   taskQueryKeys,
   useTaskDetailQuery,
 } from "../lib/taskQueries";
+import {
+  createSegmentInferenceState,
+  inferSegmentedTaskEvent,
+  inferSegmentedTaskEvents,
+  segmentDraftKeyForEvent,
+  segmentMetadataForTaskEvent,
+  type SegmentInferenceState,
+} from "../lib/segmentTimeline";
 
 interface TimelineEvent {
   key: string;
@@ -122,6 +130,10 @@ interface TimelineEvent {
   stage?: string;
   draftKey?: string;
   isDraft?: boolean;
+  segmentIndex?: number;
+  segmentMechanism?: string;
+  segmentRound?: number;
+  canonicalStage?: string;
 }
 
 interface FinalAnswerState {
@@ -460,14 +472,7 @@ function buildEventKey(event: TaskEvent): string {
 }
 
 function draftKeyForEvent(event: TaskEvent): string | null {
-  const data = asRecord(event.data) ?? {};
-  const agentId = safeString(data.agent_id, "");
-  const stage = safeString(data.stage, "");
-  const roundNumber = Number.isFinite(Number(data.round_number)) ? Number(data.round_number) : NaN;
-  if (!agentId || !stage || Number.isNaN(roundNumber)) {
-    return null;
-  }
-  return `${agentId}:${stage}:${roundNumber}`;
+  return segmentDraftKeyForEvent(event);
 }
 
 function eventKeyForTimeline(event: TaskEvent): string {
@@ -475,16 +480,19 @@ function eventKeyForTimeline(event: TaskEvent): string {
 }
 
 function sortTaskEvents(events: TaskEvent[]): TaskEvent[] {
-  return [...events].sort((a, b) => {
-    const timestampA = Date.parse(a.timestamp ?? "");
-    const timestampB = Date.parse(b.timestamp ?? "");
-    const normalizedA = Number.isFinite(timestampA) ? timestampA : 0;
-    const normalizedB = Number.isFinite(timestampB) ? timestampB : 0;
-    if (normalizedA !== normalizedB) {
-      return normalizedA - normalizedB;
-    }
-    return buildEventKey(a).localeCompare(buildEventKey(b));
-  });
+  return events
+    .map((event, index) => ({ event, index }))
+    .sort((a, b) => {
+      const timestampA = Date.parse(a.event.timestamp ?? "");
+      const timestampB = Date.parse(b.event.timestamp ?? "");
+      const normalizedA = Number.isFinite(timestampA) ? timestampA : 0;
+      const normalizedB = Number.isFinite(timestampB) ? timestampB : 0;
+      if (normalizedA !== normalizedB) {
+        return normalizedA - normalizedB;
+      }
+      return a.index - b.index;
+    })
+    .map(({ event }) => event);
 }
 
 function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
@@ -505,6 +513,8 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
         selector_fallback_path: task.selector_fallback_path,
         mechanism_override: task.mechanism_override,
         mechanism_override_source: task.mechanism_override_source,
+        execution_segment: 0,
+        segment_mechanism: task.mechanism,
       },
     });
   }
@@ -542,6 +552,10 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
           switch_reason: safeString(current.switch_reason, "switch recorded"),
           start_round: current.start_round,
           end_round: current.end_round,
+          execution_segment: index - 1,
+          segment_mechanism: safeString(previous.mechanism, task.mechanism),
+          next_execution_segment: index,
+          next_segment_mechanism: safeString(current.mechanism, task.result.mechanism),
         },
       });
     }
@@ -554,10 +568,40 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
       if (!metric) {
         continue;
       }
+      const roundValue = Number(metric.round_number);
+      const hasRound = Number.isFinite(roundValue);
+      let segmentIndex = 0;
+      let segmentMechanism: string = task.mechanism;
+      if (hasRound) {
+        for (let index = 0; index < mechanismTrace.length; index += 1) {
+          const segment = asRecord(mechanismTrace[index]);
+          if (!segment) {
+            continue;
+          }
+          const startRound = Number(segment.start_round);
+          const endRound = Number(segment.end_round);
+          if (!Number.isFinite(startRound) || !Number.isFinite(endRound)) {
+            continue;
+          }
+          if (roundValue >= startRound && roundValue <= endRound) {
+            segmentIndex = index;
+            segmentMechanism = safeString(segment.mechanism, segmentMechanism);
+            break;
+          }
+        }
+      }
+      const convergenceData: Record<string, unknown> = {
+        ...metric,
+        execution_segment: segmentIndex,
+        segment_mechanism: segmentMechanism,
+      };
+      if (hasRound) {
+        convergenceData.segment_round = roundValue;
+      }
       events.push({
         event: "convergence_update",
         timestamp: task.completed_at ?? task.created_at,
-        data: metric,
+        data: convergenceData,
       });
     }
   }
@@ -608,13 +652,16 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
 function mapTaskEvent(event: TaskEvent): TimelineEvent {
   const data = asRecord(event.data) ?? {};
   const fallbackSummary = JSON.stringify(data);
+  const segmentMetadata = segmentMetadataForTaskEvent(event);
+
+  let mappedEvent: TimelineEvent;
 
   if (event.event === "mechanism_selected") {
     const mechanism = safeString(data.mechanism, "unknown").toUpperCase();
     const confidence = safeNumber(data.confidence, 0);
     const reasoning = safeString(data.reasoning, "");
     const selectionLine = `${mechanism} selected (${(confidence * 100).toFixed(1)}% confidence)`;
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: "Mechanism selected",
@@ -623,10 +670,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       details: data,
       confidence,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "agent_output") {
-    return {
+    mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
       title: `${safeString(data.agent_id, "agent")} · ${safeString(data.role, "agent")}`,
@@ -638,12 +686,13 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       confidence: safeNumber(data.confidence, 0),
       stage: safeString(data.stage, ""),
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "agent_output_delta") {
     const contentSoFar = safeString(data.content_so_far, safeString(data.content_delta, ""));
     const thinkingSoFar = safeString(data.thinking_so_far, "");
-    return {
+    mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
       title: `${safeString(data.agent_id, "agent")} · ${safeString(data.stage, "stream")}`,
@@ -657,6 +706,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       draftKey: eventKeyForTimeline(event),
       isDraft: true,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "cross_examination") {
@@ -675,7 +725,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       .filter((item): item is string => Boolean(item))
       .join(" | ");
 
-    return {
+    mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
       title: "Devil's advocate",
@@ -686,12 +736,13 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       agentModel: safeString(data.agent_model, ""),
       stage: safeString(data.stage, "cross_examination"),
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "cross_examination_delta") {
     const contentSoFar = safeString(data.content_so_far, safeString(data.content_delta, ""));
     const thinkingSoFar = safeString(data.thinking_so_far, "");
-    return {
+    mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
       title: "Devil's advocate",
@@ -704,10 +755,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       draftKey: eventKeyForTimeline(event),
       isDraft: true,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "thinking_delta") {
-    return {
+    mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
       title: `${safeString(data.agent_id, "agent")} · thinking`,
@@ -720,6 +772,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       draftKey: eventKeyForTimeline(event),
       isDraft: true,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "usage_delta") {
@@ -734,7 +787,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       ? "n/a"
       : String(Math.round(safeNumber(data.thinking_tokens, 0)));
     const latency = safeNumber(data.latency_ms, 0);
-    return {
+    mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
       title: `${safeString(data.agent_id, "agent")} · usage`,
@@ -747,6 +800,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       draftKey: eventKeyForTimeline(event),
       isDraft: true,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "provider_retrying") {
@@ -756,7 +810,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
     const maxRetries = safeNumber(data.max_retries, 0);
     const backoffSeconds = safeNumber(data.backoff_seconds, 0);
     const statusCode = typeof data.status_code === "number" ? ` · ${Math.round(data.status_code)}` : "";
-    return {
+    mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
       title: `${provider} retrying`,
@@ -766,12 +820,13 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       agentModel: model,
       stage: "provider_retrying",
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "convergence_update") {
     const entropy = safeNumber(data.disagreement_entropy, 0);
     const novelty = safeNumber(data.information_gain_delta, 0);
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: `Convergence round ${safeNumber(data.round_number, 0)}`,
@@ -779,10 +834,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       timestamp: event.timestamp,
       details: data,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "mechanism_switch") {
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: "Mechanism switch",
@@ -790,10 +846,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       timestamp: event.timestamp,
       details: data,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "quorum_reached") {
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: "Quorum reached",
@@ -802,10 +859,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       details: data,
       confidence: safeNumber(data.confidence, 0),
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "receipt_committed") {
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: "Receipt committed",
@@ -813,10 +871,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       timestamp: event.timestamp,
       details: data,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "payment_released") {
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: "Payment released",
@@ -824,10 +883,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       timestamp: event.timestamp,
       details: data,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "complete") {
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: "Execution complete",
@@ -835,10 +895,11 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       timestamp: event.timestamp,
       details: data,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
   if (event.event === "error") {
-    return {
+    mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: "Stream error",
@@ -846,9 +907,10 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
       timestamp: event.timestamp,
       details: data,
     };
+    return { ...mappedEvent, ...segmentMetadata };
   }
 
-  return {
+  mappedEvent = {
     key: buildEventKey(event),
     type: event.event,
     title: event.event,
@@ -856,6 +918,7 @@ function mapTaskEvent(event: TaskEvent): TimelineEvent {
     timestamp: event.timestamp,
     details: data,
   };
+  return { ...mappedEvent, ...segmentMetadata };
 }
 
 export function LiveDeliberation() {
@@ -882,6 +945,9 @@ export function LiveDeliberation() {
 
   const seenEventKeysRef = useRef<Set<string>>(new Set());
   const taskMechanismRef = useRef("debate");
+  const streamSegmentStateRef = useRef<SegmentInferenceState>(
+    createSegmentInferenceState("debate"),
+  );
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const autoScrollStartedRef = useRef(false);
   const streamTaskIdRef = useRef<string | null>(null);
@@ -925,26 +991,30 @@ export function LiveDeliberation() {
       ...event,
       timestamp: event.timestamp ?? new Date().toISOString(),
     };
-    const eventKey = buildEventKey(eventWithTimestamp);
+    const segmentedEvent = inferSegmentedTaskEvent(
+      eventWithTimestamp,
+      streamSegmentStateRef.current,
+    );
+    const eventKey = buildEventKey(segmentedEvent);
     if (seenEventKeysRef.current.has(eventKey)) {
       return;
     }
     seenEventKeysRef.current.add(eventKey);
 
     if (taskId) {
-      appendTaskDetailEventCache(queryClient, taskId, eventWithTimestamp);
+      appendTaskDetailEventCache(queryClient, taskId, segmentedEvent);
     }
 
-    const mappedEvent = mapTaskEvent(eventWithTimestamp);
+    const mappedEvent = mapTaskEvent(segmentedEvent);
     setTimeline((current) => upsertTimelineEvent(current, mappedEvent));
 
-    const data = asRecord(event.data) ?? {};
+    const data = asRecord(segmentedEvent.data) ?? {};
 
-    if (event.event !== "provider_retrying") {
+    if (segmentedEvent.event !== "provider_retrying") {
       setRetryNotice(null);
     }
 
-    if (event.event === "provider_retrying") {
+    if (segmentedEvent.event === "provider_retrying") {
       const provider = safeString(data.provider, "Provider");
       const model = safeString(data.model, "model");
       const attempt = safeNumber(data.attempt, 0);
@@ -957,7 +1027,7 @@ export function LiveDeliberation() {
       return;
     }
 
-    if (event.event === "convergence_update") {
+    if (segmentedEvent.event === "convergence_update") {
       setConvergence((current) => ({
         prevEntropy: current.entropy,
         entropy: Number(data.disagreement_entropy ?? current.entropy),
@@ -969,7 +1039,7 @@ export function LiveDeliberation() {
       return;
     }
 
-    if (event.event === "mechanism_switch") {
+    if (segmentedEvent.event === "mechanism_switch") {
       setSwitchBanner(
         `SWITCHING: ${String(data.from_mechanism).toUpperCase()} -> ${String(
           data.to_mechanism,
@@ -978,7 +1048,7 @@ export function LiveDeliberation() {
       return;
     }
 
-    if (event.event === "quorum_reached") {
+    if (segmentedEvent.event === "quorum_reached") {
       const mechanism = safeString(data.mechanism, taskMechanismRef.current) === "vote"
         ? "vote"
         : "debate";
@@ -1013,7 +1083,7 @@ export function LiveDeliberation() {
       return;
     }
 
-    if (event.event === "error") {
+    if (segmentedEvent.event === "error") {
       if (taskId) {
         patchTaskDetailCache(queryClient, taskId, (current) => {
           if (!current) {
@@ -1023,7 +1093,7 @@ export function LiveDeliberation() {
             ...current,
             status: "failed",
             failure_reason: safeString(data.message, current.failure_reason ?? ""),
-            latest_error_event: eventWithTimestamp,
+            latest_error_event: segmentedEvent,
           };
         });
         void queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
@@ -1033,7 +1103,7 @@ export function LiveDeliberation() {
       return;
     }
 
-    if (event.event === "complete" && taskId) {
+    if (segmentedEvent.event === "complete" && taskId) {
       patchTaskDetailCache(queryClient, taskId, (current) => (
         current ? { ...current, status: "completed" } : current
       ));
@@ -1057,6 +1127,7 @@ export function LiveDeliberation() {
     historyRepairAttemptedRef.current = null;
     seenEventKeysRef.current = new Set();
     taskMechanismRef.current = "debate";
+    streamSegmentStateRef.current = createSegmentInferenceState("debate");
     autoScrollStartedRef.current = false;
   }, [taskId]);
 
@@ -1064,12 +1135,19 @@ export function LiveDeliberation() {
     if (!task) return;
 
     const taskEvents = deriveTaskEvents(task);
+    const segmentState = createSegmentInferenceState(task.mechanism);
+    const segmentedTaskEvents = inferSegmentedTaskEvents(
+      taskEvents,
+      task.mechanism,
+      segmentState,
+    );
 
     taskMechanismRef.current = task.mechanism;
+    streamSegmentStateRef.current = segmentedTaskEvents.state;
 
     setTimeline((current) => {
       let nextTimeline = current;
-      for (const persistedEvent of taskEvents) {
+      for (const persistedEvent of segmentedTaskEvents.events) {
         const eventKey = buildEventKey(persistedEvent);
         if (seenEventKeysRef.current.has(eventKey)) {
           continue;
@@ -1215,7 +1293,11 @@ export function LiveDeliberation() {
       return [];
     }
 
-    return deriveTaskEvents(task).reduce<TimelineEvent[]>((current, event) => (
+    const segmentedEvents = inferSegmentedTaskEvents(
+      deriveTaskEvents(task),
+      task.mechanism,
+    ).events;
+    return segmentedEvents.reduce<TimelineEvent[]>((current, event) => (
       upsertTimelineEvent(current, mapTaskEvent(event))
     ), []);
   }, [task]);
@@ -1280,6 +1362,12 @@ export function LiveDeliberation() {
   }, [displayTimeline, followLiveUpdates]);
 
   return (
+    <>
+      <title>{taskId ? `Deliberation · ${taskId} — Agora` : "Live Deliberation — Agora"}</title>
+      <meta
+        name="description"
+        content="Live multi-agent deliberation in progress. Track convergence, quorum signals, and the full reasoning transcript as they unfold."
+      />
     <div className="relative">
       <Flyout
         show={showQuorumFlyout}
@@ -1806,6 +1894,7 @@ export function LiveDeliberation() {
       )}
 
     </div>
+    </>
   );
 }
 

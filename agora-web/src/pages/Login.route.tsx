@@ -16,17 +16,20 @@ export function LoginRoute() {
   }, [signIn, isLoading, user]);
 
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        alignItems: "center",
-        height: "100vh",
-        width: "100vw",
-        gap: "1rem",
-      }}
-    >
+    <>
+      <title>Signing in — Agora</title>
+      <meta name="description" content="Redirecting to authentication for Agora." />
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          alignItems: "center",
+          height: "100vh",
+          width: "100vw",
+          gap: "1rem",
+        }}
+      >
       <h1
         className="wordmark"
         style={{
@@ -38,5 +41,6 @@ export function LoginRoute() {
       </h1>
       <p style={{ color: "var(--text-secondary)" }}>Redirecting to sign in...</p>
     </div>
+    </>
   );
 }

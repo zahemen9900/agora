@@ -375,6 +375,7 @@ export interface BenchmarkSummaryResponse {
   per_mode: Record<string, BenchmarkMetricSummaryResponse>;
   per_mechanism: Record<string, BenchmarkMetricSummaryResponse>;
   per_category: Record<string, Record<string, BenchmarkMetricSummaryResponse>>;
+  per_category_by_mechanism: Record<string, Record<string, BenchmarkMetricSummaryResponse>>;
   completed_run_count: number;
   failed_run_count: number;
   degraded_run_count: number;

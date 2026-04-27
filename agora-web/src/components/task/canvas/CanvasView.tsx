@@ -30,6 +30,16 @@ interface CanvasViewProps {
   entropy?: number;
 }
 
+interface TransitionPill {
+  id: string;
+  node: GraphNode;
+  outgoingCount: number;
+  x: number;
+  y: number;
+  label: string;
+  description: string;
+}
+
 // ─── Stage colors (shared) ────────────────────────────────────────────────────
 const KIND_COLOR: Record<NodeKind, string> = {
   task:        "#6b7280",
@@ -45,6 +55,73 @@ function stageColor(kind: NodeKind, stage?: string): string {
   if (kind !== "agent") return KIND_COLOR[kind];
   if (stage?.includes("rebuttal")) return "#60a5fa";
   return "#22d3ee";
+}
+
+function transitionPillText(node: GraphNode): { label: string; description: string } {
+  return {
+    label: node.transitionLabel ?? node.stage.toUpperCase(),
+    description: node.transitionDescription ?? `${node.title} advanced the graph.`,
+  };
+}
+
+function SplitTransitionPill({
+  pill,
+  onOpen,
+}: {
+  pill: TransitionPill;
+  onOpen: (nodeId: string) => void;
+}) {
+  const color = stageColor(pill.node.kind, pill.node.stage);
+  return (
+    <button
+      type="button"
+      data-no-drag
+      title={pill.description}
+      aria-label={`${pill.label}: ${pill.description}`}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen(pill.node.id);
+      }}
+      style={{
+        position: "absolute",
+        left: pill.x,
+        top: pill.y,
+        transform: "translate(-50%, -50%)",
+        zIndex: 4,
+        maxWidth: "220px",
+        border: `1px solid ${color}`,
+        borderRadius: "999px",
+        background: "rgba(8, 13, 18, 0.92)",
+        color,
+        padding: "5px 10px",
+        boxShadow: `0 0 0 3px rgba(0,0,0,0.28), 0 8px 22px rgba(0,0,0,0.32)`,
+        fontFamily: "'Commit Mono', monospace",
+        fontSize: "9px",
+        fontWeight: 700,
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        cursor: "pointer",
+        pointerEvents: "auto",
+      }}
+    >
+      {pill.label}
+      <span
+        aria-hidden="true"
+        style={{
+          marginLeft: "7px",
+          color: "var(--text-muted)",
+          fontWeight: 500,
+          letterSpacing: 0,
+        }}
+      >
+        x{pill.outgoingCount}
+      </span>
+    </button>
+  );
 }
 
 // ─── Expanded card modal (Top Right, Slimmer) ──────────────────────────────────
@@ -128,6 +205,17 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
 
       {/* Scrollable content */}
       <div style={{ overflowY: "auto", flex: 1, padding: "20px", position: "relative" }}>
+        {node.transitionDescription && (
+          <div style={{ marginBottom: "18px", padding: "12px 14px", background: "var(--bg-base)", border: `1px solid ${color}88`, borderRadius: "8px" }}>
+            <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: "6px", fontWeight: 700 }}>
+              {node.transitionLabel ?? "Transition"}
+            </div>
+            <div style={{ fontSize: "12px", lineHeight: 1.55, color: "var(--text-secondary)" }}>
+              {node.transitionDescription}
+            </div>
+          </div>
+        )}
+
         <div style={{ marginBottom: "20px" }}>
           {node.status === "active" ? (
             <CanvasStreamText
@@ -446,6 +534,34 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
     return m;
   }, [nodes, finalPos]);
 
+  const splitTransitionPills = useMemo<TransitionPill[]>(() => {
+    const outgoingCounts = new Map<string, number>();
+    for (const edge of edges) {
+      outgoingCounts.set(edge.fromNodeId, (outgoingCounts.get(edge.fromNodeId) ?? 0) + 1);
+    }
+
+    return nodes.flatMap((node) => {
+      const outgoingCount = outgoingCounts.get(node.id) ?? 0;
+      if (outgoingCount < 2) {
+        return [];
+      }
+      const pos = positions.get(node.id);
+      if (!pos) {
+        return [];
+      }
+      const { label, description } = transitionPillText(node);
+      return [{
+        id: `transition:${node.id}`,
+        node,
+        outgoingCount,
+        x: pos.x + NODE_WIDTH / 2,
+        y: pos.y + (nodeHeights.get(node.id) ?? NODE_HEIGHT) + 16,
+        label,
+        description,
+      }];
+    });
+  }, [edges, nodeHeights, nodes, positions]);
+
   const maxRow = nodes.reduce((m, n) => Math.max(m, n.row), 0);
   const canvasW = maxRowWidth + 160;
   const canvasH = (maxRow + 1) * (NODE_HEIGHT + NODE_GAP_V) + 160;
@@ -578,6 +694,13 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
             width: canvasW, height: canvasH, willChange: "transform",
           }}>
             <GraphEdges edges={edges} positions={positions} nodeHeights={nodeHeights} totalWidth={canvasW} totalHeight={canvasH} />
+            {splitTransitionPills.map((pill) => (
+              <SplitTransitionPill
+                key={pill.id}
+                pill={pill}
+                onOpen={setExpandedNodeId}
+              />
+            ))}
             {nodes.map((node: GraphNode) => {
               const { x, y } = finalPos(node);
               const isNew = !_animatedNodeIds.has(node.id);

@@ -22,11 +22,55 @@ import {
 } from "../lib/taskQueries";
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
 
-// ── Example tasks (unchanged) ─────────────────────────────────────────────────
-const EXAMPLE_TASKS = [
-  "Should a startup with 3 engineers use microservices or a monolith?",
-  "What is the optimal interest rate policy given current inflation?",
-  "Should we implement a graph database for our social routing?",
+// ── Rotating suggested prompts ────────────────────────────────────────────────
+interface PromptOption { label: string; fullPrompt: string; }
+
+const PROMPT_SETS: PromptOption[][] = [
+  // Set A
+  [
+    {
+      label: "Microservices vs monolith for a growing startup?",
+      fullPrompt: "A B2C SaaS company serving 80,000 monthly active users has a 2-year-old monolithic Rails application. The engineering team is growing from 4 to 12 developers over the next year, deployment pipelines take 45 minutes end-to-end, and a major enterprise customer is signing next quarter with a 99.5% uptime SLA. Infrastructure costs $12k/month. Given operational complexity, team coordination overhead, and current scaling projections, should they migrate to microservices or invest in improving their monolith?",
+    },
+    {
+      label: "Should AI-generated content require disclosure labels?",
+      fullPrompt: "Over 40% of Gen-Z users cannot reliably distinguish AI-generated content from human-created content. Deepfakes and synthetic media cause an estimated $5 billion per year in reputational and financial harm globally. Yet mandatory disclosure would affect millions of legitimate creative tools and require cross-jurisdictional enforcement across 200+ countries with no agreed standard. Given the measurable harms of synthetic media and the creative freedoms at stake, should AI-generated content be required to carry prominent disclosure labels across social platforms?",
+    },
+    {
+      label: "Is a 4-day workweek a net productivity win?",
+      fullPrompt: "A 6-month trial across 61 UK companies that adopted a 4-day, 32-hour workweek showed 22% average productivity gains, zero revenue decline, and a 57% reduction in employee sick days. However, manufacturing and healthcare sectors saw mixed results, and some teams reported higher stress within the compressed schedule. Factoring in sector-specific constraints, managerial overhead, childcare equity implications, and competitive dynamics in global labour markets, is a universal shift to a 4-day workweek a net positive for productivity and worker wellbeing?",
+    },
+  ],
+  // Set B
+  [
+    {
+      label: "Should central banks issue a digital currency?",
+      fullPrompt: "China's digital yuan has reached 261 million users in 2 years and the EU is in active consultation on a digital Euro. CBDCs could eliminate cross-border friction, reduce money-laundering by up to 40%, and extend financial access to the unbanked. However, they also create mass financial surveillance infrastructure, risk draining 20-30% of commercial bank deposits, and give governments unprecedented monetary control during crises. Should major central banks roll out a retail CBDC, and what legal and technical guardrails are necessary to prevent abuse?",
+    },
+    {
+      label: "Is open-sourcing frontier AI models too dangerous?",
+      fullPrompt: "Several openly released 70B+ parameter language models have demonstrated the ability to generate CBRN (chemical, biological, radiological, nuclear) weapon synthesis pathways and accelerate bioweapons research timelines. A coalition of AI safety researchers is calling for a moratorium on releasing frontier model weights publicly. Open-source advocates argue that restricted access concentrates AI power in just 5 corporations and blocks independent safety research. Given the demonstrated dual-use risks on one hand and the democratisation benefits on the other, should frontier AI model weights continue to be released to the public?",
+    },
+    {
+      label: "Nuclear vs. renewables: fastest path to net zero?",
+      fullPrompt: "The IEA projects global electricity demand to double by 2050. New nuclear plants cost $10-20 billion each and take 15-20 years to license and construct, while utility-scale solar and battery storage has dropped 90% in cost over the past decade but faces grid stability challenges above 80% penetration and requires 3-10 times more land per megawatt than nuclear. With a hard 2050 net-zero target and energy security increasingly geopolitical, should governments prioritise building new nuclear capacity or accelerating renewable buildout as the primary decarbonisation strategy for the electricity grid?",
+    },
+  ],
+  // Set C
+  [
+    {
+      label: "Should germline gene editing of embryos be allowed?",
+      fullPrompt: "CRISPR-Cas9 technology can now edit germline human DNA with 97%+ precision, potentially eliminating heritable diseases such as cystic fibrosis and Huntington's from entire family lineages. Off-target mutations still occur in approximately 3% of edits. The WHO advisory committee conditionally endorses somatic editing but not germline modification. Critics cite a slippery slope toward designer babies and severe access inequality between wealthy and low-income nations. Given that 8 million children are born annually with serious genetic disorders, should regulated germline gene editing of human embryos for disease prevention be permitted under binding international oversight?",
+    },
+    {
+      label: "Does social media harm democratic institutions?",
+      fullPrompt: "Analysis of 40 democratic elections from 2016 to 2024 found that countries with greater than 70% social media penetration averaged 18% higher political polarisation and a 2x faster misinformation propagation rate, but also a 40% increase in youth voter registration. The EU's Digital Services Act mandates algorithmic transparency, while the US retains broad platform immunity under Section 230. Platforms remove approximately 300 million pieces of harmful content monthly but face bipartisan accusations of ideological bias. Net-weighing deliberation quality, misinformation effects, and civic participation, does social media do more harm than good for democratic institutions?",
+    },
+    {
+      label: "Is universal basic income economically sustainable?",
+      fullPrompt: "Finland's 2-year UBI pilot at €560 per month for 2,000 unemployed citizens showed improved mental wellbeing and marginal employment gains. The US Stockton SEED experiment found full-time employment among recipients rose 28%. Scaling to $1,000 per month for all US adults would cost approximately $2.5 trillion per year, requiring either a 30% income tax increase or sustained deficit spending. With automation projected to displace up to 47% of current jobs by 2035, is universal basic income economically sustainable and socially desirable when implemented at national scale?",
+    },
+  ],
 ];
 
 function makeExampleTask(task: string, index: number): TaskStatusResponse {
@@ -71,7 +115,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
   };
 }
 
-const EXAMPLE_TASK_OBJECTS = EXAMPLE_TASKS.map(makeExampleTask);
+const EXAMPLE_TASK_OBJECTS = PROMPT_SETS[0].map((p, i) => makeExampleTask(p.fullPrompt, i));
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function TaskSubmit() {
@@ -108,6 +152,17 @@ export function TaskSubmit() {
   const recentTasksError = recentTasksQuery.error instanceof Error
     ? recentTasksQuery.error.message
     : null;
+
+  // ── Rotating prompt set — random on mount, re-randomise on each data refresh ──
+  const [activeSetIdx, setActiveSetIdx] = useState(() => Math.floor(Math.random() * PROMPT_SETS.length));
+  const prevDataUpdatedAt = useRef(recentTasksQuery.dataUpdatedAt);
+  useEffect(() => {
+    if (recentTasksQuery.dataUpdatedAt !== prevDataUpdatedAt.current) {
+      prevDataUpdatedAt.current = recentTasksQuery.dataUpdatedAt;
+      setActiveSetIdx(Math.floor(Math.random() * PROMPT_SETS.length));
+    }
+  }, [recentTasksQuery.dataUpdatedAt]);
+  const activePrompts = PROMPT_SETS[activeSetIdx];
 
   useEffect(() => {
     if (recentTasksQuery.error) {
@@ -166,6 +221,12 @@ export function TaskSubmit() {
   const FONT = "'Commit Mono', 'SF Mono', monospace";
 
   return (
+    <>
+      <title>New Deliberation — Agora</title>
+      <meta
+        name="description"
+        content="Configure and submit a deliberation task. Choose your agents, mechanism, and models, then receive a cryptographic proof of the outcome."
+      />
     <div style={{ maxWidth: '760px', margin: '0 auto', padding: '40px 16px 80px' }}>
 
 
@@ -282,7 +343,7 @@ export function TaskSubmit() {
             }}
           >
             <Settings2 size={14} />
-            Configure
+            {/* Configure */}
             {/* Badges showing current settings */}
             <span style={{
               marginLeft: '4px',
@@ -328,7 +389,7 @@ export function TaskSubmit() {
               </>
             ) : (
               <>
-                Submit to Agora
+                Submit
                 <ArrowRight size={14} />
               </>
             )}
@@ -412,12 +473,12 @@ export function TaskSubmit() {
             maskImage: 'linear-gradient(to right, black 0%, black 85%, transparent 100%)',
             WebkitMaskImage: 'linear-gradient(to right, black 0%, black 85%, transparent 100%)',
           }}>
-            {EXAMPLE_TASKS.map((prompt) => (
+            {activePrompts.map((p) => (
               <button
-                key={prompt}
+                key={p.label}
                 type="button"
                 onClick={() => {
-                  setTaskText(prompt);
+                  setTaskText(p.fullPrompt);
                   if (textareaRef.current) {
                     textareaRef.current.style.height = 'auto';
                     textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
@@ -451,7 +512,7 @@ export function TaskSubmit() {
                   b.style.color = 'var(--text-tertiary)';
                 }}
               >
-                {prompt}
+                {p.label}
               </button>
             ))}
             <div style={{ flexShrink: 0, width: '32px' }} />
@@ -472,8 +533,11 @@ export function TaskSubmit() {
             textareaRef.current.focus();
           }
         }}
+        onRefresh={() => void recentTasksQuery.refetch()}
+        isRefreshing={recentTasksQuery.isFetching && !recentTasksQuery.isLoading}
       />
 
     </div>
+    </>
   );
 }

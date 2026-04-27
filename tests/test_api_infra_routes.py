@@ -22,7 +22,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import ValidationError
 
 from agora.runtime.hasher import TranscriptHasher
-from agora.types import DeliberationResult, MechanismType
+from agora.types import DeliberationResult, MechanismSelection, MechanismType
 from api import auth
 from api.auth import AuthenticatedUser
 from api.auth_keys import DEFAULT_API_KEY_SCOPES, build_api_key_token, hash_api_key_secret
@@ -1706,6 +1706,155 @@ async def test_switched_task_records_switch_before_receipt(
     assert operation_order == ["initialize", "selection", "switch", "receipt"]
     assert status.chain_operations["record_switch:0"].status == "succeeded"
     assert status.chain_operations["submit_receipt"].status == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_switched_task_events_include_execution_segments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "switch-segments-data"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    completed_result = DeliberationResult(
+        task="switch segments",
+        mechanism_used=MechanismType.VOTE,
+        mechanism_selection=selection,
+        final_answer="Segments survive the switch.",
+        confidence=0.82,
+        quorum_reached=True,
+        round_count=2,
+        agent_count=3,
+        mechanism_switches=1,
+        merkle_root="switch-segments-root",
+        transcript_hashes=["debate-h1", "switch-h1", "vote-h1"],
+        agent_models_used=["custom-agent"],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=16,
+        total_latency_ms=4.0,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _SwitchingOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None):
+            self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
+            self.selector = _FakeSelector()
+
+        async def run(
+            self,
+            task: str,
+            stakes: float = 0.0,
+            mechanism_override: str | None = None,
+            event_sink=None,
+        ) -> DeliberationResult:
+            del stakes, mechanism_override
+            if event_sink is not None:
+                await event_sink(
+                    "agent_output",
+                    {
+                        "agent_id": "agent-1",
+                        "agent_model": "custom-agent",
+                        "role": "proponent",
+                        "stage": "opening",
+                        "round_number": 1,
+                        "content": "pre-switch",
+                    },
+                )
+                await event_sink(
+                    "mechanism_switch",
+                    {
+                        "from_mechanism": "debate",
+                        "to_mechanism": "vote",
+                        "reason": "entropy rising",
+                        "round_number": 1,
+                    },
+                )
+                await event_sink(
+                    "agent_output",
+                    {
+                        "agent_id": "agent-1",
+                        "agent_model": "custom-agent",
+                        "role": "voter",
+                        "stage": "vote",
+                        "round_number": 1,
+                        "content": "post-switch",
+                    },
+                )
+            return completed_result.model_copy(update={"task": task})
+
+    async def init_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "init_tx", "explorer_url": "https://explorer/init_tx"}
+
+    async def selection_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "selection_tx", "explorer_url": "https://explorer/selection_tx"}
+
+    async def switch_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "switch_tx", "explorer_url": "https://explorer/switch_tx"}
+
+    async def receipt_ok(**_kwargs: object) -> dict[str, str]:
+        return {"tx_hash": "receipt_tx", "explorer_url": "https://explorer/receipt_tx"}
+
+    try:
+        monkeypatch.setattr(task_routes.settings, "strict_chain_writes", True)
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes.bridge, "initialize_task", init_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_selection", selection_ok)
+        monkeypatch.setattr(task_routes.bridge, "record_mechanism_switch", switch_ok)
+        monkeypatch.setattr(task_routes.bridge, "submit_receipt", receipt_ok)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _SwitchingOrchestrator)
+
+        created = await task_routes.create_task(
+            TaskCreateRequest(task="switch segments", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        await task_routes.run_task(created.task_id, _override_user())
+
+        stored_events = await task_routes.get_task_store().get_events(
+            _override_user().workspace_id,
+            created.task_id,
+        )
+    finally:
+        task_routes._store = None
+
+    selected_event = next(event for event in stored_events if event["event"] == "mechanism_selected")
+    pre_switch_event = next(
+        event
+        for event in stored_events
+        if event["event"] == "agent_output" and event.get("data", {}).get("content") == "pre-switch"
+    )
+    switch_event = next(event for event in stored_events if event["event"] == "mechanism_switch")
+    post_switch_event = next(
+        event
+        for event in stored_events
+        if event["event"] == "agent_output" and event.get("data", {}).get("content") == "post-switch"
+    )
+
+    assert selected_event["data"]["execution_segment"] == 0
+    assert selected_event["data"]["mechanism"] == "debate"
+    assert selected_event["data"]["segment_mechanism"] == "debate"
+
+    assert pre_switch_event["data"]["execution_segment"] == 0
+    assert pre_switch_event["data"]["mechanism"] == "debate"
+    assert pre_switch_event["data"]["segment_mechanism"] == "debate"
+    assert pre_switch_event["data"]["segment_round"] == 1
+
+    assert switch_event["data"]["execution_segment"] == 0
+    assert switch_event["data"]["mechanism"] == "debate"
+    assert switch_event["data"]["segment_mechanism"] == "debate"
+    assert switch_event["data"]["next_execution_segment"] == 1
+    assert switch_event["data"]["next_segment_mechanism"] == "vote"
+    assert switch_event["data"]["segment_round"] == 1
+
+    assert post_switch_event["data"]["execution_segment"] == 1
+    assert post_switch_event["data"]["mechanism"] == "vote"
+    assert post_switch_event["data"]["segment_mechanism"] == "vote"
+    assert post_switch_event["data"]["segment_round"] == 1
 
 
 @pytest.mark.asyncio

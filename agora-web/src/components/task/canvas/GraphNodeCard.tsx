@@ -6,7 +6,7 @@ import type { GraphNode, NodeKind } from "./canvasTypes";
 export const NODE_WIDTH = 240;
 export const NODE_HEIGHT = 170;
 export const NODE_GAP_H = 20;
-export const NODE_GAP_V = 100;
+export const NODE_GAP_V = 160;
 
 // ─── Keyframe injection ───────────────────────────────────────────────────────
 const CANVAS_STYLE_ID = "canvas-node-kf";
