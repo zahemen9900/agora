@@ -1042,9 +1042,13 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
     raw_per_mode = _as_dict(summary.get("per_mode"))
     raw_per_mechanism = _as_dict(summary.get("per_mechanism"))
     raw_per_category = _as_dict(summary.get("per_category"))
+    raw_per_category_by_mechanism = _as_dict(summary.get("per_category_by_mechanism"))
     derived_per_mode = _as_dict(derived_summary.get("per_mode"))
     derived_per_mechanism = _as_dict(derived_summary.get("per_mechanism"))
     derived_per_category = _as_dict(derived_summary.get("per_category"))
+    derived_per_category_by_mechanism = _as_dict(
+        derived_summary.get("per_category_by_mechanism")
+    )
 
     per_mode_complete = _merge_metric_sections(
         raw_per_mode or raw_per_mechanism,
@@ -1081,11 +1085,16 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
         fallback_keys=_BENCHMARK_MECHANISMS,
     )
     per_category_complete = _merge_category_sections(raw_per_category, derived_per_category)
+    per_category_by_mechanism_complete = _merge_category_sections(
+        raw_per_category_by_mechanism,
+        derived_per_category_by_mechanism,
+    )
 
     normalized_summary = dict(summary)
     normalized_summary["per_mode"] = per_mode_complete
     normalized_summary["per_mechanism"] = per_mechanism_complete
     normalized_summary["per_category"] = per_category_complete
+    normalized_summary["per_category_by_mechanism"] = per_category_by_mechanism_complete
     for key in (
         "completed_run_count",
         "failed_run_count",

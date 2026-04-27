@@ -13,7 +13,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ChevronDown, Filter } from "lucide-react";
+import { ChevronDown, Filter, RotateCcw } from "lucide-react";
 
 import { BenchmarkWizard, type DomainPromptSelection } from "../components/benchmark/BenchmarkWizard";
 import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
@@ -34,6 +34,7 @@ import {
 import {
   BENCHMARK_DOMAIN_KEYS,
   buildOverviewAccuracyData,
+  buildOverviewCostData,
   buildOverviewLearningCurve,
   detectBenchmarkArtifactKind,
   normalizeBenchmarkSummary,
@@ -60,7 +61,6 @@ function normalizeText(value: string | null | undefined): string {
 }
 
 const BENCHMARK_DOMAINS: BenchmarkDomainName[] = [...BENCHMARK_DOMAIN_KEYS];
-const BENCHMARK_MECHANISMS = ["debate", "vote", "selector"] as const;
 const FALLBACK_PROMPT_TEMPLATES: BenchmarkPromptTemplatesPayload = {
   domains: {
     math: [
@@ -217,7 +217,7 @@ function injectChartKeyframes() {
   if (document.getElementById(CHART_KF_ID)) return;
   const s = document.createElement("style");
   s.id = CHART_KF_ID;
-  s.textContent = `@keyframes bm-shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } }`;
+  s.textContent = `@keyframes bm-shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } } @keyframes bm-spin { to { transform: rotate(360deg); } }`;
   document.head.appendChild(s);
 }
 
@@ -442,15 +442,7 @@ export function Benchmarks() {
   const learningCurveState = useMemo(() => buildOverviewLearningCurve(benchmarks), [benchmarks]);
 
   const costData = useMemo(() => {
-    return BENCHMARK_MECHANISMS.map((mechanism) => {
-      const metrics = normalizedSummary.per_mode[mechanism] ?? {};
-      const runCount = asNumber(metrics.run_count);
-      const avgCost = asNumber(metrics.avg_estimated_cost_usd);
-      return {
-        mechanism: titleCase(mechanism),
-        estimatedCostUsd: runCount > 0 && avgCost > 0 ? avgCost : null,
-      };
-    });
+    return buildOverviewCostData(normalizedSummary);
   }, [normalizedSummary]);
 
   const yourEntries = useMemo(() => {
@@ -619,6 +611,11 @@ export function Benchmarks() {
 
   return (
     <>
+      <title>Benchmarks — Agora</title>
+      <meta
+        name="description"
+        content="Performance dashboard for Agora's deliberation mechanisms — accuracy, latency, and cost across reasoning tasks."
+      />
       <div className="max-w-250 mx-auto pb-20 w-full">
         <header className="mb-10">
           <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
@@ -632,8 +629,8 @@ export function Benchmarks() {
           {/* Accuracy by category — full width */}
           <div className="col-span-1 lg:col-span-2">
             <ChartCard
-              title="Accuracy by Task Category × Stage"
-              subtitle="Requested benchmark-stage success by category for the active artifact. This chart is stage-level, not actual executed-mechanism telemetry."
+              title="Scored Success by Category × Executed Mechanism"
+              subtitle="Actual mechanism success by category after selector decisions and switches. Creative and demo are proxy-scored; one-sample buckets are directional, not proof."
             >
               {overviewError ? (
                 <div style={{ padding: "32px 0", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>
@@ -758,7 +755,7 @@ export function Benchmarks() {
           {/* Cost efficiency */}
           <ChartCard
             title="Cost Efficiency"
-            subtitle="Estimated USD cost per requested benchmark stage from token usage and the internal pricing catalog."
+            subtitle="Estimated USD cost per actual executed mechanism from token usage and the internal pricing catalog."
           >
             {!benchmarks && !overviewError ? (
               <SkeletonChartBlock h="250px" delay={0.2} />
@@ -852,6 +849,14 @@ export function Benchmarks() {
           <div className="flex items-center justify-between gap-3 mb-5">
             <h3 className="text-lg font-semibold">Your Benchmarks</h3>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void benchmarkCatalogQuery.refetch()}
+                title="Refresh"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
+              >
+                <RotateCcw size={13} style={{ animation: benchmarkCatalogQuery.isFetching ? "bm-spin 0.8s linear infinite" : "none" }} />
+              </button>
               <FilterButton value={yourSortMode} onChange={setYourSortMode} />
               <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
             </div>
@@ -927,6 +932,14 @@ export function Benchmarks() {
           <div className="flex items-center justify-between gap-3 mb-5">
             <h3 className="text-lg font-semibold">Global Benchmarks</h3>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void benchmarkCatalogQuery.refetch()}
+                title="Refresh"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
+              >
+                <RotateCcw size={13} style={{ animation: benchmarkCatalogQuery.isFetching ? "bm-spin 0.8s linear infinite" : "none" }} />
+              </button>
               <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
               <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
             </div>
@@ -1065,13 +1078,6 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
 }
 
 // ── Data helpers ───────────────────────────────────────────────────────────────
-
-function asNumber(value: unknown): number {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  return 0;
-}
 
 function formatUsd(value: number | null): string {
   if (value === null || !Number.isFinite(value) || value <= 0) {

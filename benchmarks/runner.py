@@ -1034,6 +1034,7 @@ class BenchmarkRunner:
                 "per_mode": {},
                 "per_mechanism": {},
                 "per_category": {},
+                "per_category_by_mechanism": {},
                 "completed_run_count": 0,
                 "failed_run_count": 0,
                 "degraded_run_count": 0,
@@ -1082,6 +1083,7 @@ class BenchmarkRunner:
                 "per_mode": {},
                 "per_mechanism": {},
                 "per_category": {},
+                "per_category_by_mechanism": {},
                 "completed_run_count": 0,
                 "failed_run_count": len(failed_runs),
                 "degraded_run_count": 0,
@@ -1095,6 +1097,9 @@ class BenchmarkRunner:
         per_mode: dict[str, list[dict[str, Any]]] = defaultdict(list)
         per_mechanism: dict[str, list[dict[str, Any]]] = defaultdict(list)
         per_category: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        per_category_by_mechanism: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
             lambda: defaultdict(list)
         )
         for run in completed_runs:
@@ -1116,6 +1121,7 @@ class BenchmarkRunner:
             per_mode[stage_key].append(run)
             per_mechanism[mechanism_key].append(run)
             per_category[category_key][stage_key].append(run)
+            per_category_by_mechanism[category_key][mechanism_key].append(run)
 
         def _metric_block(bucket_runs: list[dict[str, Any]]) -> dict[str, float | int]:
             run_count = len(bucket_runs)
@@ -1163,11 +1169,19 @@ class BenchmarkRunner:
             }
             for category, mode_runs in per_category.items()
         }
+        category_by_mechanism_summary = {
+            category: {
+                mechanism: _metric_block(category_runs)
+                for mechanism, category_runs in mechanism_runs.items()
+            }
+            for category, mechanism_runs in per_category_by_mechanism.items()
+        }
 
         return {
             "per_mode": mode_summary,
             "per_mechanism": mechanism_summary,
             "per_category": category_summary,
+            "per_category_by_mechanism": category_by_mechanism_summary,
             "completed_run_count": len(completed_runs),
             "failed_run_count": len(failed_runs),
             "degraded_run_count": len(degraded_runs),

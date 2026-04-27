@@ -452,6 +452,9 @@ class BenchmarkSummaryResponse(BaseModel):
     per_mode: dict[str, BenchmarkMetricSummaryResponse] = Field(default_factory=dict)
     per_mechanism: dict[str, BenchmarkMetricSummaryResponse] = Field(default_factory=dict)
     per_category: dict[str, dict[str, BenchmarkMetricSummaryResponse]] = Field(default_factory=dict)
+    per_category_by_mechanism: dict[str, dict[str, BenchmarkMetricSummaryResponse]] = Field(
+        default_factory=dict
+    )
     completed_run_count: int = Field(default=0, ge=0)
     failed_run_count: int = Field(default=0, ge=0)
     degraded_run_count: int = Field(default=0, ge=0)

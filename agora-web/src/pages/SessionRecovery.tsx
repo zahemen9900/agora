@@ -26,6 +26,9 @@ export function SessionRecoveryPage({ issue }: { issue: AuthIssue }) {
   const copy = ISSUE_COPY[issue];
 
   return (
+    <>
+      <title>Session Recovery — Agora</title>
+      <meta name="description" content="Re-authenticate or recover your Agora session to continue." />
     <div className="min-h-screen px-6 py-10 flex items-center justify-center">
       <div className="relative max-w-xl w-full card p-8 sm:p-10 border border-border-subtle overflow-hidden">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(0,212,170,0.12),_transparent_45%)] pointer-events-none" />
@@ -54,5 +57,6 @@ export function SessionRecoveryPage({ issue }: { issue: AuthIssue }) {
         </div>
       </div>
     </div>
+    </>
   );
 }

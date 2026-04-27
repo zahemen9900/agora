@@ -99,6 +99,12 @@ export function LoginPage() {
   const fromPage = searchParams.get('from');
 
   return (
+    <>
+      <title>Agora — Proof of Deliberation</title>
+      <meta
+        name="description"
+        content="Multi-agent AI deliberation platform. Submit a task, watch agents debate or vote, and receive a cryptographic proof ready for on-chain submission."
+      />
     <div style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
 
       {/* Redirect notice — shown when bounced from a protected route */}
@@ -243,5 +249,6 @@ export function LoginPage() {
       <FooterGraph />
 
     </div>
+    </>
   );
 }

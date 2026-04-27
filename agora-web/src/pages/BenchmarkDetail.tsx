@@ -459,31 +459,42 @@ export function BenchmarkDetail() {
 
   if (loadError) {
     return (
-      <div className="max-w-250 mx-auto pb-20 w-full">
-        <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
-          <ArrowLeft size={14} /> Back to overview
-        </button>
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">{loadError}</p>
+      <>
+        <title>{benchmarkId ? `${benchmarkId} · Benchmark — Agora` : "Benchmark — Agora"}</title>
+        <meta name="description" content="Detailed benchmark results — mechanism breakdown, model performance, accuracy scores, and cost." />
+        <div className="max-w-250 mx-auto pb-20 w-full">
+          <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
+            <ArrowLeft size={14} /> Back to overview
+          </button>
+          <div className="card p-6 border border-border-subtle">
+            <p className="text-text-secondary">{loadError}</p>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
   if (!detail) {
     return (
-      <div className="max-w-250 mx-auto pb-20 w-full">
-        <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
-          <ArrowLeft size={14} /> Back to overview
-        </button>
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">Loading benchmark report...</p>
+      <>
+        <title>{benchmarkId ? `${benchmarkId} · Benchmark — Agora` : "Benchmark — Agora"}</title>
+        <meta name="description" content="Detailed benchmark results — mechanism breakdown, model performance, accuracy scores, and cost." />
+        <div className="max-w-250 mx-auto pb-20 w-full">
+          <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
+            <ArrowLeft size={14} /> Back to overview
+          </button>
+          <div className="card p-6 border border-border-subtle">
+            <p className="text-text-secondary">Loading benchmark report...</p>
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
   return (
+    <>
+      <title>{benchmarkId ? `${benchmarkId} · Benchmark — Agora` : "Benchmark — Agora"}</title>
+      <meta name="description" content="Detailed benchmark results — mechanism breakdown, model performance, accuracy scores, and cost." />
     <div className="max-w-250 mx-auto pb-20 w-full">
       <Flyout
         show={showFailedFlyout}
@@ -980,9 +991,9 @@ export function BenchmarkDetail() {
       </div>
 
       <div className="card p-4 sm:p-8 mb-8 overflow-x-auto">
-        <h3 className="mb-2 text-lg font-semibold">Category Accuracy Matrix</h3>
+        <h3 className="mb-2 text-lg font-semibold">Category × Executed Mechanism Matrix</h3>
         <p className="text-sm text-text-secondary mb-6">
-          Per-category scored success across requested benchmark stages. Creative and demo remain proxy-scored rather than exact-match truth.
+          Per-category scored success by the mechanism that actually ran after selector decisions and switches. Creative and demo remain proxy-scored rather than exact-match truth.
         </p>
 
         {categoryRows.length === 0 ? (
@@ -1122,6 +1133,7 @@ export function BenchmarkDetail() {
         <JsonPanel title="Benchmark Payload" value={detail.benchmark_payload} />
       </div>
     </div>
+    </>
   );
 }
 

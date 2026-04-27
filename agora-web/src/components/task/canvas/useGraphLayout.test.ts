@@ -1,0 +1,224 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { buildGraphLayout } from "./useGraphLayout";
+
+test("buildGraphLayout keeps post-switch vote rows after switch bridge", () => {
+  const timeline = [
+    {
+      key: "selector",
+      type: "mechanism_selected",
+      title: "selector",
+      summary: "",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      canonicalStage: "selector",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+      },
+    },
+    {
+      key: "debate-opening",
+      type: "agent_output",
+      title: "debate-opening",
+      summary: "",
+      agentId: "agent-1",
+      stage: "opening",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "opening",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+        segment_round: 1,
+      },
+    },
+    {
+      key: "switch-0",
+      type: "mechanism_switch",
+      title: "switch-0",
+      summary: "",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      canonicalStage: "switch",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        next_execution_segment: 1,
+        next_segment_mechanism: "vote",
+      },
+    },
+    {
+      key: "vote-round-1",
+      type: "agent_output",
+      title: "vote-round-1",
+      summary: "",
+      agentId: "agent-1",
+      stage: "vote",
+      segmentIndex: 1,
+      segmentMechanism: "vote",
+      segmentRound: 1,
+      canonicalStage: "vote",
+      details: {
+        execution_segment: 1,
+        segment_mechanism: "vote",
+        round_number: 1,
+        segment_round: 1,
+      },
+    },
+    {
+      key: "quorum",
+      type: "quorum_reached",
+      title: "quorum",
+      summary: "",
+      segmentIndex: 1,
+      segmentMechanism: "vote",
+      canonicalStage: "quorum",
+      details: {
+        execution_segment: 1,
+      },
+    },
+  ];
+
+  const { nodes, edges } = buildGraphLayout(timeline);
+
+  const debateNode = nodes.find((node) => node.title === "debate-opening");
+  const switchNode = nodes.find((node) => node.title === "switch-0");
+  const voteNode = nodes.find((node) => node.title === "vote-round-1");
+
+  assert.ok(debateNode);
+  assert.ok(switchNode);
+  assert.ok(voteNode);
+  assert.ok(debateNode.row < switchNode.row);
+  assert.ok(switchNode.row < voteNode.row);
+  assert.match(voteNode.id, /^agent:1:agent-1:vote:1$/);
+  assert.ok(edges.some((edge) => edge.fromNodeId === switchNode.id && edge.toNodeId === voteNode.id));
+});
+
+test("buildGraphLayout keeps identical agent-stage-round nodes separate across segments", () => {
+  const timeline = [
+    {
+      key: "seg0-opening",
+      type: "agent_output",
+      title: "seg0-opening",
+      summary: "",
+      agentId: "agent-1",
+      stage: "opening",
+      segmentIndex: 0,
+      segmentMechanism: "vote",
+      segmentRound: 1,
+      canonicalStage: "opening",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "vote",
+        round_number: 1,
+      },
+    },
+    {
+      key: "switch-0",
+      type: "mechanism_switch",
+      title: "switch-0",
+      summary: "",
+      segmentIndex: 0,
+      segmentMechanism: "vote",
+      canonicalStage: "switch",
+      details: {
+        execution_segment: 0,
+        next_execution_segment: 1,
+        next_segment_mechanism: "debate",
+      },
+    },
+    {
+      key: "seg1-opening",
+      type: "agent_output",
+      title: "seg1-opening",
+      summary: "",
+      agentId: "agent-1",
+      stage: "opening",
+      segmentIndex: 1,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "opening",
+      details: {
+        execution_segment: 1,
+        segment_mechanism: "debate",
+        round_number: 1,
+      },
+    },
+  ];
+
+  const { nodes } = buildGraphLayout(timeline);
+  const openingNodes = nodes.filter(
+    (node) => node.kind === "agent" && node.agentId === "agent-1" && node.stage === "opening",
+  );
+
+  assert.equal(openingNodes.length, 2);
+  assert.notEqual(openingNodes[0].id, openingNodes[1].id);
+  assert.notEqual(openingNodes[0].row, openingNodes[1].row);
+});
+
+test("buildGraphLayout annotates split source nodes with transition labels", () => {
+  const timeline = [
+    {
+      key: "opening",
+      type: "agent_output",
+      title: "opening",
+      summary: "opening answer",
+      agentId: "agent-1",
+      stage: "opening",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "opening",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+      },
+    },
+    {
+      key: "rebuttal-a",
+      type: "agent_output",
+      title: "rebuttal-a",
+      summary: "a",
+      agentId: "agent-1",
+      stage: "rebuttal",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "rebuttal",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+      },
+    },
+    {
+      key: "rebuttal-b",
+      type: "agent_output",
+      title: "rebuttal-b",
+      summary: "b",
+      agentId: "agent-2",
+      stage: "rebuttal",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "rebuttal",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+      },
+    },
+  ];
+
+  const { nodes } = buildGraphLayout(timeline);
+  const openingNode = nodes.find((node) => node.title === "opening");
+
+  assert.ok(openingNode);
+  assert.equal(openingNode.transitionLabel, "Opening R1");
+  assert.match(openingNode.transitionDescription ?? "", /debate segment/i);
+});
