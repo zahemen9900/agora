@@ -305,6 +305,187 @@ def test_with_complete_summary_derives_scored_coverage_and_cost_from_runs() -> N
     assert summary["per_category_by_mechanism"]["demo"]["vote"]["proxy_run_count"] == 1
 
 
+def test_aggregate_benchmark_payloads_preserve_stage_summaries() -> None:
+    payload = benchmark_routes._aggregate_benchmark_payloads(
+        [
+            {
+                "artifact_id": "artifact-one",
+                "pre_learning": {
+                    "runs": [
+                        {
+                            "item_status": "completed",
+                            "mode": "selector",
+                            "mechanism_used": "vote",
+                            "category": "math",
+                            "correct": True,
+                            "scored": True,
+                            "scoring_mode": "exact_match",
+                            "tokens_used": 100,
+                            "latency_ms": 10.0,
+                            "rounds": 1,
+                            "switches": 0,
+                            "thinking_tokens_used": 15,
+                            "estimated_cost_usd": 0.01,
+                            "phase": "pre_learning",
+                            "run_kind": "selector",
+                        }
+                    ]
+                },
+                "post_learning": {
+                    "runs": [
+                        {
+                            "item_status": "completed",
+                            "mode": "selector",
+                            "mechanism_used": "debate",
+                            "category": "math",
+                            "correct": False,
+                            "scored": True,
+                            "scoring_mode": "exact_match",
+                            "tokens_used": 200,
+                            "latency_ms": 20.0,
+                            "rounds": 2,
+                            "switches": 1,
+                            "thinking_tokens_used": 30,
+                            "estimated_cost_usd": 0.02,
+                            "phase": "post_learning",
+                            "run_kind": "selector",
+                        }
+                    ]
+                },
+            },
+            {
+                "artifact_id": "artifact-two",
+                "pre_learning": {
+                    "runs": [
+                        {
+                            "item_status": "completed",
+                            "mode": "selector",
+                            "mechanism_used": "vote",
+                            "category": "code",
+                            "correct": True,
+                            "scored": True,
+                            "scoring_mode": "exact_match",
+                            "tokens_used": 120,
+                            "latency_ms": 12.0,
+                            "rounds": 1,
+                            "switches": 0,
+                            "thinking_tokens_used": 20,
+                            "estimated_cost_usd": 0.012,
+                            "phase": "pre_learning",
+                            "run_kind": "selector",
+                        }
+                    ]
+                },
+            },
+        ]
+    )
+
+    assert payload["aggregated_artifact_count"] == 2
+    assert payload["aggregated_run_count"] == 3
+    assert payload["pre_learning"]["summary"]["per_mode"]["selector"]["run_count"] == 2
+    assert payload["post_learning"]["summary"]["per_mode"]["selector"]["run_count"] == 1
+    assert payload["summary"]["per_mechanism"]["vote"]["run_count"] == 2
+    assert payload["summary"]["per_mechanism"]["debate"]["run_count"] == 1
+
+
+def test_aggregate_benchmark_payloads_include_comparison_style_runs() -> None:
+    payload = benchmark_routes._aggregate_benchmark_payloads(
+        [
+            {
+                "artifact_id": "comparison-artifact",
+                "runs": [
+                    {
+                        "item_status": "completed",
+                        "mode": "vote",
+                        "mechanism_used": "vote",
+                        "category": "demo",
+                        "correct": True,
+                        "scored": True,
+                        "scoring_mode": "proxy_success",
+                        "tokens_used": 90,
+                        "latency_ms": 9.0,
+                        "rounds": 1,
+                        "switches": 0,
+                        "thinking_tokens_used": 4,
+                        "estimated_cost_usd": 0.004,
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert payload["aggregated_artifact_count"] == 1
+    assert payload["aggregated_run_count"] == 1
+    assert payload["summary"]["per_mode"]["vote"]["run_count"] == 1
+    assert payload["summary"]["per_mode"]["vote"]["scored_run_count"] == 1
+    assert payload["summary"]["per_category"]["demo"]["vote"]["proxy_run_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_resolve_aggregate_benchmark_summary_payload_uses_full_catalog_for_all_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self.global_limit: int | None = None
+            self.user_limit: int | None = None
+
+        async def list_global_benchmark_artifacts(self, *, limit: int) -> list[dict[str, Any]]:
+            self.global_limit = limit
+            return [
+                {
+                    "artifact_id": "artifact-one",
+                    "status": "completed",
+                    "created_at": "2026-04-27T00:00:00+00:00",
+                    "payload": {
+                        "artifact_id": "artifact-one",
+                        "artifact_version": "benchmark-tasklike-v2",
+                        "runs": [
+                            {
+                                "item_status": "completed",
+                                "mode": "vote",
+                                "mechanism_used": "vote",
+                                "category": "math",
+                                "correct": True,
+                                "scored": True,
+                                "scoring_mode": "exact_match",
+                                "tokens_used": 12,
+                                "latency_ms": 1.0,
+                            }
+                        ],
+                    },
+                }
+            ]
+
+        async def list_user_benchmark_artifacts(
+            self,
+            user_id: str,
+            *,
+            limit: int,
+        ) -> list[dict[str, Any]]:
+            self.user_limit = limit
+            return []
+
+    store = FakeStore()
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "get_task_store", lambda: store)
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
+
+    payload = await benchmark_routes._resolve_aggregate_benchmark_summary_payload(
+        _override_user(),
+        limit=None,
+    )
+
+    assert payload is not None
+    assert payload["aggregation_window"] == "all"
+    assert payload["aggregated_artifact_count"] == 1
+    assert store.global_limit == benchmark_routes._AGGREGATE_BENCHMARK_FULL_CATALOG_LIMIT
+    assert store.user_limit == benchmark_routes._AGGREGATE_BENCHMARK_FULL_CATALOG_LIMIT
+
+
 def test_artifact_telemetry_estimates_cost_from_total_tokens_without_split_counts() -> None:
     payload = {
         "artifact_version": "benchmark-tasklike-v2",

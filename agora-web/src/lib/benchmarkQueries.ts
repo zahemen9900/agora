@@ -20,12 +20,15 @@ import {
 } from "./api";
 import { useAuth } from "./useAuth";
 
+export type BenchmarkOverviewMode = "latest" | "aggregate_recent" | "aggregate_all";
+
 export const benchmarkQueryKeys = {
   all: ["benchmarks"] as const,
   overviewAll: () => [...benchmarkQueryKeys.all, "overview"] as const,
-  overview: (includeDemo = true) => [
+  overview: (includeDemo = true, overviewMode: BenchmarkOverviewMode = "latest") => [
     ...benchmarkQueryKeys.overviewAll(),
     includeDemo ? "include-demo" : "no-demo",
+    overviewMode,
   ] as const,
   catalogAll: () => [...benchmarkQueryKeys.all, "catalog"] as const,
   catalog: (limit: number) => [...benchmarkQueryKeys.catalogAll(), limit] as const,
@@ -298,15 +301,18 @@ export function seedTriggeredBenchmarkRunCache(
   );
 }
 
-export function useBenchmarkOverviewQuery(includeDemo = true) {
+export function useBenchmarkOverviewQuery(
+  includeDemo = true,
+  overviewMode: BenchmarkOverviewMode = "latest",
+) {
   const { authStatus, getAccessToken } = useAuth();
 
   return useQuery({
-    queryKey: benchmarkQueryKeys.overview(includeDemo),
+    queryKey: benchmarkQueryKeys.overview(includeDemo, overviewMode),
     enabled: authStatus === "authenticated",
     queryFn: async () => {
       const token = await getAccessToken();
-      return getBenchmarks(token, includeDemo);
+      return getBenchmarks(token, includeDemo, overviewMode);
     },
   });
 }

@@ -26,6 +26,7 @@ import {
 import {
   benchmarkQueryKeys,
   seedTriggeredBenchmarkRunCache,
+  type BenchmarkOverviewMode,
   useBenchmarkCatalogQuery,
   useBenchmarkOverviewQuery,
   useBenchmarkPromptTemplatesQuery,
@@ -505,7 +506,8 @@ function SectionHeader({ label, count, countColor }: { label: string; count: num
 export function Benchmarks() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const benchmarkOverviewQuery = useBenchmarkOverviewQuery(true);
+  const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("latest");
+  const benchmarkOverviewQuery = useBenchmarkOverviewQuery(true, overviewMode);
   const benchmarkCatalogQuery = useBenchmarkCatalogQuery(100);
   const benchmarkPromptTemplatesQuery = useBenchmarkPromptTemplatesQuery();
   const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
@@ -620,6 +622,14 @@ export function Benchmarks() {
   );
   const benchmarkArtifactKind = useMemo(
     () => detectBenchmarkArtifactKind(benchmarks),
+    [benchmarks],
+  );
+  const aggregateArtifactCount = useMemo(
+    () => Number((benchmarks as Record<string, unknown> | null)?.aggregated_artifact_count ?? 0),
+    [benchmarks],
+  );
+  const aggregationWindow = useMemo(
+    () => String((benchmarks as Record<string, unknown> | null)?.aggregation_window ?? "latest"),
     [benchmarks],
   );
 
@@ -805,10 +815,52 @@ export function Benchmarks() {
       />
       <div className="max-w-250 mx-auto pb-20 w-full">
         <header className="mb-10">
-          <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
-          <p className="text-text-secondary text-lg max-w-150">
-            Comparison, ablation, and learning metrics generated from the Phase 2 benchmark suite.
-          </p>
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+            <div>
+              <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
+              <p className="text-text-secondary text-lg max-w-150">
+                Comparison, ablation, and learning metrics generated from the Phase 2 benchmark suite.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { mode: "latest", label: "Latest Artifact" },
+                { mode: "aggregate_recent", label: "Aggregate 20" },
+                { mode: "aggregate_all", label: "Whole Catalog" },
+              ].map((option) => {
+                const selected = overviewMode === option.mode;
+                return (
+                  <button
+                    key={option.mode}
+                    type="button"
+                    className={selected ? "btn-primary" : "btn-secondary"}
+                    onClick={() => setOverviewMode(option.mode as BenchmarkOverviewMode)}
+                    style={{ minWidth: "140px" }}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {overviewMode !== "latest" ? (
+            <div
+              style={{
+                marginTop: "14px",
+                border: "1px solid rgba(52,211,153,0.2)",
+                background: "rgba(52,211,153,0.06)",
+                borderRadius: "10px",
+                padding: "10px 12px",
+                fontFamily: "'Hanken Grotesk', sans-serif",
+                fontSize: "12px",
+                color: "var(--text-secondary)",
+                maxWidth: "760px",
+              }}
+            >
+              Aggregating across <span style={{ color: "var(--accent-emerald)" }}>{aggregateArtifactCount || "..."}</span> compatible completed benchmarks
+              {aggregationWindow === "all" ? " from the whole catalog." : " from the most recent 20 saved artifacts."}
+            </div>
+          ) : null}
         </header>
 
         {/* ── Charts ──────────────────────────────────────────────────────── */}

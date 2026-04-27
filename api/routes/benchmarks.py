@@ -231,6 +231,8 @@ _BUFFERED_BENCHMARK_EVENT_TYPES = {
     "cross_examination_delta",
 }
 _TERMINAL_BENCHMARK_EVENT_TYPES = {"complete", "failed", "error"}
+_AGGREGATE_BENCHMARK_FULL_CATALOG_LIMIT = 500
+_AGGREGATE_BENCHMARK_DEFAULT_LIMIT = 20
 
 
 def _get_legacy_backfill_lock() -> asyncio.Lock:
@@ -1137,6 +1139,141 @@ async def _resolve_benchmark_summary_payload() -> dict[str, Any] | None:
     normalized = _with_complete_summary(payload)
     await store.save_benchmark_summary(normalized)
     return normalized
+
+
+def _is_completed_runtime_benchmark_payload(artifact: dict[str, Any]) -> bool:
+    payload = _artifact_payload(artifact)
+    if not _is_current_runtime_benchmark_payload(payload):
+        return False
+    status = str(artifact.get("status") or payload.get("status") or "").strip().lower()
+    if status and status != "completed":
+        return False
+    return _payload_has_any_runs(payload)
+
+
+def _payload_has_stage_runs(payload: dict[str, Any]) -> bool:
+    for stage_key in ("pre_learning", "learning_updates", "post_learning"):
+        stage_payload = _as_dict(payload.get(stage_key))
+        raw_runs = stage_payload.get("runs")
+        if isinstance(raw_runs, list) and any(isinstance(run, dict) for run in raw_runs):
+            return True
+    return False
+
+
+def _aggregate_benchmark_payloads(payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    aggregate_payload: dict[str, Any] = {
+        "artifact_id": "aggregate-compatible-benchmarks",
+        "generated_at": datetime.now(UTC).isoformat(),
+        "artifact_version": "benchmark-aggregate-v1",
+        "summary_scope": "aggregate",
+        "aggregated_artifact_count": len(payloads),
+        "aggregated_source_ids": [
+            str(payload.get("artifact_id") or payload.get("run_id") or "").strip()
+            for payload in payloads
+            if str(payload.get("artifact_id") or payload.get("run_id") or "").strip()
+        ],
+    }
+
+    total_runs = 0
+    direct_runs: list[dict[str, Any]] = []
+    for stage_key in ("pre_learning", "learning_updates", "post_learning"):
+        stage_runs: list[dict[str, Any]] = []
+        for payload in payloads:
+            stage_payload = _as_dict(payload.get(stage_key))
+            raw_runs = stage_payload.get("runs")
+            if isinstance(raw_runs, list):
+                stage_runs.extend([run for run in raw_runs if isinstance(run, dict)])
+        if not stage_runs:
+            continue
+        total_runs += len(stage_runs)
+        aggregate_payload[stage_key] = {
+            "runs": stage_runs,
+            "summary": BenchmarkRunner._summarize_runs(_runs_for_summary({"runs": stage_runs})),
+        }
+
+    for payload in payloads:
+        if _payload_has_stage_runs(payload):
+            continue
+        raw_runs = payload.get("runs")
+        if isinstance(raw_runs, list):
+            direct_runs.extend([run for run in raw_runs if isinstance(run, dict)])
+
+    if direct_runs:
+        total_runs += len(direct_runs)
+        aggregate_payload["runs"] = direct_runs
+
+    aggregate_payload["aggregated_run_count"] = total_runs
+    aggregate_payload["summary"] = BenchmarkRunner._summarize_runs(
+        _runs_for_summary(aggregate_payload)
+    )
+    return _with_complete_summary(aggregate_payload)
+
+
+async def _resolve_aggregate_benchmark_summary_payload(
+    user: AuthenticatedUser | None,
+    *,
+    limit: int | None,
+) -> dict[str, Any] | None:
+    store = get_task_store()
+    await _maybe_backfill_legacy_benchmarks()
+
+    combined_artifacts: list[dict[str, Any]] = []
+    if limit is None:
+        fetch_limit = _AGGREGATE_BENCHMARK_FULL_CATALOG_LIMIT
+    else:
+        fetch_limit = max(limit, _AGGREGATE_BENCHMARK_DEFAULT_LIMIT)
+        fetch_limit = min(fetch_limit, _AGGREGATE_BENCHMARK_FULL_CATALOG_LIMIT)
+    combined_artifacts.extend(
+        artifact
+        for artifact in await store.list_global_benchmark_artifacts(
+            limit=fetch_limit
+        )
+        if isinstance(artifact, dict)
+    )
+
+    if user is not None and user.auth_method == "jwt" and user.user_id:
+        combined_artifacts.extend(
+            artifact
+            for artifact in await store.list_user_benchmark_artifacts(
+                user.user_id,
+                limit=fetch_limit,
+            )
+            if isinstance(artifact, dict)
+        )
+
+    combined_artifacts.sort(
+        key=lambda artifact: (
+            str(artifact.get("created_at") or artifact.get("updated_at") or "")
+        ),
+        reverse=True,
+    )
+
+    compatible_payloads: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for artifact in combined_artifacts:
+        if not _is_completed_runtime_benchmark_payload(artifact):
+            continue
+        payload = _artifact_payload(artifact)
+        artifact_id = str(
+            artifact.get("artifact_id") or payload.get("artifact_id") or artifact.get("run_id") or ""
+        ).strip()
+        if artifact_id and artifact_id in seen_ids:
+            continue
+        if artifact_id:
+            seen_ids.add(artifact_id)
+        compatible_payloads.append(payload)
+        if limit is not None and len(compatible_payloads) >= limit:
+            break
+
+    if not compatible_payloads:
+        return None
+
+    aggregate_payload = _aggregate_benchmark_payloads(compatible_payloads)
+    aggregate_payload["aggregation_window"] = (
+        "all" if limit is None else f"recent_{limit}"
+    )
+    aggregate_payload["aggregated_artifact_count"] = len(compatible_payloads)
+    return aggregate_payload
 
 
 def _build_benchmark_detail_response(
@@ -2877,6 +3014,8 @@ async def get_benchmarks(
     user: OptionalCurrentUser,
     x_agora_admin_token: str | None = Header(default=None),
     include_demo: bool = Query(default=False),
+    aggregate: bool = Query(default=False),
+    aggregate_window: Literal["recent_20", "all"] = Query(default="recent_20"),
 ) -> dict[str, Any]:
     """Return the latest persisted benchmark summary."""
 
@@ -2888,7 +3027,14 @@ async def get_benchmarks(
             raise HTTPException(status_code=403, detail="Benchmark access denied")
         require_human_user(user)
 
-    payload = await _resolve_benchmark_summary_payload()
+    if aggregate:
+        aggregate_limit = None if aggregate_window == "all" else _AGGREGATE_BENCHMARK_DEFAULT_LIMIT
+        payload = await _resolve_aggregate_benchmark_summary_payload(
+            user,
+            limit=aggregate_limit,
+        )
+    else:
+        payload = await _resolve_benchmark_summary_payload()
     if payload is None:
         raise HTTPException(status_code=404, detail="Benchmark summary is not available yet")
 
