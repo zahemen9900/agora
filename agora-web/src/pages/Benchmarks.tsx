@@ -2,16 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
-  Legend,
   Line,
   LineChart,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
+  ZAxis,
 } from "recharts";
 import { ChevronDown, Filter, RotateCcw } from "lucide-react";
 
@@ -33,11 +33,12 @@ import {
 } from "../lib/benchmarkQueries";
 import {
   BENCHMARK_DOMAIN_KEYS,
-  buildOverviewAccuracyData,
-  buildOverviewCostData,
+  buildOverviewHeatmapRows,
   buildOverviewLearningCurve,
+  buildOverviewParetoData,
   detectBenchmarkArtifactKind,
   normalizeBenchmarkSummary,
+  type BenchmarkHeatmapRow,
   type NormalizedSummary,
 } from "../lib/benchmarkMetrics";
 import {
@@ -274,6 +275,39 @@ function ChartTooltip({
   );
 }
 
+function ParetoTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload?: { mechanism: string; avgCostUsd: number | null; accuracy: number | null; avgTokens: number; scoredRunCount: number; frontier: boolean } }>;
+}) {
+  const point = payload?.[0]?.payload;
+  if (!active || !point) {
+    return null;
+  }
+  return (
+    <div style={{
+      background: "var(--bg-elevated)", border: "1px solid var(--border-strong)",
+      borderRadius: "8px", padding: "10px 14px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+      minWidth: "180px",
+    }}>
+      <div style={{
+        fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-primary)", fontWeight: 700, marginBottom: "6px",
+      }}>
+        {point.mechanism}
+      </div>
+      <div style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-secondary)", display: "grid", gap: "3px" }}>
+        <span>Quality: {point.accuracy == null ? "n/a" : `${point.accuracy.toFixed(1)}%`}</span>
+        <span>Avg cost: {formatUsd(point.avgCostUsd)}</span>
+        <span>Avg tokens: {point.avgTokens.toLocaleString()}</span>
+        <span>Scored runs: {point.scoredRunCount}</span>
+        {point.frontier ? <span style={{ color: "var(--accent-emerald)" }}>Pareto frontier</span> : null}
+      </div>
+    </div>
+  );
+}
+
 function ChartCard({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   return (
     <div className="card" style={{ padding: "20px 24px 16px" }}>
@@ -286,6 +320,160 @@ function ChartCard({ title, subtitle, children }: { title: string; subtitle: str
         </div>
       </div>
       {children}
+    </div>
+  );
+}
+
+function LearningStatCard({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "accent" | "warning" }) {
+  const valueColor = tone === "accent"
+    ? "var(--accent-emerald)"
+    : tone === "warning"
+      ? "var(--accent-amber)"
+      : "var(--text-primary)";
+  return (
+    <div style={{
+      border: "1px solid var(--border-default)",
+      borderRadius: "10px",
+      padding: "10px 12px",
+      background: "var(--bg-subtle)",
+      minWidth: "0",
+    }}>
+      <div style={{
+        fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em",
+        textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: "5px",
+      }}>
+        {label}
+      </div>
+      <div style={{ fontFamily: CHART_FONT, fontSize: "14px", color: valueColor, fontWeight: 600 }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function heatmapCellColor(accuracy: number | null): string {
+  if (accuracy == null) {
+    return "var(--bg-subtle)";
+  }
+  const alpha = 0.12 + (accuracy / 100) * 0.72;
+  return `rgba(45, 212, 191, ${alpha.toFixed(3)})`;
+}
+
+function heatmapCellBorder(accuracy: number | null): string {
+  if (accuracy == null) {
+    return "rgba(255,255,255,0.06)";
+  }
+  const alpha = 0.14 + (accuracy / 100) * 0.32;
+  return `rgba(45, 212, 191, ${alpha.toFixed(3)})`;
+}
+
+function BenchmarkHeatmap({ rows }: { rows: BenchmarkHeatmapRow[] }) {
+  return (
+    <div style={{ width: "100%", overflowX: "auto" }}>
+      <div style={{ minWidth: "680px" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "140px repeat(3, minmax(0, 1fr))",
+            gap: "10px",
+            marginBottom: "10px",
+          }}
+        >
+          <div />
+          {["Debate", "Vote", "Selector"].map((label) => (
+            <div
+              key={label}
+              style={{
+                fontFamily: CHART_FONT,
+                fontSize: "10px",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                color: "var(--text-secondary)",
+                textAlign: "center",
+              }}
+            >
+              {label}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {rows.map((row) => (
+            <div
+              key={row.category}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "140px repeat(3, minmax(0, 1fr))",
+                gap: "10px",
+                alignItems: "stretch",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  fontFamily: CHART_FONT,
+                  fontSize: "12px",
+                  color: "var(--text-primary)",
+                }}
+              >
+                {row.category}
+              </div>
+              {row.cells.map((cell) => (
+                <div
+                  key={`${row.category}-${cell.mechanism}`}
+                  style={{
+                    minHeight: "86px",
+                    borderRadius: "12px",
+                    border: `1px solid ${heatmapCellBorder(cell.accuracy)}`,
+                    background: heatmapCellColor(cell.accuracy),
+                    padding: "12px 14px",
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "space-between",
+                    boxShadow: cell.accuracy == null ? "none" : "inset 0 1px 0 rgba(255,255,255,0.04)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "10px" }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "18px", color: "var(--text-primary)", fontWeight: 700 }}>
+                      {cell.accuracy == null ? "n/a" : `${Math.round(cell.accuracy)}%`}
+                    </span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-secondary)" }}>
+                      n={cell.scoredRunCount}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-tertiary)" }}>
+                      {cell.runCount > 0 ? `${cell.runCount} completed` : "No coverage"}
+                    </span>
+                    {cell.proxyRunCount > 0 ? (
+                      <span style={{
+                        fontFamily: CHART_FONT,
+                        fontSize: "9px",
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        color: "var(--accent-amber)",
+                      }}>
+                        Proxy
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "14px", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-tertiary)" }}>Low evidence / low success</span>
+          <div style={{
+            width: "160px",
+            height: "10px",
+            borderRadius: "999px",
+            background: "linear-gradient(90deg, rgba(45,212,191,0.12) 0%, rgba(45,212,191,0.84) 100%)",
+            border: "1px solid rgba(45,212,191,0.2)",
+          }} />
+          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-tertiary)" }}>High scored success</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -435,15 +623,14 @@ export function Benchmarks() {
     [benchmarks],
   );
 
-  const accuracyData = useMemo(() => {
-    return buildOverviewAccuracyData(normalizedSummary);
-  }, [normalizedSummary]);
+  const overviewHeatmapRows = useMemo(
+    () => buildOverviewHeatmapRows(normalizedSummary),
+    [normalizedSummary],
+  );
 
   const learningCurveState = useMemo(() => buildOverviewLearningCurve(benchmarks), [benchmarks]);
 
-  const costData = useMemo(() => {
-    return buildOverviewCostData(normalizedSummary);
-  }, [normalizedSummary]);
+  const paretoData = useMemo(() => buildOverviewParetoData(normalizedSummary), [normalizedSummary]);
 
   const yourEntries = useMemo(() => {
     if (!catalog) {
@@ -629,8 +816,8 @@ export function Benchmarks() {
           {/* Accuracy by category — full width */}
           <div className="col-span-1 lg:col-span-2">
             <ChartCard
-              title="Scored Success by Category × Executed Mechanism"
-              subtitle="Actual mechanism success by category after selector decisions and switches. Creative and demo are proxy-scored; one-sample buckets are directional, not proof."
+              title="Scored Success Heatmap"
+              subtitle="Executed mechanism success by category, with explicit sample counts. Creative and demo are proxy-scored; one-sample buckets are directional, not proof."
             >
               {overviewError ? (
                 <div style={{ padding: "32px 0", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>
@@ -639,56 +826,8 @@ export function Benchmarks() {
               ) : !benchmarks ? (
                 <SkeletonChartBlock h="300px" />
               ) : (
-                <div className="w-full h-75">
-                  {chartsReady && (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={accuracyData} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
-                        <XAxis
-                          dataKey="category"
-                          stroke="transparent"
-                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                        />
-                        <YAxis
-                          stroke="transparent"
-                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                        />
-                        <Tooltip
-                          content={(props) => (
-                            <ChartTooltip
-                              active={props.active}
-                              payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
-                              label={props.label as string | undefined}
-                              valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
-                            />
-                          )}
-                          cursor={{ fill: "rgba(255,255,255,0.025)" }}
-                        />
-                        <Legend
-                          iconType="circle"
-                          wrapperStyle={{ fontFamily: CHART_FONT, fontSize: "10px", paddingTop: "14px", color: "var(--text-tertiary)" }}
-                        />
-                        <Bar
-                          dataKey="debate" name="Debate"
-                          fill="var(--text-muted)"
-                          radius={[4, 4, 0, 0]} minPointSize={4}
-                          isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
-                        />
-                        <Bar
-                          dataKey="vote" name="Vote"
-                          fill="var(--accent-amber)"
-                          radius={[4, 4, 0, 0]} minPointSize={4}
-                          isAnimationActive animationBegin={200} animationDuration={700} animationEasing="ease-out"
-                        />
-                        <Bar
-                          dataKey="selector" name="Selector"
-                          fill="var(--accent-emerald)"
-                          radius={[4, 4, 0, 0]} minPointSize={4}
-                          isAnimationActive animationBegin={300} animationDuration={700} animationEasing="ease-out"
-                        />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
+                <div className="w-full">
+                  {chartsReady && <BenchmarkHeatmap rows={overviewHeatmapRows} />}
                 </div>
               )}
             </ChartCard>
@@ -699,7 +838,7 @@ export function Benchmarks() {
             title="Selector Learning Curve"
             subtitle={
               benchmarkArtifactKind === "validation"
-                ? "Accuracy before and after the learning update cycle."
+                ? "Scored selector-stage success before and after learning, annotated so saturated runs don't masquerade as visible lift."
                 : "Only validation artifacts with explicit pre/post stages can populate this curve honestly."
             }
           >
@@ -710,88 +849,157 @@ export function Benchmarks() {
                 {learningCurveState.reason}
               </div>
             ) : (
-              <div className="w-full h-62.5">
-                {chartsReady && benchmarks && learningCurveState.available && (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={learningCurveState.data} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
-                      <XAxis
-                        dataKey="phase"
-                        stroke="transparent"
-                        tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                      />
-                      <YAxis
-                        stroke="transparent"
-                        tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                        domain={[0, 100]}
-                      />
-                      <Tooltip
-                        content={(props) => (
-                          <ChartTooltip
-                            active={props.active}
-                            payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
-                            label={props.label as string | undefined}
-                            valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
-                          />
-                        )}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="accuracy"
-                        name="Accuracy"
-                        stroke="var(--accent-emerald)"
-                        strokeWidth={2}
-                        dot={{ fill: "var(--bg-base)", stroke: "var(--accent-emerald)", strokeWidth: 2, r: 4 }}
-                        activeDot={{ r: 6, fill: "var(--accent-emerald)" }}
-                        isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                )}
+              <div className="w-full">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                  <LearningStatCard
+                    label="Pre"
+                    value={
+                      learningCurveState.preAccuracy == null
+                        ? "n/a"
+                        : `${Math.round(learningCurveState.preAccuracy)}% · n=${learningCurveState.preScoredRunCount}`
+                    }
+                  />
+                  <LearningStatCard
+                    label="Post"
+                    value={
+                      learningCurveState.postAccuracy == null
+                        ? "n/a"
+                        : `${Math.round(learningCurveState.postAccuracy)}% · n=${learningCurveState.postScoredRunCount}`
+                    }
+                  />
+                  <LearningStatCard
+                    label="Delta"
+                    value={
+                      learningCurveState.delta == null
+                        ? "n/a"
+                        : `${learningCurveState.delta > 0 ? "+" : ""}${learningCurveState.delta.toFixed(1)} pts`
+                    }
+                    tone={learningCurveState.delta == null ? "default" : learningCurveState.delta > 0 ? "accent" : "warning"}
+                  />
+                  <LearningStatCard
+                    label="Read"
+                    value={learningCurveState.saturated ? "Saturated run" : "Measured lift"}
+                    tone={learningCurveState.saturated ? "warning" : "accent"}
+                  />
+                </div>
+                {learningCurveState.saturated ? (
+                  <div
+                    style={{
+                      marginBottom: "12px",
+                      border: "1px solid rgba(251,191,36,0.24)",
+                      background: "rgba(251,191,36,0.08)",
+                      borderRadius: "10px",
+                      padding: "10px 12px",
+                      fontFamily: "'Hanken Grotesk', sans-serif",
+                      fontSize: "12px",
+                      color: "var(--text-secondary)",
+                    }}
+                  >
+                    This artifact already scored <span style={{ color: "var(--accent-amber)" }}>100%</span> before learning and stayed there after learning. That means the flat line is real, but it also means this run is too saturated to show improvement on accuracy alone.
+                  </div>
+                ) : null}
+                <div className="w-full h-62.5">
+                  {chartsReady && benchmarks && learningCurveState.available && (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={learningCurveState.data} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
+                        <XAxis
+                          dataKey="phase"
+                          stroke="transparent"
+                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                        />
+                        <YAxis
+                          stroke="transparent"
+                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                          domain={[0, 100]}
+                        />
+                        <Tooltip
+                          content={(props) => (
+                            <ChartTooltip
+                              active={props.active}
+                              payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
+                              label={props.label as string | undefined}
+                              valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
+                            />
+                          )}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="accuracy"
+                          name="Accuracy"
+                          stroke="var(--accent-emerald)"
+                          strokeWidth={2}
+                          dot={{ fill: "var(--bg-base)", stroke: "var(--accent-emerald)", strokeWidth: 2, r: 4 }}
+                          activeDot={{ r: 6, fill: "var(--accent-emerald)" }}
+                          isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
               </div>
             )}
           </ChartCard>
 
           {/* Cost efficiency */}
           <ChartCard
-            title="Cost Efficiency"
-            subtitle="Estimated USD cost per actual executed mechanism from token usage and the internal pricing catalog."
+            title="Cost vs Quality Frontier"
+            subtitle="Average cost against scored success for actual executed mechanisms. Frontier points are not dominated on both cost and quality."
           >
             {!benchmarks && !overviewError ? (
               <SkeletonChartBlock h="250px" delay={0.2} />
+            ) : paretoData.length === 0 ? (
+              <div className="w-full h-62.5 rounded-md border border-border-subtle bg-void px-4 py-5 flex items-center justify-center text-center text-sm text-text-secondary">
+                This artifact does not yet have enough scored mechanism coverage to plot a cost/quality frontier honestly.
+              </div>
             ) : (
               <div className="w-full h-62.5">
                 {chartsReady && benchmarks && (
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={costData} margin={{ top: 20, right: 10, left: -10, bottom: 5 }}>
+                    <ScatterChart margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
                       <XAxis
-                        dataKey="mechanism"
+                        type="number"
+                        dataKey="avgCostUsd"
                         stroke="transparent"
                         tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                        tickFormatter={(value) => `$${Number(value).toFixed(3)}`}
                       />
                       <YAxis
+                        type="number"
+                        dataKey="accuracy"
                         stroke="transparent"
                         tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
+                        domain={[0, 100]}
                       />
+                      <ZAxis dataKey="scoredRunCount" range={[90, 220]} />
                       <Tooltip
-                        content={(props) => (
-                          <ChartTooltip
-                            active={props.active}
-                            payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
-                            label={props.label as string | undefined}
-                            valueFormatter={(v) => formatUsd(v ?? null)}
-                          />
-                        )}
+                        content={(props) => <ParetoTooltip active={props.active} payload={props.payload as any} />}
                         cursor={{ fill: "rgba(255,255,255,0.025)" }}
                       />
-                      <Bar
-                        dataKey="estimatedCostUsd" name="Estimated USD"
+                      <Scatter
+                        data={paretoData}
                         fill="var(--accent-emerald)"
-                        radius={[4, 4, 0, 0]} minPointSize={4}
-                        isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
+                        shape={(props: any) => {
+                          const { cx, cy, payload } = props;
+                          const fill = payload.frontier ? "var(--accent-emerald)" : "var(--text-muted)";
+                          const stroke = payload.frontier ? "rgba(52,211,153,0.95)" : "rgba(148,163,184,0.55)";
+                          return (
+                            <g>
+                              <circle cx={cx} cy={cy} r={payload.frontier ? 8 : 6} fill={fill} stroke={stroke} strokeWidth={2} />
+                              <text
+                                x={cx}
+                                y={cy - 14}
+                                textAnchor="middle"
+                                style={{ fontFamily: CHART_FONT, fontSize: "9px", fill: "var(--text-secondary)" }}
+                              >
+                                {payload.mechanism}
+                              </text>
+                            </g>
+                          );
+                        }}
                       />
-                    </BarChart>
+                    </ScatterChart>
                   </ResponsiveContainer>
                 )}
               </div>

@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   buildOverviewAccuracyData,
   buildOverviewCostData,
+  buildOverviewHeatmapRows,
+  buildOverviewParetoData,
   buildDetailMechanismRows,
   buildDetailStageRows,
   buildOverviewLearningCurve,
@@ -37,6 +39,8 @@ test("buildOverviewLearningCurve suppresses fake values for comparison artifacts
 
   assert.equal(learningCurve.available, false);
   assert.match(learningCurve.reason ?? "", /comparison artifact/i);
+  assert.equal(learningCurve.delta, null);
+  assert.equal(learningCurve.saturated, false);
 });
 
 test("buildOverviewLearningCurve emits real pre/post values for validation artifacts", () => {
@@ -50,6 +54,10 @@ test("buildOverviewLearningCurve emits real pre/post values for validation artif
     { phase: "Pre", accuracy: 25 },
     { phase: "Post", accuracy: 75 },
   ]);
+  assert.equal(learningCurve.preScoredRunCount, 3);
+  assert.equal(learningCurve.postScoredRunCount, 3);
+  assert.equal(learningCurve.delta, 50);
+  assert.equal(learningCurve.saturated, false);
 });
 
 test("detail rows keep stage metrics separate from actual mechanism metrics", () => {
@@ -264,4 +272,94 @@ test("overview cost data uses actual executed mechanism cost before requested st
   const rows = buildOverviewCostData(summary);
   assert.equal(rows.find((row) => row.mechanism === "Debate")?.estimatedCostUsd, 0.03);
   assert.equal(rows.find((row) => row.mechanism === "Selector")?.estimatedCostUsd, null);
+});
+
+test("overview heatmap rows preserve scored counts and proxy markers", () => {
+  const summary = normalizeBenchmarkSummary(
+    {
+      per_category_by_mechanism: {
+        demo: {
+          debate: {
+            accuracy: 1,
+            run_count: 1,
+            scored_run_count: 1,
+            proxy_run_count: 1,
+            avg_tokens: 100,
+            avg_thinking_tokens: 20,
+            avg_latency_ms: 200,
+            avg_estimated_cost_usd: 0.03,
+          },
+        },
+        math: {
+          vote: {
+            accuracy: 0.5,
+            run_count: 2,
+            scored_run_count: 2,
+            proxy_run_count: 0,
+            avg_tokens: 90,
+            avg_thinking_tokens: 10,
+            avg_latency_ms: 150,
+            avg_estimated_cost_usd: 0.01,
+          },
+        },
+      },
+    },
+    null,
+  );
+
+  const rows = buildOverviewHeatmapRows(summary);
+  const demoDebate = rows.find((row) => row.category === "Demo")?.cells.find((cell) => cell.mechanism === "Debate");
+  const mathVote = rows.find((row) => row.category === "Math")?.cells.find((cell) => cell.mechanism === "Vote");
+  const mathSelector = rows.find((row) => row.category === "Math")?.cells.find((cell) => cell.mechanism === "Selector");
+
+  assert.equal(demoDebate?.accuracy, 100);
+  assert.equal(demoDebate?.proxyRunCount, 1);
+  assert.equal(mathVote?.accuracy, 50);
+  assert.equal(mathVote?.scoredRunCount, 2);
+  assert.equal(mathSelector?.accuracy, null);
+});
+
+test("overview pareto data marks non-dominated mechanisms", () => {
+  const summary = normalizeBenchmarkSummary(
+    {
+      per_mechanism: {
+        debate: {
+          accuracy: 0.9,
+          run_count: 4,
+          scored_run_count: 4,
+          proxy_run_count: 1,
+          avg_tokens: 1200,
+          avg_thinking_tokens: 300,
+          avg_latency_ms: 5000,
+          avg_estimated_cost_usd: 0.05,
+        },
+        vote: {
+          accuracy: 0.8,
+          run_count: 4,
+          scored_run_count: 4,
+          proxy_run_count: 0,
+          avg_tokens: 500,
+          avg_thinking_tokens: 80,
+          avg_latency_ms: 2000,
+          avg_estimated_cost_usd: 0.02,
+        },
+        selector: {
+          accuracy: 0.75,
+          run_count: 4,
+          scored_run_count: 4,
+          proxy_run_count: 0,
+          avg_tokens: 900,
+          avg_thinking_tokens: 120,
+          avg_latency_ms: 2500,
+          avg_estimated_cost_usd: 0.04,
+        },
+      },
+    },
+    null,
+  );
+
+  const rows = buildOverviewParetoData(summary);
+  assert.equal(rows.find((row) => row.mechanism === "Debate")?.frontier, true);
+  assert.equal(rows.find((row) => row.mechanism === "Vote")?.frontier, true);
+  assert.equal(rows.find((row) => row.mechanism === "Selector")?.frontier, false);
 });

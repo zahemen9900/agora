@@ -45,10 +45,39 @@ export interface BenchmarkCategoryRow {
   selectorScoredRuns: number;
 }
 
+export interface BenchmarkHeatmapCell {
+  mechanism: string;
+  accuracy: number | null;
+  scoredRunCount: number;
+  proxyRunCount: number;
+  runCount: number;
+}
+
+export interface BenchmarkHeatmapRow {
+  category: string;
+  cells: BenchmarkHeatmapCell[];
+}
+
+export interface BenchmarkParetoPoint {
+  mechanism: string;
+  accuracy: number | null;
+  avgCostUsd: number | null;
+  avgTokens: number;
+  scoredRunCount: number;
+  proxyRunCount: number;
+  frontier: boolean;
+}
+
 export interface BenchmarkLearningCurveState {
   available: boolean;
   data: Array<{ phase: "Pre" | "Post"; accuracy: number }>;
   reason: string | null;
+  preAccuracy: number | null;
+  postAccuracy: number | null;
+  preScoredRunCount: number;
+  postScoredRunCount: number;
+  delta: number | null;
+  saturated: boolean;
 }
 
 export type BenchmarkArtifactKind = "validation" | "comparison" | "unknown";
@@ -165,6 +194,58 @@ export function buildOverviewCostData(summary: NormalizedSummary): Array<{
   });
 }
 
+export function buildOverviewParetoData(summary: NormalizedSummary): BenchmarkParetoPoint[] {
+  const rows = buildMetricRows(summary.per_mechanism);
+  const candidates = rows
+    .filter((row) => row.accuracy != null && row.avgCostUsd > 0 && row.scoredRunCount > 0)
+    .map((row) => ({
+      mechanism: row.mechanism,
+      accuracy: row.accuracy,
+      avgCostUsd: row.avgCostUsd,
+      avgTokens: row.avgTokens,
+      scoredRunCount: row.scoredRunCount,
+      proxyRunCount: row.proxyRunCount,
+      frontier: false,
+    }));
+
+  return candidates.map((candidate) => ({
+    ...candidate,
+    frontier: !candidates.some((other) => (
+      other.mechanism !== candidate.mechanism
+      && (other.avgCostUsd ?? Number.POSITIVE_INFINITY) <= (candidate.avgCostUsd ?? Number.POSITIVE_INFINITY)
+      && (other.accuracy ?? Number.NEGATIVE_INFINITY) >= (candidate.accuracy ?? Number.NEGATIVE_INFINITY)
+      && (
+        (other.avgCostUsd ?? Number.POSITIVE_INFINITY) < (candidate.avgCostUsd ?? Number.POSITIVE_INFINITY)
+        || (other.accuracy ?? Number.NEGATIVE_INFINITY) > (candidate.accuracy ?? Number.NEGATIVE_INFINITY)
+      )
+    )),
+  }));
+}
+
+export function buildOverviewHeatmapRows(summary: NormalizedSummary): BenchmarkHeatmapRow[] {
+  const categorySource = hasCategoryAxisData(summary.per_category_by_mechanism)
+    ? summary.per_category_by_mechanism
+    : summary.per_category;
+
+  return BENCHMARK_DOMAIN_KEYS.map((domain) => {
+    const metricsByMechanism = categorySource[domain] ?? {};
+    return {
+      category: titleCase(domain),
+      cells: BENCHMARK_STAGE_KEYS.map((mechanism) => {
+        const metrics = metricsByMechanism[mechanism] ?? DEFAULT_METRIC;
+        const scoredRunCount = Math.round(metrics.scored_run_count);
+        return {
+          mechanism: titleCase(mechanism),
+          accuracy: scoredRunCount > 0 ? Number((metrics.accuracy * 100).toFixed(1)) : null,
+          scoredRunCount,
+          proxyRunCount: Math.round(metrics.proxy_run_count),
+          runCount: Math.round(metrics.run_count),
+        };
+      }),
+    };
+  });
+}
+
 export function buildOverviewLearningCurve(
   payload: BenchmarkPayload | Record<string, unknown> | null | undefined,
 ): BenchmarkLearningCurveState {
@@ -176,6 +257,12 @@ export function buildOverviewLearningCurve(
       reason: artifactKind === "comparison"
         ? "This comparison artifact does not include pre/post learning stages, so a learning curve would be misleading."
         : "Learning curve data is not available for this artifact.",
+      preAccuracy: null,
+      postAccuracy: null,
+      preScoredRunCount: 0,
+      postScoredRunCount: 0,
+      delta: null,
+      saturated: false,
     };
   }
   const record = payload as Record<string, any>;
@@ -203,16 +290,31 @@ export function buildOverviewLearningCurve(
       available: false,
       data: [],
       reason: "This validation artifact does not have scored selector coverage for the learning curve yet.",
+      preAccuracy: Number.isFinite(pre) ? pre : null,
+      postAccuracy: Number.isFinite(post) ? post : null,
+      preScoredRunCount: preScored,
+      postScoredRunCount: postScored,
+      delta: Number.isFinite(pre) && Number.isFinite(post) ? Number((post - pre).toFixed(1)) : null,
+      saturated: false,
     };
   }
 
+  const delta = Number((post - pre).toFixed(1));
+  const saturated = pre >= 99.9 && post >= 99.9;
+
   return {
     available: true,
-      data: [
-        { phase: "Pre", accuracy: pre },
-        { phase: "Post", accuracy: post },
-      ],
+    data: [
+      { phase: "Pre", accuracy: pre },
+      { phase: "Post", accuracy: post },
+    ],
     reason: null,
+    preAccuracy: pre,
+    postAccuracy: post,
+    preScoredRunCount: preScored,
+    postScoredRunCount: postScored,
+    delta,
+    saturated,
   };
 }
 
