@@ -201,7 +201,8 @@ function AgentCard({ option, selected, onClick }: { option: typeof AGENT_OPTIONS
         transform: hovered && !selected ? "translateY(-1px)" : "translateY(0)",
       }}
     >
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "3px", marginBottom: "10px" }}>
+      {/* Dot grid — fixed 4-column grid so 8 and 12 wrap cleanly */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 8px)", gap: "3px", marginBottom: "10px", width: "fit-content" }}>
         {Array.from({ length: option.count }).map((_, i) => (
           <div key={i} style={{
             width: "8px", height: "8px", borderRadius: "50%",

@@ -14,7 +14,14 @@ TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"
 PaymentStatusName = Literal["locked", "released", "none"]
 ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
 AuthMethodName = Literal["jwt", "api_key"]
-ApiKeyScopeName = Literal["tasks:read", "tasks:write", "api_keys:read", "api_keys:write"]
+ApiKeyScopeName = Literal[
+    "tasks:read",
+    "tasks:write",
+    "benchmarks:read",
+    "benchmarks:write",
+    "api_keys:read",
+    "api_keys:write",
+]
 
 
 class TaskCreateRequest(BaseModel):
