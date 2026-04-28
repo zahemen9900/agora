@@ -266,8 +266,17 @@ export async function releaseTaskPayment(
 export async function getBenchmarks(
   token: string | null,
   includeDemo = true,
+  overviewMode: "latest" | "aggregate_recent" | "aggregate_all" = "latest",
 ): Promise<BenchmarkPayload> {
-  const path = includeDemo ? "/benchmarks?include_demo=true" : "/benchmarks";
+  const params = new URLSearchParams();
+  if (includeDemo) {
+    params.set("include_demo", "true");
+  }
+  if (overviewMode !== "latest") {
+    params.set("aggregate", "true");
+    params.set("aggregate_window", overviewMode === "aggregate_all" ? "all" : "recent_20");
+  }
+  const path = params.size > 0 ? `/benchmarks?${params.toString()}` : "/benchmarks";
   return requestJson<BenchmarkPayload>(path, {
     headers: authHeaders(token),
   });

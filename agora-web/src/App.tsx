@@ -18,6 +18,7 @@ import { ApiKeys } from "./pages/ApiKeys";
 import { Benchmarks } from "./pages/Benchmarks";
 import { BenchmarksAll } from "./pages/BenchmarksAll";
 import { BenchmarkDetail } from "./pages/BenchmarkDetail";
+import { BenchmarkAnalytics } from "./pages/BenchmarkAnalytics";
 
 function pathToLabel(pathname: string): string {
   if (pathname.startsWith('/task/') && pathname.endsWith('/receipt')) return 'On-Chain Receipt';
@@ -104,6 +105,14 @@ function AppRoutes() {
             element={
               canViewBenchmarks
                 ? <DashboardLayout><BenchmarksAll /></DashboardLayout>
+                : <Navigate to="/tasks" replace />
+            }
+          />
+          <Route
+            path="/benchmarks/analytics"
+            element={
+              canViewBenchmarks
+                ? <DashboardLayout><BenchmarkAnalytics /></DashboardLayout>
                 : <Navigate to="/tasks" replace />
             }
           />
