@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import {
   CartesianGrid,
   Line,
@@ -13,10 +13,11 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { ChevronDown, Filter, RotateCcw } from "lucide-react";
+import { ChevronDown, ChevronRight, Filter, RotateCcw } from "lucide-react";
 
 import { BenchmarkWizard, type DomainPromptSelection } from "../components/benchmark/BenchmarkWizard";
 import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
+import { ChartCard, injectChartKeyframes, SkeletonChartBlock, ShimBlock, CHART_FONT } from "../components/benchmark/ChartCard";
 import {
   type BenchmarkDomainName,
   type BenchmarkPromptTemplatesPayload,
@@ -211,28 +212,7 @@ function hasUsablePromptTemplates(
 }
 
 // ── Chart primitives ───────────────────────────────────────────────────────────
-
-const CHART_KF_ID = "bm-chart-kf";
-const CHART_FONT = "'Commit Mono', 'SF Mono', monospace";
-
-function injectChartKeyframes() {
-  if (document.getElementById(CHART_KF_ID)) return;
-  const s = document.createElement("style");
-  s.id = CHART_KF_ID;
-  s.textContent = `@keyframes bm-shimmer { 0% { background-position: -600px 0; } 100% { background-position: 600px 0; } } @keyframes bm-spin { to { transform: rotate(360deg); } }`;
-  document.head.appendChild(s);
-}
-
-function SkeletonChartBlock({ h, delay = 0 }: { h: string; delay?: number }) {
-  return (
-    <div style={{
-      width: "100%", height: h, borderRadius: "8px",
-      background: "linear-gradient(90deg, var(--bg-base) 0%, var(--border-strong) 40%, var(--bg-base) 80%)",
-      backgroundSize: "600px 100%",
-      animation: `bm-shimmer 1.8s ease-in-out ${delay}s infinite`,
-    }} />
-  );
-}
+// ChartCard, SkeletonChartBlock, injectChartKeyframes, CHART_FONT, CHART_KF_ID imported from ../components/benchmark/ChartCard
 
 interface ChartTooltipPayload {
   name: string;
@@ -309,22 +289,6 @@ function ParetoTooltip({
   );
 }
 
-function ChartCard({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
-  return (
-    <div className="card" style={{ padding: "20px 24px 16px" }}>
-      <div style={{ marginBottom: "16px" }}>
-        <div style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "4px" }}>
-          {title}
-        </div>
-        <div style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: "12px", color: "var(--text-muted)" }}>
-          {subtitle}
-        </div>
-      </div>
-      {children}
-    </div>
-  );
-}
-
 function LearningStatCard({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "accent" | "warning" }) {
   const valueColor = tone === "accent"
     ? "var(--accent-emerald)"
@@ -352,129 +316,123 @@ function LearningStatCard({ label, value, tone = "default" }: { label: string; v
   );
 }
 
-function heatmapCellColor(accuracy: number | null): string {
-  if (accuracy == null) {
-    return "var(--bg-subtle)";
-  }
-  const alpha = 0.12 + (accuracy / 100) * 0.72;
-  return `rgba(45, 212, 191, ${alpha.toFixed(3)})`;
+interface HeatmapTooltip {
+  x: number;
+  y: number;
+  category: string;
+  mechanism: string;
+  accuracy: number | null;
+  scoredRunCount: number;
+  runCount: number;
+  proxyRunCount: number;
 }
 
-function heatmapCellBorder(accuracy: number | null): string {
-  if (accuracy == null) {
-    return "rgba(255,255,255,0.06)";
-  }
-  const alpha = 0.14 + (accuracy / 100) * 0.32;
-  return `rgba(45, 212, 191, ${alpha.toFixed(3)})`;
+function heatmapCellBg(accuracy: number | null, hovered: boolean): string {
+  if (accuracy == null) return hovered ? "var(--bg-elevated)" : "var(--bg-subtle)";
+  const base = 0.13 + (accuracy / 100) * 0.7;
+  const boost = hovered ? 0.14 : 0;
+  return `rgba(45, 212, 191, ${Math.min(1, base + boost).toFixed(3)})`;
+}
+
+function heatmapCellBorder(accuracy: number | null, hovered: boolean): string {
+  if (accuracy == null) return hovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.06)";
+  const base = 0.14 + (accuracy / 100) * 0.32;
+  const boost = hovered ? 0.2 : 0;
+  return `rgba(45, 212, 191, ${Math.min(1, base + boost).toFixed(3)})`;
 }
 
 function BenchmarkHeatmap({ rows }: { rows: BenchmarkHeatmapRow[] }) {
+  const [tip, setTip] = useState<HeatmapTooltip | null>(null);
+  const [hoveredKey, setHoveredKey] = useState<string | null>(null);
+
   return (
-    <div style={{ width: "100%", overflowX: "auto" }}>
-      <div style={{ minWidth: "680px" }}>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "140px repeat(3, minmax(0, 1fr))",
-            gap: "10px",
-            marginBottom: "10px",
-          }}
-        >
+    <div style={{ width: "100%", overflowX: "auto", position: "relative" }}>
+      <div style={{ minWidth: "620px" }}>
+        {/* Column headers */}
+        <div style={{ display: "grid", gridTemplateColumns: "120px repeat(3, minmax(0, 1fr))", gap: "8px", marginBottom: "8px" }}>
           <div />
           {["Debate", "Vote", "Selector"].map((label) => (
-            <div
-              key={label}
-              style={{
-                fontFamily: CHART_FONT,
-                fontSize: "10px",
-                letterSpacing: "0.08em",
-                textTransform: "uppercase",
-                color: "var(--text-secondary)",
-                textAlign: "center",
-              }}
-            >
+            <div key={label} style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", textAlign: "center" }}>
               {label}
             </div>
           ))}
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          {rows.map((row) => (
-            <div
-              key={row.category}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "140px repeat(3, minmax(0, 1fr))",
-                gap: "10px",
-                alignItems: "stretch",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  fontFamily: CHART_FONT,
-                  fontSize: "12px",
-                  color: "var(--text-primary)",
-                }}
-              >
+
+        {/* Rows */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "7px" }}>
+          {rows.map((row, rowIdx) => (
+            <div key={row.category} style={{ display: "grid", gridTemplateColumns: "120px repeat(3, minmax(0, 1fr))", gap: "8px", alignItems: "stretch" }}>
+              <div style={{ display: "flex", alignItems: "center", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--text-secondary)" }}>
                 {row.category}
               </div>
-              {row.cells.map((cell) => (
-                <div
-                  key={`${row.category}-${cell.mechanism}`}
-                  style={{
-                    minHeight: "86px",
-                    borderRadius: "12px",
-                    border: `1px solid ${heatmapCellBorder(cell.accuracy)}`,
-                    background: heatmapCellColor(cell.accuracy),
-                    padding: "12px 14px",
-                    display: "flex",
-                    flexDirection: "column",
-                    justifyContent: "space-between",
-                    boxShadow: cell.accuracy == null ? "none" : "inset 0 1px 0 rgba(255,255,255,0.04)",
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "10px" }}>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "18px", color: "var(--text-primary)", fontWeight: 700 }}>
-                      {cell.accuracy == null ? "n/a" : `${Math.round(cell.accuracy)}%`}
+              {row.cells.map((cell, colIdx) => {
+                const key = `${row.category}-${cell.mechanism}`;
+                const hov = hoveredKey === key;
+                return (
+                  <div
+                    key={key}
+                    style={{
+                      minHeight: "68px", borderRadius: "10px",
+                      border: `1px solid ${heatmapCellBorder(cell.accuracy, hov)}`,
+                      background: heatmapCellBg(cell.accuracy, hov),
+                      padding: "10px 12px",
+                      display: "flex", flexDirection: "column", justifyContent: "space-between",
+                      cursor: "default",
+                      transition: "background 0.18s ease, border-color 0.18s ease, transform 0.15s ease, box-shadow 0.15s ease",
+                      transform: hov ? "translateY(-1px)" : "translateY(0)",
+                      boxShadow: hov && cell.accuracy != null ? "0 4px 14px rgba(45,212,191,0.18)" : "none",
+                      animationName: "hm-fade-in",
+                      animationDuration: "0.35s",
+                      animationFillMode: "both",
+                      animationDelay: `${(rowIdx * 3 + colIdx) * 0.04}s`,
+                    } as React.CSSProperties}
+                    onMouseEnter={(e) => {
+                      setHoveredKey(key);
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      setTip({ x: rect.left + rect.width / 2, y: rect.top, category: row.category, mechanism: cell.mechanism, accuracy: cell.accuracy, scoredRunCount: cell.scoredRunCount, runCount: cell.runCount, proxyRunCount: cell.proxyRunCount });
+                    }}
+                    onMouseLeave={() => { setHoveredKey(null); setTip(null); }}
+                  >
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "16px", color: cell.accuracy == null ? "var(--text-muted)" : "var(--text-primary)", fontWeight: 700 }}>
+                      {cell.accuracy == null ? "—" : `${Math.round(cell.accuracy)}%`}
                     </span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-secondary)" }}>
-                      n={cell.scoredRunCount}
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>
+                      {cell.runCount > 0 ? `n=${cell.scoredRunCount}` : "No data"}
                     </span>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-tertiary)" }}>
-                      {cell.runCount > 0 ? `${cell.runCount} completed` : "No coverage"}
-                    </span>
-                    {cell.proxyRunCount > 0 ? (
-                      <span style={{
-                        fontFamily: CHART_FONT,
-                        fontSize: "9px",
-                        letterSpacing: "0.08em",
-                        textTransform: "uppercase",
-                        color: "var(--accent-amber)",
-                      }}>
-                        Proxy
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           ))}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", marginTop: "14px", flexWrap: "wrap" }}>
-          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-tertiary)" }}>Low evidence / low success</span>
-          <div style={{
-            width: "160px",
-            height: "10px",
-            borderRadius: "999px",
-            background: "linear-gradient(90deg, rgba(45,212,191,0.12) 0%, rgba(45,212,191,0.84) 100%)",
-            border: "1px solid rgba(45,212,191,0.2)",
-          }} />
-          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-tertiary)" }}>High scored success</span>
+
+        {/* Legend — slim */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px" }}>
+          <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>0%</span>
+          <div style={{ flex: 1, maxWidth: "120px", height: "6px", borderRadius: "999px", background: "linear-gradient(90deg, rgba(45,212,191,0.13) 0%, rgba(45,212,191,0.83) 100%)", border: "1px solid rgba(45,212,191,0.15)" }} />
+          <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>100%</span>
         </div>
       </div>
+
+      {/* Tooltip */}
+      {tip && (
+        <div style={{
+          position: "fixed", left: tip.x, top: tip.y - 10,
+          transform: "translate(-50%, -100%)",
+          background: "var(--bg-elevated)", border: "1px solid var(--border-strong)",
+          borderRadius: "8px", padding: "9px 13px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+          pointerEvents: "none", zIndex: 9999, minWidth: "160px",
+        }}>
+          <div style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--accent-emerald)", fontWeight: 700, marginBottom: "5px" }}>
+            {tip.category} · {tip.mechanism}
+          </div>
+          <div style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-secondary)", display: "flex", flexDirection: "column", gap: "2px" }}>
+            <span>Accuracy: {tip.accuracy == null ? "n/a" : `${Math.round(tip.accuracy)}%`}</span>
+            <span>Scored runs: {tip.scoredRunCount} / {tip.runCount}</span>
+            {tip.proxyRunCount > 0 && <span style={{ color: "var(--accent-amber)" }}>{tip.proxyRunCount} proxy-scored</span>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -815,32 +773,15 @@ export function Benchmarks() {
       />
       <div className="max-w-250 mx-auto pb-20 w-full">
         <header className="mb-10">
-          <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <h1 className="text-3xl md:text-4xl mb-4">Benchmarks</h1>
               <p className="text-text-secondary text-lg max-w-150">
                 Comparison, ablation, and learning metrics generated from the Phase 2 benchmark suite.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {[
-                { mode: "latest", label: "Latest Artifact" },
-                { mode: "aggregate_recent", label: "Aggregate 20" },
-                { mode: "aggregate_all", label: "Whole Catalog" },
-              ].map((option) => {
-                const selected = overviewMode === option.mode;
-                return (
-                  <button
-                    key={option.mode}
-                    type="button"
-                    className={selected ? "btn-primary" : "btn-secondary"}
-                    onClick={() => setOverviewMode(option.mode as BenchmarkOverviewMode)}
-                    style={{ minWidth: "140px" }}
-                  >
-                    {option.label}
-                  </button>
-                );
-              })}
+            <div style={{ flexShrink: 0, paddingTop: "6px" }}>
+              <ModeDropdown value={overviewMode} onChange={setOverviewMode} />
             </div>
           </div>
           {overviewMode !== "latest" ? (
@@ -876,7 +817,23 @@ export function Benchmarks() {
                   {overviewError}
                 </div>
               ) : !benchmarks ? (
-                <SkeletonChartBlock h="300px" />
+                <div style={{ width: "100%" }}>
+                  {/* Grid skeleton mimicking heatmap structure */}
+                  <div style={{ display: "grid", gridTemplateColumns: "120px repeat(3, minmax(0, 1fr))", gap: "8px", marginBottom: "8px" }}>
+                    <div />
+                    {[0, 1, 2].map((i) => (
+                      <ShimBlock key={i} w="100%" h="14px" style={{ borderRadius: "4px" }} />
+                    ))}
+                  </div>
+                  {[0, 1, 2, 3, 4, 5].map((rowI) => (
+                    <div key={rowI} style={{ display: "grid", gridTemplateColumns: "120px repeat(3, minmax(0, 1fr))", gap: "8px", marginBottom: "7px" }}>
+                      <ShimBlock w="80px" h="14px" style={{ alignSelf: "center" }} />
+                      {[0, 1, 2].map((colI) => (
+                        <ShimBlock key={colI} w="100%" h="68px" style={{ borderRadius: "10px", animationDelay: `${(rowI * 3 + colI) * 0.06}s` }} />
+                      ))}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="w-full">
                   {chartsReady && <BenchmarkHeatmap rows={overviewHeatmapRows} />}
@@ -890,104 +847,91 @@ export function Benchmarks() {
             title="Selector Learning Curve"
             subtitle={
               benchmarkArtifactKind === "validation"
-                ? "Scored selector-stage success before and after learning, annotated so saturated runs don't masquerade as visible lift."
+                ? "Scored selector-stage success before and after the bandit learning phase."
                 : "Only validation artifacts with explicit pre/post stages can populate this curve honestly."
             }
           >
             {!benchmarks && !overviewError ? (
-              <SkeletonChartBlock h="250px" delay={0.1} />
+              <SkeletonChartBlock h="220px" delay={0.1} />
             ) : learningCurveState.reason ? (
-              <div className="w-full h-62.5 rounded-md border border-border-subtle bg-void px-4 py-5 flex items-center justify-center text-center text-sm text-text-secondary">
+              <div className="w-full h-55 rounded-md border border-border-subtle bg-void px-4 py-5 flex items-center justify-center text-center text-sm text-text-secondary">
                 {learningCurveState.reason}
               </div>
             ) : (
-              <div className="w-full">
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-                  <LearningStatCard
-                    label="Pre"
-                    value={
-                      learningCurveState.preAccuracy == null
-                        ? "n/a"
-                        : `${Math.round(learningCurveState.preAccuracy)}% · n=${learningCurveState.preScoredRunCount}`
-                    }
-                  />
-                  <LearningStatCard
-                    label="Post"
-                    value={
-                      learningCurveState.postAccuracy == null
-                        ? "n/a"
-                        : `${Math.round(learningCurveState.postAccuracy)}% · n=${learningCurveState.postScoredRunCount}`
-                    }
-                  />
-                  <LearningStatCard
-                    label="Delta"
-                    value={
-                      learningCurveState.delta == null
-                        ? "n/a"
-                        : `${learningCurveState.delta > 0 ? "+" : ""}${learningCurveState.delta.toFixed(1)} pts`
-                    }
-                    tone={learningCurveState.delta == null ? "default" : learningCurveState.delta > 0 ? "accent" : "warning"}
-                  />
-                  <LearningStatCard
-                    label="Read"
-                    value={learningCurveState.saturated ? "Saturated run" : "Measured lift"}
-                    tone={learningCurveState.saturated ? "warning" : "accent"}
-                  />
-                </div>
-                {learningCurveState.saturated ? (
-                  <div
-                    style={{
-                      marginBottom: "12px",
-                      border: "1px solid rgba(251,191,36,0.24)",
-                      background: "rgba(251,191,36,0.08)",
-                      borderRadius: "10px",
-                      padding: "10px 12px",
-                      fontFamily: "'Hanken Grotesk', sans-serif",
-                      fontSize: "12px",
-                      color: "var(--text-secondary)",
-                    }}
-                  >
-                    This artifact already scored <span style={{ color: "var(--accent-amber)" }}>100%</span> before learning and stayed there after learning. That means the flat line is real, but it also means this run is too saturated to show improvement on accuracy alone.
+              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+                {/* Main before → after display */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0", padding: "20px 0 8px" }}>
+                  {/* Pre */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", flex: 1 }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Pre-learning</span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "38px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
+                      {learningCurveState.preAccuracy == null ? "—" : `${Math.round(learningCurveState.preAccuracy)}%`}
+                    </span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-muted)" }}>
+                      n={learningCurveState.preScoredRunCount}
+                    </span>
                   </div>
-                ) : null}
-                <div className="w-full h-62.5">
-                  {chartsReady && benchmarks && learningCurveState.available && (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={learningCurveState.data} margin={{ top: 20, right: 10, left: -20, bottom: 5 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
-                        <XAxis
-                          dataKey="phase"
-                          stroke="transparent"
-                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                        />
-                        <YAxis
-                          stroke="transparent"
-                          tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                          domain={[0, 100]}
-                        />
-                        <Tooltip
-                          content={(props) => (
-                            <ChartTooltip
-                              active={props.active}
-                              payload={props.payload as unknown as ChartTooltipPayload[] | undefined}
-                              label={props.label as string | undefined}
-                              valueFormatter={(v) => (v == null ? "n/a" : `${Math.round(v)}%`)}
-                            />
-                          )}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="accuracy"
-                          name="Accuracy"
-                          stroke="var(--accent-emerald)"
-                          strokeWidth={2}
-                          dot={{ fill: "var(--bg-base)", stroke: "var(--accent-emerald)", strokeWidth: 2, r: 4 }}
-                          activeDot={{ r: 6, fill: "var(--accent-emerald)" }}
-                          isAnimationActive animationBegin={100} animationDuration={700} animationEasing="ease-out"
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  )}
+
+                  {/* Arrow + delta */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", padding: "0 16px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <div style={{ width: "40px", height: "1px", background: "var(--border-strong)" }} />
+                      <div style={{ width: 0, height: 0, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderLeft: `6px solid var(--border-strong)` }} />
+                    </div>
+                    <span style={{
+                      fontFamily: CHART_FONT, fontSize: "12px", fontWeight: 700,
+                      color: learningCurveState.delta == null ? "var(--text-muted)"
+                        : learningCurveState.delta > 0 ? "var(--accent-emerald)"
+                        : learningCurveState.delta < 0 ? "var(--accent-rose)"
+                        : "var(--text-muted)",
+                    }}>
+                      {learningCurveState.delta == null ? "n/a"
+                        : learningCurveState.delta > 0 ? `+${learningCurveState.delta.toFixed(1)}pp`
+                        : `${learningCurveState.delta.toFixed(1)}pp`}
+                    </span>
+                  </div>
+
+                  {/* Post */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", flex: 1 }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Post-learning</span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "38px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
+                      {learningCurveState.postAccuracy == null ? "—" : `${Math.round(learningCurveState.postAccuracy)}%`}
+                    </span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-muted)" }}>
+                      n={learningCurveState.postScoredRunCount}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Status badge */}
+                <div style={{ display: "flex", justifyContent: "center" }}>
+                  <span style={{
+                    fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.08em", textTransform: "uppercase",
+                    padding: "3px 10px", borderRadius: "20px",
+                    background: learningCurveState.saturated ? "rgba(251,191,36,0.1)" : "rgba(52,211,153,0.1)",
+                    border: `1px solid ${learningCurveState.saturated ? "rgba(251,191,36,0.3)" : "rgba(52,211,153,0.3)"}`,
+                    color: learningCurveState.saturated ? "var(--accent-amber)" : "var(--accent-emerald)",
+                  }}>
+                    {learningCurveState.saturated ? "Saturated — 100% pre-learning" : "Measured lift"}
+                  </span>
+                </div>
+
+                {/* Visual progress bars */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "4px 0 2px" }}>
+                  {[
+                    { label: "Pre", value: learningCurveState.preAccuracy, color: "var(--text-muted)" },
+                    { label: "Post", value: learningCurveState.postAccuracy, color: "var(--accent-emerald)" },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "26px", flexShrink: 0 }}>{label}</span>
+                      <div style={{ flex: 1, height: "6px", background: "var(--bg-subtle)", borderRadius: "3px", overflow: "hidden" }}>
+                        <div style={{ width: `${value ?? 0}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.8s ease" }} />
+                      </div>
+                      <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "32px", textAlign: "right", flexShrink: 0 }}>
+                        {value == null ? "—" : `${Math.round(value)}%`}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -1059,6 +1003,26 @@ export function Benchmarks() {
           </ChartCard>
         </div>
 
+        {/* ── Analytics CTA ───────────────────────────────────────────────── */}
+        <Link
+          to="/benchmarks/analytics"
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: "11px 20px", marginBottom: "16px",
+            borderRadius: "10px",
+            border: "1px solid var(--border-default)",
+            background: "var(--bg-subtle)",
+            textDecoration: "none",
+            transition: "border-color 0.15s, background 0.15s",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.background = "var(--bg-elevated)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-default)"; e.currentTarget.style.background = "var(--bg-subtle)"; }}
+        >
+          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-secondary)" }}>
+            View Analytics
+          </span>
+        </Link>
+
         {/* ── Run CTA ─────────────────────────────────────────────────────── */}
         <div className="card p-4 sm:p-8 mb-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
@@ -1118,7 +1082,23 @@ export function Benchmarks() {
                 <RotateCcw size={13} style={{ animation: benchmarkCatalogQuery.isFetching ? "bm-spin 0.8s linear infinite" : "none" }} />
               </button>
               <FilterButton value={yourSortMode} onChange={setYourSortMode} />
-              <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
+              <button
+                type="button"
+                onClick={() => navigate("/benchmarks/all")}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "5px",
+                  fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
+                  padding: "5px 10px", borderRadius: "7px",
+                  border: "1px solid var(--border-default)",
+                  background: "var(--bg-base)",
+                  color: "var(--text-secondary)", cursor: "pointer",
+                  transition: "all 0.15s ease",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.background = "var(--bg-subtle)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-default)"; e.currentTarget.style.background = "var(--bg-base)"; }}
+              >
+                View all
+              </button>
             </div>
           </div>
 
@@ -1185,6 +1165,7 @@ export function Benchmarks() {
               )}
             </div>
           )}
+
         </div>
 
         {/* ── Global Benchmarks ────────────────────────────────────────────── */}
@@ -1201,7 +1182,23 @@ export function Benchmarks() {
                 <RotateCcw size={13} style={{ animation: benchmarkCatalogQuery.isFetching ? "bm-spin 0.8s linear infinite" : "none" }} />
               </button>
               <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
-              <button type="button" className="btn-secondary" onClick={() => navigate("/benchmarks/all")}>View all</button>
+              <button
+                type="button"
+                onClick={() => navigate("/benchmarks/all")}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: "5px",
+                  fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
+                  padding: "5px 10px", borderRadius: "7px",
+                  border: "1px solid var(--border-default)",
+                  background: "var(--bg-base)",
+                  color: "var(--text-secondary)", cursor: "pointer",
+                  transition: "all 0.15s ease",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.background = "var(--bg-subtle)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-default)"; e.currentTarget.style.background = "var(--bg-base)"; }}
+              >
+                View all
+              </button>
             </div>
           </div>
 
@@ -1226,6 +1223,7 @@ export function Benchmarks() {
               ))}
             </div>
           )}
+
         </div>
       </div>
 
@@ -1267,6 +1265,84 @@ export function Benchmarks() {
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────────
+
+const MODE_LABELS: Record<BenchmarkOverviewMode, string> = {
+  latest: "Latest",
+  aggregate_recent: "Aggregate 20",
+  aggregate_all: "Whole Catalog",
+};
+
+function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onChange: (v: BenchmarkOverviewMode) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const visibleOptions: BenchmarkOverviewMode[] = value === "aggregate_recent"
+    ? ["latest", "aggregate_recent", "aggregate_all"]
+    : ["latest", "aggregate_recent"];
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "6px",
+          fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
+          padding: "5px 10px", borderRadius: "7px",
+          border: `1px solid ${open ? "var(--border-strong)" : "var(--border-default)"}`,
+          background: open ? "var(--bg-subtle)" : "var(--bg-base)",
+          color: "var(--text-secondary)", cursor: "pointer",
+          transition: "all 0.15s ease",
+        }}
+      >
+        <Filter size={11} />
+        {MODE_LABELS[value]}
+        <ChevronDown
+          size={11}
+          style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s ease" }}
+        />
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 100,
+          background: "var(--bg-elevated)", border: "1px solid var(--border-strong)",
+          borderRadius: "8px", overflow: "hidden", minWidth: "140px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+        }}>
+          {visibleOptions.map((option, i) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => { onChange(option); setOpen(false); }}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                padding: "9px 13px",
+                fontFamily: CHART_FONT, fontSize: "11px",
+                color: value === option ? "var(--accent-emerald)" : "var(--text-secondary)",
+                background: value === option ? "var(--accent-emerald-soft)" : "transparent",
+                border: "none",
+                borderBottom: i < visibleOptions.length - 1 ? "1px solid var(--border-default)" : "none",
+                cursor: "pointer",
+                transition: "background 0.1s ease",
+              }}
+            >
+              {MODE_LABELS[option]}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (value: CatalogSortMode) => void }) {
   const [open, setOpen] = useState(false);

@@ -22,12 +22,12 @@ const GRID_BG_DARK = `
   linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)
 `.trim();
 
-const LANE_HEIGHT = 170;
-const NODE_WIDTH = 220;
-const NODE_HEIGHT = 108;
-const NODE_GAP_X = 42;
-const PADDING_X = 180;
-const PADDING_Y = 72;
+const LANE_HEIGHT = 196;
+const NODE_WIDTH = 236;
+const NODE_HEIGHT = 132;
+const NODE_GAP_X = 34;
+const PADDING_X = 196;
+const PADDING_Y = 64;
 
 interface BenchmarkLiveCanvasProps {
   benchmarkId: string;
@@ -62,7 +62,7 @@ function formatInt(value: number | null | undefined): string {
 
 function formatLatency(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) {
-    return "n/a";
+    return "";
   }
   return `${Math.round(value)} ms`;
 }
@@ -74,6 +74,50 @@ function statusTone(status: BenchmarkOverviewNode["status"]): string {
   if (status === "running") return "border-cyan-400/45 text-cyan-300 bg-cyan-400/10";
   if (status === "summary") return "border-violet-400/45 text-violet-300 bg-violet-400/10";
   return "border-border-subtle text-text-secondary bg-void";
+}
+
+function mechanismPill(node: BenchmarkOverviewNode): string | null {
+  if (node.mechanism && node.mechanism.trim()) {
+    return titleCase(node.mechanism);
+  }
+  if (node.kind === "item" && (node.status === "pending" || node.status === "running")) {
+    return "Pending mechanism";
+  }
+  return null;
+}
+
+function tokenPill(node: BenchmarkOverviewNode): string | null {
+  if (node.totalTokens > 0) {
+    return `${formatInt(node.totalTokens)} tok`;
+  }
+  return null;
+}
+
+function latencyPill(node: BenchmarkOverviewNode): string | null {
+  const label = formatLatency(node.totalLatencyMs);
+  return label || null;
+}
+
+function finalSummaryLine(node: BenchmarkOverviewNode): string {
+  const parts = [node.question];
+  if (node.totalTokens > 0) {
+    parts.push(`${formatInt(node.totalTokens)} tokens`);
+  }
+  const latency = formatLatency(node.totalLatencyMs);
+  if (latency) {
+    parts.push(latency);
+  }
+  return parts.join(" · ");
+}
+
+function laneAccent(index: number): string {
+  const colors = [
+    "rgba(34, 211, 238, 0.32)",
+    "rgba(52, 211, 153, 0.28)",
+    "rgba(251, 191, 36, 0.24)",
+    "rgba(168, 85, 247, 0.24)",
+  ];
+  return colors[index % colors.length];
 }
 
 function viewTone(status: BenchmarkDetailPayload["status"] | null | undefined): string {
@@ -464,18 +508,39 @@ export function BenchmarkLiveCanvas({
           </svg>
 
           {graph.laneOrder.map((laneKey, index) => (
-            <div
-              key={laneKey}
-              style={{
-                position: "absolute",
-                left: 16,
-                top: PADDING_Y + index * LANE_HEIGHT + 16,
-                width: 140,
-              }}
-            >
-              <div className="rounded-md border border-border-subtle/80 bg-black/25 px-3 py-2">
-                <div className="mono text-[9px] uppercase tracking-[0.08em] text-text-muted">
-                  {graph.nodes.find((node) => node.laneKey === laneKey)?.laneLabel ?? laneKey}
+            <div key={laneKey}>
+              <div
+                style={{
+                  position: "absolute",
+                  left: 8,
+                  top: PADDING_Y + index * LANE_HEIGHT - 12,
+                  width: canvasWidth - 260,
+                  height: NODE_HEIGHT + 30,
+                  borderRadius: "16px",
+                  border: `1px solid ${laneAccent(index)}`,
+                  background: "linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
+                }}
+              />
+              <div
+                style={{
+                  position: "absolute",
+                  left: 24,
+                  top: PADDING_Y + index * LANE_HEIGHT + 18,
+                  width: 150,
+                }}
+              >
+                <div
+                  style={{
+                    borderRadius: "10px",
+                    border: `1px solid ${laneAccent(index)}`,
+                    background: "rgba(7, 11, 16, 0.72)",
+                    padding: "10px 12px",
+                  }}
+                >
+                  <div className="mono text-[9px] uppercase tracking-[0.08em] text-text-muted">
+                    {graph.nodes.find((node) => node.laneKey === laneKey)?.laneLabel ?? laneKey}
+                  </div>
                 </div>
               </div>
             </div>
@@ -502,8 +567,8 @@ export function BenchmarkLiveCanvas({
                   position: "absolute",
                   left: position.x,
                   top: position.y,
-                  width: NODE_WIDTH,
-                  minHeight: node.kind === "final" ? NODE_HEIGHT + 16 : NODE_HEIGHT + 8,
+                  width: node.kind === "final" ? NODE_WIDTH + 18 : NODE_WIDTH,
+                  minHeight: node.kind === "final" ? NODE_HEIGHT + 16 : NODE_HEIGHT,
                 }}
                 className={`rounded-md border p-3 text-left transition ${
                   node.isActive
@@ -511,31 +576,62 @@ export function BenchmarkLiveCanvas({
                     : "border-border-subtle/90 bg-[rgba(13,19,26,0.94)] shadow-[0_16px_40px_rgba(0,0,0,0.28)] hover:border-cyan-400/55 hover:bg-[rgba(15,22,30,0.98)]"
                 } ${isItem ? "cursor-pointer" : "cursor-default"}`}
               >
-                <div className="mb-2 flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="mono text-[9px] uppercase tracking-[0.06em] text-text-muted">{node.title}</div>
-                    <div className="text-xs text-text-primary">{node.subtitle}</div>
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {node.itemNumber ? (
+                      <>
+                        <span className="shrink-0 rounded-full border border-border-subtle/90 bg-black/20 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.08em] text-text-primary">
+                          {node.itemNumber}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="text-xs text-text-primary">{node.subtitle}</div>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="min-w-0">
+                        <div className="mono text-[9px] uppercase tracking-[0.06em] text-text-muted">{node.title}</div>
+                        <div className="text-xs text-text-primary">{node.subtitle}</div>
+                      </div>
+                    )}
                   </div>
                   <span className={`shrink-0 rounded-full border px-2 py-1 mono text-[9px] uppercase tracking-[0.05em] ${statusTone(node.status)}`}>
                     {node.status}
                   </span>
                 </div>
-                <p className="mb-3 line-clamp-3 text-[12px] leading-5 text-text-secondary">
+                <p className="mb-3 line-clamp-3 text-[13px] leading-6 text-text-primary">
                   {node.kind === "final"
-                    ? `${node.question} · ${formatInt(node.totalTokens)} tokens · ${formatLatency(node.totalLatencyMs)}`
+                    ? finalSummaryLine(node)
                     : node.question}
                 </p>
-                <div className="flex flex-wrap gap-2 border-t border-border-subtle/70 pt-2 mono text-[9px] uppercase tracking-[0.05em] text-text-muted">
+                <div className="flex flex-wrap gap-2 border-t border-border-subtle/70 pt-2">
                   {node.kind === "item" ? (
                     <>
-                      <span>{node.mechanism ? titleCase(node.mechanism) : "Pending mechanism"}</span>
-                      <span>{formatInt(node.totalTokens)} tok</span>
-                      <span>{formatLatency(node.totalLatencyMs)}</span>
+                      {mechanismPill(node) ? (
+                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
+                          {mechanismPill(node)}
+                        </span>
+                      ) : null}
+                      {tokenPill(node) ? (
+                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
+                          {tokenPill(node)}
+                        </span>
+                      ) : null}
+                      {latencyPill(node) ? (
+                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
+                          {latencyPill(node)}
+                        </span>
+                      ) : null}
                     </>
                   ) : (
                     <>
-                      <span>{dominantMechanism ? titleCase(dominantMechanism) : "Mixed mechanisms"}</span>
-                      <span>{completedCount}/{items.length} done</span>
+                      {dominantMechanism ? (
+                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
+                          {titleCase(dominantMechanism)}
+                        </span>
+                      ) : null}
+                      <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
+                        {completedCount}/{items.length} done
+                      </span>
                     </>
                   )}
                 </div>

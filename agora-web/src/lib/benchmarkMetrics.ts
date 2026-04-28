@@ -607,3 +607,289 @@ function titleCase(value: string): string {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
 }
+
+// ─── Rich payload types ───────────────────────────────────────────────────────
+
+export interface ModelTelemetryEntry {
+  total_tokens: number;
+  thinking_tokens: number;
+  input_tokens: number;
+  output_tokens: number;
+  latency_ms: number;
+  estimated_cost_usd: number;
+}
+
+export interface ConvergenceHistoryItem {
+  round_number: number;
+  disagreement_entropy: number;
+  dominant_answer_share: number;
+  unique_answers: number;
+  answer_churn: number;
+  js_divergence: number;
+  novelty_score: number;
+  answer_distribution: Record<string, number>;
+}
+
+export interface MechanismTraceItem {
+  mechanism: string;
+  start_round: number;
+  end_round: number;
+  switch_reason: string | null;
+  convergence_history: ConvergenceHistoryItem[];
+}
+
+export interface RawBenchmarkRun {
+  task_index: number;
+  category: string;
+  mechanism_used: string;
+  correct: boolean;
+  confidence: number;
+  tokens_used: number;
+  thinking_tokens_used: number;
+  latency_ms: number;
+  estimated_cost_usd: number;
+  rounds: number;
+  switches: number;
+  agent_models_used: string[];
+  selector_reasoning?: string;
+  model_telemetry: Record<string, ModelTelemetryEntry>;
+  model_estimated_costs_usd: Record<string, number>;
+  convergence_history: ConvergenceHistoryItem[];
+  mechanism_trace: MechanismTraceItem[];
+}
+
+export interface BanditCategoryStats {
+  alpha: number;
+  beta_param: number;
+  last_reward: number | null;
+  total_pulls: number;
+}
+
+export type BanditStats = Record<string, Record<string, BanditCategoryStats>>;
+
+export interface EnhancedParetoPoint extends BenchmarkParetoPoint {
+  avgLatencyMs: number;
+  thinkingRatio: number;
+}
+
+export interface PerModelCostRow {
+  model: string;
+  totalCostUsd: number;
+  totalTokens: number;
+  thinkingTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface CategoryRadarRow {
+  category: string;
+  accuracy: number;
+  costEfficiency: number;
+  speed: number;
+  thinkingRatio: number;
+  coverage: number;
+}
+
+// ─── Public payload extraction functions ─────────────────────────────────────
+
+export function extractPayloadRuns(
+  payload: Record<string, unknown>,
+  phase: "pre_learning" | "post_learning" | "learning_updates",
+): RawBenchmarkRun[] {
+  const section = payload[phase];
+  if (!isRecord(section) || !Array.isArray(section.runs)) {
+    return [];
+  }
+  return (section.runs as unknown[]).filter(isRecord).map((raw) => parseRawRun(raw));
+}
+
+export function extractBanditStats(payload: Record<string, unknown>): BanditStats | null {
+  const stats = payload.bandit_stats;
+  if (!isRecord(stats)) {
+    return null;
+  }
+  const result: BanditStats = {};
+  for (const [mechanism, byCategory] of Object.entries(stats)) {
+    if (!isRecord(byCategory)) continue;
+    result[mechanism] = {};
+    for (const [category, entry] of Object.entries(byCategory)) {
+      if (!isRecord(entry)) continue;
+      result[mechanism][category] = {
+        alpha: asNumber(entry.alpha),
+        beta_param: asNumber(entry.beta_param),
+        last_reward: entry.last_reward == null ? null : asNumber(entry.last_reward),
+        total_pulls: asNumber(entry.total_pulls),
+      };
+    }
+  }
+  return result;
+}
+
+export function buildEnhancedParetoData(summary: NormalizedSummary): EnhancedParetoPoint[] {
+  const base = buildOverviewParetoData(summary);
+  return base.map((pt) => {
+    const metric = summary.per_mechanism[pt.mechanism.toLowerCase()] ?? DEFAULT_METRIC;
+    const thinkingRatio = metric.avg_tokens > 0 ? metric.avg_thinking_tokens / metric.avg_tokens : 0;
+    return {
+      ...pt,
+      avgLatencyMs: metric.avg_latency_ms,
+      thinkingRatio,
+    };
+  });
+}
+
+export function buildPerModelCostData(payload: Record<string, unknown>): PerModelCostRow[] {
+  const allRuns: RawBenchmarkRun[] = [
+    ...extractPayloadRuns(payload, "pre_learning"),
+    ...extractPayloadRuns(payload, "post_learning"),
+    ...extractPayloadRuns(payload, "learning_updates"),
+  ];
+
+  const accumulator = new Map<string, PerModelCostRow>();
+  for (const run of allRuns) {
+    for (const [model, telemetry] of Object.entries(run.model_telemetry)) {
+      const existing = accumulator.get(model) ?? {
+        model,
+        totalCostUsd: 0,
+        totalTokens: 0,
+        thinkingTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+      existing.totalCostUsd += telemetry.estimated_cost_usd;
+      existing.totalTokens += telemetry.total_tokens;
+      existing.thinkingTokens += telemetry.thinking_tokens;
+      existing.inputTokens += telemetry.input_tokens;
+      existing.outputTokens += telemetry.output_tokens;
+      accumulator.set(model, existing);
+    }
+  }
+
+  return Array.from(accumulator.values()).sort((a, b) => b.totalCostUsd - a.totalCostUsd);
+}
+
+export function buildCategoryRadarData(summary: NormalizedSummary): CategoryRadarRow[] {
+  const categorySource = hasCategoryAxisData(summary.per_category_by_mechanism)
+    ? summary.per_category_by_mechanism
+    : summary.per_category;
+
+  const rows = BENCHMARK_DOMAIN_KEYS.map((domain) => {
+    const metricsByMode = categorySource[domain] ?? {};
+    const allMetrics = Object.values(metricsByMode);
+    if (allMetrics.length === 0) {
+      return { domain, accuracy: 0, avgCost: 0, avgLatency: 0, avgThinkingRatio: 0, coverage: 0, runCount: 0, scoredRunCount: 0 };
+    }
+    const scoredMetrics = allMetrics.filter((m) => m.scored_run_count > 0);
+    const accuracy = scoredMetrics.length > 0
+      ? scoredMetrics.reduce((s, m) => s + m.accuracy, 0) / scoredMetrics.length * 100
+      : 0;
+    const avgCost = average(allMetrics as unknown as Array<Record<string, any>>, (m) => asNumber((m as NormalizedMetric).avg_estimated_cost_usd));
+    const avgLatency = average(allMetrics as unknown as Array<Record<string, any>>, (m) => asNumber((m as NormalizedMetric).avg_latency_ms));
+    const avgThinkingRatio = average(
+      allMetrics as unknown as Array<Record<string, any>>,
+      (m) => {
+        const metric = m as NormalizedMetric;
+        return metric.avg_tokens > 0 ? metric.avg_thinking_tokens / metric.avg_tokens : 0;
+      },
+    );
+    const runCount = allMetrics.reduce((s, m) => s + m.run_count, 0);
+    const scoredRunCount = allMetrics.reduce((s, m) => s + m.scored_run_count, 0);
+    return { domain, accuracy, avgCost, avgLatency, avgThinkingRatio, coverage: runCount > 0 ? scoredRunCount / runCount : 0, runCount, scoredRunCount };
+  });
+
+  const maxCost = Math.max(...rows.map((r) => r.avgCost), 0.000001);
+  const maxLatency = Math.max(...rows.map((r) => r.avgLatency), 1);
+
+  return rows.map((r) => ({
+    category: titleCase(r.domain),
+    accuracy: Number(r.accuracy.toFixed(1)),
+    costEfficiency: Number(Math.max(0, 100 - (r.avgCost / maxCost) * 100).toFixed(1)),
+    speed: Number(Math.max(0, 100 - (r.avgLatency / maxLatency) * 100).toFixed(1)),
+    thinkingRatio: Number((r.avgThinkingRatio * 100).toFixed(1)),
+    coverage: Number((r.coverage * 100).toFixed(1)),
+  }));
+}
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
+
+function parseRawRun(raw: Record<string, any>): RawBenchmarkRun {
+  return {
+    task_index: asNumber(raw.task_index),
+    category: String(raw.category ?? "unknown"),
+    mechanism_used: String(raw.mechanism_used ?? raw.mechanism ?? "selector"),
+    correct: Boolean(raw.correct),
+    confidence: asNumber(raw.confidence),
+    tokens_used: asNumber(raw.tokens_used ?? raw.total_tokens_used),
+    thinking_tokens_used: asNumber(raw.thinking_tokens_used),
+    latency_ms: asNumber(raw.latency_ms),
+    estimated_cost_usd: asNumber(raw.estimated_cost_usd),
+    rounds: asNumber(raw.rounds),
+    switches: asNumber(raw.switches),
+    agent_models_used: Array.isArray(raw.agent_models_used) ? raw.agent_models_used.map(String) : [],
+    selector_reasoning: raw.selector_reasoning != null ? String(raw.selector_reasoning) : undefined,
+    model_telemetry: parseTelemetryMap(raw.model_telemetry),
+    model_estimated_costs_usd: parseCostMap(raw.model_estimated_costs_usd),
+    convergence_history: parseConvergenceHistory(raw.convergence_history),
+    mechanism_trace: parseMechanismTrace(raw.mechanism_trace),
+  };
+}
+
+function parseTelemetryMap(raw: unknown): Record<string, ModelTelemetryEntry> {
+  if (!isRecord(raw)) return {};
+  const result: Record<string, ModelTelemetryEntry> = {};
+  for (const [model, entry] of Object.entries(raw)) {
+    if (!isRecord(entry)) continue;
+    result[model] = {
+      total_tokens: asNumber(entry.total_tokens),
+      thinking_tokens: asNumber(entry.thinking_tokens),
+      input_tokens: asNumber(entry.input_tokens),
+      output_tokens: asNumber(entry.output_tokens),
+      latency_ms: asNumber(entry.latency_ms),
+      estimated_cost_usd: asNumber(entry.estimated_cost_usd),
+    };
+  }
+  return result;
+}
+
+function parseCostMap(raw: unknown): Record<string, number> {
+  if (!isRecord(raw)) return {};
+  const result: Record<string, number> = {};
+  for (const [model, cost] of Object.entries(raw)) {
+    result[model] = asNumber(cost);
+  }
+  return result;
+}
+
+function parseConvergenceHistory(raw: unknown): ConvergenceHistoryItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isRecord).map((item) => ({
+    round_number: asNumber(item.round_number),
+    disagreement_entropy: asNumber(item.disagreement_entropy),
+    dominant_answer_share: asNumber(item.dominant_answer_share),
+    unique_answers: asNumber(item.unique_answers),
+    answer_churn: asNumber(item.answer_churn),
+    js_divergence: asNumber(item.js_divergence),
+    novelty_score: asNumber(item.novelty_score),
+    answer_distribution: parseStringNumericMap(item.answer_distribution),
+  }));
+}
+
+function parseMechanismTrace(raw: unknown): MechanismTraceItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isRecord).map((item) => ({
+    mechanism: String(item.mechanism ?? "unknown"),
+    start_round: asNumber(item.start_round),
+    end_round: asNumber(item.end_round),
+    switch_reason: item.switch_reason != null ? String(item.switch_reason) : null,
+    convergence_history: parseConvergenceHistory(item.convergence_history),
+  }));
+}
+
+function parseStringNumericMap(raw: unknown): Record<string, number> {
+  if (!isRecord(raw)) return {};
+  const result: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    result[k] = asNumber(v);
+  }
+  return result;
+}

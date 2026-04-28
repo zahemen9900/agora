@@ -11,6 +11,7 @@ export interface BenchmarkOverviewNode {
   laneLabel: string;
   laneIndex: number;
   colIndex: number;
+  itemNumber: string;
   title: string;
   subtitle: string;
   status: BenchmarkItemPayload["status"] | "pending" | "summary";
@@ -124,6 +125,7 @@ export function buildBenchmarkOverviewGraph(
       laneLabel: `${titleCase(item.phase ?? "benchmark")} · ${titleCase(item.run_kind ?? "run")}`,
       laneIndex: laneIndex.get(laneKey) ?? 0,
       colIndex,
+      itemNumber: String(item.item_index + 1),
       title: `Item ${item.item_index + 1}`,
       subtitle: titleCase(item.category),
       status: itemDisplayStatus(item),
@@ -163,6 +165,7 @@ export function buildBenchmarkOverviewGraph(
       laneLabel: "Benchmark start",
       laneIndex: 0,
       colIndex: 0,
+      itemNumber: "",
       title: "Run queued",
       subtitle: titleCase(options.benchmarkStatus ?? "queued"),
       status: "pending",
@@ -181,6 +184,7 @@ export function buildBenchmarkOverviewGraph(
     laneLabel: "Benchmark completion",
     laneIndex: Math.max(laneOrder.length - 1, 0),
     colIndex: Math.max(...Array.from(laneCounts.values(), (value) => value), 1),
+    itemNumber: "",
     title: "Benchmark completeness",
     subtitle: titleCase(options.benchmarkStatus ?? "queued"),
     status: "summary",

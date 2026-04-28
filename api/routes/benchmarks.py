@@ -1396,6 +1396,20 @@ def _build_benchmark_detail_response(
         payload=payload,
         run_record=run_record,
     )
+    artifact_benchmark_items = _artifact_benchmark_items(artifact)
+    if artifact_benchmark_items:
+        benchmark_items = _merge_benchmark_item_snapshots(
+            benchmark_items,
+            artifact_benchmark_items,
+        )
+        if active_item_id is None or not any(
+            item.item_id == active_item_id for item in benchmark_items
+        ):
+            active_item_id = _artifact_active_item_id(artifact, benchmark_items)
+    elif active_item_id is None:
+        active_item_id = _artifact_active_item_id(artifact, benchmark_items)
+    if not failure_counts_by_stage:
+        failure_counts_by_stage = _artifact_failure_counts_by_stage(artifact)
     active_item = next(
         (item for item in benchmark_items if item.item_id == active_item_id),
         None,
@@ -2089,6 +2103,106 @@ def _benchmark_items_from_payload(
         )
         active_item_id = prioritized.item_id
     return benchmark_items, active_item_id, failure_counts_by_stage
+
+
+def _artifact_benchmark_items(artifact: dict[str, Any] | None) -> list[BenchmarkItemResponse]:
+    if not isinstance(artifact, dict):
+        return []
+    raw_items = artifact.get("benchmark_items")
+    if not isinstance(raw_items, list):
+        return []
+    return [
+        BenchmarkItemResponse.model_validate(item)
+        for item in raw_items
+        if isinstance(item, dict)
+    ]
+
+
+def _artifact_active_item_id(
+    artifact: dict[str, Any] | None,
+    benchmark_items: list[BenchmarkItemResponse],
+) -> str | None:
+    if isinstance(artifact, dict):
+        raw_item_id = artifact.get("active_item_id")
+        if isinstance(raw_item_id, str) and raw_item_id.strip():
+            candidate = raw_item_id.strip()
+            if any(item.item_id == candidate for item in benchmark_items):
+                return candidate
+    return benchmark_items[0].item_id if benchmark_items else None
+
+
+def _artifact_failure_counts_by_stage(artifact: dict[str, Any] | None) -> dict[str, int]:
+    if not isinstance(artifact, dict):
+        return {}
+    raw_counts = artifact.get("failure_counts_by_stage")
+    if not isinstance(raw_counts, dict):
+        return {}
+    return {
+        str(key): _safe_int(value)
+        for key, value in raw_counts.items()
+        if str(key).strip()
+    }
+
+
+def _merge_benchmark_item_snapshots(
+    current_items: list[BenchmarkItemResponse],
+    artifact_items: list[BenchmarkItemResponse],
+) -> list[BenchmarkItemResponse]:
+    artifact_by_id = {item.item_id: item for item in artifact_items}
+    merged_items: list[BenchmarkItemResponse] = []
+    seen_item_ids: set[str] = set()
+
+    for item in current_items:
+        artifact_item = artifact_by_id.get(item.item_id)
+        if artifact_item is None:
+            merged_items.append(item)
+            seen_item_ids.add(item.item_id)
+            continue
+
+        merged_items.append(
+            item.model_copy(
+                update={
+                    "status": (
+                        artifact_item.status
+                        if item.status == "queued" and artifact_item.status != "queued"
+                        else item.status
+                    ),
+                    "mechanism": item.mechanism or artifact_item.mechanism,
+                    "selector_source": item.selector_source or artifact_item.selector_source,
+                    "selector_fallback_path": (
+                        item.selector_fallback_path
+                        if item.selector_fallback_path
+                        else artifact_item.selector_fallback_path
+                    ),
+                    "failure_reason": item.failure_reason or artifact_item.failure_reason,
+                    "latest_error_event": item.latest_error_event or artifact_item.latest_error_event,
+                    "fallback_events": (
+                        item.fallback_events if item.fallback_events else artifact_item.fallback_events
+                    ),
+                    "total_tokens": item.total_tokens or artifact_item.total_tokens,
+                    "thinking_tokens": item.thinking_tokens or artifact_item.thinking_tokens,
+                    "total_latency_ms": item.total_latency_ms or artifact_item.total_latency_ms,
+                    "model_telemetry": (
+                        item.model_telemetry if item.model_telemetry else artifact_item.model_telemetry
+                    ),
+                    "summary": item.summary if item.summary else artifact_item.summary,
+                    "started_at": item.started_at or artifact_item.started_at,
+                    "completed_at": item.completed_at or artifact_item.completed_at,
+                    "events": item.events if item.events else artifact_item.events,
+                }
+            )
+        )
+        seen_item_ids.add(item.item_id)
+
+    for artifact_item in artifact_items:
+        if artifact_item.item_id in seen_item_ids:
+            continue
+        merged_items.append(artifact_item)
+
+    return sorted(
+        merged_items,
+        key=lambda item: (item.item_index, item.task_index, item.item_id),
+    )
 
 
 def _extract_runs(payload: dict[str, Any]) -> list[dict[str, Any]]:

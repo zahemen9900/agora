@@ -6,6 +6,7 @@ import { type BenchmarkCatalogEntry } from "../lib/api";
 import { useBenchmarkCatalogQuery } from "../lib/benchmarkQueries";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
+import { SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
 
 type SortMode = "recent" | "frequency";
 
@@ -91,8 +92,17 @@ export function BenchmarksAll() {
           <p className="text-text-secondary">{loadError}</p>
         </div>
       ) : !catalog ? (
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">Loading benchmark catalog...</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+          {["Your Benchmarks", "Global Benchmarks"].map((title) => (
+            <div key={title} className="card p-4 sm:p-6">
+              <h3 className="text-lg font-semibold mb-4">{title}</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <SkeletonRunRow delay={0} />
+                <SkeletonRunRow delay={0.08} />
+                <SkeletonRunRow delay={0.16} />
+              </div>
+            </div>
+          ))}
         </div>
       ) : yourEntries.length === 0 && globalEntries.length === 0 ? (
         <div className="card p-6 border border-border-subtle">

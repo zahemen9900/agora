@@ -2914,7 +2914,7 @@ async def test_sdk_verify_receipt_uses_hosted_task_mapping_without_wallet(
             assert create_payload.get("stakes") == 0.0
             assert create_payload.get("mechanism_override") == "vote"
             return _FakeResponse({"task_id": "task-hosted-verify"})
-        if url == "/tasks/task-hosted-verify/run":
+        if url == "/tasks/task-hosted-verify/run-async":
             return _FakeResponse({"ok": True})
         raise AssertionError(f"Unexpected POST url: {url}")
 

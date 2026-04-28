@@ -29,11 +29,20 @@ import {
   buildDetailCategoryRows,
   buildDetailMechanismRows,
   buildDetailStageRows,
+  extractPayloadRuns,
+  extractBanditStats,
   type BenchmarkCategoryRow,
   type BenchmarkMetricRow,
   type NormalizedSummary,
   normalizeBenchmarkSummary,
 } from "../lib/benchmarkMetrics";
+import { injectChartKeyframes, ShimBlock } from "../components/benchmark/ChartCard";
+import { PerModelTokenBreakdown } from "../components/benchmark/detail/PerModelTokenBreakdown";
+import { MechanismTimeline } from "../components/benchmark/detail/MechanismTimeline";
+import { ConvergenceEntropyRiver } from "../components/benchmark/detail/ConvergenceEntropyRiver";
+import { AnswerFactionRace } from "../components/benchmark/detail/AnswerFactionRace";
+import { BanditBeliefCurves } from "../components/benchmark/detail/BanditBeliefCurves";
+import { RunNarrative } from "../components/benchmark/detail/RunNarrative";
 import { useAuth } from "../lib/useAuth";
 import { BenchmarkLiveCanvas } from "../components/benchmark/BenchmarkLiveCanvas";
 import { Flyout } from "../components/Flyout";
@@ -100,6 +109,7 @@ export function BenchmarkDetail() {
   const followTimelineRef = useRef(true);
   const copyTimeoutRef = useRef<number | null>(null);
   const streamedEventKeysRef = useRef<Set<string>>(new Set());
+  const historyRepairAttemptedRef = useRef<string | null>(null);
   const [showFailedFlyout, setShowFailedFlyout] = useState(false);
   const [showSuccessFlyout, setShowSuccessFlyout] = useState(false);
   const failedFlyoutShownRef = useRef(false);
@@ -144,6 +154,7 @@ export function BenchmarkDetail() {
     setManualItemSelection(false);
     setHydratedItemEvents({});
     setHydratingItemId(null);
+    historyRepairAttemptedRef.current = null;
   }, [benchmarkId]);
 
   useEffect(() => {
@@ -217,12 +228,42 @@ export function BenchmarkDetail() {
     };
   }, [benchmarkId, detailRunId, detailStatus, getAccessToken, queryClient]);
 
+  useEffect(() => { injectChartKeyframes(); }, []);
+
   const summary = useMemo<NormalizedSummary>(() => {
     return normalizeBenchmarkSummary(detail?.summary, detail?.benchmark_payload);
   }, [detail]);
   const stageRows = useMemo<BenchmarkMetricRow[]>(() => buildDetailStageRows(summary), [summary]);
   const mechanismRows = useMemo<BenchmarkMetricRow[]>(() => buildDetailMechanismRows(summary), [summary]);
   const categoryRows = useMemo<BenchmarkCategoryRow[]>(() => buildDetailCategoryRows(summary), [summary]);
+
+  const artifactPayload = useMemo(
+    () => (detail?.benchmark_payload ?? {}) as Record<string, unknown>,
+    [detail],
+  );
+  const preRuns = useMemo(() => extractPayloadRuns(artifactPayload, "pre_learning"), [artifactPayload]);
+  const postRuns = useMemo(() => extractPayloadRuns(artifactPayload, "post_learning"), [artifactPayload]);
+  const banditStats = useMemo(() => extractBanditStats(artifactPayload), [artifactPayload]);
+  const debateRuns = useMemo(() => preRuns.filter((r) => r.convergence_history.length > 0), [preRuns]);
+  const hasDebateData = debateRuns.length > 0;
+  const payloadTelemetry = useMemo(() => {
+    const allRuns = [...preRuns, ...postRuns];
+    if (allRuns.length === 0) return null;
+    const merged: Record<string, import("../lib/benchmarkMetrics").ModelTelemetryEntry> = {};
+    for (const run of allRuns) {
+      for (const [model, t] of Object.entries(run.model_telemetry)) {
+        const ex = merged[model];
+        if (!ex) { merged[model] = { ...t }; continue; }
+        ex.total_tokens += t.total_tokens;
+        ex.thinking_tokens += t.thinking_tokens;
+        ex.input_tokens += t.input_tokens;
+        ex.output_tokens += t.output_tokens;
+        ex.latency_ms += t.latency_ms;
+        ex.estimated_cost_usd += t.estimated_cost_usd;
+      }
+    }
+    return Object.keys(merged).length > 0 ? merged : null;
+  }, [preRuns, postRuns]);
 
   const modelList = useMemo(() => {
     if (!detail) {
@@ -308,6 +349,28 @@ export function BenchmarkDetail() {
     () => aggregateBenchmarkTimeline(selectedItemTimeline),
     [selectedItemTimeline],
   );
+
+  useEffect(() => {
+    if (!benchmarkId || !detail || !selectedItem) {
+      return;
+    }
+    const isSettled = detail.status === "completed" || detail.status === "failed";
+    if (!isSettled || detailQuery.isFetching || selectedItemTimeline.length > 0) {
+      return;
+    }
+    const repairKey = `${benchmarkId}:${selectedItem.item_id}`;
+    if (historyRepairAttemptedRef.current === repairKey) {
+      return;
+    }
+    historyRepairAttemptedRef.current = repairKey;
+    void detailQuery.refetch();
+  }, [
+    benchmarkId,
+    detail,
+    detailQuery,
+    selectedItem,
+    selectedItemTimeline.length,
+  ]);
   const availablePhases = useMemo(() => {
     const phases = new Set<string>();
     for (const event of timeline) {
@@ -490,10 +553,17 @@ export function BenchmarkDetail() {
       if (cancelled) {
         return;
       }
+      const nextEvents = payload.events ?? [];
       setHydratedItemEvents((current) => ({
         ...current,
-        [selectedItem.item_id]: payload.events ?? [],
+        [selectedItem.item_id]: nextEvents,
       }));
+      patchBenchmarkDetailCache(queryClient, benchmarkId, (current) => {
+        if (!current) {
+          return current;
+        }
+        return mergeBenchmarkItemEventsIntoDetail(current, selectedItem.item_id, nextEvents);
+      });
     })().catch((error: unknown) => {
       if (!cancelled) {
         console.error(error);
@@ -507,7 +577,7 @@ export function BenchmarkDetail() {
     return () => {
       cancelled = true;
     };
-  }, [benchmarkId, getAccessToken, hydratingItemId, selectedItem, timelineByItem]);
+  }, [benchmarkId, getAccessToken, hydratingItemId, queryClient, selectedItem, timelineByItem]);
 
   const resolvedPrompts = (() => {
     const request = detail?.request;
@@ -547,12 +617,18 @@ export function BenchmarkDetail() {
       <>
         <title>{benchmarkId ? `${benchmarkId} · Benchmark — Agora` : "Benchmark — Agora"}</title>
         <meta name="description" content="Detailed benchmark results — mechanism breakdown, model performance, accuracy scores, and cost." />
-        <div className="max-w-250 mx-auto pb-20 w-full">
-          <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
-            <ArrowLeft size={14} /> Back to overview
-          </button>
-          <div className="card p-6 border border-border-subtle">
-            <p className="text-text-secondary">Loading benchmark report...</p>
+        <div style={{ maxWidth: 900, margin: "0 auto", padding: "32px 16px" }}>
+          <ShimBlock w="120px" h="14px" style={{ marginBottom: 24 }} />
+          <ShimBlock w="340px" h="32px" style={{ marginBottom: 16 }} />
+          <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+            <ShimBlock w="80px" h="32px" />
+            <ShimBlock w="80px" h="32px" />
+            <ShimBlock w="80px" h="32px" />
+          </div>
+          <ShimBlock w="100%" h="300px" style={{ marginBottom: 16 }} />
+          <div style={{ display: "flex", gap: 16 }}>
+            <ShimBlock w="50%" h="200px" />
+            <ShimBlock w="50%" h="200px" />
           </div>
         </div>
       </>
@@ -1136,116 +1212,76 @@ export function BenchmarkDetail() {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <div className="card p-4 sm:p-6">
-          <h3 className="text-lg font-semibold mb-3">Model Mix</h3>
-          {modelList.length === 0 ? (
-            <p className="text-sm text-text-secondary">No model metadata found.</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {modelList.map((model) => {
-                const provider = providerFromModel(model);
-                return (
-                  <span
-                    key={model}
-                    className={`inline-flex items-center gap-1.5 border rounded-full px-2 py-1 mono text-[11px] ${providerTone(provider)}`}
-                  >
-                    <ProviderGlyph provider={provider} />
-                    <span>{model}</span>
-                  </span>
-                );
-              })}
-            </div>
+      {/* ── Per-Model Token Breakdown (visual) ─────────────────────────────── */}
+      {payloadTelemetry && (
+        <div className="card p-4 sm:p-6 mb-8">
+          <PerModelTokenBreakdown telemetry={payloadTelemetry} />
+        </div>
+      )}
+
+      {/* ── Mechanism Execution Timeline ────────────────────────────────────── */}
+      {preRuns.length > 0 && (
+        <div className="card p-4 sm:p-6 mb-8" style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+          {preRuns.slice(0, 6).map((run, i) => (
+            run.mechanism_trace.length > 0 && (
+              <div key={i}>
+                <MechanismTimeline trace={run.mechanism_trace} />
+              </div>
+            )
+          ))}
+        </div>
+      )}
+
+      {/* ── Convergence Entropy River ────────────────────────────────────────── */}
+      {hasDebateData && (
+        <div className="card p-4 sm:p-6 mb-8">
+          <ConvergenceEntropyRiver runs={debateRuns} />
+        </div>
+      )}
+
+      {/* ── Answer Faction Race ──────────────────────────────────────────────── */}
+      {hasDebateData && (
+        <div className="card p-4 sm:p-6 mb-8" style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+          {debateRuns.slice(0, 4).map((run, i) => (
+            run.convergence_history.length > 0 && (
+              <div key={i}>
+                <AnswerFactionRace history={run.convergence_history} category={run.category} />
+              </div>
+            )
+          ))}
+        </div>
+      )}
+
+      {/* ── Bandit Belief Curves ────────────────────────────────────────────── */}
+      {banditStats && (
+        <div className="card p-4 sm:p-6 mb-8">
+          <BanditBeliefCurves stats={banditStats} />
+        </div>
+      )}
+
+      {/* ── Run Narratives ──────────────────────────────────────────────────── */}
+      {preRuns.length > 0 && (
+        <div className="card p-4 sm:p-6 mb-8">
+          <div style={{ fontFamily: "'Commit Mono', 'SF Mono', monospace", fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: "14px" }}>
+            Run Narratives — Pre-Learning ({preRuns.length} run{preRuns.length !== 1 ? "s" : ""})
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {preRuns.slice(0, 10).map((run, i) => <RunNarrative key={i} run={run} />)}
+          </div>
+          {postRuns.length > 0 && (
+            <>
+              <div style={{ fontFamily: "'Commit Mono', 'SF Mono', monospace", fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", margin: "18px 0 14px" }}>
+                Run Narratives — Post-Learning ({postRuns.length} run{postRuns.length !== 1 ? "s" : ""})
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {postRuns.slice(0, 10).map((run, i) => <RunNarrative key={i} run={run} />)}
+              </div>
+            </>
           )}
         </div>
+      )}
 
-        <div className="card p-4 sm:p-6">
-          <h3 className="text-lg font-semibold mb-3">Cost Breakdown</h3>
-          {costByModel.length === 0 ? (
-            <p className="text-sm text-text-secondary">No model-level cost estimates available.</p>
-          ) : (
-            <div className="space-y-2">
-              {costByModel.map(([model, cost]) => (
-                <div key={model} className="flex items-center justify-between gap-3 text-sm">
-                  <span className="inline-flex items-center gap-2 text-text-secondary truncate">
-                    <ProviderGlyph provider={providerFromModel(model)} />
-                    <span className="truncate">{model}</span>
-                  </span>
-                  <span className="mono text-text-primary">{formatUsd(cost)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="mono text-xs text-text-muted mt-4">
-            Pricing version {detail.cost?.pricing_version ?? "n/a"} • estimated {formatDateTime(detail.cost?.estimated_at ?? null)}
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        <div className="card p-4 sm:p-6">
-          <h3 className="text-lg font-semibold mb-3">Model Telemetry</h3>
-          {modelTelemetryRows.length === 0 ? (
-            <p className="text-sm text-text-secondary">No model telemetry available yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {modelTelemetryRows.map(([model, telemetry]) => (
-                <div key={model} className="border border-border-subtle rounded-md p-3 bg-void">
-                  <div className="flex items-center justify-between gap-3 mb-2">
-                    <span className="inline-flex items-center gap-2 text-text-primary">
-                      <ProviderGlyph provider={providerFromModel(model)} />
-                      <span className="text-sm">{model}</span>
-                    </span>
-                    <span className="mono text-[10px] text-text-muted">{telemetry.estimation_mode ?? "n/a"}</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-xs text-text-secondary">
-                    <div>Total {formatMaybeInt(telemetry.total_tokens)}</div>
-                    <div>Input {formatMaybeInt(telemetry.input_tokens)}</div>
-                    <div>Output {formatMaybeInt(telemetry.output_tokens)}</div>
-                    <div>Thinking {formatMaybeInt(telemetry.thinking_tokens)}</div>
-                    <div>Latency {formatLatency(telemetry.latency_ms ?? null)}</div>
-                    <div>Cost {formatUsd(telemetry.estimated_cost_usd ?? costByModelMap.get(model) ?? null)}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="card p-4 sm:p-6">
-          <h3 className="text-lg font-semibold mb-3">Question Configuration</h3>
-          {resolvedPrompts.length === 0 ? (
-            <p className="text-sm text-text-secondary">No resolved domain questions stored for this benchmark.</p>
-          ) : (
-            <div className="space-y-3">
-              {resolvedPrompts.map(([domain, question]) => {
-                const sourceLabel = String(
-                  question.source ?? (String(question.template_id ?? "") === "custom" ? "custom" : "template"),
-                );
-                return (
-                  <div key={domain} className="border border-border-subtle rounded-md p-3 bg-void">
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <span className="text-sm text-text-primary">{titleCase(domain)}</span>
-                      <span className="mono text-[10px] text-text-muted">{sourceLabel}</span>
-                    </div>
-                    <div className="mono text-[10px] text-text-muted mb-2">
-                      {String(question.template_title ?? question.template_id ?? "Custom Question")}
-                    </div>
-                    <p className="text-xs text-text-secondary whitespace-pre-wrap wrap-break-word">
-                      {String(question.question ?? question.prompt ?? "")}
-                    </p>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <JsonPanel title="Request Snapshot" value={detail.request} />
-        <JsonPanel title="Benchmark Payload" value={detail.benchmark_payload} />
-      </div>
+      <PayloadPanel value={detail.benchmark_payload} />
       </>
       ) : null}
     </div>
@@ -1277,6 +1313,46 @@ function JsonPanel({ title, value }: { title: string; value: unknown }) {
       <h3 className="text-lg font-semibold mb-3">{title}</h3>
       <pre className="text-xs text-text-secondary overflow-auto max-h-96 bg-void border border-border-subtle rounded-md p-3">
         {prettyJson(value)}
+      </pre>
+    </div>
+  );
+}
+
+function PayloadPanel({ value }: { value: unknown }) {
+  const [copied, setCopied] = useState(false);
+  const json = prettyJson(value);
+
+  function handleCopy() {
+    void navigator.clipboard.writeText(json).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    });
+  }
+
+  return (
+    <div className="card p-4 sm:p-6">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h3 className="text-lg font-semibold">Benchmark Payload</h3>
+        <button
+          type="button"
+          onClick={handleCopy}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: "6px",
+            fontFamily: "'Commit Mono', 'SF Mono', monospace", fontSize: "9px", letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            padding: "5px 10px", borderRadius: "6px",
+            border: `1px solid ${copied ? "var(--accent-emerald)" : "var(--border-default)"}`,
+            background: copied ? "rgba(16,185,129,0.1)" : "var(--bg-subtle)",
+            color: copied ? "var(--accent-emerald)" : "var(--text-secondary)",
+            cursor: "pointer", transition: "all 0.2s ease",
+          }}
+        >
+          {copied ? <Check size={10} /> : <Clipboard size={10} />}
+          {copied ? "Copied!" : "Copy JSON"}
+        </button>
+      </div>
+      <pre className="text-xs text-text-secondary overflow-auto max-h-96 bg-void border border-border-subtle rounded-md p-3">
+        {json}
       </pre>
     </div>
   );
@@ -1513,6 +1589,38 @@ function applyBenchmarkStreamEventToDetail(
       telemetry && typeof telemetry.degraded_item_count === "number"
         ? telemetry.degraded_item_count
         : current.degraded_item_count,
+  };
+}
+
+function mergeBenchmarkItemEventsIntoDetail(
+  current: BenchmarkDetailPayload,
+  itemId: string,
+  incomingEvents: TaskEvent[],
+): BenchmarkDetailPayload {
+  if (incomingEvents.length === 0) {
+    return current;
+  }
+
+  const nextItems = current.benchmark_items.map((item) => {
+    if (item.item_id !== itemId) {
+      return item;
+    }
+    const mergedEvents = mergeUniqueTaskEvents(item.events ?? [], incomingEvents);
+    return {
+      ...item,
+      events: mergedEvents,
+      started_at: item.started_at ?? mergedEvents[0]?.timestamp ?? null,
+      completed_at: item.completed_at ?? mergedEvents.at(-1)?.timestamp ?? null,
+    };
+  });
+  const nextActiveItem = current.active_item_id
+    ? nextItems.find((item) => item.item_id === current.active_item_id) ?? current.active_item
+    : current.active_item;
+
+  return {
+    ...current,
+    benchmark_items: nextItems,
+    active_item: nextActiveItem,
   };
 }
 
