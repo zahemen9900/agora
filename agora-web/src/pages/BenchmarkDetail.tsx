@@ -13,6 +13,7 @@ import {
 } from "recharts";
 
 import {
+  getBenchmarkItemEvents,
   streamBenchmarkRun,
   type BenchmarkDetailPayload,
   type BenchmarkItemPayload,
@@ -34,8 +35,13 @@ import {
   normalizeBenchmarkSummary,
 } from "../lib/benchmarkMetrics";
 import { useAuth } from "../lib/useAuth";
+import { BenchmarkLiveCanvas } from "../components/benchmark/BenchmarkLiveCanvas";
 import { Flyout } from "../components/Flyout";
 import { ProviderGlyph } from "../components/ProviderGlyph";
+import {
+  resolveSelectedBenchmarkItemId,
+  shouldFetchBenchmarkItemEvents,
+} from "../lib/benchmarkCanvas";
 import { providerFromModel, providerTone } from "../lib/modelProviders";
 
 interface BenchmarkTimelineDescriptor {
@@ -80,7 +86,12 @@ export function BenchmarkDetail() {
       : null;
   const isRefreshing = detailQuery.isFetching && Boolean(detail);
   const [timeline, setTimeline] = useState<TaskEvent[]>([]);
+  const [activeTab, setActiveTab] = useState<"canvas" | "logs" | "metrics">("canvas");
+  const [canvasLayer, setCanvasLayer] = useState<"overview" | "item">("overview");
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [manualItemSelection, setManualItemSelection] = useState(false);
+  const [hydratedItemEvents, setHydratedItemEvents] = useState<Record<string, TaskEvent[]>>({});
+  const [hydratingItemId, setHydratingItemId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const [now, setNow] = useState(() => Date.now());
   const [phaseFilter, setPhaseFilter] = useState<string>("all");
@@ -119,12 +130,21 @@ export function BenchmarkDetail() {
       return merged;
     });
     setSelectedItemId((current) => {
-      if (current && detail.benchmark_items.some((item) => item.item_id === current)) {
-        return current;
-      }
-      return detail.active_item_id ?? detail.benchmark_items?.[0]?.item_id ?? null;
+      return resolveSelectedBenchmarkItemId(detail.benchmark_items, {
+        currentSelectedItemId: current,
+        manualSelection: manualItemSelection,
+        activeItemId: detail.active_item_id ?? null,
+      });
     });
-  }, [detail]);
+  }, [detail, manualItemSelection]);
+
+  useEffect(() => {
+    setActiveTab("canvas");
+    setCanvasLayer("overview");
+    setManualItemSelection(false);
+    setHydratedItemEvents({});
+    setHydratingItemId(null);
+  }, [benchmarkId]);
 
   useEffect(() => {
     if (detailStatus !== "queued" && detailStatus !== "running") {
@@ -278,11 +298,12 @@ export function BenchmarkDetail() {
       return [];
     }
     const streamed = timelineByItem.get(selectedItem.item_id) ?? [];
-    if (streamed.length > 0) {
-      return streamed;
-    }
-    return selectedItem.events ?? [];
-  }, [selectedItem, timelineByItem]);
+    const hydrated = hydratedItemEvents[selectedItem.item_id] ?? [];
+    let merged = mergeUniqueTaskEvents([], selectedItem.events ?? []);
+    merged = mergeUniqueTaskEvents(merged, hydrated);
+    merged = mergeUniqueTaskEvents(merged, streamed);
+    return merged;
+  }, [hydratedItemEvents, selectedItem, timelineByItem]);
   const aggregatedSelectedItemTimeline = useMemo(
     () => aggregateBenchmarkTimeline(selectedItemTimeline),
     [selectedItemTimeline],
@@ -441,6 +462,53 @@ export function BenchmarkDetail() {
     }
   }, [timelineJson]);
 
+  const handleSelectItem = useCallback((itemId: string) => {
+    setManualItemSelection(true);
+    setSelectedItemId(itemId);
+  }, []);
+
+  useEffect(() => {
+    if (!benchmarkId || !selectedItem) {
+      return;
+    }
+    const streamed = timelineByItem.get(selectedItem.item_id) ?? [];
+    const shouldFetch = shouldFetchBenchmarkItemEvents(
+      selectedItem,
+      streamed,
+      hydratingItemId === selectedItem.item_id,
+    );
+    if (!shouldFetch) {
+      return;
+    }
+
+    let cancelled = false;
+    setHydratingItemId(selectedItem.item_id);
+
+    void (async () => {
+      const token = await getAccessToken();
+      const payload = await getBenchmarkItemEvents(token, benchmarkId, selectedItem.item_id);
+      if (cancelled) {
+        return;
+      }
+      setHydratedItemEvents((current) => ({
+        ...current,
+        [selectedItem.item_id]: payload.events ?? [],
+      }));
+    })().catch((error: unknown) => {
+      if (!cancelled) {
+        console.error(error);
+      }
+    }).finally(() => {
+      if (!cancelled) {
+        setHydratingItemId((current) => (current === selectedItem.item_id ? null : current));
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [benchmarkId, getAccessToken, hydratingItemId, selectedItem, timelineByItem]);
+
   const resolvedPrompts = (() => {
     const request = detail?.request;
     if (!request || typeof request !== "object") {
@@ -510,7 +578,7 @@ export function BenchmarkDetail() {
         body="Selector accuracy exceeded 60%. Results are ready to review."
         onDismiss={() => setShowSuccessFlyout(false)}
       />
-      <header className="mb-8">
+      <header className="mb-6">
         <div className="flex flex-wrap gap-3 mb-5">
           <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
             <ArrowLeft size={14} /> Overview
@@ -522,15 +590,6 @@ export function BenchmarkDetail() {
             {isRefreshing ? <RefreshCcw size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
             Refresh
           </button>
-        </div>
-
-        <h1 className="text-3xl md:text-4xl mb-4">Benchmark Report</h1>
-        <div className="space-y-1">
-          <div className="mono text-xs text-text-muted">ARTIFACT {detail.artifact_id ?? detail.benchmark_id}</div>
-          <div className="mono text-xs text-text-muted">SOURCE {detail.source}</div>
-          <div className="mono text-xs text-text-muted">
-            CREATED {formatDateTime(detail.created_at)} • UPDATED {formatDateTime(detail.updated_at)}
-          </div>
         </div>
       </header>
 
@@ -578,117 +637,44 @@ export function BenchmarkDetail() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-8 gap-4 mb-8">
-        <MetricCard label="Scope" value={titleCase(detail.scope)} />
-        <MetricCard label="Runs" value={formatInt(detail.run_count)} />
-        <MetricCard label="Agents" value={formatMaybeInt(detail.agent_count)} />
-        <MetricCard label="Mechanism" value={detail.latest_mechanism ? titleCase(detail.latest_mechanism) : "n/a"} />
-        <MetricCard label="Total Tokens" value={formatMaybeRuntimeInt(detail.total_tokens, detail.status)} />
-        <MetricCard label="Thinking Tokens" value={formatMaybeRuntimeInt(detail.thinking_tokens, detail.status)} />
-        <MetricCard label="Latency" value={formatMaybeRuntimeLatency(detail.total_latency_ms ?? null, detail.status)} />
-        <MetricCard label="Budget / Agent" value={formatUsd(estimatedBudgetPerAgent)} />
-        <MetricCard label="Estimated Cost" value={formatUsd(detail.cost?.estimated_cost_usd ?? null)} />
+      <div className="mb-8 flex items-center gap-2 rounded-[10px] border border-border-subtle bg-[rgba(11,16,22,0.84)] p-1.5 shadow-[0_10px_28px_rgba(0,0,0,0.18)]">
+        {(["canvas", "logs", "metrics"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => setActiveTab(tab)}
+            className={`rounded-[8px] px-4 py-2.5 mono text-[11px] uppercase tracking-[0.08em] transition ${
+              activeTab === tab
+                ? "border border-accent bg-accent/95 text-black shadow-[0_10px_24px_rgba(30,240,203,0.18)]"
+                : "border border-transparent text-text-muted hover:border-border-subtle hover:bg-white/[0.03]"
+            }`}
+          >
+            {tab}
+          </button>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
-        <div className="card p-4 sm:p-6">
-          <h3 className="text-lg font-semibold mb-3">Benchmark Composition</h3>
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <InlineMetricTile label="Dominant Mechanism" value={dominantMechanism ? titleCase(dominantMechanism) : "n/a"} />
-            <InlineMetricTile label="Dominant Model" value={dominantModel ?? "n/a"} />
-            <InlineMetricTile label="Frequency Score" value={String(detail.frequency_score)} />
-            <InlineMetricTile label="Config Density" value={frequencyBucket(detail.frequency_score)} />
-          </div>
-          {detail.reasoning_presets ? (
-            <div className="mb-4">
-              <div className="mono text-[11px] text-text-muted mb-2">REASONING PRESETS</div>
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(detail.reasoning_presets).map(([key, value]) => (
-                  <span key={key} className="badge">
-                    {key.replace(/_/g, " ")} {value}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          <div className="space-y-3">
-            <div>
-              <div className="mono text-[11px] text-text-muted mb-2">MECHANISM COUNTS</div>
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(detail.mechanism_counts).length > 0 ? Object.entries(detail.mechanism_counts).map(([key, value]) => (
-                  <span key={key} className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary">
-                    {titleCase(key)} {value}
-                  </span>
-                )) : <span className="text-sm text-text-secondary">No mechanism composition saved.</span>}
-              </div>
-            </div>
-            <div>
-              <div className="mono text-[11px] text-text-muted mb-2">MODEL COUNTS</div>
-              <div className="space-y-2">
-                {Object.entries(detail.model_counts).length > 0 ? Object.entries(detail.model_counts)
-                  .sort((left, right) => right[1] - left[1])
-                  .map(([model, count]) => (
-                    <div key={model} className="flex items-center justify-between gap-3 text-sm text-text-secondary">
-                      <span className="inline-flex items-center gap-2 min-w-0">
-                        <ProviderGlyph provider={providerFromModel(model)} />
-                        <span className="truncate">{model}</span>
-                      </span>
-                      <span className="mono text-text-primary">{count}</span>
-                    </div>
-                  )) : <span className="text-sm text-text-secondary">No model composition saved.</span>}
-              </div>
-            </div>
-          </div>
+      {activeTab === "canvas" ? (
+        <div className="mb-8 overflow-hidden rounded-[14px] border border-border-subtle">
+          <BenchmarkLiveCanvas
+            benchmarkId={detail.benchmark_id}
+            benchmarkStatus={detail.status}
+            items={benchmarkItems}
+            selectedItem={selectedItem}
+            selectedItemTimeline={selectedItemTimeline}
+            activeItemId={detail.active_item_id}
+            totalTokens={detail.total_tokens}
+            totalLatencyMs={detail.total_latency_ms}
+            dominantMechanism={dominantMechanism}
+            layer={canvasLayer}
+            onLayerChange={setCanvasLayer}
+            onSelectItem={handleSelectItem}
+            onOpenLogs={() => setActiveTab("logs")}
+          />
         </div>
+      ) : null}
 
-        <div className="card p-4 sm:p-6">
-          <h3 className="text-lg font-semibold mb-3">Reliability</h3>
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <InlineMetricTile label="Retry Events" value={String(reliability.retryCount)} />
-            <InlineMetricTile label="Failed Items" value={String(reliabilityCards.failed)} />
-            <InlineMetricTile label="Degraded Items" value={String(reliabilityCards.degraded)} />
-            <InlineMetricTile label="Last Event" value={lastTimelineEvent ? relativeTimeFrom(lastTimelineEvent.timestamp, now) : "waiting..."} />
-            <InlineMetricTile label="Completed Items" value={String(reliabilityCards.completed)} />
-            <InlineMetricTile label="Active Items" value={String(reliabilityCards.active)} />
-            <InlineMetricTile label="Stream State" value={streamState.label} />
-            <InlineMetricTile label="Terminal Errors" value={String(reliability.terminalErrorCount)} />
-          </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="rounded-md border border-border-subtle bg-void p-3">
-              <div className="mono text-[11px] text-text-muted mb-2">RETRIES BY PROVIDER</div>
-              {reliability.retryByProvider.length === 0 ? (
-                <div className="text-sm text-text-secondary">No provider retries recorded in this artifact.</div>
-              ) : (
-                <div className="space-y-2">
-                  {reliability.retryByProvider.map(([provider, count]) => (
-                    <div key={provider} className="flex items-center justify-between gap-3 text-sm">
-                      <span className="text-text-secondary">{titleCase(provider)}</span>
-                      <span className="mono text-text-primary">{count}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="rounded-md border border-border-subtle bg-void p-3">
-              <div className="mono text-[11px] text-text-muted mb-2">EVENT DENSITY BY PHASE</div>
-              {reliability.phaseCounts.length === 0 ? (
-                <div className="text-sm text-text-secondary">No phase-scoped live events were recorded.</div>
-              ) : (
-                <div className="space-y-2">
-                  {reliability.phaseCounts.map(([phase, count]) => (
-                    <div key={phase} className="flex items-center justify-between gap-3 text-sm">
-                      <span className="text-text-secondary">{titleCase(phase)}</span>
-                      <span className="mono text-text-primary">{count}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {benchmarkItems.length > 0 ? (
+      {activeTab === "logs" && benchmarkItems.length > 0 ? (
         <div className="card p-4 sm:p-6 mb-8">
           <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-4">
             <div>
@@ -803,7 +789,7 @@ export function BenchmarkDetail() {
                   <button
                     key={item.item_id}
                     type="button"
-                    onClick={() => setSelectedItemId(item.item_id)}
+                    onClick={() => handleSelectItem(item.item_id)}
                     className={`w-full text-left rounded-md border p-3 transition-colors ${
                       selected
                         ? "border-accent bg-accent/5"
@@ -837,57 +823,7 @@ export function BenchmarkDetail() {
         </div>
       ) : null}
 
-      <div className="card p-4 sm:p-6 mb-8">
-        <h3 className="text-lg font-semibold mb-3">Scored Success / Cost Frontier</h3>
-        <p className="text-sm text-text-secondary mb-4">
-          Success rate across benchmark items that actually have scoring coverage in this artifact. Creative and demo use proxy success, not exact-match truth.
-        </p>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-          <InlineMetricTile label="Scored Runs" value={formatMaybeInt(benchmarkMetricContext.scoredRuns)} />
-          <InlineMetricTile label="Failed Runs" value={formatMaybeInt(benchmarkMetricContext.failedRuns)} />
-          <InlineMetricTile label="Degraded Runs" value={formatMaybeInt(benchmarkMetricContext.degradedRuns)} />
-          <InlineMetricTile label="Coverage" value={formatCoverage(benchmarkMetricContext.coverage)} />
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
-          <InlineMetricTile label="Best Accuracy" value={frontierHighlights.bestAccuracy} />
-          <InlineMetricTile label="Fastest Mode" value={frontierHighlights.fastest} />
-          <InlineMetricTile label="Cheapest Mode" value={frontierHighlights.cheapest} />
-        </div>
-        {stageRows.length === 0 ? (
-          <div className="text-sm text-text-secondary">No per-mechanism scored-success metrics were stored for this benchmark artifact.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-170 border-collapse">
-              <thead>
-                <tr className="border-b border-border-subtle">
-                  <th className="py-2 pr-3 text-left mono text-[10px] text-text-muted">MECHANISM</th>
-                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">SCORED SUCCESS</th>
-                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">COVERAGE</th>
-                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">TOKENS</th>
-                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">THINKING</th>
-                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">LATENCY</th>
-                  <th className="py-2 text-right mono text-[10px] text-text-muted">COST</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stageRows.map((row) => (
-                  <tr key={row.mechanism} className="border-b border-border-subtle/70">
-                    <td className="py-2 pr-3 text-sm text-text-primary">{row.mechanism}</td>
-                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatRowAccuracy(row.accuracy)}</td>
-                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatCoverage(row.runCount > 0 ? row.scoredRunCount / row.runCount : null)}</td>
-                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.avgTokens)}</td>
-                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.thinkingTokens)}</td>
-                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatLatency(row.avgLatencyMs)}</td>
-                    <td className="py-2 text-right mono text-[11px] text-text-primary">{formatUsd(row.avgCostUsd)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {timeline.length > 0 ? (
+      {activeTab === "logs" && timeline.length > 0 ? (
         <div className="card p-4 sm:p-6 mb-8">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
             <h3 className="text-lg font-semibold">Raw Event Timeline</h3>
@@ -963,6 +899,184 @@ export function BenchmarkDetail() {
           </div>
         </div>
       ) : null}
+
+      {activeTab === "metrics" ? (
+      <>
+      <div className="card p-5 sm:p-6 mb-8">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="mono text-[10px] uppercase tracking-[0.08em] text-text-muted mb-2">Benchmark Report</div>
+            <h1 className="text-3xl md:text-4xl">Benchmark Report</h1>
+          </div>
+          <div className="space-y-1 text-right">
+            <div className="mono text-xs text-text-muted">ARTIFACT {detail.artifact_id ?? detail.benchmark_id}</div>
+            <div className="mono text-xs text-text-muted">SOURCE {detail.source}</div>
+            <div className="mono text-xs text-text-muted">
+              CREATED {formatDateTime(detail.created_at)} • UPDATED {formatDateTime(detail.updated_at)}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4 mb-8">
+        <MetricCard label="Scope" value={titleCase(detail.scope)} />
+        <MetricCard label="Runs" value={formatInt(detail.run_count)} />
+        <MetricCard label="Agents" value={formatMaybeInt(detail.agent_count)} />
+        <MetricCard label="Mechanism" value={detail.latest_mechanism ? titleCase(detail.latest_mechanism) : "n/a"} />
+        <MetricCard label="Total Tokens" value={formatMaybeRuntimeInt(detail.total_tokens, detail.status)} />
+        <MetricCard label="Thinking Tokens" value={formatMaybeRuntimeInt(detail.thinking_tokens, detail.status)} />
+        <MetricCard label="Latency" value={formatMaybeRuntimeLatency(detail.total_latency_ms ?? null, detail.status)} />
+        <MetricCard label="Budget / Agent" value={formatUsd(estimatedBudgetPerAgent)} />
+        <MetricCard label="Estimated Cost" value={formatUsd(detail.cost?.estimated_cost_usd ?? null)} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
+        <div className="card p-4 sm:p-6">
+          <h3 className="text-lg font-semibold mb-3">Benchmark Composition</h3>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <InlineMetricTile label="Dominant Mechanism" value={dominantMechanism ? titleCase(dominantMechanism) : "n/a"} />
+            <InlineMetricTile label="Dominant Model" value={dominantModel ?? "n/a"} />
+            <InlineMetricTile label="Frequency Score" value={String(detail.frequency_score)} />
+            <InlineMetricTile label="Config Density" value={frequencyBucket(detail.frequency_score)} />
+          </div>
+          {detail.reasoning_presets ? (
+            <div className="mb-4">
+              <div className="mono text-[11px] text-text-muted mb-2">REASONING PRESETS</div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(detail.reasoning_presets).map(([key, value]) => (
+                  <span key={key} className="badge">
+                    {key.replace(/_/g, " ")} {value}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <div className="space-y-3">
+            <div>
+              <div className="mono text-[11px] text-text-muted mb-2">MECHANISM COUNTS</div>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(detail.mechanism_counts).length > 0 ? Object.entries(detail.mechanism_counts).map(([key, value]) => (
+                  <span key={key} className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary">
+                    {titleCase(key)} {value}
+                  </span>
+                )) : <span className="text-sm text-text-secondary">No mechanism composition saved.</span>}
+              </div>
+            </div>
+            <div>
+              <div className="mono text-[11px] text-text-muted mb-2">MODEL COUNTS</div>
+              <div className="space-y-2">
+                {Object.entries(detail.model_counts).length > 0 ? Object.entries(detail.model_counts)
+                  .sort((left, right) => right[1] - left[1])
+                  .map(([model, count]) => (
+                    <div key={model} className="flex items-center justify-between gap-3 text-sm text-text-secondary">
+                      <span className="inline-flex items-center gap-2 min-w-0">
+                        <ProviderGlyph provider={providerFromModel(model)} />
+                        <span className="truncate">{model}</span>
+                      </span>
+                      <span className="mono text-text-primary">{count}</span>
+                    </div>
+                  )) : <span className="text-sm text-text-secondary">No model composition saved.</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="card p-4 sm:p-6">
+          <h3 className="text-lg font-semibold mb-3">Reliability</h3>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <InlineMetricTile label="Retry Events" value={String(reliability.retryCount)} />
+            <InlineMetricTile label="Failed Items" value={String(reliabilityCards.failed)} />
+            <InlineMetricTile label="Degraded Items" value={String(reliabilityCards.degraded)} />
+            <InlineMetricTile label="Last Event" value={lastTimelineEvent ? relativeTimeFrom(lastTimelineEvent.timestamp, now) : "waiting..."} />
+            <InlineMetricTile label="Completed Items" value={String(reliabilityCards.completed)} />
+            <InlineMetricTile label="Active Items" value={String(reliabilityCards.active)} />
+            <InlineMetricTile label="Stream State" value={streamState.label} />
+            <InlineMetricTile label="Terminal Errors" value={String(reliability.terminalErrorCount)} />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="rounded-md border border-border-subtle bg-void p-3">
+              <div className="mono text-[11px] text-text-muted mb-2">RETRIES BY PROVIDER</div>
+              {reliability.retryByProvider.length === 0 ? (
+                <div className="text-sm text-text-secondary">No provider retries recorded in this artifact.</div>
+              ) : (
+                <div className="space-y-2">
+                  {reliability.retryByProvider.map(([provider, count]) => (
+                    <div key={provider} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-text-secondary">{titleCase(provider)}</span>
+                      <span className="mono text-text-primary">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="rounded-md border border-border-subtle bg-void p-3">
+              <div className="mono text-[11px] text-text-muted mb-2">EVENT DENSITY BY PHASE</div>
+              {reliability.phaseCounts.length === 0 ? (
+                <div className="text-sm text-text-secondary">No phase-scoped live events were recorded.</div>
+              ) : (
+                <div className="space-y-2">
+                  {reliability.phaseCounts.map(([phase, count]) => (
+                    <div key={phase} className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-text-secondary">{titleCase(phase)}</span>
+                      <span className="mono text-text-primary">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card p-4 sm:p-6 mb-8">
+        <h3 className="text-lg font-semibold mb-3">Scored Success / Cost Frontier</h3>
+        <p className="text-sm text-text-secondary mb-4">
+          Success rate across benchmark items that actually have scoring coverage in this artifact. Creative and demo use proxy success, not exact-match truth.
+        </p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+          <InlineMetricTile label="Scored Runs" value={formatMaybeInt(benchmarkMetricContext.scoredRuns)} />
+          <InlineMetricTile label="Failed Runs" value={formatMaybeInt(benchmarkMetricContext.failedRuns)} />
+          <InlineMetricTile label="Degraded Runs" value={formatMaybeInt(benchmarkMetricContext.degradedRuns)} />
+          <InlineMetricTile label="Coverage" value={formatCoverage(benchmarkMetricContext.coverage)} />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+          <InlineMetricTile label="Best Accuracy" value={frontierHighlights.bestAccuracy} />
+          <InlineMetricTile label="Fastest Mode" value={frontierHighlights.fastest} />
+          <InlineMetricTile label="Cheapest Mode" value={frontierHighlights.cheapest} />
+        </div>
+        {stageRows.length === 0 ? (
+          <div className="text-sm text-text-secondary">No per-mechanism scored-success metrics were stored for this benchmark artifact.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-170 border-collapse">
+              <thead>
+                <tr className="border-b border-border-subtle">
+                  <th className="py-2 pr-3 text-left mono text-[10px] text-text-muted">MECHANISM</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">SCORED SUCCESS</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">COVERAGE</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">TOKENS</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">THINKING</th>
+                  <th className="py-2 pr-3 text-right mono text-[10px] text-text-muted">LATENCY</th>
+                  <th className="py-2 text-right mono text-[10px] text-text-muted">COST</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stageRows.map((row) => (
+                  <tr key={row.mechanism} className="border-b border-border-subtle/70">
+                    <td className="py-2 pr-3 text-sm text-text-primary">{row.mechanism}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatRowAccuracy(row.accuracy)}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatCoverage(row.runCount > 0 ? row.scoredRunCount / row.runCount : null)}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.avgTokens)}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatInt(row.thinkingTokens)}</td>
+                    <td className="py-2 pr-3 text-right mono text-[11px] text-text-primary">{formatLatency(row.avgLatencyMs)}</td>
+                    <td className="py-2 text-right mono text-[11px] text-text-primary">{formatUsd(row.avgCostUsd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       <div className="card p-4 sm:p-8 mb-8">
         <h3 className="mb-2 text-lg font-semibold">Mechanism Performance</h3>
@@ -1132,6 +1246,8 @@ export function BenchmarkDetail() {
         <JsonPanel title="Request Snapshot" value={detail.request} />
         <JsonPanel title="Benchmark Payload" value={detail.benchmark_payload} />
       </div>
+      </>
+      ) : null}
     </div>
     </>
   );
@@ -1139,9 +1255,9 @@ export function BenchmarkDetail() {
 
 function MetricCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="card p-4 border border-border-subtle">
-      <div className="mono text-xs text-text-muted mb-2">{label.toUpperCase()}</div>
-      <div className="text-base text-text-primary break-all">{value}</div>
+    <div className="card min-h-30 p-4 border border-border-subtle">
+      <div className="mono text-[10px] uppercase tracking-[0.08em] text-text-muted mb-3">{label}</div>
+      <div className="text-lg leading-8 text-text-primary break-words">{value}</div>
     </div>
   );
 }
@@ -1149,8 +1265,8 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 function InlineMetricTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border border-border-subtle bg-void p-3">
-      <div className="mono text-[10px] text-text-muted mb-1">{label.toUpperCase()}</div>
-      <div className="text-sm text-text-primary break-words">{value}</div>
+      <div className="mono text-[10px] uppercase tracking-[0.08em] text-text-muted mb-2">{label}</div>
+      <div className="text-sm leading-6 text-text-primary break-words">{value}</div>
     </div>
   );
 }
