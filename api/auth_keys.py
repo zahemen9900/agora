@@ -12,6 +12,8 @@ from api.config import settings
 DEFAULT_API_KEY_SCOPES = [
     "tasks:read",
     "tasks:write",
+    "benchmarks:read",
+    "benchmarks:write",
     "api_keys:read",
     "api_keys:write",
 ]

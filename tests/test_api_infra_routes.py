@@ -4492,6 +4492,117 @@ async def test_benchmark_detail_exposes_item_scoped_state_and_replay(
 
 
 @pytest.mark.asyncio
+async def test_global_benchmark_detail_preserves_persisted_item_events(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    artifact_id = "bench-global-item-history"
+    item_id = "pre_learning:selector_initial:7"
+    await store.save_global_benchmark_artifact(
+        artifact_id,
+        {
+            "artifact_id": artifact_id,
+            "scope": "global",
+            "source": "user_triggered",
+            "status": "completed",
+            "created_at": "2026-04-27T09:05:00+00:00",
+            "benchmark_payload": {
+                "generated_at": "2026-04-27T09:05:00+00:00",
+                "benchmark_config": {"agent_count": 4},
+                "runs": [],
+            },
+            "benchmark_items": [
+                {
+                    "item_id": item_id,
+                    "item_index": 7,
+                    "task_index": 7,
+                    "phase": "pre_learning",
+                    "run_kind": "selector_initial",
+                    "category": "geo",
+                    "question": "What is the capital city of Japan?",
+                    "source_task": "What is the capital city of Japan?",
+                    "status": "completed",
+                    "mechanism": "vote",
+                    "selector_source": "bandit",
+                    "selector_fallback_path": [],
+                    "failure_reason": None,
+                    "latest_error_event": None,
+                    "fallback_events": [],
+                    "total_tokens": 321,
+                    "thinking_tokens": 0,
+                    "total_latency_ms": 87.0,
+                    "model_telemetry": {},
+                    "summary": {"answer": "Tokyo"},
+                    "started_at": "2026-04-27T09:00:00+00:00",
+                    "completed_at": "2026-04-27T09:00:08+00:00",
+                    "events": [
+                        {
+                            "event": "agent_output_delta",
+                            "data": {
+                                "item_id": item_id,
+                                "phase": "pre_learning",
+                                "run_kind": "selector_initial",
+                                "task_index": 7,
+                                "question": "What is the capital city of Japan?",
+                                "mechanism": "vote",
+                                "stage": "vote",
+                            },
+                            "timestamp": "2026-04-27T09:00:00+00:00",
+                        },
+                        {
+                            "event": "quorum",
+                            "data": {
+                                "item_id": item_id,
+                                "phase": "pre_learning",
+                                "run_kind": "selector_initial",
+                                "task_index": 7,
+                                "question": "What is the capital city of Japan?",
+                                "mechanism": "vote",
+                                "stage": "vote",
+                            },
+                            "timestamp": "2026-04-27T09:00:08+00:00",
+                        },
+                    ],
+                }
+            ],
+            "active_item_id": item_id,
+            "failure_counts_by_stage": {},
+        },
+    )
+
+    detail = await client.get(f"/benchmarks/{artifact_id}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["scope"] == "global"
+    assert payload["active_item_id"] == item_id
+    benchmark_item = next(item for item in payload["benchmark_items"] if item["item_id"] == item_id)
+    assert benchmark_item["summary"]["answer"] == "Tokyo"
+    assert [event["event"] for event in benchmark_item["events"]] == [
+        "agent_output_delta",
+        "quorum",
+    ]
+
+    item = await client.get(f"/benchmarks/{artifact_id}/items/{item_id}")
+    assert item.status_code == 200
+    assert [event["event"] for event in item.json()["events"]] == [
+        "agent_output_delta",
+        "quorum",
+    ]
+
+    item_events = await client.get(f"/benchmarks/{artifact_id}/items/{item_id}/events")
+    assert item_events.status_code == 200
+    assert [event["event"] for event in item_events.json()["events"]] == [
+        "agent_output_delta",
+        "quorum",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_benchmark_detail_derives_item_from_domain_progress_event(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -4917,6 +5028,53 @@ async def test_benchmark_queued_detail_uses_request_agent_count_and_custom_quest
         == "What should the math benchmark debate?"
     )
     assert detail_payload["request"]["resolved_domain_prompts"]["math"]["source"] == "custom"
+
+
+@pytest.mark.asyncio
+async def test_api_key_can_trigger_and_view_benchmark_runs(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_execute_benchmark_run(**_kwargs: object) -> None:
+        return None
+
+    api_key_user = AuthenticatedUser(
+        auth_method="api_key",
+        workspace_id="user-1",
+        user_id=None,
+        email="",
+        display_name="CI key",
+        scopes=["tasks:read", "tasks:write"],
+        api_key_id="key-1",
+    )
+
+    app.dependency_overrides[auth.get_current_user] = lambda: api_key_user
+    monkeypatch.setattr(benchmark_routes, "_execute_benchmark_run", fake_execute_benchmark_run)
+
+    run_response = await client.post(
+        "/benchmarks/run",
+        json={
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+            "agent_count": 4,
+            "live_agents": False,
+        },
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["run_id"]
+
+    status_response = await client.get(f"/benchmarks/runs/{run_id}")
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "queued"
+
+    detail_response = await client.get(f"/benchmarks/{run_id}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["run_id"] == run_id
+
+    catalog_response = await client.get("/benchmarks/catalog")
+    assert catalog_response.status_code == 200
+    catalog_payload = catalog_response.json()
+    assert any(entry["run_id"] == run_id for entry in catalog_payload["user_tests_recent"])
 
 
 @pytest.mark.asyncio

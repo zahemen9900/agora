@@ -274,48 +274,51 @@ export function ApiKeys() {
           </h1>
         </div>
 
-        {/* Description */}
-        <p style={{
-          fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '15px',
-          color: 'var(--text-secondary)', maxWidth: '560px', lineHeight: 1.6,
-          margin: '0 0 12px 0',
-        }}>
-          Issue workspace-scoped machine credentials for CI, services, notebooks, and SDK clients.
-          Keys are shown exactly once and can be revoked at any time.
-        </p>
-        <a
-          href="https://pypi.org/project/agora-arbitrator-sdk/"
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: '6px',
-            padding: '6px 14px', borderRadius: '8px',
-            border: '1px solid var(--border-default)',
-            background: 'var(--bg-elevated)',
-            color: 'var(--text-secondary)',
-            fontFamily: FONT, fontSize: '12px',
-            textDecoration: 'none', marginBottom: '20px',
-            transition: 'border-color 0.15s ease, color 0.15s ease',
-          }}
-          onMouseEnter={(e) => {
-            const a = e.currentTarget as HTMLAnchorElement;
-            a.style.borderColor = 'var(--accent-emerald)';
-            a.style.color = 'var(--text-primary)';
-          }}
-          onMouseLeave={(e) => {
-            const a = e.currentTarget as HTMLAnchorElement;
-            a.style.borderColor = 'var(--border-default)';
-            a.style.color = 'var(--text-secondary)';
-          }}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
-          </svg>
-          Read SDK Docs
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M7 17L17 7"/><path d="M7 7h10v10"/>
-          </svg>
-        </a>
+        {/* Description + SDK docs button side-by-side on desktop, stacked on mobile */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '20px' }}>
+          <p style={{
+            fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '15px',
+            color: 'var(--text-secondary)', lineHeight: 1.6,
+            margin: 0, flex: '1 1 240px',
+          }}>
+            Issue workspace-scoped machine credentials for CI, services, notebooks, and SDK clients.
+            Keys are shown exactly once and can be revoked at any time.
+          </p>
+          <a
+            href="https://pypi.org/project/agora-arbitrator-sdk/"
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '6px',
+              padding: '7px 14px', borderRadius: '8px',
+              border: '1px solid var(--border-default)',
+              background: 'var(--bg-elevated)',
+              color: 'var(--text-secondary)',
+              fontFamily: FONT, fontSize: '12px',
+              textDecoration: 'none', flexShrink: 0,
+              alignSelf: 'flex-start', marginTop: '2px',
+              transition: 'border-color 0.15s ease, color 0.15s ease',
+            }}
+            onMouseEnter={(e) => {
+              const a = e.currentTarget as HTMLAnchorElement;
+              a.style.borderColor = 'var(--accent-emerald)';
+              a.style.color = 'var(--text-primary)';
+            }}
+            onMouseLeave={(e) => {
+              const a = e.currentTarget as HTMLAnchorElement;
+              a.style.borderColor = 'var(--border-default)';
+              a.style.color = 'var(--text-secondary)';
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+            </svg>
+            Read SDK Docs
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M7 17L17 7"/><path d="M7 7h10v10"/>
+            </svg>
+          </a>
+        </div>
 
         {/* Workspace identity badge */}
         {principal || workspace ? (

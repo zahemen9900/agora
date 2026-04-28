@@ -672,10 +672,7 @@ class AgoraArbitrator:
         request: HostedBenchmarkRunRequest | None = None,
         **payload: Any,
     ) -> HostedBenchmarkRunResponse:
-        """Trigger a hosted benchmark run.
-
-        Benchmarks require a human bearer token, not an Agora API key.
-        """
+        """Trigger a hosted benchmark run with the configured bearer token."""
 
         if request is not None and payload:
             raise ValueError("Pass either request=... or keyword payload fields, not both")
