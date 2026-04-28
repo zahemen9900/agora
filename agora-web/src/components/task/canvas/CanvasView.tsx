@@ -475,17 +475,17 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
       resizeObsRef.current = null;
     };
   }, []);
-  // Detect theme for grid
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  // Detect theme for grid — app uses data-theme="light" on <html>
+  const [isDarkMode, setIsDarkMode] = useState(
+    () => document.documentElement.getAttribute("data-theme") !== "light"
+  );
   useEffect(() => {
     const checkTheme = () => {
-      const dark = document.documentElement.classList.contains("dark") || 
-                   window.matchMedia("(prefers-color-scheme: dark)").matches;
-      setIsDarkMode(dark);
+      setIsDarkMode(document.documentElement.getAttribute("data-theme") !== "light");
     };
     checkTheme();
     const observer = new MutationObserver(checkTheme);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
   }, []);
 
