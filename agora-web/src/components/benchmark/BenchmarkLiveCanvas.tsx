@@ -17,17 +17,22 @@ import type {
   TaskEvent,
 } from "../../lib/api";
 
-const GRID_BG_DARK = `
-  linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px),
-  linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)
-`.trim();
+const GRID_BG_DARK = [
+  "linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px)",
+  "linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)",
+].join(",");
 
-const LANE_HEIGHT = 196;
-const NODE_WIDTH = 236;
-const NODE_HEIGHT = 132;
-const NODE_GAP_X = 34;
-const PADDING_X = 196;
-const PADDING_Y = 64;
+const GRID_BG_LIGHT = [
+  "linear-gradient(rgba(0,0,0,0.10) 1px, transparent 1px)",
+  "linear-gradient(90deg, rgba(0,0,0,0.10) 1px, transparent 1px)",
+].join(",");
+
+const LANE_HEIGHT = 220;
+const NODE_WIDTH = 254;
+const NODE_HEIGHT = 148;
+const NODE_GAP_X = 44;
+const PADDING_X = 210;
+const PADDING_Y = 72;
 
 interface BenchmarkLiveCanvasProps {
   benchmarkId: string;
@@ -67,14 +72,20 @@ function formatLatency(value: number | null | undefined): string {
   return `${Math.round(value)} ms`;
 }
 
-function statusTone(status: BenchmarkOverviewNode["status"]): string {
-  if (status === "completed") return "border-emerald-400/45 text-emerald-300 bg-emerald-400/10";
-  if (status === "degraded") return "border-amber-400/45 text-amber-300 bg-amber-400/10";
-  if (status === "failed") return "border-red-400/45 text-red-300 bg-red-400/10";
-  if (status === "running") return "border-cyan-400/45 text-cyan-300 bg-cyan-400/10";
-  if (status === "summary") return "border-violet-400/45 text-violet-300 bg-violet-400/10";
-  return "border-border-subtle text-text-secondary bg-void";
+const STATUS_STYLE: Record<string, { border: string; color: string; bg: string }> = {
+  completed: { border: "rgba(52,211,153,0.55)",  color: "#6ee7b7", bg: "rgba(52,211,153,0.08)" },
+  degraded:  { border: "rgba(251,191,36,0.55)",  color: "#fcd34d", bg: "rgba(251,191,36,0.08)" },
+  failed:    { border: "rgba(248,113,113,0.55)", color: "#fca5a5", bg: "rgba(248,113,113,0.08)" },
+  running:   { border: "rgba(34,211,238,0.65)",  color: "#67e8f9", bg: "rgba(34,211,238,0.10)" },
+  summary:   { border: "rgba(167,139,250,0.55)", color: "#c4b5fd", bg: "rgba(167,139,250,0.08)" },
+  pending:   { border: "rgba(148,163,184,0.35)", color: "#94a3b8", bg: "rgba(148,163,184,0.05)" },
+};
+
+function statusStyle(status: BenchmarkOverviewNode["status"]) {
+  return STATUS_STYLE[status] ?? STATUS_STYLE.pending;
 }
+
+
 
 function mechanismPill(node: BenchmarkOverviewNode): string | null {
   if (node.mechanism && node.mechanism.trim()) {
@@ -110,21 +121,22 @@ function finalSummaryLine(node: BenchmarkOverviewNode): string {
   return parts.join(" · ");
 }
 
-function laneAccent(index: number): string {
-  const colors = [
-    "rgba(34, 211, 238, 0.32)",
-    "rgba(52, 211, 153, 0.28)",
-    "rgba(251, 191, 36, 0.24)",
-    "rgba(168, 85, 247, 0.24)",
-  ];
-  return colors[index % colors.length];
+const LANE_PALETTES = [
+  { border: "rgba(34,211,238,0.38)",  glow: "rgba(34,211,238,0.10)",  label: "#67e8f9",  edge: "rgba(34,211,238,0.75)" },
+  { border: "rgba(52,211,153,0.35)",  glow: "rgba(52,211,153,0.09)",  label: "#6ee7b7",  edge: "rgba(52,211,153,0.75)" },
+  { border: "rgba(251,191,36,0.32)",  glow: "rgba(251,191,36,0.08)",  label: "#fcd34d",  edge: "rgba(251,191,36,0.75)" },
+  { border: "rgba(167,139,250,0.35)", glow: "rgba(167,139,250,0.09)", label: "#c4b5fd",  edge: "rgba(167,139,250,0.75)" },
+];
+
+function lanePalette(index: number) {
+  return LANE_PALETTES[index % LANE_PALETTES.length];
 }
 
-function viewTone(status: BenchmarkDetailPayload["status"] | null | undefined): string {
-  if (status === "completed") return "border-emerald-400/35 bg-emerald-400/10 text-emerald-300";
-  if (status === "failed") return "border-red-400/35 bg-red-400/10 text-red-300";
-  if (status === "running") return "border-cyan-400/35 bg-cyan-400/10 text-cyan-300";
-  return "border-border-subtle bg-black/20 text-text-secondary";
+function viewStatusStyle(status: BenchmarkDetailPayload["status"] | null | undefined) {
+  if (status === "completed") return { border: "rgba(52,211,153,0.55)",  bg: "rgba(52,211,153,0.10)",  color: "#6ee7b7" };
+  if (status === "failed")    return { border: "rgba(248,113,113,0.55)", bg: "rgba(248,113,113,0.10)", color: "#fca5a5" };
+  if (status === "running")  return { border: "rgba(34,211,238,0.65)",  bg: "rgba(34,211,238,0.10)",  color: "#67e8f9" };
+  return { border: "rgba(148,163,184,0.35)", bg: "rgba(0,0,0,0.20)", color: "#94a3b8" };
 }
 
 function nodePosition(node: BenchmarkOverviewNode, laneCount: number, maxColIndex: number): { x: number; y: number } {
@@ -214,6 +226,17 @@ export function BenchmarkLiveCanvas({
   onSelectItem,
   onOpenLogs,
 }: BenchmarkLiveCanvasProps) {
+  // Theme-aware grid — app sets data-theme="light" on <html>
+  const [isDarkMode, setIsDarkMode] = useState(
+    () => document.documentElement.getAttribute("data-theme") !== "light"
+  );
+  useEffect(() => {
+    const check = () => setIsDarkMode(document.documentElement.getAttribute("data-theme") !== "light");
+    check();
+    const obs = new MutationObserver(check);
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => obs.disconnect();
+  }, []);
   const graph = useMemo(() => buildBenchmarkOverviewGraph(items, {
     benchmarkId,
     benchmarkStatus,
@@ -371,37 +394,76 @@ export function BenchmarkLiveCanvas({
   );
 
   if (layer === "item" && selectedItem) {
+    const ss = statusStyle(selectedItem.status);
     return (
       <div className="relative flex h-full min-h-[680px] flex-col">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle bg-[var(--bg-elevated)] px-4 py-3">
-          <div className="flex flex-wrap items-center gap-3">
+        {/* ── Item header ──────────────────────────────────── */}
+        <div style={{ borderBottom: "1px solid var(--border-subtle)", background: "var(--bg-elevated)", padding: "10px 16px 12px", display: "flex", flexDirection: "column", gap: "10px", flexShrink: 0 }}>
+          {/* Row 1: back + controls */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
             <button
               type="button"
               className="btn-secondary inline-flex items-center gap-2"
               onClick={() => onLayerChange("overview")}
             >
-              <ArrowLeft size={14} />
+              <ArrowLeft size={13} />
               Back to benchmark map
             </button>
-            <div>
-              <div className="mono text-[10px] text-text-muted">
-                ITEM {selectedItem.item_index + 1} · {titleCase(selectedItem.phase ?? "benchmark")} · {titleCase(selectedItem.run_kind ?? "run")}
-              </div>
-              <div className="text-sm text-text-primary">{selectedItem.question}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{
+                borderRadius: "100px",
+                border: `1px solid ${ss.border}`,
+                background: ss.bg,
+                color: ss.color,
+                fontFamily: "'Commit Mono', monospace",
+                fontSize: "10px",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                padding: "3px 10px",
+              }}>
+                {selectedItem.status}
+              </span>
+              <button
+                type="button"
+                className="btn-secondary inline-flex items-center gap-2"
+                onClick={onOpenLogs}
+              >
+                <ScrollText size={13} />
+                Open logs
+              </button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded-full border px-2 py-1 mono text-[10px] ${statusTone(selectedItem.status)}`}>
-              {selectedItem.status}
-            </span>
-            <button
-              type="button"
-              className="btn-secondary inline-flex items-center gap-2"
-              onClick={onOpenLogs}
-            >
-              <ScrollText size={14} />
-              Open logs
-            </button>
+          {/* Row 2: breadcrumb + question */}
+          <div style={{ display: "flex", alignItems: "baseline", gap: "10px", minWidth: 0 }}>
+            <div style={{
+              flexShrink: 0,
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: "9px",
+              color: "var(--text-muted)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              whiteSpace: "nowrap",
+              padding: "2px 8px",
+              borderRadius: "6px",
+              border: "1px solid var(--border-subtle)",
+              background: "var(--bg-base)",
+            }}>
+              Item {selectedItem.item_index + 1} · {titleCase(selectedItem.phase ?? "benchmark")} · {titleCase(selectedItem.run_kind ?? "run")}
+            </div>
+            <p style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: "13px",
+              color: "var(--text-primary)",
+              lineHeight: 1.5,
+              overflow: "hidden",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              margin: 0,
+            }}>
+              {selectedItem.question}
+            </p>
           </div>
         </div>
         <CanvasView
@@ -418,6 +480,7 @@ export function BenchmarkLiveCanvas({
     );
   }
 
+
   const completedCount = items.filter((item) => item.status === "completed").length;
   const activeCount = items.filter((item) => item.status === "running" || item.status === "queued").length;
   const laneCount = Math.max(graph.laneOrder.length, 1);
@@ -429,23 +492,28 @@ export function BenchmarkLiveCanvas({
         ? { position: "fixed", inset: 0, zIndex: 9999, background: "var(--bg-base)" }
         : { minHeight: "680px" }}
     >
-      <div className="flex flex-wrap items-center gap-3 border-b border-border-subtle bg-[var(--bg-elevated)] px-4 py-3">
-        <span className={`rounded-full border px-3 py-1 mono text-[10px] uppercase tracking-[0.08em] ${viewTone(benchmarkStatus)}`}>
-          {benchmarkStatus ?? "queued"}
-        </span>
-        <span className="mono text-[10px] text-text-secondary">Lanes {laneCount}</span>
-        <span className="mono text-[10px] text-text-secondary">Items {items.length}</span>
-        <span className="mono text-[10px] text-text-secondary">Active {activeCount}</span>
-        <span className="mono text-[10px] text-text-secondary">Done {completedCount}</span>
-        <div className="ml-auto flex items-center gap-2">
-          <span className="mono text-[10px] text-text-muted">Drag · Scroll to zoom</span>
+      {/* ── Toolbar ─────────────────────────────────────── */}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px", borderBottom: "1px solid var(--border-subtle)", background: "var(--bg-elevated)", padding: "10px 16px" }}>
+        {(() => { const s = viewStatusStyle(benchmarkStatus); return (
+          <span style={{ borderRadius: "20px", border: `1px solid ${s.border}`, background: s.bg, color: s.color, fontFamily: "'Commit Mono',monospace", fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", padding: "4px 12px" }}>
+            {benchmarkStatus ?? "queued"}
+          </span>
+        ); })()}
+        {[
+          ["Lanes", laneCount],
+          ["Items", items.length],
+          ["Active", activeCount],
+          ["Done", completedCount],
+        ].map(([label, val]) => (
+          <span key={String(label)} style={{ fontFamily: "'Commit Mono',monospace", fontSize: "10px", color: "var(--text-secondary)" }}>
+            <span style={{ color: "var(--text-muted)", marginRight: 4 }}>{label}</span>{val}
+          </span>
+        ))}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          <span style={{ fontFamily: "'Commit Mono',monospace", fontSize: "10px", color: "var(--text-muted)" }}>Drag · Scroll to zoom</span>
           <button type="button" onClick={fitToContent} title="Fit to content" style={iconBtn}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-              <circle cx="7" cy="7" r="2.5" />
-              <line x1="7" y1="0.5" x2="7" y2="3.5" />
-              <line x1="7" y1="10.5" x2="7" y2="13.5" />
-              <line x1="0.5" y1="7" x2="3.5" y2="7" />
-              <line x1="10.5" y1="7" x2="13.5" y2="7" />
+              <circle cx="7" cy="7" r="2.5" /><line x1="7" y1="0.5" x2="7" y2="3.5" /><line x1="7" y1="10.5" x2="7" y2="13.5" /><line x1="0.5" y1="7" x2="3.5" y2="7" /><line x1="10.5" y1="7" x2="13.5" y2="7" />
             </svg>
           </button>
           <button type="button" onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
@@ -453,14 +521,6 @@ export function BenchmarkLiveCanvas({
               ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M1 4V1h3M8 1h3v3M11 8v3H8M4 11H1V8" /></svg>
               : <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M4 1H1v3M8 1h3v3M1 8v3h3M8 11h3V8" /></svg>}
           </button>
-        </div>
-      </div>
-      <div className="border-b border-border-subtle bg-[rgba(10,14,18,0.95)] px-4 py-4">
-        <div className="mono text-[10px] tracking-[0.08em] text-text-muted">BENCHMARK MAP</div>
-        <div className="mt-1 max-w-4xl text-sm leading-6 text-text-primary">
-          {items.length > 0
-            ? "Each lane tracks one benchmark phase and run kind. Click any item to drop into its live deliberation."
-            : "The run is queued. Benchmark items will appear here as soon as execution state is materialized."}
         </div>
       </div>
       <div
@@ -471,8 +531,8 @@ export function BenchmarkLiveCanvas({
         onPointerLeave={onPointerUp}
         className="relative flex-1 overflow-hidden"
         style={{
-          background: "#0b1117",
-          backgroundImage: GRID_BG_DARK,
+          background: "var(--bg-base)",
+          backgroundImage: isDarkMode ? GRID_BG_DARK : GRID_BG_LIGHT,
           backgroundSize: "28px 28px",
           touchAction: "none",
         }}
@@ -487,153 +547,151 @@ export function BenchmarkLiveCanvas({
           }}
         >
           <svg width={canvasWidth} height={canvasHeight} style={{ position: "absolute", inset: 0, overflow: "visible" }}>
+            <defs>
+              {LANE_PALETTES.map((_, i) => (
+                <filter key={i} id={`glow-${i}`} x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="3" result="blur" />
+                  <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+                </filter>
+              ))}
+            </defs>
             {graph.edges.map((edge) => {
               const from = positions.get(edge.fromNodeId);
               const to = positions.get(edge.toNodeId);
-              if (!from || !to) {
-                return null;
-              }
+              if (!from || !to) return null;
+              const laneIdx = graph.laneOrder.indexOf(
+                graph.nodes.find((n) => n.id === edge.fromNodeId)?.laneKey ?? ""
+              );
+              const pal = LANE_PALETTES[Math.max(0, laneIdx) % LANE_PALETTES.length];
               return (
                 <path
                   key={edge.id}
                   d={edgePath(from, to)}
                   fill="none"
-                  stroke="rgba(34, 211, 238, 0.72)"
-                  strokeWidth={2}
-                  strokeDasharray="7 5"
+                  stroke={pal.edge}
+                  strokeWidth={1.5}
                   strokeLinecap="round"
+                  filter={`url(#glow-${Math.max(0, laneIdx) % LANE_PALETTES.length})`}
                 />
               );
             })}
           </svg>
 
-          {graph.laneOrder.map((laneKey, index) => (
-            <div key={laneKey}>
-              <div
-                style={{
-                  position: "absolute",
-                  left: 8,
-                  top: PADDING_Y + index * LANE_HEIGHT - 12,
-                  width: canvasWidth - 260,
-                  height: NODE_HEIGHT + 30,
-                  borderRadius: "16px",
-                  border: `1px solid ${laneAccent(index)}`,
-                  background: "linear-gradient(90deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01))",
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)",
-                }}
-              />
-              <div
-                style={{
-                  position: "absolute",
-                  left: 24,
-                  top: PADDING_Y + index * LANE_HEIGHT + 18,
-                  width: 150,
-                }}
-              >
-                <div
-                  style={{
-                    borderRadius: "10px",
-                    border: `1px solid ${laneAccent(index)}`,
-                    background: "rgba(7, 11, 16, 0.72)",
-                    padding: "10px 12px",
-                  }}
-                >
-                  <div className="mono text-[9px] uppercase tracking-[0.08em] text-text-muted">
-                    {graph.nodes.find((node) => node.laneKey === laneKey)?.laneLabel ?? laneKey}
+          {graph.laneOrder.map((laneKey, index) => {
+            const pal = lanePalette(index);
+            const laneLabel = graph.nodes.find((n) => n.laneKey === laneKey)?.laneLabel ?? laneKey;
+            return (
+              <div key={laneKey}>
+                {/* Lane band */}
+                <div style={{
+                  position: "absolute", left: 8,
+                  top: PADDING_Y + index * LANE_HEIGHT - 14,
+                  width: canvasWidth - 240,
+                  height: NODE_HEIGHT + 36,
+                  borderRadius: "14px",
+                  border: `1px solid ${pal.border}`,
+                  background: `linear-gradient(90deg, ${pal.glow}, transparent 60%)`,
+                }} />
+                {/* Lane label */}
+                <div style={{ position: "absolute", left: 20, top: PADDING_Y + index * LANE_HEIGHT + 14, width: 160 }}>
+                  <div style={{
+                    borderRadius: "8px",
+                    border: `1px solid ${pal.border}`,
+                    background: "var(--bg-elevated)",
+                    padding: "7px 11px",
+                    backdropFilter: "blur(8px)",
+                  }}>
+                    <div style={{ fontFamily: "'Commit Mono',monospace", fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: pal.label }}>{laneLabel}</div>
                   </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {graph.nodes.map((node) => {
             const position = positions.get(node.id);
-            if (!position) {
-              return null;
-            }
+            if (!position) return null;
             const isItem = node.kind === "item";
+            const ss = statusStyle(node.status);
+            const mechPill = mechanismPill(node);
+            const tokPill = tokenPill(node);
+            const latPill = latencyPill(node);
             return (
               <button
                 key={node.id}
                 type="button"
-                onClick={() => {
-                  if (!isItem) {
-                    return;
-                  }
-                  onSelectItem(node.id);
-                  onLayerChange("item");
-                }}
+                onClick={() => { if (!isItem) return; onSelectItem(node.id); onLayerChange("item"); }}
                 style={{
                   position: "absolute",
                   left: position.x,
                   top: position.y,
-                  width: node.kind === "final" ? NODE_WIDTH + 18 : NODE_WIDTH,
-                  minHeight: node.kind === "final" ? NODE_HEIGHT + 16 : NODE_HEIGHT,
+                  width: node.kind === "final" ? NODE_WIDTH + 20 : NODE_WIDTH,
+                  minHeight: node.kind === "final" ? NODE_HEIGHT + 20 : NODE_HEIGHT,
+                  background: node.isActive
+                    ? "rgba(34,211,238,0.07)"
+                    : "var(--bg-elevated)",
+                  border: node.isActive
+                    ? "1px solid rgba(34,211,238,0.6)"
+                    : `1px solid var(--border-default)`,
+                  borderRadius: "10px",
+                  boxShadow: node.isActive
+                    ? "0 0 0 1px rgba(34,211,238,0.18), 0 8px 32px rgba(0,0,0,0.18)"
+                    : "0 4px 20px rgba(0,0,0,0.12)",
+                  cursor: isItem ? "pointer" : "default",
+                  textAlign: "left",
+                  padding: 0,
+                  overflow: "hidden",
+                  transition: "border-color 0.18s ease, box-shadow 0.18s ease",
+                  display: "flex",
+                  flexDirection: "column",
                 }}
-                className={`rounded-md border p-3 text-left transition ${
-                  node.isActive
-                    ? "border-cyan-300/80 bg-cyan-400/12 shadow-[0_0_0_1px_rgba(34,211,238,0.2),0_16px_40px_rgba(0,0,0,0.32)]"
-                    : "border-border-subtle/90 bg-[rgba(13,19,26,0.94)] shadow-[0_16px_40px_rgba(0,0,0,0.28)] hover:border-cyan-400/55 hover:bg-[rgba(15,22,30,0.98)]"
-                } ${isItem ? "cursor-pointer" : "cursor-default"}`}
+                onMouseEnter={(e) => {
+                  if (!isItem || node.isActive) return;
+                  (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(34,211,238,0.35)";
+                  (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 8px 32px rgba(0,0,0,0.14)";
+                }}
+                onMouseLeave={(e) => {
+                  if (!isItem || node.isActive) return;
+                  (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border-default)";
+                  (e.currentTarget as HTMLButtonElement).style.boxShadow = "0 4px 20px rgba(0,0,0,0.12)";
+                }}
               >
-                <div className="mb-3 flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {node.itemNumber ? (
+                {/* Mechanism accent bar */}
+                <div style={{ height: "3px", background: ss.border, opacity: 0.85 }} />
+                <div style={{ padding: "10px 12px", flex: 1, display: "flex", flexDirection: "column" }}>
+                  {/* Header row */}
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
+                      {node.itemNumber ? (
+                        <>
+                          <span style={{ flexShrink: 0, borderRadius: "20px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "2px 8px", fontFamily: "'Commit Mono',monospace", fontSize: "9px", letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-secondary)" }}>{node.itemNumber}</span>
+                          <span style={{ fontFamily: "'Commit Mono',monospace", fontSize: "9px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.subtitle}</span>
+                        </>
+                      ) : (
+                        <span style={{ fontFamily: "'Commit Mono',monospace", fontSize: "9px", color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>{node.title}</span>
+                      )}
+                    </div>
+                    <span style={{ flexShrink: 0, borderRadius: "20px", border: `1px solid ${ss.border}`, background: ss.bg, color: ss.color, fontFamily: "'Commit Mono',monospace", fontSize: "8.5px", letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 8px" }}>{node.status}</span>
+                  </div>
+                  {/* Question text */}
+                  <p style={{ flex: 1, fontSize: "12px", lineHeight: 1.55, color: "var(--text-primary)", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden", marginBottom: 8 }}>
+                    {node.kind === "final" ? finalSummaryLine(node) : node.question}
+                  </p>
+                  {/* Footer pills */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, borderTop: "1px solid var(--border-subtle)", paddingTop: 8 }}>
+                    {node.kind === "item" ? (
                       <>
-                        <span className="shrink-0 rounded-full border border-border-subtle/90 bg-black/20 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.08em] text-text-primary">
-                          {node.itemNumber}
-                        </span>
-                        <div className="min-w-0">
-                          <div className="text-xs text-text-primary">{node.subtitle}</div>
-                        </div>
+                        {mechPill && <span style={{ borderRadius: "20px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "2px 8px", fontFamily: "'Commit Mono',monospace", fontSize: "8.5px", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-secondary)" }}>{mechPill}</span>}
+                        {tokPill && <span style={{ borderRadius: "20px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "2px 8px", fontFamily: "'Commit Mono',monospace", fontSize: "8.5px", letterSpacing: "0.06em", color: "var(--text-secondary)" }}>{tokPill}</span>}
+                        {latPill && <span style={{ borderRadius: "20px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "2px 8px", fontFamily: "'Commit Mono',monospace", fontSize: "8.5px", letterSpacing: "0.06em", color: "var(--text-muted)" }}>{latPill}</span>}
                       </>
                     ) : (
-                      <div className="min-w-0">
-                        <div className="mono text-[9px] uppercase tracking-[0.06em] text-text-muted">{node.title}</div>
-                        <div className="text-xs text-text-primary">{node.subtitle}</div>
-                      </div>
+                      <>
+                        {dominantMechanism && <span style={{ borderRadius: "20px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "2px 8px", fontFamily: "'Commit Mono',monospace", fontSize: "8.5px", letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-secondary)" }}>{titleCase(dominantMechanism)}</span>}
+                        <span style={{ borderRadius: "20px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "2px 8px", fontFamily: "'Commit Mono',monospace", fontSize: "8.5px", letterSpacing: "0.06em", color: "var(--text-secondary)" }}>{completedCount}/{items.length} done</span>
+                      </>
                     )}
                   </div>
-                  <span className={`shrink-0 rounded-full border px-2 py-1 mono text-[9px] uppercase tracking-[0.05em] ${statusTone(node.status)}`}>
-                    {node.status}
-                  </span>
-                </div>
-                <p className="mb-3 line-clamp-3 text-[13px] leading-6 text-text-primary">
-                  {node.kind === "final"
-                    ? finalSummaryLine(node)
-                    : node.question}
-                </p>
-                <div className="flex flex-wrap gap-2 border-t border-border-subtle/70 pt-2">
-                  {node.kind === "item" ? (
-                    <>
-                      {mechanismPill(node) ? (
-                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
-                          {mechanismPill(node)}
-                        </span>
-                      ) : null}
-                      {tokenPill(node) ? (
-                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
-                          {tokenPill(node)}
-                        </span>
-                      ) : null}
-                      {latencyPill(node) ? (
-                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
-                          {latencyPill(node)}
-                        </span>
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      {dominantMechanism ? (
-                        <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
-                          {titleCase(dominantMechanism)}
-                        </span>
-                      ) : null}
-                      <span className="rounded-full border border-border-subtle/80 bg-black/18 px-2.5 py-1 mono text-[9px] uppercase tracking-[0.06em] text-text-secondary">
-                        {completedCount}/{items.length} done
-                      </span>
-                    </>
-                  )}
                 </div>
               </button>
             );

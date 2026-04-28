@@ -4,6 +4,7 @@ import test from "node:test";
 import type { BenchmarkItemPayload } from "./api";
 import {
   buildBenchmarkOverviewGraph,
+  deriveBenchmarkItemTimelineEvents,
   resolveSelectedBenchmarkItemId,
   shouldFetchBenchmarkItemEvents,
 } from "./benchmarkCanvas";
@@ -108,4 +109,40 @@ test("shouldFetchBenchmarkItemEvents only hydrates missing selected item histori
     shouldFetchBenchmarkItemEvents(selectedItem, [], true),
     false,
   );
+  assert.equal(
+    shouldFetchBenchmarkItemEvents(selectedItem, [], false, true),
+    false,
+  );
+});
+
+test("deriveBenchmarkItemTimelineEvents recovers terminal item graph events from summary metadata", () => {
+  const item = makeItem({
+    item_id: "pre_learning:selector_initial:7",
+    item_index: 7,
+    task_index: 7,
+    status: "completed",
+    mechanism: "vote",
+    question: "What is the capital city of Japan?",
+    completed_at: "2026-04-27T09:00:08+00:00",
+    summary: {
+      confidence: 0.835,
+      final_answer: "Tokyo",
+      quorum_reached: true,
+      latest_entropy: 0.2,
+      latest_novelty: 0.1,
+      rounds: 1,
+    },
+  });
+
+  const events = deriveBenchmarkItemTimelineEvents(item, [], "debate");
+
+  assert.deepEqual(
+    events.map((event) => event.event),
+    ["mechanism_selected", "convergence_update", "quorum_reached", "complete"],
+  );
+  assert.equal(events[0].data.mechanism, "vote");
+  assert.equal(events[2].data.final_answer, "Tokyo");
+  assert.equal(events[2].data.confidence, 0.835);
+  assert.equal(events[2].data.item_id, "pre_learning:selector_initial:7");
+  assert.equal(events[2].data.mechanism_recovered, true);
 });

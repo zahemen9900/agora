@@ -55,14 +55,14 @@ export function BenchmarkAnalytics() {
   const payload = useMemo(() => (overview as unknown as Record<string, unknown>) ?? {}, [overview]);
 
   const summary = useMemo(
-    () => normalizeBenchmarkSummary(overview?.summary, overview?.benchmark_payload),
+    () => normalizeBenchmarkSummary(overview?.summary, overview),
     [overview],
   );
 
   const enhancedPareto = useMemo(() => buildEnhancedParetoData(summary), [summary]);
 
   const perModelCost = useMemo(
-    () => buildPerModelCostData((overview?.benchmark_payload as Record<string, unknown>) ?? {}),
+    () => buildPerModelCostData((overview as Record<string, unknown> | undefined) ?? {}),
     [overview],
   );
 
@@ -70,7 +70,7 @@ export function BenchmarkAnalytics() {
 
   // Build slope data directly from pre/post raw payload summaries
   const slopeData = useMemo((): SlopeDataPoint[] => {
-    const benchPayload = (overview?.benchmark_payload ?? payload) as Record<string, unknown>;
+    const benchPayload = payload;
     const preSection = benchPayload.pre_learning;
     const postSection = benchPayload.post_learning;
 
@@ -151,9 +151,6 @@ export function BenchmarkAnalytics() {
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          {/* Full-width: Pre → Post slope graph */}
-          {slopeData.length > 0 && <SlopeGraph data={slopeData} />}
-
           {/* Two-column: Bubble + Radar */}
           {hasAnyData && (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
@@ -169,6 +166,9 @@ export function BenchmarkAnalytics() {
           {mechanismCostFallback && mechanismCostFallback.length > 0 && (
             <PerModelCostBreakdown data={mechanismCostFallback} />
           )}
+
+          {/* Full-width: Pre → Post slope graph — last so it contextualises the above */}
+          {slopeData.length > 0 && <SlopeGraph data={slopeData} />}
 
           {/* Empty state */}
           {!hasAnyData && (

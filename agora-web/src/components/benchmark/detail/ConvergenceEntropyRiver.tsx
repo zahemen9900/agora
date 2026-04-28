@@ -86,10 +86,13 @@ export function ConvergenceEntropyRiver({ runs }: Props) {
           <Tooltip
             contentStyle={{ background: "var(--bg-elevated)", border: "1px solid var(--border-strong)", borderRadius: "6px", fontFamily: CHART_FONT, fontSize: "9px" }}
             labelFormatter={(v) => `Round ${v}`}
-            formatter={(value: number, name: string) => [
-              name === "share" ? `${value}%` : value,
-              name === "share" ? "Dominant share" : "Entropy",
-            ]}
+            formatter={(value, name) => {
+              const numericValue = typeof value === "number" && Number.isFinite(value) ? value : 0;
+              return [
+                name === "share" ? `${numericValue}%` : numericValue,
+                name === "share" ? "Dominant share" : "Entropy",
+              ];
+            }}
           />
           {switchRounds.map((sw) => (
             <ReferenceLine

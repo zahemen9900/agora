@@ -3,8 +3,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import {
   CartesianGrid,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -13,7 +11,7 @@ import {
   YAxis,
   ZAxis,
 } from "recharts";
-import { ChevronDown, ChevronRight, Filter, RotateCcw } from "lucide-react";
+import { ChevronDown, Filter, RotateCcw } from "lucide-react";
 
 import { BenchmarkWizard, type DomainPromptSelection } from "../components/benchmark/BenchmarkWizard";
 import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
@@ -214,48 +212,6 @@ function hasUsablePromptTemplates(
 // ── Chart primitives ───────────────────────────────────────────────────────────
 // ChartCard, SkeletonChartBlock, injectChartKeyframes, CHART_FONT, CHART_KF_ID imported from ../components/benchmark/ChartCard
 
-interface ChartTooltipPayload {
-  name: string;
-  value: number | null;
-  color: string;
-  dataKey: string;
-}
-
-function ChartTooltip({
-  active, payload, label, valueFormatter,
-}: {
-  active?: boolean;
-  payload?: ChartTooltipPayload[];
-  label?: string;
-  valueFormatter?: (v: number | null) => string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div style={{
-      background: "var(--bg-elevated)", border: "1px solid var(--border-strong)",
-      borderRadius: "8px", padding: "10px 14px", boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
-    }}>
-      {label && (
-        <div style={{
-          fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em",
-          textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: "7px",
-        }}>
-          {label}
-        </div>
-      )}
-      {payload.map((entry) => (
-        <div key={entry.dataKey} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "3px" }}>
-          <span style={{ width: "7px", height: "7px", borderRadius: "50%", background: entry.color, flexShrink: 0, display: "inline-block" }} />
-          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-secondary)" }}>{entry.name}</span>
-          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-primary)", fontWeight: 600, marginLeft: "auto", paddingLeft: "12px" }}>
-            {valueFormatter ? valueFormatter(entry.value) : (entry.value == null ? "n/a" : Math.round(entry.value))}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function ParetoTooltip({
   active,
   payload,
@@ -284,33 +240,6 @@ function ParetoTooltip({
         <span>Avg tokens: {point.avgTokens.toLocaleString()}</span>
         <span>Scored runs: {point.scoredRunCount}</span>
         {point.frontier ? <span style={{ color: "var(--accent-emerald)" }}>Pareto frontier</span> : null}
-      </div>
-    </div>
-  );
-}
-
-function LearningStatCard({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "accent" | "warning" }) {
-  const valueColor = tone === "accent"
-    ? "var(--accent-emerald)"
-    : tone === "warning"
-      ? "var(--accent-amber)"
-      : "var(--text-primary)";
-  return (
-    <div style={{
-      border: "1px solid var(--border-default)",
-      borderRadius: "10px",
-      padding: "10px 12px",
-      background: "var(--bg-subtle)",
-      minWidth: "0",
-    }}>
-      <div style={{
-        fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em",
-        textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: "5px",
-      }}>
-        {label}
-      </div>
-      <div style={{ fontFamily: CHART_FONT, fontSize: "14px", color: valueColor, fontWeight: 600 }}>
-        {value}
       </div>
     </div>
   );
@@ -940,7 +869,7 @@ export function Benchmarks() {
           {/* Cost efficiency */}
           <ChartCard
             title="Cost vs Quality Frontier"
-            subtitle="Average cost against scored success for actual executed mechanisms. Frontier points are not dominated on both cost and quality."
+            subtitle="Average cost against scored success per mechanism. Frontier points (emerald) are not dominated on both axes. Hover for details."
           >
             {!benchmarks && !overviewError ? (
               <SkeletonChartBlock h="250px" delay={0.2} />
@@ -952,14 +881,15 @@ export function Benchmarks() {
               <div className="w-full h-62.5">
                 {chartsReady && benchmarks && (
                   <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart margin={{ top: 20, right: 10, left: 0, bottom: 5 }}>
+                    <ScatterChart margin={{ top: 16, right: 20, left: 0, bottom: 28 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="var(--border-default)" vertical={false} />
                       <XAxis
                         type="number"
                         dataKey="avgCostUsd"
                         stroke="transparent"
                         tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                        tickFormatter={(value) => `$${Number(value).toFixed(3)}`}
+                        tickFormatter={(v) => `$${Number(v).toFixed(3)}`}
+                        label={{ value: "Avg cost / run", position: "insideBottom", offset: -14, style: { fontFamily: CHART_FONT, fontSize: "9px", fill: "var(--text-tertiary)", letterSpacing: "0.06em" } }}
                       />
                       <YAxis
                         type="number"
@@ -967,31 +897,28 @@ export function Benchmarks() {
                         stroke="transparent"
                         tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
                         domain={[0, 100]}
+                        tickFormatter={(v) => `${v}%`}
+                        label={{ value: "Accuracy", angle: -90, position: "insideLeft", offset: 14, style: { fontFamily: CHART_FONT, fontSize: "9px", fill: "var(--text-tertiary)", letterSpacing: "0.06em" } }}
                       />
-                      <ZAxis dataKey="scoredRunCount" range={[90, 220]} />
+                      <ZAxis dataKey="scoredRunCount" range={[80, 200]} />
                       <Tooltip
                         content={(props) => <ParetoTooltip active={props.active} payload={props.payload as any} />}
                         cursor={{ fill: "rgba(255,255,255,0.025)" }}
                       />
                       <Scatter
                         data={paretoData}
-                        fill="var(--accent-emerald)"
                         shape={(props: any) => {
                           const { cx, cy, payload } = props;
-                          const fill = payload.frontier ? "var(--accent-emerald)" : "var(--text-muted)";
-                          const stroke = payload.frontier ? "rgba(52,211,153,0.95)" : "rgba(148,163,184,0.55)";
+                          if (payload.frontier) {
+                            return (
+                              <g>
+                                <circle cx={cx} cy={cy} r={13} fill="rgba(52,211,153,0.1)" stroke="rgba(52,211,153,0.3)" strokeWidth={1} />
+                                <circle cx={cx} cy={cy} r={7} fill="var(--accent-emerald)" stroke="rgba(52,211,153,0.9)" strokeWidth={1.5} />
+                              </g>
+                            );
+                          }
                           return (
-                            <g>
-                              <circle cx={cx} cy={cy} r={payload.frontier ? 8 : 6} fill={fill} stroke={stroke} strokeWidth={2} />
-                              <text
-                                x={cx}
-                                y={cy - 14}
-                                textAnchor="middle"
-                                style={{ fontFamily: CHART_FONT, fontSize: "9px", fill: "var(--text-secondary)" }}
-                              >
-                                {payload.mechanism}
-                              </text>
-                            </g>
+                            <circle cx={cx} cy={cy} r={5} fill="rgba(148,163,184,0.25)" stroke="rgba(148,163,184,0.5)" strokeWidth={1.5} />
                           );
                         }}
                       />
@@ -1000,28 +927,44 @@ export function Benchmarks() {
                 )}
               </div>
             )}
+            {/* Legend */}
+            {paretoData.length > 0 && (
+              <div style={{ display: "flex", gap: "16px", marginTop: "10px" }}>
+                {[
+                  { color: "var(--accent-emerald)", label: "Frontier" },
+                  { color: "rgba(148,163,184,0.5)", label: "Dominated" },
+                ].map(({ color, label }) => (
+                  <div key={label} style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                    <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: color, display: "inline-block", flexShrink: 0 }} />
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "8px", color: "var(--text-tertiary)" }}>{label}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </ChartCard>
         </div>
 
         {/* ── Analytics CTA ───────────────────────────────────────────────── */}
-        <Link
-          to="/benchmarks/analytics"
-          style={{
-            display: "flex", alignItems: "center", justifyContent: "center",
-            padding: "11px 20px", marginBottom: "16px",
-            borderRadius: "10px",
-            border: "1px solid var(--border-default)",
-            background: "var(--bg-subtle)",
-            textDecoration: "none",
-            transition: "border-color 0.15s, background 0.15s",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.background = "var(--bg-elevated)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-default)"; e.currentTarget.style.background = "var(--bg-subtle)"; }}
-        >
-          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-secondary)" }}>
-            View Analytics
-          </span>
-        </Link>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
+          <Link
+            to="/benchmarks/analytics"
+            style={{
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              padding: "10px 48px",
+              borderRadius: "10px",
+              border: "1px solid var(--border-default)",
+              background: "var(--bg-subtle)",
+              textDecoration: "none",
+              transition: "border-color 0.15s, background 0.15s",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--border-strong)"; e.currentTarget.style.background = "var(--bg-elevated)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border-default)"; e.currentTarget.style.background = "var(--bg-subtle)"; }}
+          >
+            <span style={{ fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-secondary)" }}>
+              View Analytics
+            </span>
+          </Link>
+        </div>
 
         {/* ── Run CTA ─────────────────────────────────────────────────────── */}
         <div className="card p-4 sm:p-8 mb-8">

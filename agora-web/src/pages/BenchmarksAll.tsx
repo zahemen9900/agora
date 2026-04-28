@@ -1,39 +1,364 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, ChevronRight, RefreshCcw, Search } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, Filter, RefreshCcw, Search } from "lucide-react";
 
 import { type BenchmarkCatalogEntry } from "../lib/api";
 import { useBenchmarkCatalogQuery } from "../lib/benchmarkQueries";
 import { ProviderGlyph } from "../components/ProviderGlyph";
-import { providerFromModel, providerTone } from "../lib/modelProviders";
-import { SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
+import { providerFromModel } from "../lib/modelProviders";
+import { injectChartKeyframes, CHART_FONT, ShimBlock } from "../components/benchmark/ChartCard";
 
 type SortMode = "recent" | "frequency";
 
+// ── Formatters ─────────────────────────────────────────────────────────────────
+
+function fmtUsd(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v) || (v as number) <= 0) return "n/a";
+  return `$${(v as number).toFixed(4)}`;
+}
+
+function fmtInt(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "0";
+  return Math.round(v).toLocaleString();
+}
+
+function fmtDate(v: string | null | undefined): string {
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return v;
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function titleCase(v: string): string {
+  return v.split(/[_\s-]+/).filter(Boolean).map((p) => p[0].toUpperCase() + p.slice(1)).join(" ");
+}
+
+// ── Skeleton ───────────────────────────────────────────────────────────────────
+
+function SkeletonBenchmarkCard({ delay = 0 }: { delay?: number }) {
+  return (
+    <div style={{
+      padding: "14px 16px", borderRadius: "12px",
+      border: "1px solid var(--border-default)", background: "var(--bg-base)",
+    }}>
+      {/* Top row: id + badges */}
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "10px" }}>
+        <ShimBlock w="6px" h="6px" style={{ borderRadius: "50%", flexShrink: 0 }} />
+        <ShimBlock w="220px" h="12px" style={{ animationDelay: `${delay}s` }} />
+        <ShimBlock w="52px" h="18px" style={{ borderRadius: "20px", animationDelay: `${delay + 0.05}s` }} />
+        <ShimBlock w="52px" h="18px" style={{ borderRadius: "20px", animationDelay: `${delay + 0.08}s` }} />
+        <div style={{ marginLeft: "auto" }}>
+          <ShimBlock w="80px" h="10px" style={{ animationDelay: `${delay + 0.12}s` }} />
+        </div>
+      </div>
+      {/* Model glyphs row */}
+      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        {[0, 1, 2, 3].map((i) => (
+          <ShimBlock key={i} w="22px" h="22px" style={{ borderRadius: "6px", animationDelay: `${delay + 0.06 * i}s` }} />
+        ))}
+        <ShimBlock w="90px" h="10px" style={{ marginLeft: "4px", animationDelay: `${delay + 0.2}s` }} />
+      </div>
+    </div>
+  );
+}
+
+// ── Model chips ────────────────────────────────────────────────────────────────
+
+function ModelRow({ models }: { models: string[] }) {
+  if (!models.length) return null;
+  const shown = models.slice(0, 3);
+  const overflow = models.length - shown.length;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+      {/* Overlapping glyph stack */}
+      <div style={{ display: "flex", alignItems: "center" }}>
+        {shown.map((model, i) => (
+          <div key={model} title={model} style={{
+            width: "22px", height: "22px", borderRadius: "6px",
+            background: "var(--bg-subtle)", border: "1.5px solid var(--bg-base)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            marginLeft: i > 0 ? "-6px" : 0, flexShrink: 0,
+            position: "relative", zIndex: shown.length - i,
+          }}>
+            <ProviderGlyph provider={providerFromModel(model)} size={12} />
+          </div>
+        ))}
+      </div>
+      {/* Short name of first model */}
+      <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-tertiary)" }}>
+        {shown[0]?.replace(/^.*\//, "").replace(/-\d{8}$/, "").slice(0, 24)}
+        {shown.length > 1 && ` · ${shown[1]?.replace(/^.*\//, "").replace(/-\d{8}$/, "").slice(0, 20)}`}
+      </span>
+      {overflow > 0 && (
+        <span style={{
+          fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.04em",
+          color: "var(--text-muted)", padding: "1px 6px", borderRadius: "10px",
+          background: "var(--bg-subtle)", border: "1px solid var(--border-default)",
+        }}>+{overflow}</span>
+      )}
+    </div>
+  );
+}
+
+// ── Badge ──────────────────────────────────────────────────────────────────────
+
+function Chip({ label }: { label: string }) {
+  return (
+    <span style={{
+      fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.06em", textTransform: "uppercase",
+      padding: "2px 8px", borderRadius: "20px",
+      background: "var(--bg-subtle)", color: "var(--text-tertiary)",
+      border: "1px solid var(--border-default)", flexShrink: 0,
+    }}>
+      {label}
+    </span>
+  );
+}
+
+// ── Card ───────────────────────────────────────────────────────────────────────
+
+function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen: () => void }) {
+  const [hovered, setHovered] = useState(false);
+  const models = (entry.models?.length ? entry.models : Object.keys(entry.model_counts));
+  const mechanism = Object.keys(entry.mechanism_counts ?? {})[0] ?? entry.latest_mechanism ?? null;
+  const shortId = entry.artifact_id.length > 36
+    ? `${entry.artifact_id.slice(0, 36)}…`
+    : entry.artifact_id;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        width: "100%", textAlign: "left", display: "block",
+        padding: "14px 16px", borderRadius: "12px",
+        border: `1px solid ${hovered ? "var(--border-strong)" : "var(--border-default)"}`,
+        background: hovered ? "var(--bg-subtle)" : "var(--bg-base)",
+        cursor: "pointer",
+        transition: "border-color 0.15s ease, background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease",
+        transform: hovered ? "translateY(-2px)" : "translateY(0)",
+        boxShadow: hovered ? "0 6px 20px rgba(0,0,0,0.12)" : "none",
+      }}
+    >
+      {/* Top row */}
+      <div style={{ display: "flex", alignItems: "center", gap: "7px", marginBottom: "10px", flexWrap: "wrap" }}>
+        <span style={{
+          display: "inline-block", width: "6px", height: "6px", borderRadius: "50%",
+          background: "var(--accent-emerald)", flexShrink: 0,
+          opacity: hovered ? 1 : 0.5, transition: "opacity 0.15s ease",
+        }} />
+        <span style={{
+          fontFamily: CHART_FONT, fontSize: "11px",
+          color: hovered ? "var(--text-primary)" : "var(--text-secondary)",
+          fontWeight: 600, transition: "color 0.15s ease",
+        }}>
+          {shortId}
+        </span>
+        {entry.scope && <Chip label={entry.scope} />}
+        {mechanism && <Chip label={mechanism} />}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-muted)" }}>
+            {fmtDate(entry.created_at)}
+          </span>
+          <ChevronRight
+            size={12}
+            style={{
+              color: hovered ? "var(--accent-emerald)" : "var(--text-muted)",
+              transition: "color 0.15s ease, transform 0.15s ease",
+              transform: hovered ? "translateX(2px)" : "translateX(0)",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Model row */}
+      <ModelRow models={models} />
+
+      {/* Hover-reveal stats strip */}
+      <div style={{
+        display: "flex", gap: "14px", marginTop: hovered ? "10px" : "0",
+        maxHeight: hovered ? "20px" : "0",
+        overflow: "hidden",
+        opacity: hovered ? 1 : 0,
+        transition: "max-height 0.2s ease, opacity 0.2s ease, margin-top 0.2s ease",
+      }}>
+        {[
+          { label: "Runs", value: fmtInt(entry.run_count) },
+          { label: "Cost", value: fmtUsd(entry.cost?.estimated_cost_usd ?? null) },
+          { label: "Score", value: entry.frequency_score.toFixed(1) },
+          { label: "Agents", value: String(entry.agent_count ?? "n/a") },
+        ].map(({ label, value }) => (
+          <span key={label} style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-muted)", whiteSpace: "nowrap" }}>
+            <span style={{ color: "var(--text-tertiary)" }}>{label} </span>
+            <span style={{ color: "var(--text-secondary)" }}>{value}</span>
+          </span>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+// ── Filter dropdown ────────────────────────────────────────────────────────────
+
+function FilterDropdown({ value, onChange }: { value: SortMode; onChange: (v: SortMode) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "inline-flex", alignItems: "center", gap: "6px",
+          fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
+          padding: "5px 10px", borderRadius: "7px",
+          border: `1px solid ${open ? "var(--border-strong)" : "var(--border-default)"}`,
+          background: open ? "var(--bg-subtle)" : "var(--bg-base)",
+          color: "var(--text-secondary)", cursor: "pointer",
+          transition: "all 0.15s ease",
+        }}
+      >
+        <Filter size={11} />
+        {titleCase(value)}
+        <ChevronDown size={11} style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s ease" }} />
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 100,
+          background: "var(--bg-elevated)", border: "1px solid var(--border-strong)",
+          borderRadius: "8px", overflow: "hidden", minWidth: "130px",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+        }}>
+          {(["recent", "frequency"] as SortMode[]).map((option, i) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => { onChange(option); setOpen(false); }}
+              style={{
+                display: "block", width: "100%", textAlign: "left",
+                padding: "9px 13px", fontFamily: CHART_FONT, fontSize: "11px",
+                color: value === option ? "var(--accent-emerald)" : "var(--text-secondary)",
+                background: value === option ? "var(--accent-emerald-soft)" : "transparent",
+                border: "none",
+                borderBottom: i === 0 ? "1px solid var(--border-default)" : "none",
+                cursor: "pointer", transition: "background 0.1s ease",
+              }}
+            >
+              {titleCase(option)}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Section ────────────────────────────────────────────────────────────────────
+
+function BenchmarkSection({
+  title, entries, sortMode, onSortChange, onOpen, isLoading,
+}: {
+  title: string;
+  entries: BenchmarkCatalogEntry[];
+  sortMode: SortMode;
+  onSortChange: (v: SortMode) => void;
+  onOpen: (id: string) => void;
+  isLoading: boolean;
+}) {
+  return (
+    <div style={{
+      borderRadius: "16px", border: "1px solid var(--border-default)",
+      background: "var(--bg-base)", overflow: "hidden",
+    }}>
+      {/* Section header */}
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        padding: "16px 20px", borderBottom: "1px solid var(--border-default)",
+        background: "var(--bg-subtle)",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <span style={{
+            fontFamily: CHART_FONT, fontSize: "11px", letterSpacing: "0.1em",
+            textTransform: "uppercase", color: "var(--text-primary)", fontWeight: 600,
+          }}>
+            {title}
+          </span>
+          {!isLoading && (
+            <span style={{
+              fontFamily: CHART_FONT, fontSize: "9px", padding: "1px 7px", borderRadius: "10px",
+              background: "var(--bg-elevated)", color: "var(--text-tertiary)",
+              border: "1px solid var(--border-default)",
+            }}>
+              {entries.length}
+            </span>
+          )}
+        </div>
+        <FilterDropdown value={sortMode} onChange={onSortChange} />
+      </div>
+
+      {/* Body */}
+      <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: "6px" }}>
+        {isLoading ? (
+          <>
+            <SkeletonBenchmarkCard delay={0} />
+            <SkeletonBenchmarkCard delay={0.08} />
+            <SkeletonBenchmarkCard delay={0.16} />
+          </>
+        ) : entries.length === 0 ? (
+          <p style={{ fontFamily: CHART_FONT, fontSize: "11px", color: "var(--text-muted)", padding: "16px 0", textAlign: "center" }}>
+            No matching benchmark artifacts.
+          </p>
+        ) : (
+          entries.map((entry) => (
+            <BenchmarkCard
+              key={`${entry.scope}:${entry.artifact_id}`}
+              entry={entry}
+              onOpen={() => onOpen(entry.artifact_id)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────────
+
 export function BenchmarksAll() {
+  useEffect(() => { injectChartKeyframes(); }, []);
   const navigate = useNavigate();
   const catalogQuery = useBenchmarkCatalogQuery(100);
   const [yourSortMode, setYourSortMode] = useState<SortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<SortMode>("recent");
   const [query, setQuery] = useState("");
   const catalog = catalogQuery.data ?? null;
+  const isLoading = catalogQuery.isLoading;
+  const isRefreshing = catalogQuery.isFetching && Boolean(catalog);
   const loadError = !catalog && catalogQuery.error instanceof Error
     ? catalogQuery.error.message
     : null;
-  const isRefreshing = catalogQuery.isFetching && Boolean(catalog);
 
   const filterEntries = useCallback((entries: BenchmarkCatalogEntry[]) => {
-    const loweredQuery = query.trim().toLowerCase();
-    return entries.filter((entry) => {
-      if (!loweredQuery) {
-        return true;
-      }
-
-      const modelCandidates = entry.models?.length ? entry.models : Object.keys(entry.model_counts);
+    const q = query.trim().toLowerCase();
+    if (!q) return entries;
+    return entries.filter((e) => {
+      const models = e.models?.length ? e.models : Object.keys(e.model_counts);
       return (
-        entry.artifact_id.toLowerCase().includes(loweredQuery)
-        || entry.scope.toLowerCase().includes(loweredQuery)
-        || modelCandidates.some((model) => model.toLowerCase().includes(loweredQuery))
+        e.artifact_id.toLowerCase().includes(q)
+        || e.scope.toLowerCase().includes(q)
+        || models.some((m) => m.toLowerCase().includes(q))
       );
     });
   }, [query]);
@@ -54,213 +379,112 @@ export function BenchmarksAll() {
         name="description"
         content="Full catalog of Agora benchmark runs. Compare outcomes across tasks, mechanisms, and model configurations."
       />
-    <div className="max-w-250 mx-auto pb-20 w-full">
-      <header className="mb-8">
-        <button type="button" onClick={() => navigate("/benchmarks")} className="btn-secondary mb-4 inline-flex items-center gap-2">
-          <ArrowLeft size={14} /> Back to overview
-        </button>
-        <h1 className="text-3xl md:text-4xl mb-4">All Benchmarks</h1>
-        <p className="text-text-secondary text-lg max-w-160">
-          Browse both personal and global benchmark runs in one place with direct report navigation.
-        </p>
-      </header>
+      <div className="max-w-250 mx-auto pb-20 w-full">
+        {/* Header */}
+        <header style={{ marginBottom: "28px" }}>
+          <button
+            type="button"
+            onClick={() => navigate("/benchmarks")}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: "5px",
+              fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.08em",
+              textTransform: "uppercase", color: "var(--text-tertiary)",
+              background: "none", border: "none", cursor: "pointer", padding: 0,
+              marginBottom: "16px", transition: "color 0.15s ease",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-tertiary)"; }}
+          >
+            <ArrowLeft size={12} /> Benchmarks
+          </button>
+          <h1 style={{
+            fontFamily: CHART_FONT, fontSize: "clamp(22px, 4vw, 32px)",
+            letterSpacing: "0.05em", textTransform: "uppercase",
+            color: "var(--text-primary)", margin: 0, marginBottom: "8px",
+          }}>
+            All Benchmarks
+          </h1>
+          <p style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: "14px", color: "var(--text-muted)", margin: 0, maxWidth: "560px" }}>
+            Browse personal and global benchmark runs in one place.
+          </p>
+        </header>
 
-      <div className="card p-4 sm:p-6 mb-6">
-        <div className="flex flex-col lg:flex-row lg:items-end gap-4">
-          <label className="block flex-1 max-w-120">
-            <div className="mono text-xs text-text-muted mb-2">SEARCH</div>
-            <div className="border border-border-subtle rounded-md bg-void px-3 py-2 flex items-center gap-2">
-              <Search size={14} className="text-text-muted" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                className="w-full bg-transparent border-none outline-none text-sm text-text-primary"
-                placeholder="artifact id, scope, or model"
-              />
-            </div>
-          </label>
-
-          <button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void catalogQuery.refetch()}>
-            {isRefreshing ? <RefreshCcw size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
-            Refresh
+        {/* Search + refresh bar */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: "8px",
+          marginBottom: "20px",
+          padding: "8px 12px", borderRadius: "10px",
+          border: "1px solid var(--border-default)", background: "var(--bg-subtle)",
+        }}>
+          <Search size={13} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search artifact ID, scope, or model…"
+            style={{
+              flex: 1, background: "transparent", border: "none", outline: "none",
+              fontFamily: CHART_FONT, fontSize: "11px", color: "var(--text-primary)",
+              letterSpacing: "0.02em",
+            }}
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              style={{
+                background: "none", border: "none", cursor: "pointer",
+                color: "var(--text-muted)", fontFamily: CHART_FONT, fontSize: "10px",
+                padding: "0 4px", transition: "color 0.15s",
+              }}
+            >
+              ✕
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void catalogQuery.refetch()}
+            title="Refresh"
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center",
+              transition: "color 0.15s",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-secondary)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-muted)"; }}
+          >
+            <RefreshCcw size={13} style={{ animation: isRefreshing ? "bm-spin 0.8s linear infinite" : "none" }} />
           </button>
         </div>
-      </div>
 
-      {loadError ? (
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">{loadError}</p>
-        </div>
-      ) : !catalog ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          {["Your Benchmarks", "Global Benchmarks"].map((title) => (
-            <div key={title} className="card p-4 sm:p-6">
-              <h3 className="text-lg font-semibold mb-4">{title}</h3>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-                <SkeletonRunRow delay={0} />
-                <SkeletonRunRow delay={0.08} />
-                <SkeletonRunRow delay={0.16} />
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : yourEntries.length === 0 && globalEntries.length === 0 ? (
-        <div className="card p-6 border border-border-subtle">
-          <p className="text-text-secondary">No benchmark artifacts match the current filters.</p>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          <BenchmarkSection
-            title="Your Benchmarks"
-            entries={yourEntries}
-            sortMode={yourSortMode}
-            onSortChange={setYourSortMode}
-            onOpen={(artifactId) => navigate(`/benchmarks/${artifactId}`)}
-          />
-          <BenchmarkSection
-            title="Global Benchmarks"
-            entries={globalEntries}
-            sortMode={globalSortMode}
-            onSortChange={setGlobalSortMode}
-            onOpen={(artifactId) => navigate(`/benchmarks/${artifactId}`)}
-          />
-        </div>
-      )}
-    </div>
+        {/* Content */}
+        {loadError ? (
+          <div style={{
+            padding: "20px 24px", borderRadius: "12px",
+            border: "1px solid var(--border-default)", background: "var(--bg-subtle)",
+          }}>
+            <p style={{ fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>{loadError}</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+            <BenchmarkSection
+              title="Your Benchmarks"
+              entries={yourEntries}
+              sortMode={yourSortMode}
+              onSortChange={setYourSortMode}
+              onOpen={(id) => navigate(`/benchmarks/${id}`)}
+              isLoading={isLoading}
+            />
+            <BenchmarkSection
+              title="Global Benchmarks"
+              entries={globalEntries}
+              sortMode={globalSortMode}
+              onSortChange={setGlobalSortMode}
+              onOpen={(id) => navigate(`/benchmarks/${id}`)}
+              isLoading={isLoading}
+            />
+          </div>
+        )}
+      </div>
     </>
   );
-}
-
-function BenchmarkSection({
-  title,
-  entries,
-  sortMode,
-  onSortChange,
-  onOpen,
-}: {
-  title: string;
-  entries: BenchmarkCatalogEntry[];
-  sortMode: SortMode;
-  onSortChange: (value: SortMode) => void;
-  onOpen: (artifactId: string) => void;
-}) {
-  return (
-    <section className="card p-4 sm:p-6">
-      <div className="flex items-center justify-between gap-3 mb-4">
-        <h2 className="text-xl text-text-primary">{title}</h2>
-        <div className="inline-flex border border-border-subtle rounded-md overflow-hidden">
-          {(["recent", "frequency"] as SortMode[]).map((option) => (
-            <button
-              key={option}
-              type="button"
-              onClick={() => onSortChange(option)}
-              className={`mono px-3 py-1.5 text-xs transition-colors ${
-                sortMode === option ? "bg-accent-muted text-accent" : "text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              {titleCase(option)}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {entries.length === 0 ? (
-        <p className="text-sm text-text-secondary">No matching benchmark artifacts.</p>
-      ) : (
-        <div className="space-y-4">
-          {entries.map((entry) => (
-            <button
-              key={`${entry.scope}:${entry.artifact_id}`}
-              type="button"
-              onClick={() => onOpen(entry.artifact_id)}
-              className="w-full text-left border border-border-subtle rounded-md px-4 py-4 bg-void hover:border-accent transition-colors"
-            >
-              <div className="flex flex-wrap gap-2 items-center mb-2">
-                <span className="mono text-xs text-text-muted">{entry.artifact_id}</span>
-                <span className="badge">{titleCase(entry.scope)}</span>
-                {entry.latest_mechanism ? <span className="badge">{titleCase(entry.latest_mechanism)}</span> : null}
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-7 gap-2 text-xs text-text-secondary mb-3">
-                <div>Runs {formatInt(entry.run_count)}</div>
-                <div>Agents {entry.agent_count ?? "n/a"}</div>
-                <div>Tokens {formatInt(entry.total_tokens ?? 0)}</div>
-                <div>Thinking {formatInt(entry.thinking_tokens ?? 0)}</div>
-                <div>Cost {formatUsd(entry.cost?.estimated_cost_usd ?? null)}</div>
-                <div>Budget/Agent {formatBudgetPerAgent(entry.cost?.estimated_cost_usd ?? null, entry.agent_count ?? null)}</div>
-                <div>Score {entry.frequency_score.toFixed(2)}</div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2 mb-2">
-                {(entry.models?.length ? entry.models : Object.keys(entry.model_counts)).slice(0, 8).map((model) => {
-                  const provider = providerFromModel(model);
-                  return (
-                    <span
-                      key={model}
-                      className={`inline-flex items-center gap-1.5 border rounded-full px-2 py-1 mono text-[11px] ${providerTone(provider)}`}
-                    >
-                      <ProviderGlyph provider={provider} />
-                      <span className="truncate max-w-56">{model}</span>
-                    </span>
-                  );
-                })}
-              </div>
-
-              <div className="flex items-center justify-between text-xs text-text-muted">
-                <span>{formatDateTime(entry.created_at)}</span>
-                <span className="inline-flex items-center gap-1">Open report <ChevronRight size={12} /></span>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) {
-    return "n/a";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleString();
-}
-
-function formatUsd(value: number | null): string {
-  if (value === null || !Number.isFinite(value) || value <= 0) {
-    return "n/a";
-  }
-  return `$${value.toFixed(6)}`;
-}
-
-function formatInt(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "0";
-  }
-  return Math.round(value).toLocaleString();
-}
-
-function formatBudgetPerAgent(cost: number | null, agentCount: number | null): string {
-  if (
-    cost === null
-    || !Number.isFinite(cost)
-    || cost <= 0
-    || agentCount === null
-    || !Number.isFinite(agentCount)
-    || agentCount <= 0
-  ) {
-    return "n/a";
-  }
-  return `$${(cost / agentCount).toFixed(6)}`;
-}
-
-function titleCase(value: string): string {
-  return value
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
 }

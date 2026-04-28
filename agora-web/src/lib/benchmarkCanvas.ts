@@ -241,12 +241,148 @@ export function shouldFetchBenchmarkItemEvents(
   item: BenchmarkItemPayload | null,
   streamedEvents: TaskEvent[],
   isLoading: boolean,
+  hasAttemptedHydration = false,
 ): boolean {
   if (!item || isLoading) {
+    return false;
+  }
+  if (hasAttemptedHydration) {
     return false;
   }
   if (streamedEvents.length > 0) {
     return false;
   }
   return item.events.length === 0;
+}
+
+function summaryRecord(item: BenchmarkItemPayload): Record<string, unknown> {
+  return typeof item.summary === "object" && item.summary !== null && !Array.isArray(item.summary)
+    ? item.summary
+    : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function itemEventContext(item: BenchmarkItemPayload): Record<string, unknown> {
+  return {
+    item_id: item.item_id,
+    item_index: item.item_index,
+    task_index: item.task_index,
+    phase: item.phase,
+    run_kind: item.run_kind,
+    category: item.category,
+    question: item.question,
+    source_task: item.source_task,
+  };
+}
+
+function syntheticTimestamp(item: BenchmarkItemPayload): string | null {
+  return item.completed_at ?? item.started_at ?? null;
+}
+
+export function deriveBenchmarkItemTimelineEvents(
+  item: BenchmarkItemPayload | null,
+  events: TaskEvent[],
+  fallbackMechanism: string | null,
+): TaskEvent[] {
+  if (!item || events.length > 0) {
+    return events;
+  }
+
+  const summary = summaryRecord(item);
+  const mechanism = item.mechanism ?? fallbackMechanism ?? stringValue(summary.mechanism) ?? "vote";
+  const timestamp = syntheticTimestamp(item);
+  const context = itemEventContext(item);
+  const derivedEvents: TaskEvent[] = [];
+
+  if (mechanism) {
+    derivedEvents.push({
+      event: "mechanism_selected",
+      timestamp,
+      data: {
+        ...context,
+        benchmark_context: context,
+        mechanism,
+        confidence: numberValue(summary.confidence) ?? 0,
+        selector_source: item.selector_source,
+        selector_fallback_path: item.selector_fallback_path,
+        reasoning: "Recovered from benchmark artifact metadata.",
+        execution_segment: 0,
+        mechanism_recovered: true,
+      },
+    });
+  }
+
+  const entropy = numberValue(summary.latest_entropy);
+  const novelty = numberValue(summary.latest_novelty);
+  if (entropy !== null || novelty !== null) {
+    derivedEvents.push({
+      event: "convergence_update",
+      timestamp,
+      data: {
+        ...context,
+        benchmark_context: context,
+        mechanism,
+        round_number: numberValue(summary.rounds) ?? 1,
+        disagreement_entropy: entropy ?? 0,
+        information_gain_delta: novelty ?? 0,
+        execution_segment: 0,
+        mechanism_recovered: true,
+      },
+    });
+  }
+
+  const finalAnswer = stringValue(summary.final_answer) ?? stringValue(summary.answer);
+  if (finalAnswer) {
+    derivedEvents.push({
+      event: "quorum_reached",
+      timestamp,
+      data: {
+        ...context,
+        benchmark_context: context,
+        final_answer: finalAnswer,
+        confidence: numberValue(summary.confidence) ?? 0,
+        mechanism,
+        quorum_reached: summary.quorum_reached !== false,
+        execution_segment: 0,
+        mechanism_recovered: true,
+      },
+    });
+  }
+
+  if (item.failure_reason || item.latest_error_event) {
+    derivedEvents.push({
+      event: "error",
+      timestamp,
+      data: {
+        ...context,
+        benchmark_context: context,
+        message: item.failure_reason ?? "Benchmark item failed",
+        item_status: item.status,
+        execution_segment: 0,
+        mechanism_recovered: true,
+      },
+    });
+  } else if (item.status === "completed" || item.status === "degraded") {
+    derivedEvents.push({
+      event: "complete",
+      timestamp,
+      data: {
+        ...context,
+        benchmark_context: context,
+        status: item.status,
+        mechanism,
+        execution_segment: 0,
+        mechanism_recovered: true,
+      },
+    });
+  }
+
+  return derivedEvents.length > 0 ? derivedEvents : events;
 }
