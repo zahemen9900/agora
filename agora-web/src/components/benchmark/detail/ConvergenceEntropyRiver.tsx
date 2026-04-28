@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
-import { CHART_FONT } from "../ChartCard";
+import { CHART_FONT, InfoTooltip } from "../ChartCard";
 import type { RawBenchmarkRun } from "../../../lib/benchmarkMetrics";
 
 const GRAD_ID = "entropyGrad";
@@ -28,8 +28,11 @@ export function ConvergenceEntropyRiver({ runs }: Props) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-        <div style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
-          Convergence River — Dominant Answer Share
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
+            Convergence River — Dominant Answer Share
+          </span>
+          <InfoTooltip text="Area chart tracking how quickly agents converged on a single answer across debate rounds. Higher = more agreement. The curve rising toward 100% means near-consensus was reached. Amber dashed reference lines mark rounds where the selector switched mechanism, with the switch reason labelled above." />
         </div>
         {runs.length > 1 && (
           <div style={{ display: "flex", gap: "4px" }}>

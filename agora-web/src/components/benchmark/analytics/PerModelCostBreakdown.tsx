@@ -27,6 +27,7 @@ export function PerModelCostBreakdown({ data }: Props) {
     <ChartCard
       title="PER-MODEL COST BREAKDOWN"
       subtitle="Token spend across all benchmark runs, split by input / thinking / output."
+      tooltip="Cumulative token spend per model across all runs, split into input tokens (muted), thinking/reasoning tokens (amber), and output tokens (teal). Bar width scales relative to the highest-spending model. Hover a bar segment to see the exact token count. Cost chips show the total estimated USD spend per model."
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "12px", position: "relative" }}>
         {data.map((row) => {

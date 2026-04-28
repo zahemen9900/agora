@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CHART_FONT } from "../ChartCard";
+import { CHART_FONT, InfoTooltip } from "../ChartCard";
 import type { ConvergenceHistoryItem } from "../../../lib/benchmarkMetrics";
 
 const FACTION_COLORS = [
@@ -40,8 +40,11 @@ export function AnswerFactionRace({ history, category }: Props) {
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-        <div style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
-          Answer Faction Race — {category}
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
+            Answer Faction Race — {category}
+          </span>
+          <InfoTooltip text="Each row is one deliberation round. The stacked bar shows how model votes are distributed across unique answer factions (color-coded by faction). The dominant faction gets an emerald outline. H= is the Shannon entropy — higher means more disagreement among agents that round." />
         </div>
         <span style={{ fontFamily: CHART_FONT, fontSize: "8px", color: "var(--text-tertiary)" }}>
           {history.length} round{history.length !== 1 ? "s" : ""}

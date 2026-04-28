@@ -1,4 +1,4 @@
-import { CHART_FONT } from "../ChartCard";
+import { CHART_FONT, InfoTooltip } from "../ChartCard";
 import type { MechanismTraceItem } from "../../../lib/benchmarkMetrics";
 
 const MECH_COLORS: Record<string, string> = {
@@ -22,8 +22,11 @@ export function MechanismTimeline({ trace }: Props) {
 
   return (
     <div>
-      <div style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: "12px" }}>
-        Mechanism Execution Timeline
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "12px" }}>
+        <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
+          Mechanism Execution Timeline
+        </span>
+        <InfoTooltip text="A horizontal swimlane showing which deliberation mechanism (debate or vote) was active during each round. Segment width is proportional to rounds spent in that mechanism. Switch reasons appear below when the selector changed strategy mid-run." />
       </div>
       <div style={{ display: "flex", alignItems: "stretch", gap: 0, borderRadius: "6px", overflow: "hidden", border: "1px solid var(--border-default)" }}>
         {trace.map((item, idx) => {

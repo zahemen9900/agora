@@ -60,6 +60,7 @@ export function CostLatencyBubble({ data }: Props) {
     <ChartCard
       title="COST · LATENCY · QUALITY"
       subtitle="Bubble size = latency. Frontier points dominate on both cost and quality."
+      tooltip="Each bubble is a benchmark run plotted by average cost (X axis) and scored accuracy (Y axis). Bubble radius encodes average latency — larger means slower. Emerald bubbles are Pareto-frontier points: no other run is simultaneously cheaper and more accurate. Use this to find the sweet spot between cost, speed, and quality."
     >
       <ResponsiveContainer width="100%" height={260}>
         <ScatterChart margin={{ top: 10, right: 20, bottom: 20, left: 10 }}>
