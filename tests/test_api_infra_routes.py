@@ -1252,7 +1252,47 @@ async def test_run_async_returns_in_progress_without_duplicate_launch(
         response = await task_routes.start_task_run(create.task_id, _override_user())
 
         assert response.status == "in_progress"
-        assert launches == 0
+        assert launches == 1
+    finally:
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_resume_stale_background_task_runs_relaunches_requested_pending_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "resume-stale-task"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="recover pending background task", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["background_run_requested_at"] = "2026-04-29T00:00:00+00:00"
+        task["updated_at"] = "2026-04-29T00:00:00+00:00"
+        await store.save_task("user-1", create.task_id, task)
+
+        launches: list[tuple[str, str]] = []
+
+        def fake_launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
+            launches.append((task_id, workspace_id))
+
+        monkeypatch.setattr(task_routes, "_launch_background_task_run", fake_launch_background_task_run)
+
+        recovered = await task_routes.resume_stale_background_task_runs(
+            stale_after_seconds=60,
+            limit=50,
+        )
+
+        assert recovered == 1
+        assert launches == [(create.task_id, "user-1")]
     finally:
         task_routes._store = None
 
@@ -5081,6 +5121,67 @@ async def test_api_key_can_trigger_and_view_benchmark_runs(
     assert catalog_response.status_code == 200
     catalog_payload = catalog_response.json()
     assert any(entry["run_id"] == run_id for entry in catalog_payload["user_tests_recent"])
+
+
+@pytest.mark.asyncio
+async def test_resume_stale_background_benchmark_runs_relaunches_stale_running_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "resume-stale-benchmark"))
+    try:
+        store = task_routes._store
+        assert store is not None
+        run_id = "resume-benchmark-run"
+        request_payload = {
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+            "agent_count": 4,
+            "live_agents": False,
+            "seed": 7,
+        }
+        await store.save_user_test_result(
+            "user-1",
+            run_id,
+            {
+                "run_id": run_id,
+                "workspace_id": "user-1",
+                "kind": "benchmark",
+                "status": "running",
+                "updated_at": "2026-04-29T00:00:00+00:00",
+                "request": request_payload,
+            },
+        )
+
+        launches: list[tuple[str, str, dict[str, object]]] = []
+
+        def fake_launch_background_benchmark_run(
+            *,
+            workspace_id: str,
+            run_id: str,
+            request: benchmark_routes.BenchmarkRunRequest,
+        ) -> None:
+            launches.append((workspace_id, run_id, request.model_dump(mode="json")))
+
+        monkeypatch.setattr(
+            benchmark_routes,
+            "_launch_background_benchmark_run",
+            fake_launch_background_benchmark_run,
+        )
+
+        recovered = await benchmark_routes.resume_stale_background_benchmark_runs(
+            stale_after_seconds=60,
+            limit=50,
+        )
+
+        assert recovered == 1
+        assert len(launches) == 1
+        assert launches[0][0] == "user-1"
+        assert launches[0][1] == run_id
+        for key, value in request_payload.items():
+            assert launches[0][2][key] == value
+    finally:
+        task_routes._store = None
 
 
 @pytest.mark.asyncio

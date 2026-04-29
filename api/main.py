@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.background_recovery import background_recovery_loop, shutdown_background_task
+from api.config import settings
 from api.coordination import validate_coordination_configuration
 from api.routes import api_keys, auth_session, benchmarks, health, tasks, webhooks
 from api.streaming import validate_streaming_configuration
@@ -28,7 +31,13 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     validate_coordination_configuration()
     validate_streaming_configuration()
-    yield
+    recovery_task = None
+    if settings.background_recovery_enabled:
+        recovery_task = asyncio.create_task(background_recovery_loop())
+    try:
+        yield
+    finally:
+        await shutdown_background_task(recovery_task)
 
 app = FastAPI(
     title="Agora Protocol API",

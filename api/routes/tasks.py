@@ -7,7 +7,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
 
 import structlog
@@ -221,6 +221,64 @@ def _launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
             )
 
     _track_background_task(run_key, asyncio.create_task(_runner()))
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+async def resume_stale_background_task_runs(
+    *,
+    stale_after_seconds: int,
+    limit: int,
+) -> int:
+    """Relaunch task runs that were background-started but lost their worker."""
+
+    store = get_task_store()
+    if not hasattr(store, "list_all_tasks"):
+        return 0
+
+    records = await store.list_all_tasks(limit=limit)
+    stale_before = datetime.now(UTC) - timedelta(seconds=max(1, stale_after_seconds))
+    relaunched = 0
+    for raw_task in records:
+        if not isinstance(raw_task, dict):
+            continue
+        workspace_id = str(raw_task.get("workspace_id") or "").strip()
+        task_id = str(raw_task.get("task_id") or "").strip()
+        if not workspace_id or not task_id:
+            continue
+        status = str(raw_task.get("status") or "").strip().lower()
+        updated_at = _parse_timestamp(raw_task.get("updated_at"))
+        is_stale = updated_at is None or updated_at <= stale_before
+        background_requested = bool(raw_task.get("background_run_requested_at"))
+        should_resume = (status == "pending" and background_requested) or (
+            status == "in_progress" and is_stale
+        )
+        if not should_resume:
+            continue
+        logger.info(
+            "resume_stale_background_task_run",
+            workspace_id=workspace_id,
+            task_id=task_id,
+            status=status,
+            updated_at=raw_task.get("updated_at"),
+        )
+        _launch_background_task_run(task_id=task_id, workspace_id=workspace_id)
+        relaunched += 1
+
+    return relaunched
 
 
 async def _acquire_task_run_lock(run_key: str) -> RunLockLease | None:
@@ -1966,6 +2024,12 @@ async def start_task_run(
     if task.status not in {"pending", "in_progress", "completed", "paid"}:
         raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
     if task.status == "pending":
+        requested_at = datetime.now(UTC).isoformat()
+        raw_task["background_run_requested_at"] = requested_at
+        raw_task["updated_at"] = requested_at
+        await store.save_task(user.workspace_id, task_id, raw_task)
+        _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
+    elif task.status == "in_progress":
         _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
 
     refreshed = await _load_task_for_user(store, user.workspace_id, task_id)
