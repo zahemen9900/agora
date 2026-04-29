@@ -168,16 +168,10 @@ export function TaskSubmit() {
     }
   }, [recentTasksQuery.error]);
 
-  useEffect(() => {
-    if (!runtimeConfig || runtimeDefaultsHydrated) {
-      return;
-    }
-    // Defer state updates to avoid synchronous setState in effect warning
-    queueMicrotask(() => {
-      setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
-      setRuntimeDefaultsHydrated(true);
-    });
-  }, [runtimeConfig, runtimeDefaultsHydrated]);
+  if (runtimeConfig && !runtimeDefaultsHydrated) {
+    setRuntimeDefaultsHydrated(true);
+    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
+  }
 
   const providerSummary = buildProviderSummary(agentCount, runtimeConfig, tierModelOverrides);
 
