@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { usePostHog } from "@posthog/react";
 
 // ─── Keyframe injection ────────────────────────────────────────────────────────
 const FLYOUT_STYLE_ID = "flyout-kf";
@@ -92,6 +93,7 @@ export interface FlyoutProps {
 }
 
 export function Flyout({ show, variant, title, body, onDismiss, autoDismissMs = 6000 }: FlyoutProps) {
+    const posthog = usePostHog();
   const [visible, setVisible]   = useState(false);
   const [exiting, setExiting]   = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -177,7 +179,7 @@ export function Flyout({ show, variant, title, body, onDismiss, autoDismissMs = 
 
         <button
           type="button"
-          onClick={handleDismiss}
+          onClick={(e: any) => { posthog?.capture('flyout_clicked'); const handler = handleDismiss; if (typeof handler === 'function') (handler as any)(e); }}
           style={{
             background: "none",
             border: "none",

@@ -680,7 +680,7 @@ export function HeroReel() {
               size="md"
               onClick={() => isAuthenticated ? navigate('/tasks') : signIn()}
               disabled={!isAuthenticated && isLoading}
-              rightIcon={<ArrowRight size={16} />}
+              rightIcon={<ArrowRight size={16} />} trackingEvent="heroreel_action_clicked"
             >
               {isAuthenticated ? 'Enter Dashboard' : isLoading ? 'Connecting…' : 'Launch App'}
             </Button>
@@ -689,7 +689,7 @@ export function HeroReel() {
                 variant="secondary"
                 size="md"
                 onClick={() => signUp()}
-                disabled={isLoading}
+                disabled={isLoading} trackingEvent="heroreel_action_clicked"
               >
                 {isLoading ? 'Loading…' : 'Create Account'}
               </Button>

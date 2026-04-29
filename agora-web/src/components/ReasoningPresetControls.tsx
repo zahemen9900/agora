@@ -8,6 +8,7 @@ import {
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
 import { providerTone } from "../lib/modelProviders";
+import { usePostHog } from "@posthog/react";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 
@@ -18,6 +19,7 @@ interface InlineSelectProps {
 }
 
 function InlineSelect({ value, options, onChange }: InlineSelectProps) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.value === value) ?? options[0];
@@ -35,7 +37,7 @@ function InlineSelect({ value, options, onChange }: InlineSelectProps) {
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('reasoningpresetcontrols_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           width: "100%", padding: "7px 12px",
@@ -69,7 +71,7 @@ function InlineSelect({ value, options, onChange }: InlineSelectProps) {
             <button
               key={opt.value}
               type="button"
-              onClick={() => { onChange(opt.value); setOpen(false); }}
+              onClick={(e: any) => { posthog?.capture('reasoningpresetcontrols_action_clicked'); const handler = () => { onChange(opt.value); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "8px 12px",

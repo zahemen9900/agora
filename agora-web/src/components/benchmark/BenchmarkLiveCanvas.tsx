@@ -16,6 +16,8 @@ import type {
   BenchmarkItemPayload,
   TaskEvent,
 } from "../../lib/api";
+import { usePostHog } from "@posthog/react";
+import { Button } from "../../components/ui/Button";
 
 const GRID_BG_DARK = [
   "linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px)",
@@ -226,6 +228,7 @@ export function BenchmarkLiveCanvas({
   onSelectItem,
   onOpenLogs,
 }: BenchmarkLiveCanvasProps) {
+    const posthog = usePostHog();
   // Theme-aware grid — app sets data-theme="light" on <html>
   const [isDarkMode, setIsDarkMode] = useState(
     () => document.documentElement.getAttribute("data-theme") !== "light"
@@ -401,14 +404,14 @@ export function BenchmarkLiveCanvas({
         <div style={{ borderBottom: "1px solid var(--border-subtle)", background: "var(--bg-elevated)", padding: "10px 16px 12px", display: "flex", flexDirection: "column", gap: "10px", flexShrink: 0 }}>
           {/* Row 1: back + controls */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px" }}>
-            <button
+            <Button
               type="button"
-              className="btn-secondary inline-flex items-center gap-2"
-              onClick={() => onLayerChange("overview")}
+              className="inline-flex items-center gap-2"
+              onClick={() => onLayerChange("overview")} variant="secondary" trackingEvent="benchmarklivecanvas_back_to_benchmark_map_clicked"
             >
               <ArrowLeft size={13} />
               Back to benchmark map
-            </button>
+            </Button>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span style={{
                 borderRadius: "100px",
@@ -423,14 +426,14 @@ export function BenchmarkLiveCanvas({
               }}>
                 {selectedItem.status}
               </span>
-              <button
+              <Button
                 type="button"
-                className="btn-secondary inline-flex items-center gap-2"
-                onClick={onOpenLogs}
+                className="inline-flex items-center gap-2"
+                onClick={onOpenLogs} variant="secondary" trackingEvent="benchmarklivecanvas_open_logs_clicked"
               >
                 <ScrollText size={13} />
                 Open logs
-              </button>
+              </Button>
             </div>
           </div>
           {/* Row 2: breadcrumb + question */}
@@ -511,12 +514,12 @@ export function BenchmarkLiveCanvas({
         ))}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
           <span style={{ fontFamily: "'Commit Mono',monospace", fontSize: "10px", color: "var(--text-muted)" }}>Drag · Scroll to zoom</span>
-          <button type="button" onClick={fitToContent} title="Fit to content" style={iconBtn}>
+          <button type="button" onClick={(e: any) => { posthog?.capture('benchmarklivecanvas_fit_to_content_clicked'); const handler = fitToContent; if (typeof handler === 'function') (handler as any)(e); }} title="Fit to content" style={iconBtn}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
               <circle cx="7" cy="7" r="2.5" /><line x1="7" y1="0.5" x2="7" y2="3.5" /><line x1="7" y1="10.5" x2="7" y2="13.5" /><line x1="0.5" y1="7" x2="3.5" y2="7" /><line x1="10.5" y1="7" x2="13.5" y2="7" />
             </svg>
           </button>
-          <button type="button" onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
+          <button type="button" onClick={(e: any) => { posthog?.capture('benchmarklivecanvas_action_clicked'); const handler = toggleFullscreen; if (typeof handler === 'function') (handler as any)(e); }} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
             {isFullscreen
               ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M1 4V1h3M8 1h3v3M11 8v3H8M4 11H1V8" /></svg>
               : <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M4 1H1v3M8 1h3v3M1 8v3h3M8 11h3V8" /></svg>}
@@ -620,7 +623,7 @@ export function BenchmarkLiveCanvas({
               <button
                 key={node.id}
                 type="button"
-                onClick={() => { if (!isItem) return; onSelectItem(node.id); onLayerChange("item"); }}
+                onClick={(e: any) => { posthog?.capture('benchmarklivecanvas_action_clicked'); const handler = () => { if (!isItem) return; onSelectItem(node.id); onLayerChange("item"); }; if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   position: "absolute",
                   left: position.x,

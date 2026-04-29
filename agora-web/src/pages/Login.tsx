@@ -13,6 +13,7 @@ import { FooterGraph } from '../components/landing/FooterGraph';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
 import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
+import { Button } from "../components/ui/Button";
 
 /* ── Reduced-motion hook ─────────────────────────────────────────── */
 function useReducedMotion() {
@@ -133,22 +134,20 @@ export function LoginPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <ThemeToggle />
           {isAuthenticated ? (
-            <button
+            <Button
               onClick={() => navigate('/tasks')}
-              className="btn-primary"
-              style={{ fontSize: '13px', padding: '8px 18px' }}
+              style={{ fontSize: '13px', padding: '8px 18px' }} variant="primary"
             >
               Go to Dashboard
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               onClick={() => signIn()}
               disabled={isLoading}
-              className="btn-secondary"
-              style={{ fontSize: '13px', padding: '8px 18px' }}
+              style={{ fontSize: '13px', padding: '8px 18px' }} variant="secondary"
             >
               {isLoading ? 'Connecting…' : 'Sign In'}
-            </button>
+            </Button>
           )}
         </div>
       </header>

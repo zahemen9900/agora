@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Play, ChevronRight, RotateCcw, X, ArrowRight, Search } from 'lucide-react';
 import type { TaskStatusResponse } from '../../lib/api';
+import { usePostHog } from "@posthog/react";
 
 // ─── Keyframes injected once ──────────────────────────────────────────────────
 const STYLE_ID = 'carousel-skeleton-keyframes';
@@ -121,6 +122,7 @@ interface CardProps {
 }
 
 function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps) {
+    const posthog = usePostHog();
   const navigate = useNavigate();
   const color = statusColor(task.status);
   const isActive = !isExample && isActiveStatus(task.status);
@@ -133,7 +135,7 @@ function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps
   return (
     <button
       type="button"
-      onClick={handleClick}
+      onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_action_clicked'); const handler = handleClick; if (typeof handler === 'function') (handler as any)(e); }}
       style={{
         flexShrink: 0,
         width: '220px',
@@ -244,6 +246,7 @@ interface AllTasksModalProps {
 }
 
 function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
+    const posthog = usePostHog();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
 
@@ -334,7 +337,7 @@ function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
               </p>
             </div>
             <button
-              onClick={onClose}
+              onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_close_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 background: 'none',
                 border: 'none',
@@ -384,7 +387,7 @@ function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
             {query && (
               <button
                 type="button"
-                onClick={() => setQuery('')}
+                onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_clear_search_clicked'); const handler = () => setQuery(''); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   background: 'none',
                   border: 'none',
@@ -435,10 +438,10 @@ function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
               <button
                 key={task.task_id}
                 type="button"
-                onClick={() => {
-                  onClose();
-                  navigate(`/task/${task.task_id}`);
-                }}
+                onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_action_clicked'); const handler = () => {
+                                                      onClose();
+                                                      navigate(`/task/${task.task_id}`);
+                                                    }; if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -521,6 +524,7 @@ export function RecentDeliberationsCarousel({
   onRefresh,
   isRefreshing = false,
 }: RecentDeliberationsCarouselProps) {
+    const posthog = usePostHog();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showAll, setShowAll] = useState(false);
 
@@ -554,7 +558,7 @@ export function RecentDeliberationsCarousel({
           {!isLoading && (
             <button
               type="button"
-              onClick={onRefresh}
+              onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_refresh_clicked'); const handler = onRefresh; if (typeof handler === 'function') (handler as any)(e); }}
               title="Refresh"
               style={{
                 background: 'none',
@@ -575,7 +579,7 @@ export function RecentDeliberationsCarousel({
           {hasRealTasks && !isLoading && (
             <button
               type="button"
-              onClick={() => setShowAll(true)}
+              onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_see_all_clicked'); const handler = () => setShowAll(true); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: 'flex',
                 alignItems: 'center',

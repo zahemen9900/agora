@@ -15,6 +15,7 @@ import {
 } from "../lib/apiKeyQueries";
 import { useAuth } from "../lib/useAuth";
 import { ApiKeyCarousel } from "../components/task/ApiKeyCarousel";
+import { usePostHog } from "@posthog/react";
 
 // ─── One-time reveal modal ────────────────────────────────────────────────────
 interface RevealModalProps {
@@ -23,6 +24,7 @@ interface RevealModalProps {
 }
 
 function RevealModal({ created, onDismiss }: RevealModalProps) {
+    const posthog = usePostHog();
   const FONT = "'Commit Mono', 'SF Mono', monospace";
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyTimeoutRef = useRef<number | null>(null);
@@ -126,7 +128,7 @@ function RevealModal({ created, onDismiss }: RevealModalProps) {
           {/* Copy button */}
           <button
             type="button"
-            onClick={handleCopy}
+            onClick={(e: any) => { posthog?.capture('apikeys_action_clicked'); const handler = handleCopy; if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
               padding: '12px', borderRadius: '10px',
@@ -145,7 +147,7 @@ function RevealModal({ created, onDismiss }: RevealModalProps) {
           {/* Dismiss — only way to close */}
           <button
             type="button"
-            onClick={onDismiss}
+            onClick={(e: any) => { posthog?.capture('apikeys_i_ve_saved_my_key_close_clicked'); const handler = onDismiss; if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               padding: '11px', borderRadius: '10px',
@@ -174,6 +176,7 @@ function RevealModal({ created, onDismiss }: RevealModalProps) {
 
 // ─── Main page ────────────────────────────────────────────────────────────────
 export function ApiKeys() {
+    const posthog = usePostHog();
   const { principal, user, workspace } = useAuth();
   const queryClient = useQueryClient();
   const apiKeyListQuery = useApiKeyListQuery();
@@ -385,7 +388,7 @@ export function ApiKeys() {
           <button
             type="button"
             disabled={submitting || !name.trim()}
-            onClick={handleCreate}
+            onClick={(e: any) => { posthog?.capture('apikeys_action_clicked'); const handler = handleCreate; if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0,
               padding: '11px 20px', borderRadius: '10px', border: 'none',
