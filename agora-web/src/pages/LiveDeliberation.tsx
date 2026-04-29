@@ -606,8 +606,7 @@ export function LiveDeliberation() {
     lockedClaims: [] as Array<Record<string, unknown>>,
   });
   const [finalAnswer, setFinalAnswer] = useTaskScopedState<FinalAnswerState | null>(taskId, null);
-  const [showQuorumFlyout, setShowQuorumFlyout] = useState(false);
-  const quorumFlyoutShownRef = useRef(false);
+  const [showQuorumFlyout, setShowQuorumFlyout] = useTaskScopedState<boolean>(taskId, false);
 
   const seenEventKeysRef = useRef<Set<string>>(new Set());
   const taskMechanismRef = useRef("debate");
@@ -625,13 +624,6 @@ export function LiveDeliberation() {
   useEffect(() => {
     injectLdKeyframes();
   }, []);
-
-  useEffect(() => {
-    if (finalAnswer && !quorumFlyoutShownRef.current) {
-      quorumFlyoutShownRef.current = true;
-      setShowQuorumFlyout(true);
-    }
-  }, [finalAnswer]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -746,6 +738,7 @@ export function LiveDeliberation() {
         confidence: safeNumber(data.confidence, 0),
         mechanism,
       });
+      setShowQuorumFlyout(true);
       return;
     }
 
@@ -780,6 +773,7 @@ export function LiveDeliberation() {
     queryClient,
     setErrorMessage,
     setFinalAnswer,
+    setShowQuorumFlyout,
     setRetryNotice,
     setSwitchBanner,
     setTimeline,
