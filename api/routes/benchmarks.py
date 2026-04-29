@@ -587,6 +587,9 @@ def _resolve_summary_block(payload: dict[str, Any]) -> dict[str, Any]:
     if _is_summary_block(direct_summary):
         return direct_summary
 
+    if _payload_has_any_runs(payload):
+        return direct_summary
+
     for stage_key in ("post_learning", "pre_learning", "learning_updates"):
         stage_payload = _as_dict(payload.get(stage_key))
         stage_summary = _as_dict(stage_payload.get("summary"))
@@ -1163,6 +1166,7 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
     cloned = dict(payload)
     summary = _resolve_summary_block(cloned)
     derived_summary = BenchmarkRunner._summarize_runs(_runs_for_summary(cloned))
+    prefer_derived_summary = _payload_has_any_runs(cloned)
     raw_per_mode = _as_dict(summary.get("per_mode"))
     raw_per_mechanism = _as_dict(summary.get("per_mechanism"))
     raw_per_category = _as_dict(summary.get("per_category"))
@@ -1175,8 +1179,12 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     per_mode_complete = _merge_metric_sections(
-        raw_per_mode or raw_per_mechanism,
-        derived_per_mode or derived_per_mechanism,
+        (derived_per_mode or derived_per_mechanism)
+        if prefer_derived_summary
+        else (raw_per_mode or raw_per_mechanism),
+        (raw_per_mode or raw_per_mechanism)
+        if prefer_derived_summary
+        else (derived_per_mode or derived_per_mechanism),
         metric_keys=(
             "accuracy",
             "run_count",
@@ -1192,8 +1200,12 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
         fallback_keys=_BENCHMARK_MECHANISMS,
     )
     per_mechanism_complete = _merge_metric_sections(
-        raw_per_mechanism or raw_per_mode,
-        derived_per_mechanism or derived_per_mode,
+        (derived_per_mechanism or derived_per_mode)
+        if prefer_derived_summary
+        else (raw_per_mechanism or raw_per_mode),
+        (raw_per_mechanism or raw_per_mode)
+        if prefer_derived_summary
+        else (derived_per_mechanism or derived_per_mode),
         metric_keys=(
             "accuracy",
             "run_count",
@@ -1208,10 +1220,21 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         fallback_keys=_BENCHMARK_MECHANISMS,
     )
-    per_category_complete = _merge_category_sections(raw_per_category, derived_per_category)
+    per_category_complete = _merge_category_sections(
+        derived_per_category if prefer_derived_summary else raw_per_category,
+        raw_per_category if prefer_derived_summary else derived_per_category,
+    )
     per_category_by_mechanism_complete = _merge_category_sections(
-        raw_per_category_by_mechanism,
-        derived_per_category_by_mechanism,
+        (
+            derived_per_category_by_mechanism
+            if prefer_derived_summary
+            else raw_per_category_by_mechanism
+        ),
+        (
+            raw_per_category_by_mechanism
+            if prefer_derived_summary
+            else derived_per_category_by_mechanism
+        ),
     )
 
     normalized_summary = dict(summary)
@@ -1229,6 +1252,9 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "failure_counts_by_reason",
         "failure_counts_by_stage",
     ):
+        if prefer_derived_summary:
+            normalized_summary[key] = derived_summary.get(key, normalized_summary.get(key))
+            continue
         if normalized_summary.get(key) in (None, {}, 0):
             normalized_summary[key] = derived_summary.get(key, normalized_summary.get(key))
     cloned["summary"] = normalized_summary
