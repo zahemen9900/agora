@@ -260,6 +260,21 @@ class LocalTaskStore:
                 break
         return tasks
 
+    async def list_all_tasks(self, limit: int = 500) -> list[dict[str, Any]]:
+        task_files = list(safe_child_path(self._agora_root, "users").glob("*/tasks/*.json"))
+        files = sorted(
+            task_files,
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        tasks: list[dict[str, Any]] = []
+        for file in files[:limit]:
+            task = self._read_json(file, allow_missing=True, operation="list_all_tasks.read_task")
+            if task is None:
+                continue
+            tasks.append(task)
+        return tasks
+
     async def append_event(self, workspace_id: str, task_id: str, event: dict[str, Any]) -> None:
         await self.append_events(workspace_id, task_id, [event])
 
@@ -584,6 +599,25 @@ class LocalTaskStore:
                 file,
                 allow_missing=True,
                 operation="list_user_test_results.read_test",
+            )
+            if result is None:
+                continue
+            results.append(result)
+        return results
+
+    async def list_all_user_test_results(self, limit: int = 500) -> list[dict[str, Any]]:
+        test_files = list(safe_child_path(self._agora_root, "users").glob("*/tests/*.json"))
+        files = sorted(
+            test_files,
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        results: list[dict[str, Any]] = []
+        for file in files[:limit]:
+            result = self._read_json(
+                file,
+                allow_missing=True,
+                operation="list_all_user_test_results.read_test",
             )
             if result is None:
                 continue
