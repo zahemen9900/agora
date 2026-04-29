@@ -129,6 +129,8 @@ function useTaskScopedState<T>(
   initialValue: T,
 ): [T, (value: SetStateAction<T>) => void] {
   const scopedTaskId = taskId ?? null;
+  const initialValueRef = useRef(initialValue);
+  initialValueRef.current = initialValue;
   const [state, setState] = useState<{ taskId: string | null; value: T }>(() => ({
     taskId: scopedTaskId,
     value: initialValue,
@@ -137,16 +139,21 @@ function useTaskScopedState<T>(
   const value = state.taskId === scopedTaskId ? state.value : initialValue;
   const setScopedState = useCallback((nextValue: SetStateAction<T>) => {
     setState((current) => {
-      const currentValue = current.taskId === scopedTaskId ? current.value : initialValue;
+      const currentValue = current.taskId === scopedTaskId
+        ? current.value
+        : initialValueRef.current;
       const resolvedValue = typeof nextValue === "function"
         ? (nextValue as (previous: T) => T)(currentValue)
         : nextValue;
+      if (current.taskId === scopedTaskId && Object.is(current.value, resolvedValue)) {
+        return current;
+      }
       return {
         taskId: scopedTaskId,
         value: resolvedValue,
       };
     });
-  }, [initialValue, scopedTaskId]);
+  }, [scopedTaskId]);
 
   return [value, setScopedState];
 }
