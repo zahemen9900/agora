@@ -239,3 +239,4 @@ node_modules
 .github/agents
 .vercel
 benchmarks/results/
+scratchpad

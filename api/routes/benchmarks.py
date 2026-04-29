@@ -30,7 +30,7 @@ from agora.runtime.model_policy import (
     resolve_reasoning_presets,
 )
 from agora.runtime.orchestrator import AgoraOrchestrator
-from api.auth import AuthenticatedUser, get_current_user, require_human_user
+from api.auth import AuthenticatedUser, get_current_user, require_scope
 from api.config import settings
 from api.coordination import StreamTicketRecord, get_coordination_backend
 from api.models import (
@@ -1231,11 +1231,11 @@ async def _resolve_aggregate_benchmark_summary_payload(
         if isinstance(artifact, dict)
     )
 
-    if user is not None and user.auth_method == "jwt" and user.user_id:
+    if user is not None and user.workspace_id:
         combined_artifacts.extend(
             artifact
             for artifact in await store.list_user_benchmark_artifacts(
-                user.user_id,
+                user.workspace_id,
                 limit=fetch_limit,
             )
             if isinstance(artifact, dict)
@@ -3123,6 +3123,14 @@ OptionalCurrentUser = Annotated[
 ]
 
 
+def _require_benchmark_scope(user: AuthenticatedUser, access: Literal["read", "write"]) -> None:
+    """Authorize benchmarks with new scopes while honoring existing task API keys."""
+
+    if f"benchmarks:{access}" in user.scopes or f"tasks:{access}" in user.scopes:
+        return
+    require_scope(user, f"benchmarks:{access}")
+
+
 @router.get("/benchmarks")
 async def get_benchmarks(
     user: OptionalCurrentUser,
@@ -3139,7 +3147,7 @@ async def get_benchmarks(
     if not admin_granted:
         if user is None:
             raise HTTPException(status_code=403, detail="Benchmark access denied")
-        require_human_user(user)
+        _require_benchmark_scope(user, "read")
 
     if aggregate:
         aggregate_limit = None if aggregate_window == "all" else _AGGREGATE_BENCHMARK_DEFAULT_LIMIT
@@ -3207,43 +3215,42 @@ async def get_benchmark_catalog(
     tests_recent: list[BenchmarkRunStatusResponse] = []
     tests_frequency: list[BenchmarkRunStatusResponse] = []
 
-    if user.auth_method == "jwt":
-        require_human_user(user)
-        user_artifacts = await store.list_user_benchmark_artifacts(user.workspace_id, limit=limit)
-        user_entries = [
-            entry
-            for artifact in user_artifacts
-            if isinstance(artifact, dict) and _is_catalog_eligible_artifact(artifact)
-            for entry in [_to_catalog_entry(artifact, default_scope="user")]
-            if entry is not None
-        ]
+    _require_benchmark_scope(user, "read")
+    user_artifacts = await store.list_user_benchmark_artifacts(user.workspace_id, limit=limit)
+    user_entries = [
+        entry
+        for artifact in user_artifacts
+        if isinstance(artifact, dict) and _is_catalog_eligible_artifact(artifact)
+        for entry in [_to_catalog_entry(artifact, default_scope="user")]
+        if entry is not None
+    ]
 
-        test_records = await store.list_user_test_results(user.workspace_id, limit=limit)
-        status_pairs = [
-            (status, _test_frequency_score(record))
-            for record in test_records
-            if isinstance(record, dict)
-            for status in [_to_run_status(record)]
-            if status is not None
-        ]
+    test_records = await store.list_user_test_results(user.workspace_id, limit=limit)
+    status_pairs = [
+        (status, _test_frequency_score(record))
+        for record in test_records
+        if isinstance(record, dict)
+        for status in [_to_run_status(record)]
+        if status is not None
+    ]
 
-        tests_recent = [
-            status
-            for status, _score in sorted(
-                status_pairs,
-                key=lambda pair: pair[0].updated_at,
-                reverse=True,
-            )
-        ]
-        tests_frequency = [
-            status
-            for status, score in sorted(
-                status_pairs,
-                key=lambda pair: (pair[1], pair[0].updated_at),
-                reverse=True,
-            )
-            if score > 0
-        ]
+    tests_recent = [
+        status
+        for status, _score in sorted(
+            status_pairs,
+            key=lambda pair: pair[0].updated_at,
+            reverse=True,
+        )
+    ]
+    tests_frequency = [
+        status
+        for status, score in sorted(
+            status_pairs,
+            key=lambda pair: (pair[1], pair[0].updated_at),
+            reverse=True,
+        )
+        if score > 0
+    ]
 
     global_recent = sorted(global_entries, key=lambda entry: entry.created_at, reverse=True)
     global_frequency = sorted(
@@ -3274,10 +3281,7 @@ async def get_benchmark_prompt_templates(
 ) -> BenchmarkPromptTemplatesResponse:
     """Return benchmark question templates grouped by domain for the run wizard."""
 
-    # Human sessions unlock user-scoped benchmark actions, but question template browsing
-    # can still be available to authenticated API key clients.
-    if user.auth_method == "jwt":
-        require_human_user(user)
+    _require_benchmark_scope(user, "read")
 
     return _domain_prompt_templates_response()
 
@@ -3288,8 +3292,7 @@ async def get_benchmark_runtime_config(
 ) -> DeliberationRuntimeConfigResponse:
     """Return frontend-safe runtime model defaults and catalog metadata."""
 
-    if user.auth_method == "jwt":
-        require_human_user(user)
+    _require_benchmark_scope(user, "read")
 
     return _deliberation_runtime_config_response()
 
@@ -3307,8 +3310,7 @@ async def _resolve_benchmark_detail(
     await _maybe_backfill_legacy_benchmarks()
     store = get_task_store()
 
-    if user.auth_method == "jwt":
-        require_human_user(user)
+    _require_benchmark_scope(user, "read")
 
     run_record = await store.get_user_test_result(user.workspace_id, benchmark_id)
     if run_record is None:
@@ -3443,7 +3445,7 @@ async def trigger_benchmark_run(
 ) -> BenchmarkRunResponse:
     """Trigger an async benchmark run and persist status in user test records."""
 
-    require_human_user(user)
+    _require_benchmark_scope(user, "write")
     store = get_task_store()
     stream = get_stream_manager()
     run_id = _build_run_id(user.workspace_id)
@@ -3509,7 +3511,7 @@ async def get_benchmark_run_status(
 ) -> BenchmarkRunStatusResponse:
     """Return status for a previously triggered user benchmark run."""
 
-    require_human_user(user)
+    _require_benchmark_scope(user, "read")
     store = get_task_store()
     record = await store.get_user_test_result(user.workspace_id, run_id)
     if record is None:
@@ -3528,7 +3530,7 @@ async def create_benchmark_stream_ticket(
 ) -> dict[str, str]:
     """Issue a short-lived ticket for benchmark EventSource authentication."""
 
-    require_human_user(user)
+    _require_benchmark_scope(user, "read")
     store = get_task_store()
     record = await store.get_user_test_result(user.workspace_id, run_id)
     if record is None:

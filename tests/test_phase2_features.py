@@ -638,7 +638,7 @@ async def test_benchmarks_route_allows_human_bearer_without_admin_token(
 
 
 @pytest.mark.asyncio
-async def test_benchmarks_route_rejects_api_key_principal_without_admin_token(
+async def test_benchmarks_route_accepts_api_key_principal_without_admin_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -674,8 +674,8 @@ async def test_benchmarks_route_rejects_api_key_principal_without_admin_token(
                 headers={"Authorization": "Bearer dummy"},
             )
 
-        assert response.status_code == 403
-        assert response.json()["detail"] == "Human authentication required"
+        assert response.status_code == 200
+        assert response.json()["summary"]["per_mode"]["selector"]["accuracy"] == 0.5
     finally:
         task_routes._store = None
 

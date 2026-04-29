@@ -5031,6 +5031,53 @@ async def test_benchmark_queued_detail_uses_request_agent_count_and_custom_quest
 
 
 @pytest.mark.asyncio
+async def test_api_key_can_trigger_and_view_benchmark_runs(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_execute_benchmark_run(**_kwargs: object) -> None:
+        return None
+
+    api_key_user = AuthenticatedUser(
+        auth_method="api_key",
+        workspace_id="user-1",
+        user_id=None,
+        email="",
+        display_name="CI key",
+        scopes=["tasks:read", "tasks:write"],
+        api_key_id="key-1",
+    )
+
+    app.dependency_overrides[auth.get_current_user] = lambda: api_key_user
+    monkeypatch.setattr(benchmark_routes, "_execute_benchmark_run", fake_execute_benchmark_run)
+
+    run_response = await client.post(
+        "/benchmarks/run",
+        json={
+            "training_per_category": 1,
+            "holdout_per_category": 1,
+            "agent_count": 4,
+            "live_agents": False,
+        },
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["run_id"]
+
+    status_response = await client.get(f"/benchmarks/runs/{run_id}")
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "queued"
+
+    detail_response = await client.get(f"/benchmarks/{run_id}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["run_id"] == run_id
+
+    catalog_response = await client.get("/benchmarks/catalog")
+    assert catalog_response.status_code == 200
+    catalog_payload = catalog_response.json()
+    assert any(entry["run_id"] == run_id for entry in catalog_payload["user_tests_recent"])
+
+
+@pytest.mark.asyncio
 async def test_benchmark_stream_replays_events_and_terminal_state(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

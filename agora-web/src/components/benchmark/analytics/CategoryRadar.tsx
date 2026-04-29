@@ -53,6 +53,7 @@ export function CategoryRadar({ data }: Props) {
     <ChartCard
       title="CATEGORY RADAR"
       subtitle="5-axis quality profile per benchmark domain. Hover to inspect."
+      tooltip="A 5-axis radar showing the quality profile of each benchmark domain. Accuracy = correct answers %. Cost-Efficiency = inverse of average run cost (higher is cheaper). Speed = inverse of average latency. Thinking Ratio = share of tokens spent on reasoning. Coverage = fraction of runs that produced a scorable answer. A larger polygon area indicates better overall performance."
     >
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", position: "relative" }}>
         <svg

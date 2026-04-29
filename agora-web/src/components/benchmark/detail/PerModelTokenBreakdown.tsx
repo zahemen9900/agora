@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CHART_FONT } from "../ChartCard";
+import { CHART_FONT, InfoTooltip } from "../ChartCard";
 import type { ModelTelemetryEntry } from "../../../lib/benchmarkMetrics";
 import { providerFromModel } from "../../../lib/modelProviders";
 import { ProviderGlyph } from "../../ProviderGlyph";
@@ -23,8 +23,11 @@ export function PerModelTokenBreakdown({ telemetry }: Props) {
 
   return (
     <div>
-      <div style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", marginBottom: "14px" }}>
-        Per-Model Token Breakdown
+      <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "14px" }}>
+        <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
+          Per-Model Token Breakdown
+        </span>
+        <InfoTooltip text="Token consumption per model for this run, split into input tokens (muted), thinking/reasoning tokens (amber), and output tokens (teal). Bar width scales relative to the highest-consuming model. Hover a segment to see the exact token count. Latency and estimated cost chips are shown per model on the right." />
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: "10px", position: "relative" }}>
         {entries.map(([model, e]) => {

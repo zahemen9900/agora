@@ -5,7 +5,7 @@ export type MechanismName = "debate" | "vote";
 export type TaskStatusName = "pending" | "in_progress" | "completed" | "failed" | "paid";
 export type PaymentStatusName = "locked" | "released" | "none";
 export type AuthMethodName = "jwt" | "api_key";
-export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "api_keys:read" | "api_keys:write";
+export type ApiKeyScopeName = "tasks:read" | "tasks:write" | "benchmarks:read" | "benchmarks:write" | "api_keys:read" | "api_keys:write";
 
 export interface ReasoningPresetOverrides {
   gemini_pro: "low" | "high" | null;
@@ -156,7 +156,7 @@ export interface PrincipalResponse {
   user_id: string | null;
   display_name: string;
   email: string;
-  scopes: Array<"tasks:read" | "tasks:write" | "api_keys:read" | "api_keys:write">;
+  scopes: Array<"tasks:read" | "tasks:write" | "benchmarks:read" | "benchmarks:write" | "api_keys:read" | "api_keys:write">;
   api_key_id: string | null;
 }
 
@@ -184,7 +184,7 @@ export interface ApiKeyMetadataResponse {
   workspace_id: string;
   name: string;
   public_id: string;
-  scopes: Array<"tasks:read" | "tasks:write" | "api_keys:read" | "api_keys:write">;
+  scopes: Array<"tasks:read" | "tasks:write" | "benchmarks:read" | "benchmarks:write" | "api_keys:read" | "api_keys:write">;
   created_by_user_id: string;
   created_at: string;
   last_used_at: string | null;

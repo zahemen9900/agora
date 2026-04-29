@@ -276,15 +276,16 @@ and promote alternates only after smoke-testing them in your own environment.
 
 ### Hosted benchmark runs
 
-Benchmarks are available through the SDK, but they use the benchmark API
-surface, which currently requires a human bearer token. Use a WorkOS-backed
-human session token here, not an Agora API key.
+Benchmarks use the same bearer-token flow as hosted tasks. Use an Agora API key
+for SDK, CI, notebooks, and server-side jobs; the run is persisted under that
+key's workspace, so it appears in the dashboard benchmark catalog for the same
+workspace.
 
 ```python
 from agora.sdk import AgoraArbitrator, HostedBenchmarkRunRequest, HostedTierModelOverrides
 
 
-arbitrator = AgoraArbitrator(auth_token="workos_or_human_bearer_token")
+arbitrator = AgoraArbitrator(auth_token="agora_live_or_test_api_key")
 run = await arbitrator.run_benchmark(
     HostedBenchmarkRunRequest(
         agent_count=4,
@@ -354,7 +355,7 @@ async with AgoraNode() as agora_node:
 - SDK, CI, notebooks, and server-side callers should use first-party Agora API keys.
 - Hosted mode keeps the same `auth_token=` interface, but the token should be an Agora API key such as `agora_live_<public_id>.<secret>` or `agora_test_<public_id>.<secret>` in non-production environments.
 - Strict hosted E2E should use a real staging API key, not a fabricated JWT.
-- Benchmark endpoints are the exception: they currently require a human bearer token and reject API-key principals.
+- Benchmark runs, status polling, detail fetches, and event streams accept the same API keys and workspace ownership model as tasks.
 
 ### Hosted API URL policy
 
@@ -372,5 +373,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a9`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a11`.
 - Preferred publish path is the trusted GitHub workflow in `.github/workflows/deploy-sdk.yml`.

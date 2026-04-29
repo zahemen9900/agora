@@ -53,6 +53,7 @@ export function SlopeGraph({ data }: Props) {
     <ChartCard
       title="PRE → POST ACCURACY SHIFT"
       subtitle="Per-category accuracy before and after bandit learning."
+      tooltip="Each line connects a category's accuracy before bandit learning (Pre) to its accuracy after learning (Post). Teal lines indicate improvement, rose lines indicate regression, muted lines mean no change. A dashed line means the category was already saturated at 100% before learning. The delta badge mid-line shows the exact percentage-point change."
     >
       <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", maxHeight: H, overflow: "visible" }}>
         {/* Axis labels */}

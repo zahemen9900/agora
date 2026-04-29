@@ -736,6 +736,7 @@ export function Benchmarks() {
             <ChartCard
               title="Scored Success Heatmap"
               subtitle="Executed mechanism success by category, with explicit sample counts. Creative and demo are proxy-scored; one-sample buckets are directional, not proof."
+              tooltip="Each cell shows the accuracy rate for one combination of task category (row) and deliberation mechanism (column). Darker teal = higher success rate. 'n=' is the number of scored runs in that cell — cells with n=1 are directional only. Proxy-scored categories (Creative, Demo) use heuristic evaluation rather than ground-truth comparison."
             >
               {overviewError ? (
                 <div style={{ padding: "32px 0", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>
@@ -775,6 +776,7 @@ export function Benchmarks() {
                 ? "Scored selector-stage success before and after the bandit learning phase."
                 : "Only validation artifacts with explicit pre/post stages can populate this curve honestly."
             }
+            tooltip="Shows how the bandit selector's accuracy changes after it has seen training examples. Pre-learning is measured on holdout questions before any updates; post-learning is measured after the bandit has updated its mechanism beliefs. A positive delta means the selector genuinely improved. 'Saturated' means it already scored 100% before learning — no room to improve numerically."
           >
             {!benchmarks && !overviewError ? (
               <SkeletonChartBlock h="220px" delay={0.1} />
@@ -866,6 +868,7 @@ export function Benchmarks() {
           <ChartCard
             title="Cost vs Quality Frontier"
             subtitle="Average cost against scored success per mechanism. Frontier points (emerald) are not dominated on both axes. Hover for details."
+            tooltip="Each point represents one deliberation mechanism. Emerald frontier points are not dominated — no other mechanism simultaneously costs less and scores higher. The Pareto frontier reveals which mechanisms give the best accuracy-for-cost trade-off. Hover a dot to see mechanism name, accuracy %, average cost, and whether it is on the frontier."
           >
             {!benchmarks && !overviewError ? (
               <SkeletonChartBlock h="250px" delay={0.2} />
