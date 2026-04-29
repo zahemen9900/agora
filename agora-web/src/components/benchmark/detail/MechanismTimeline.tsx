@@ -4,6 +4,7 @@ import type { MechanismTraceItem } from "../../../lib/benchmarkMetrics";
 const MECH_COLORS: Record<string, string> = {
   debate: "var(--accent-amber)",
   vote: "var(--accent-emerald)",
+  delphi: "#a78bfa",
   selector: "#818cf8",
 };
 
@@ -26,7 +27,7 @@ export function MechanismTimeline({ trace }: Props) {
         <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
           Mechanism Execution Timeline
         </span>
-        <InfoTooltip text="A horizontal swimlane showing which deliberation mechanism (debate or vote) was active during each round. Segment width is proportional to rounds spent in that mechanism. Switch reasons appear below when the selector changed strategy mid-run." />
+        <InfoTooltip text="A horizontal swimlane showing which deliberation mechanism (debate, vote, or delphi) was active during each round. Segment width is proportional to rounds spent in that mechanism. Switch reasons appear below when the selector changed strategy mid-run." />
       </div>
       <div style={{ display: "flex", alignItems: "stretch", gap: 0, borderRadius: "6px", overflow: "hidden", border: "1px solid var(--border-default)" }}>
         {trace.map((item, idx) => {

@@ -38,7 +38,7 @@ Why these first:
 
 ## Priority 0
 
-### 1. Resolved: public mechanism contract now rejects unsupported roadmap values
+### 1. Resolved: public mechanism contract now exposes the supported execution surface cleanly
 
 **Dispatch status**
 
@@ -46,9 +46,10 @@ Why these first:
 
 What changed:
 
-- Public API and SDK request/response types now expose only `debate|vote`.
+- Public API and SDK request/response types now expose `debate|vote|delphi`.
 - Task creation and execution reject unsupported mechanisms instead of silently rerouting them.
 - Selector/runtime execution paths no longer advertise unsupported execution coverage.
+- Delphi is now a real executable mechanism across runtime, API, SDK, and frontend contracts.
 
 What remains:
 
@@ -149,7 +150,7 @@ What still remains:
 - The `/benchmarks` summary payload is still intentionally loose and frontend-only helper shapes remain for that endpoint.
 - Some backend benchmark fields still use `dict[str, Any]`, which limits how precise the generated TypeScript can become.
 
-### 7. Internal placeholder/stub surfaces still exist and should stay clearly unsupported
+### 7. Remaining placeholder/stub surfaces should stay clearly unsupported
 
 **Dispatch status**
 
@@ -161,7 +162,6 @@ Some modules are still explicit placeholders. They are now documented more clear
 Evidence:
 
 - `agora/solana/client.py:21`
-- `agora/engines/delphi.py:8`
 - `agora/engines/moa.py:8`
 
 Why this matters:
@@ -171,8 +171,8 @@ Why this matters:
 
 Current status:
 
-- README and module docstrings now mark these as internal/unsupported placeholders.
-- They remain open because the code still ships with the stubs present.
+- README and module docstrings now mark the remaining placeholders as internal/unsupported.
+- `agora/engines/delphi.py` is no longer a placeholder; MoA and the SDK-side Solana client remain the meaningful stubs.
 
 ### 8. Resolved: selector package import cycle is gone
 

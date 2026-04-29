@@ -2,6 +2,8 @@ import { useState, useCallback } from 'react';
 import { SAMPLE_TRANSCRIPT } from '../../lib/sample-transcript';
 import { SAMPLE_ROOT } from '../../lib/sample-root';
 import { verifyReceipt, type VerifyStep } from '../../lib/merkle';
+import { usePostHog } from "@posthog/react";
+import { Button } from "../../components/ui/Button";
 
 /* ── Merkle tree SVG visualization ─────────────────────────────── */
 interface MerkleNodeState {
@@ -122,6 +124,7 @@ function MerkleTreeViz({
 type VerifyStatus = 'idle' | 'running' | 'done' | 'error';
 
 export function OnChainReceiptPreview() {
+    const posthog = usePostHog();
   const [status, setStatus] = useState<VerifyStatus>('idle');
   const [nodeState, setNodeState] = useState<MerkleNodeState>({
     leafLit: [false, false, false, false],
@@ -233,7 +236,7 @@ export function OnChainReceiptPreview() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <span className="hash-inline">{value}</span>
                     {action === 'copy' && (
-                      <button onClick={onAction} style={{ fontSize: '10px', color: 'var(--accent-emerald)', fontFamily: "'Commit Mono', monospace", cursor: 'pointer' }}>
+                      <button onClick={(e: any) => { posthog?.capture('onchainreceiptpreview_action_clicked'); const handler = onAction; if (typeof handler === 'function') (handler as any)(e); }} style={{ fontSize: '10px', color: 'var(--accent-emerald)', fontFamily: "'Commit Mono', monospace", cursor: 'pointer' }}>
                         {copied ? 'Copied!' : '[copy]'}
                       </button>
                     )}
@@ -273,14 +276,13 @@ export function OnChainReceiptPreview() {
 
           {/* Verify button + result */}
           <div style={{ textAlign: 'center' }}>
-            <button
+            <Button
               onClick={runVerify}
               disabled={status === 'running'}
-              className="btn-primary"
-              style={{ marginBottom: '12px', fontSize: '14px', opacity: status === 'running' ? 0.7 : 1 }}
+              style={{ marginBottom: '12px', fontSize: '14px', opacity: status === 'running' ? 0.7 : 1 }} variant="primary" trackingEvent="onchainreceiptpreview_action_clicked"
             >
               {status === 'running' ? '⟳ Computing SHA-256…' : '→ Verify Proof'}
-            </button>
+            </Button>
 
             {status === 'done' && verifyResult && (
               <div style={{

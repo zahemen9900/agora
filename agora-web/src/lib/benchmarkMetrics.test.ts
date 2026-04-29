@@ -193,6 +193,34 @@ test("overview accuracy data prefers actual executed mechanism category coverage
   assert.equal(math?.vote, 50);
 });
 
+test("overview accuracy data can surface delphi coverage when it is the executed mechanism", () => {
+  const summary = normalizeBenchmarkSummary(
+    {
+      per_category_by_mechanism: {
+        creative: {
+          delphi: {
+            accuracy: 0.75,
+            run_count: 4,
+            scored_run_count: 4,
+            proxy_run_count: 2,
+            avg_tokens: 20,
+            avg_thinking_tokens: 6,
+            avg_latency_ms: 40,
+            avg_estimated_cost_usd: 0.02,
+          },
+        },
+      },
+    },
+    null,
+  );
+
+  const rows = buildOverviewAccuracyData(summary);
+  const creative = rows.find((row) => row.category === "Creative");
+  assert.equal(creative?.delphi, 75);
+  assert.equal(creative?.debate, null);
+  assert.equal(creative?.vote, null);
+});
+
 test("overview derives actual mechanism category coverage from validation payloads", () => {
   const summary = normalizeBenchmarkSummary(
     {

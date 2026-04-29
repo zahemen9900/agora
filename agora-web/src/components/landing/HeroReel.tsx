@@ -655,7 +655,7 @@ export function HeroReel() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
           >
-            AI agents<br />debate,<br />vote &amp;<br />prove it.
+            AI agents<br />debate,<br />revise, vote<br />&amp; prove it.
           </motion.h1>
 
           <motion.p
@@ -665,8 +665,8 @@ export function HeroReel() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.35, ease: [0.16, 1, 0.3, 1] }}
           >
-            An on-chain orchestration primitive where AI agents debate, vote, and reach
-            consensus — with every step cryptographically verified on Solana.
+            An on-chain orchestration primitive where AI agents debate, iterate through Delphi,
+            vote, and reach consensus — with every step cryptographically verified on Solana.
           </motion.p>
 
           <motion.div
@@ -680,7 +680,7 @@ export function HeroReel() {
               size="md"
               onClick={() => isAuthenticated ? navigate('/tasks') : signIn()}
               disabled={!isAuthenticated && isLoading}
-              rightIcon={<ArrowRight size={16} />}
+              rightIcon={<ArrowRight size={16} />} trackingEvent="heroreel_action_clicked"
             >
               {isAuthenticated ? 'Enter Dashboard' : isLoading ? 'Connecting…' : 'Launch App'}
             </Button>
@@ -689,7 +689,7 @@ export function HeroReel() {
                 variant="secondary"
                 size="md"
                 onClick={() => signUp()}
-                disabled={isLoading}
+                disabled={isLoading} trackingEvent="heroreel_action_clicked"
               >
                 {isLoading ? 'Loading…' : 'Create Account'}
               </Button>

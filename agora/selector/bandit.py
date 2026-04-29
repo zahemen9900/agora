@@ -23,12 +23,13 @@ class ThompsonSamplingSelector:
         """Initialize bandit arms with uniform priors.
 
         Args:
-            mechanisms: Supported mechanisms. Defaults to debate and vote.
+            mechanisms: Supported mechanisms. Defaults to debate, vote, and delphi.
         """
 
         self.mechanisms: list[MechanismType] = mechanisms or [
             MechanismType.DEBATE,
             MechanismType.VOTE,
+            MechanismType.DELPHI,
         ]
         self._lock = threading.RLock()
         self.arms: dict[tuple[MechanismType, str], BanditArm] = {}

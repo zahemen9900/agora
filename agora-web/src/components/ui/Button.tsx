@@ -1,4 +1,5 @@
 import React, { type ButtonHTMLAttributes, forwardRef } from 'react';
+import { usePostHog } from '@posthog/react';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'ghost' | 'glow' | 'danger';
@@ -6,6 +7,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   isLoading?: boolean;
   leftIcon?: React.ReactNode;
   rightIcon?: React.ReactNode;
+  trackingEvent?: string;
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
@@ -19,10 +21,23 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       rightIcon,
       children,
       disabled,
+      trackingEvent,
+      onClick,
       ...props
     },
     ref
   ) => {
+    const posthog = usePostHog();
+
+    const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+      if (trackingEvent) {
+        posthog?.capture(trackingEvent);
+      }
+      if (onClick) {
+        onClick(e);
+      }
+    };
+
     const baseClasses =
       'group relative inline-flex items-center justify-center font-sans font-semibold outline-none transition-all duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden rounded-full';
 
@@ -70,6 +85,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         className={`${baseClasses} ${sizeClasses[size]} ${className}`}
         style={{ ...variantStyles[variant], ...sizeStyles[size] }}
         disabled={disabled || isLoading}
+        onClick={(e: any) => { posthog?.capture('button_action_clicked'); const handler = handleClick; if (typeof handler === 'function') (handler as any)(e); }}
         {...props}
       >
         <span className="relative z-10 inline-flex items-center gap-2.5">

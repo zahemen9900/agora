@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
+import { Button } from "../../components/ui/Button";
 
 /* ── Types ──────────────────────────────────────────────────────── */
 export type Faction = 'pro' | 'opp' | 'da';
@@ -534,13 +535,12 @@ export function LiveDeliberationPreview({ reducedMotion = false }: LiveDeliberat
           {/* Replay button */}
           {showReplay && (
             <div style={{ textAlign: 'center', marginTop: '24px', animation: 'phase-fade-in 0.4s ease' }}>
-              <button
+              <Button
                 onClick={startReplay}
-                className="btn-secondary"
-                style={{ fontSize: '12px', padding: '8px 20px' }}
+                style={{ fontSize: '12px', padding: '8px 20px' }} variant="secondary"
               >
                 ↺ Replay Deliberation
-              </button>
+              </Button>
             </div>
           )}
         </div>

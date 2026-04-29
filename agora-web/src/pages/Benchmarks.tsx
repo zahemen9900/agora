@@ -54,8 +54,11 @@ import {
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
+import { usePostHog } from "@posthog/react";
+import { Button } from "../components/ui/Button";
 
 type CatalogSortMode = "recent" | "frequency";
+type ParetoPoint = ReturnType<typeof buildOverviewParetoData>[number];
 
 function normalizeText(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
@@ -217,7 +220,7 @@ function ParetoTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ payload?: { mechanism: string; avgCostUsd: number | null; accuracy: number | null; avgTokens: number; scoredRunCount: number; frontier: boolean } }>;
+  payload?: ReadonlyArray<{ payload?: ParetoPoint }>;
 }) {
   const point = payload?.[0]?.payload;
   if (!active || !point) {
@@ -280,7 +283,7 @@ function BenchmarkHeatmap({ rows }: { rows: BenchmarkHeatmapRow[] }) {
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: "120px repeat(3, minmax(0, 1fr))", gap: "8px", marginBottom: "8px" }}>
           <div />
-          {["Debate", "Vote", "Selector"].map((label) => (
+          {["Debate", "Vote", "Delphi"].map((label) => (
             <div key={label} style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", textAlign: "center" }}>
               {label}
             </div>
@@ -391,6 +394,7 @@ function SectionHeader({ label, count, countColor }: { label: string; count: num
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export function Benchmarks() {
+    const posthog = usePostHog();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("latest");
@@ -415,11 +419,13 @@ export function Benchmarks() {
   const [benchmarkAgentCount, setBenchmarkAgentCount] = useState(4);
   const [trainingPerCategory, setTrainingPerCategory] = useState(1);
   const [holdoutPerCategory, setHoldoutPerCategory] = useState(1);
-  const [reasoningPresets, setReasoningPresets] = useState<ReasoningPresetState>(
-    DEFAULT_REASONING_PRESETS,
+  const defaultReasoningPresets = useMemo(
+    () => runtimeConfig ? resolveDefaultReasoningPresets(runtimeConfig) : DEFAULT_REASONING_PRESETS,
+    [runtimeConfig],
   );
+  const [reasoningPresetOverrides, setReasoningPresetOverrides] = useState<ReasoningPresetState | null>(null);
+  const reasoningPresets = reasoningPresetOverrides ?? defaultReasoningPresets;
   const [tierModelOverrides, setTierModelOverrides] = useState<TierModelOverrideState>({});
-  const [runtimeDefaultsHydrated, setRuntimeDefaultsHydrated] = useState(false);
   const [domainPromptSelection, setDomainPromptSelection] = useState<
     Partial<Record<BenchmarkDomainName, DomainPromptSelection>>
   >({});
@@ -429,13 +435,6 @@ export function Benchmarks() {
     const frame = window.requestAnimationFrame(() => setChartsReady(true));
     return () => window.cancelAnimationFrame(frame);
   }, []);
-  useEffect(() => {
-    if (!runtimeConfig || runtimeDefaultsHydrated) {
-      return;
-    }
-    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
-    setRuntimeDefaultsHydrated(true);
-  }, [runtimeConfig, runtimeDefaultsHydrated]);
 
   const finalizeDomainSelection = useCallback(
     (
@@ -905,13 +904,21 @@ export function Benchmarks() {
                       />
                       <ZAxis dataKey="scoredRunCount" range={[80, 200]} />
                       <Tooltip
-                        content={(props) => <ParetoTooltip active={props.active} payload={props.payload as any} />}
+                        content={(props) => (
+                          <ParetoTooltip
+                            active={props.active}
+                            payload={props.payload as unknown as ReadonlyArray<{ payload?: ParetoPoint }> | undefined}
+                          />
+                        )}
                         cursor={{ fill: "rgba(255,255,255,0.025)" }}
                       />
                       <Scatter
                         data={paretoData}
-                        shape={(props: any) => {
-                          const { cx, cy, payload } = props;
+                        shape={(props) => {
+                          const { cx, cy, payload } = props as { cx?: number; cy?: number; payload?: ParetoPoint };
+                          if (typeof cx !== "number" || typeof cy !== "number" || !payload) {
+                            return <g />;
+                          }
                           if (payload.frontier) {
                             return (
                               <g>
@@ -978,9 +985,9 @@ export function Benchmarks() {
                 Configure benchmark questions per domain, trigger a run, and persist rich artifacts in global and user-specific cloud paths.
               </p>
             </div>
-            <button type="button" className="btn-primary" onClick={openWizard}>
+            <Button type="button" onClick={openWizard} variant="primary" trackingEvent="benchmarks_configure_and_run_clicked">
               Configure and Run
-            </button>
+            </Button>
           </div>
 
           {featuredBenchmarkRun && (
@@ -1021,7 +1028,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => void benchmarkCatalogQuery.refetch()}
+                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1030,7 +1037,7 @@ export function Benchmarks() {
               <FilterButton value={yourSortMode} onChange={setYourSortMode} />
               <button
                 type="button"
-                onClick={() => navigate("/benchmarks/all")}
+                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1121,7 +1128,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => void benchmarkCatalogQuery.refetch()}
+                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1130,7 +1137,7 @@ export function Benchmarks() {
               <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
               <button
                 type="button"
-                onClick={() => navigate("/benchmarks/all")}
+                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1185,7 +1192,7 @@ export function Benchmarks() {
           holdoutPerCategory={holdoutPerCategory}
           onHoldoutChange={setHoldoutPerCategory}
           reasoningPresets={reasoningPresets}
-          onPresetsChange={setReasoningPresets}
+          onPresetsChange={setReasoningPresetOverrides}
           runtimeConfig={runtimeConfig}
           tierModelOverrides={tierModelOverrides}
           onTierModelOverridesChange={setTierModelOverrides}
@@ -1219,6 +1226,7 @@ const MODE_LABELS: Record<BenchmarkOverviewMode, string> = {
 };
 
 function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onChange: (v: BenchmarkOverviewMode) => void }) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1239,7 +1247,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1268,7 +1276,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
             <button
               key={option}
               type="button"
-              onClick={() => { onChange(option); setOpen(false); }}
+              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",
@@ -1291,6 +1299,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
 }
 
 function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (value: CatalogSortMode) => void }) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1307,7 +1316,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1337,7 +1346,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
             <button
               key={option}
               type="button"
-              onClick={() => { onChange(option); setOpen(false); }}
+              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",

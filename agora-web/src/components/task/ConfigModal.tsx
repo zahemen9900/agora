@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { X, HelpCircle, ChevronDown } from 'lucide-react';
 import { ProviderGlyph } from '../ProviderGlyph';
 import { TierModelSelectorGrid } from '../TierModelSelectorGrid';
+import type { MechanismName } from '../../lib/api';
 import type { ProviderName } from '../../lib/modelProviders';
 import {
   buildReasoningControlDefinitions,
@@ -10,6 +11,7 @@ import {
   type ReasoningPresetState,
   type TierModelOverrideState,
 } from '../../lib/deliberationConfig';
+import { usePostHog } from "@posthog/react";
 
 function ProviderLogo({ provider, size = 20 }: { provider: string; size?: number }) {
   return (
@@ -21,6 +23,7 @@ function ProviderLogo({ provider, size = 20 }: { provider: string; size?: number
 
 // ─── Stakes tooltip ───────────────────────────────────────────────────────────
 function StakesTooltip() {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   return (
     <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
@@ -35,7 +38,7 @@ function StakesTooltip() {
           background: 'none', border: 'none', cursor: 'pointer',
           padding: '2px', color: 'var(--text-tertiary)',
           display: 'flex', alignItems: 'center',
-        }}
+        }} onClick={() => posthog?.capture('configmodal_stakes_help_clicked')}
       >
         <HelpCircle size={13} />
       </button>
@@ -134,6 +137,8 @@ function SwarmDiagram({ agentCount }: { agentCount: number }) {
 interface ConfigModalProps {
   open: boolean;
   onClose: () => void;
+  mechanismOverride: MechanismName | "auto";
+  onMechanismOverrideChange: (next: MechanismName | "auto") => void;
   reasoningPresets: ReasoningPresetState;
   onPresetsChange: (next: ReasoningPresetState) => void;
   agentCount: number;
@@ -149,6 +154,8 @@ interface ConfigModalProps {
 export function ConfigModal({
   open,
   onClose,
+  mechanismOverride,
+  onMechanismOverrideChange,
   reasoningPresets,
   onPresetsChange,
   agentCount,
@@ -160,6 +167,7 @@ export function ConfigModal({
   tierModelOverrides,
   onTierModelOverridesChange,
 }: ConfigModalProps) {
+    const posthog = usePostHog();
   const [activeTab, setActiveTab] = useState<TabId>('Effort & Stakes');
   const reasoningDefinitions = buildReasoningControlDefinitions(runtimeConfig, tierModelOverrides);
 
@@ -215,7 +223,7 @@ export function ConfigModal({
             Configure
           </div>
           <button
-            onClick={onClose}
+            onClick={(e: any) => { posthog?.capture('configmodal_close_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }}
             aria-label="Close"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '4px', display: 'flex', alignItems: 'center' }}
           >
@@ -234,7 +242,7 @@ export function ConfigModal({
           {TABS.map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => setActiveTab(tab); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 background: 'none',
                 border: 'none',
@@ -263,6 +271,58 @@ export function ConfigModal({
           {activeTab === 'Effort & Stakes' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
+              {/* Mechanism override */}
+              <div>
+                <div style={{
+                  fontSize: '11px', fontFamily: "'Commit Mono', monospace",
+                  color: 'var(--text-tertiary)', textTransform: 'uppercase',
+                  letterSpacing: '0.08em', marginBottom: '12px',
+                }}>
+                  Mechanism Override
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: '8px' }}>
+                  {[
+                    { value: 'auto', label: 'Auto' },
+                    { value: 'debate', label: 'Debate' },
+                    { value: 'vote', label: 'Vote' },
+                    { value: 'delphi', label: 'Delphi' },
+                  ].map((option) => {
+                    const active = mechanismOverride === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onMechanismOverrideChange(option.value as MechanismName | "auto"); if (typeof handler === 'function') (handler as any)(e); }}
+                        style={{
+                          padding: '10px 0',
+                          borderRadius: '10px',
+                          border: `1px solid ${active ? 'var(--accent-emerald)' : 'var(--border-default)'}`,
+                          background: active ? 'rgba(34,211,138,0.08)' : 'var(--bg-base)',
+                          color: active ? 'var(--accent-emerald)' : 'var(--text-secondary)',
+                          fontSize: '11px',
+                          fontFamily: "'Commit Mono', monospace",
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.06em',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{
+                  marginTop: '8px',
+                  fontSize: '10px',
+                  color: 'var(--text-tertiary)',
+                  fontFamily: "'Commit Mono', monospace",
+                  lineHeight: 1.5,
+                }}>
+                  Auto lets the selector choose. Delphi is best for high-disagreement questions that benefit from anonymous revision.
+                </div>
+              </div>
+
               {/* Stakes */}
               <div>
                 <div style={{
@@ -278,7 +338,7 @@ export function ConfigModal({
                     <button
                       key={val}
                       type="button"
-                      onClick={() => onStakesChange(val)}
+                      onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onStakesChange(val); if (typeof handler === 'function') (handler as any)(e); }}
                       style={{
                         padding: '6px 14px',
                         borderRadius: '100px',
@@ -388,7 +448,7 @@ export function ConfigModal({
                             <button
                               key={opt.value}
                               type="button"
-                              onClick={() => onPresetsChange({ ...reasoningPresets, [def.id]: opt.value } as ReasoningPresetState)}
+                              onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onPresetsChange({ ...reasoningPresets, [def.id]: opt.value } as ReasoningPresetState); if (typeof handler === 'function') (handler as any)(e); }}
                               style={{
                                 flex: 1,
                                 padding: '5px 0',
@@ -462,7 +522,7 @@ export function ConfigModal({
                     <button
                       key={n}
                       type="button"
-                      onClick={() => onAgentCountChange(n)}
+                      onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onAgentCountChange(n); if (typeof handler === 'function') (handler as any)(e); }}
                       style={{
                         flex: 1,
                         padding: '12px 0',
@@ -584,7 +644,7 @@ export function ConfigModal({
           )}
           <button
             type="button"
-            onClick={stakesOverLimit ? undefined : onClose}
+            onClick={(e: any) => { posthog?.capture('configmodal_done_clicked'); const handler = stakesOverLimit ? undefined : onClose; if (typeof handler === 'function') (handler as any)(e); }}
             disabled={stakesOverLimit}
             style={{
               padding: '9px 22px',

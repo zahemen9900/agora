@@ -80,7 +80,7 @@ _BENCHMARK_DOMAIN_ORDER: tuple[BenchmarkDomainName, ...] = (
     "creative",
     "demo",
 )
-_BENCHMARK_MECHANISMS = ("debate", "vote", "selector")
+_BENCHMARK_MECHANISMS = ("debate", "vote", "delphi", "selector")
 
 _BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
     "math": [
@@ -1587,7 +1587,20 @@ def _infer_benchmark_item_status_from_event(
     if explicit in {"queued", "running", "completed", "failed", "degraded"}:
         return explicit
 
-    if event_type in {"agent_output_delta", "agent_output", "usage_delta", "thinking_delta", "cross_examination", "cross_examination_delta", "convergence_update", "mechanism_selected", "mechanism_switch", "provider_retrying"}:
+    if event_type in {
+        "agent_output_delta",
+        "agent_output",
+        "usage_delta",
+        "thinking_delta",
+        "cross_examination",
+        "cross_examination_delta",
+        "convergence_update",
+        "delphi_feedback",
+        "delphi_finalize",
+        "mechanism_selected",
+        "mechanism_switch",
+        "provider_retrying",
+    }:
         return "running"
 
     if event_type == "domain_progress":

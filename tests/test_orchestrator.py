@@ -626,17 +626,54 @@ async def test_mechanism_override_pins_vote_without_switch(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mechanism_override_rejects_unsupported_mechanism() -> None:
-    """Unsupported mechanism overrides should fail explicitly."""
+async def test_mechanism_override_executes_delphi_when_supported() -> None:
+    """Explicit Delphi overrides should dispatch to the Delphi engine."""
 
     orchestrator = AgoraOrchestrator(agent_count=3)
 
-    with pytest.raises(ValueError) as exc_info:
-        await orchestrator.run("force unsupported", mechanism_override=MechanismType.DELPHI)
+    expected = DeliberationResult(
+        task="force delphi",
+        mechanism_used=MechanismType.DELPHI,
+        mechanism_selection=make_selection(
+            mechanism=MechanismType.DELPHI,
+            topic_category="reasoning",
+        ),
+        final_answer="Delphi answer",
+        confidence=0.77,
+        quorum_reached=True,
+        round_count=2,
+        agent_count=3,
+        mechanism_switches=0,
+        merkle_root="delphi-root",
+        transcript_hashes=["h1", "h2", "h3"],
+        agent_models_used=[VOTE_TEST_MODEL],
+        model_token_usage={VOTE_TEST_MODEL: 9},
+        model_latency_ms={VOTE_TEST_MODEL: 3.0},
+        model_input_token_usage={VOTE_TEST_MODEL: 4},
+        model_output_token_usage={VOTE_TEST_MODEL: 3},
+        model_thinking_token_usage={VOTE_TEST_MODEL: 2},
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=9,
+        input_tokens_used=4,
+        output_tokens_used=3,
+        thinking_tokens_used=2,
+        total_latency_ms=3.0,
+        timestamp=datetime.now(UTC),
+    )
 
-    message = str(exc_info.value)
-    assert "not currently supported" in message
-    assert "debate, vote" in message
+    class _FakeDelphiEngine:
+        async def run(self, task: str, selection, **_kwargs):
+            assert task == "force delphi"
+            assert selection.mechanism == MechanismType.DELPHI
+            return expected
+
+    orchestrator.delphi_engine = _FakeDelphiEngine()
+
+    result = await orchestrator.run("force delphi", mechanism_override=MechanismType.DELPHI)
+
+    assert result.mechanism_used == MechanismType.DELPHI
+    assert result.final_answer == "Delphi answer"
 
 
 @pytest.mark.asyncio
