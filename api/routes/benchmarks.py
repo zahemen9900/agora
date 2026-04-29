@@ -7,10 +7,12 @@ import hashlib
 import json
 import re
 from collections import Counter
-from datetime import UTC, datetime
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
@@ -61,6 +63,7 @@ from api.streaming import DeliberationStream, get_stream_manager
 from benchmarks.runner import BenchmarkRunner
 
 router = APIRouter()
+logger = structlog.get_logger(__name__)
 _optional_bearer = HTTPBearer(auto_error=False)
 OptionalBearerCredentials = Annotated[
     HTTPAuthorizationCredentials | None,
@@ -244,6 +247,125 @@ def _get_legacy_backfill_lock() -> asyncio.Lock:
 
 def _benchmark_stream_key(workspace_id: str, run_id: str) -> str:
     return f"benchmark:{workspace_id}:{run_id}"
+
+
+def _benchmark_run_key(workspace_id: str, run_id: str) -> str:
+    return f"benchmark-run:{workspace_id}:{run_id}"
+
+
+def _track_background_benchmark_run(run_id: str, task: asyncio.Task[None]) -> None:
+    _background_benchmark_runs[run_id] = task
+
+    def _cleanup(finished: asyncio.Task[None]) -> None:
+        current = _background_benchmark_runs.get(run_id)
+        if current is finished:
+            _background_benchmark_runs.pop(run_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def _launch_background_benchmark_run(
+    *,
+    workspace_id: str,
+    run_id: str,
+    request: BenchmarkRunRequest,
+) -> None:
+    existing = _background_benchmark_runs.get(run_id)
+    if existing is not None and not existing.done():
+        return
+
+    async def _runner() -> None:
+        try:
+            await _execute_benchmark_run(
+                workspace_id=workspace_id,
+                run_id=run_id,
+                request=request,
+            )
+        except Exception:
+            logger.exception(
+                "background_benchmark_run_failed",
+                workspace_id=workspace_id,
+                run_id=run_id,
+            )
+
+    _track_background_benchmark_run(run_id, asyncio.create_task(_runner()))
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = datetime.fromisoformat(stripped.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+async def resume_stale_background_benchmark_runs(
+    *,
+    stale_after_seconds: int,
+    limit: int,
+) -> int:
+    """Relaunch queued or stale running benchmark jobs from persisted state."""
+
+    store = get_task_store()
+    if not hasattr(store, "list_all_user_test_results"):
+        return 0
+
+    records = await store.list_all_user_test_results(limit=limit)
+    stale_before = datetime.now(UTC) - timedelta(seconds=max(1, stale_after_seconds))
+    relaunched = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("kind") or "").strip().lower() != "benchmark":
+            continue
+        workspace_id = str(record.get("workspace_id") or "").strip()
+        run_id = str(record.get("run_id") or "").strip()
+        status = str(record.get("status") or "").strip().lower()
+        if not workspace_id or not run_id or status not in {"queued", "running"}:
+            continue
+        updated_at = _parse_timestamp(record.get("updated_at"))
+        should_resume = status == "queued" or updated_at is None or updated_at <= stale_before
+        if not should_resume:
+            continue
+        request_payload = record.get("request")
+        if not isinstance(request_payload, dict):
+            logger.warning(
+                "resume_stale_background_benchmark_missing_request",
+                workspace_id=workspace_id,
+                run_id=run_id,
+            )
+            continue
+        try:
+            request = BenchmarkRunRequest.model_validate(request_payload)
+        except ValidationError:
+            logger.exception(
+                "resume_stale_background_benchmark_invalid_request",
+                workspace_id=workspace_id,
+                run_id=run_id,
+            )
+            continue
+        logger.info(
+            "resume_stale_background_benchmark_run",
+            workspace_id=workspace_id,
+            run_id=run_id,
+            status=status,
+            updated_at=record.get("updated_at"),
+        )
+        _launch_background_benchmark_run(
+            workspace_id=workspace_id,
+            run_id=run_id,
+            request=request,
+        )
+        relaunched += 1
+
+    return relaunched
 
 
 async def _issue_benchmark_stream_ticket(workspace_id: str, run_id: str) -> dict[str, str]:
@@ -2788,6 +2910,63 @@ async def _execute_benchmark_run(
 ) -> None:
     store = get_task_store()
     stream = get_stream_manager()
+    backend = get_coordination_backend()
+    run_key = _benchmark_run_key(workspace_id, run_id)
+    lease = await backend.acquire_run_lock(
+        run_key,
+        ttl_seconds=settings.task_run_lock_ttl_seconds,
+    )
+    if lease is None:
+        logger.info(
+            "benchmark_run_already_active",
+            workspace_id=workspace_id,
+            run_id=run_id,
+            run_key=run_key,
+        )
+        return
+
+    heartbeat_stop = asyncio.Event()
+    current_lease = lease
+    lease_lost = False
+    run_lock_released = False
+
+    async def _run_lock_heartbeat() -> None:
+        nonlocal current_lease, lease_lost
+        interval_seconds = max(1.0, min(30.0, settings.task_run_lock_ttl_seconds / 3))
+        while True:
+            try:
+                await asyncio.wait_for(heartbeat_stop.wait(), timeout=interval_seconds)
+                return
+            except TimeoutError:
+                refreshed = await backend.refresh_run_lock(
+                    run_key,
+                    lease_id=current_lease.lease_id,
+                    ttl_seconds=settings.task_run_lock_ttl_seconds,
+                )
+                if refreshed is None:
+                    lease_lost = True
+                    logger.error(
+                        "benchmark_run_lock_lost",
+                        workspace_id=workspace_id,
+                        run_id=run_id,
+                        run_key=run_key,
+                    )
+                    heartbeat_stop.set()
+                    return
+                current_lease = refreshed
+
+    heartbeat_task = asyncio.create_task(_run_lock_heartbeat())
+
+    async def _release_run_lock_once() -> None:
+        nonlocal run_lock_released
+        if run_lock_released:
+            return
+        heartbeat_stop.set()
+        with suppress(asyncio.CancelledError, Exception):
+            await heartbeat_task
+        await backend.release_run_lock(run_key, lease_id=current_lease.lease_id)
+        run_lock_released = True
+
     updated_at = datetime.now(UTC).isoformat()
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
     resolved_domain_prompts = _resolved_domain_prompts(request)
@@ -2856,6 +3035,8 @@ async def _execute_benchmark_run(
         runner = BenchmarkRunner(orchestrator, agents=agents)
 
         async def emit_progress(event_type: str, event_data: dict[str, Any]) -> None:
+            if lease_lost:
+                raise RuntimeError("Benchmark execution lease lost")
             running_record_state.update(
                 {
                     "run_id": run_id,
@@ -2903,6 +3084,8 @@ async def _execute_benchmark_run(
             )
 
         async def emit_live_event(event_type: str, event_data: dict[str, Any]) -> None:
+            if lease_lost:
+                raise RuntimeError("Benchmark execution lease lost")
             await _persist_and_emit_benchmark_event(
                 store=store,
                 stream=stream,
@@ -3076,6 +3259,7 @@ async def _execute_benchmark_run(
         )
         await event_journal.close()
         await state_writer.close()
+        await _release_run_lock_once()
         await stream.close(_benchmark_stream_key(workspace_id, run_id))
     except Exception as exc:
         failed_at = datetime.now(UTC).isoformat()
@@ -3118,6 +3302,7 @@ async def _execute_benchmark_run(
                 "stage": next(iter(failure_counts_by_stage.keys()), None),
             },
         )
+        await _release_run_lock_once()
         await stream.close(_benchmark_stream_key(workspace_id, run_id))
 
 
@@ -3500,15 +3685,11 @@ async def trigger_benchmark_run(
         event_data={"run_id": run_id, "status": "queued"},
     )
 
-    task = asyncio.create_task(
-        _execute_benchmark_run(
-            workspace_id=user.workspace_id,
-            run_id=run_id,
-            request=request,
-        )
+    _launch_background_benchmark_run(
+        workspace_id=user.workspace_id,
+        run_id=run_id,
+        request=request,
     )
-    _background_benchmark_runs[run_id] = task
-    task.add_done_callback(lambda _finished: _background_benchmark_runs.pop(run_id, None))
 
     return BenchmarkRunResponse(
         run_id=run_id,
