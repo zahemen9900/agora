@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceLine, ResponsiveContainer } from "recharts";
 import { CHART_FONT, InfoTooltip } from "../ChartCard";
 import type { RawBenchmarkRun } from "../../../lib/benchmarkMetrics";
+import { usePostHog } from "@posthog/react";
 
 const GRAD_ID = "entropyGrad";
 
@@ -10,6 +11,7 @@ interface Props {
 }
 
 export function ConvergenceEntropyRiver({ runs }: Props) {
+    const posthog = usePostHog();
   const [activeIdx, setActiveIdx] = useState(0);
   if (runs.length === 0) return null;
 
@@ -39,7 +41,7 @@ export function ConvergenceEntropyRiver({ runs }: Props) {
             {runs.map((r, i) => (
               <button
                 key={i}
-                onClick={() => setActiveIdx(i)}
+                onClick={(e: any) => { posthog?.capture('convergenceentropyriver_action_clicked'); const handler = () => setActiveIdx(i); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   fontFamily: CHART_FONT, fontSize: "8px", padding: "3px 7px", borderRadius: "4px",
                   border: "1px solid var(--border-default)", cursor: "pointer",

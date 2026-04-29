@@ -5,10 +5,11 @@ import { BENCHMARK_DOMAIN_KEYS } from "../../../lib/benchmarkMetrics";
 const W = 120;
 const H = 70;
 const SAMPLES = 60;
-const MECHANISMS = ["debate", "vote"] as const;
+const MECHANISMS = ["debate", "vote", "delphi"] as const;
 const MECH_COLORS: Record<string, string> = {
   debate: "var(--accent-amber)",
   vote: "var(--accent-emerald)",
+  delphi: "#a78bfa",
 };
 
 function betaPdf(x: number, alpha: number, beta: number): number {
@@ -102,7 +103,7 @@ export function BanditBeliefCurves({ stats }: Props) {
           <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>
             Bandit Belief Curves — Beta Posteriors
           </span>
-          <InfoTooltip text="Each mini chart shows the Beta(α, β) posterior probability distribution over P(success) for each mechanism (teal = vote, amber = debate) per benchmark domain. A curve peaked near 1 means the bandit is confident this mechanism wins; a flat or dashed line means not enough data yet. n= shows total pulls." />
+          <InfoTooltip text="Each mini chart shows the Beta(α, β) posterior probability distribution over P(success) for each mechanism (teal = vote, amber = debate, violet = delphi) per benchmark domain. A curve peaked near 1 means the bandit is confident this mechanism wins; a flat or dashed line means not enough data yet. n= shows total pulls." />
         </div>
         <div style={{ display: "flex", gap: "10px" }}>
           {MECHANISMS.map((mech) => (

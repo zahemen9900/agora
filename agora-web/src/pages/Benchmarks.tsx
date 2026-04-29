@@ -54,6 +54,8 @@ import {
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
+import { usePostHog } from "@posthog/react";
+import { Button } from "../components/ui/Button";
 
 type CatalogSortMode = "recent" | "frequency";
 type ParetoPoint = ReturnType<typeof buildOverviewParetoData>[number];
@@ -257,16 +259,31 @@ interface HeatmapTooltip {
   proxyRunCount: number;
 }
 
-function heatmapCellBg(accuracy: number | null, hovered: boolean): string {
+function heatmapCellBg(
+  accuracy: number | null,
+  relativeSampleWeight: number,
+  hovered: boolean,
+): string {
   if (accuracy == null) return hovered ? "var(--bg-elevated)" : "var(--bg-subtle)";
-  const base = 0.13 + (accuracy / 100) * 0.7;
+  const supportFloor = 0.18;
+  const supportRange = 0.38;
+  const accuracyRange = 0.34;
+  const base = (
+    supportFloor
+    + relativeSampleWeight * supportRange
+    + (accuracy / 100) * accuracyRange
+  );
   const boost = hovered ? 0.14 : 0;
   return `rgba(45, 212, 191, ${Math.min(1, base + boost).toFixed(3)})`;
 }
 
-function heatmapCellBorder(accuracy: number | null, hovered: boolean): string {
+function heatmapCellBorder(
+  accuracy: number | null,
+  relativeSampleWeight: number,
+  hovered: boolean,
+): string {
   if (accuracy == null) return hovered ? "rgba(255,255,255,0.14)" : "rgba(255,255,255,0.06)";
-  const base = 0.14 + (accuracy / 100) * 0.32;
+  const base = 0.12 + relativeSampleWeight * 0.18 + (accuracy / 100) * 0.22;
   const boost = hovered ? 0.2 : 0;
   return `rgba(45, 212, 191, ${Math.min(1, base + boost).toFixed(3)})`;
 }
@@ -281,7 +298,7 @@ function BenchmarkHeatmap({ rows }: { rows: BenchmarkHeatmapRow[] }) {
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: "120px repeat(3, minmax(0, 1fr))", gap: "8px", marginBottom: "8px" }}>
           <div />
-          {["Debate", "Vote", "Selector"].map((label) => (
+          {["Debate", "Vote", "Delphi"].map((label) => (
             <div key={label} style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", textAlign: "center" }}>
               {label}
             </div>
@@ -303,8 +320,8 @@ function BenchmarkHeatmap({ rows }: { rows: BenchmarkHeatmapRow[] }) {
                     key={key}
                     style={{
                       minHeight: "68px", borderRadius: "10px",
-                      border: `1px solid ${heatmapCellBorder(cell.accuracy, hov)}`,
-                      background: heatmapCellBg(cell.accuracy, hov),
+                      border: `1px solid ${heatmapCellBorder(cell.accuracy, cell.relativeSampleWeight, hov)}`,
+                      background: heatmapCellBg(cell.accuracy, cell.relativeSampleWeight, hov),
                       padding: "10px 12px",
                       display: "flex", flexDirection: "column", justifyContent: "space-between",
                       cursor: "default",
@@ -337,10 +354,15 @@ function BenchmarkHeatmap({ rows }: { rows: BenchmarkHeatmapRow[] }) {
         </div>
 
         {/* Legend — slim */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "12px" }}>
-          <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>0%</span>
-          <div style={{ flex: 1, maxWidth: "120px", height: "6px", borderRadius: "999px", background: "linear-gradient(90deg, rgba(45,212,191,0.13) 0%, rgba(45,212,191,0.83) 100%)", border: "1px solid rgba(45,212,191,0.15)" }} />
-          <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>100%</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "18px", marginTop: "12px", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>0%</span>
+            <div style={{ flex: 1, width: "120px", height: "6px", borderRadius: "999px", background: "linear-gradient(90deg, rgba(45,212,191,0.13) 0%, rgba(45,212,191,0.83) 100%)", border: "1px solid rgba(45,212,191,0.15)" }} />
+            <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>100%</span>
+          </div>
+          <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)" }}>
+            Darker fill = stronger relative sample support in this view.
+          </span>
         </div>
       </div>
 
@@ -392,6 +414,7 @@ function SectionHeader({ label, count, countColor }: { label: string; count: num
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export function Benchmarks() {
+    const posthog = usePostHog();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("latest");
@@ -735,7 +758,7 @@ export function Benchmarks() {
           <div className="col-span-1 lg:col-span-2">
             <ChartCard
               title="Scored Success Heatmap"
-              subtitle="Executed mechanism success by category, with explicit sample counts. Creative and demo are proxy-scored; one-sample buckets are directional, not proof."
+              subtitle="Executed mechanism success by category, with explicit sample counts. Creative and demo are proxy-scored; one-sample buckets are directional, not proof. Darker cells indicate stronger relative sample support."
               tooltip="Each cell shows the accuracy rate for one combination of task category (row) and deliberation mechanism (column). Darker teal = higher success rate. 'n=' is the number of scored runs in that cell — cells with n=1 are directional only. Proxy-scored categories (Creative, Demo) use heuristic evaluation rather than ground-truth comparison."
             >
               {overviewError ? (
@@ -895,7 +918,8 @@ export function Benchmarks() {
                         dataKey="accuracy"
                         stroke="transparent"
                         tick={{ fill: "var(--text-tertiary)", fontSize: 10, fontFamily: CHART_FONT }}
-                        domain={[0, 100]}
+                        domain={[-4, 100]}
+                        ticks={[0, 25, 50, 75, 100]}
                         tickFormatter={(v) => `${v}%`}
                         label={{ value: "Accuracy", angle: -90, position: "insideLeft", offset: 14, style: { fontFamily: CHART_FONT, fontSize: "9px", fill: "var(--text-tertiary)", letterSpacing: "0.06em" } }}
                       />
@@ -982,9 +1006,9 @@ export function Benchmarks() {
                 Configure benchmark questions per domain, trigger a run, and persist rich artifacts in global and user-specific cloud paths.
               </p>
             </div>
-            <button type="button" className="btn-primary" onClick={openWizard}>
+            <Button type="button" onClick={openWizard} variant="primary" trackingEvent="benchmarks_configure_and_run_clicked">
               Configure and Run
-            </button>
+            </Button>
           </div>
 
           {featuredBenchmarkRun && (
@@ -1025,7 +1049,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => void benchmarkCatalogQuery.refetch()}
+                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1034,7 +1058,7 @@ export function Benchmarks() {
               <FilterButton value={yourSortMode} onChange={setYourSortMode} />
               <button
                 type="button"
-                onClick={() => navigate("/benchmarks/all")}
+                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1125,7 +1149,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => void benchmarkCatalogQuery.refetch()}
+                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1134,7 +1158,7 @@ export function Benchmarks() {
               <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
               <button
                 type="button"
-                onClick={() => navigate("/benchmarks/all")}
+                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1223,6 +1247,7 @@ const MODE_LABELS: Record<BenchmarkOverviewMode, string> = {
 };
 
 function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onChange: (v: BenchmarkOverviewMode) => void }) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1243,7 +1268,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1272,7 +1297,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
             <button
               key={option}
               type="button"
-              onClick={() => { onChange(option); setOpen(false); }}
+              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",
@@ -1295,6 +1320,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
 }
 
 function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (value: CatalogSortMode) => void }) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1311,7 +1337,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1341,7 +1367,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
             <button
               key={option}
               type="button"
-              onClick={() => { onChange(option); setOpen(false); }}
+              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",

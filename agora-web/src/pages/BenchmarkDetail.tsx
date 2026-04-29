@@ -53,6 +53,8 @@ import {
   shouldFetchBenchmarkItemEvents,
 } from "../lib/benchmarkCanvas";
 import { providerFromModel } from "../lib/modelProviders";
+import { usePostHog } from "@posthog/react";
+import { Button } from "../components/ui/Button";
 
 interface BenchmarkTimelineDescriptor {
   label: string;
@@ -82,7 +84,16 @@ const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
   "usage_delta",
 ]);
 
+function asConvergenceMetrics(data: Record<string, unknown>): Record<string, unknown> {
+  const nested = data.metrics;
+  if (typeof nested !== "object" || nested === null || Array.isArray(nested)) {
+    return data;
+  }
+  return nested as Record<string, unknown>;
+}
+
 export function BenchmarkDetail() {
+    const posthog = usePostHog();
   const navigate = useNavigate();
   const { benchmarkId } = useParams<{ benchmarkId: string }>();
   const { getAccessToken } = useAuth();
@@ -573,9 +584,9 @@ export function BenchmarkDetail() {
         <title>{benchmarkId ? `${benchmarkId} · Benchmark — Agora` : "Benchmark — Agora"}</title>
         <meta name="description" content="Detailed benchmark results — mechanism breakdown, model performance, accuracy scores, and cost." />
         <div className="max-w-250 mx-auto pb-20 w-full">
-          <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
+          <Button type="button" className="mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks")} variant="secondary" trackingEvent="benchmarkdetail_back_to_overview_clicked">
             <ArrowLeft size={14} /> Back to overview
-          </button>
+          </Button>
           <div className="card p-6 border border-border-subtle">
             <p className="text-text-secondary">{loadError}</p>
           </div>
@@ -630,7 +641,7 @@ export function BenchmarkDetail() {
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
         <button
           type="button"
-          onClick={() => navigate("/benchmarks")}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_overview_clicked'); const handler = () => navigate("/benchmarks"); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7.5 2L3 6l4.5 4" /></svg>
@@ -638,7 +649,7 @@ export function BenchmarkDetail() {
         </button>
         <button
           type="button"
-          onClick={() => navigate("/benchmarks/all")}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_all_artifacts_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7.5 2L3 6l4.5 4" /></svg>
@@ -646,7 +657,7 @@ export function BenchmarkDetail() {
         </button>
         <button
           type="button"
-          onClick={() => void detailQuery.refetch()}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_refresh_clicked'); const handler = () => void detailQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <RefreshCcw size={12} className={isRefreshing ? "animate-spin" : ""} />
@@ -659,7 +670,7 @@ export function BenchmarkDetail() {
             <button
               key={tab}
               type="button"
-              onClick={() => setActiveTab(tab)}
+              onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => setActiveTab(tab); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 padding: "6px 16px",
                 borderRadius: "7px",
@@ -869,7 +880,7 @@ export function BenchmarkDetail() {
                   <button
                     key={item.item_id}
                     type="button"
-                    onClick={() => handleSelectItem(item.item_id)}
+                    onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => handleSelectItem(item.item_id); if (typeof handler === 'function') (handler as any)(e); }}
                     className={`w-full text-left rounded-md border p-3 transition-colors ${
                       selected
                         ? "border-accent bg-accent/5"
@@ -908,14 +919,14 @@ export function BenchmarkDetail() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
             <h3 className="text-lg font-semibold">Raw Event Timeline</h3>
             <div className="flex flex-wrap items-center gap-3">
-              <button
+              <Button
                 type="button"
-                className="btn-secondary inline-flex items-center gap-2"
-                onClick={() => void handleCopyTimeline()}
+                className="inline-flex items-center gap-2"
+                onClick={() => void handleCopyTimeline()} variant="secondary" trackingEvent="benchmarkdetail_action_clicked"
               >
                 {copyState === "copied" ? <Check size={14} /> : <Clipboard size={14} />}
                 {copyState === "copied" ? "Copied" : "Copy JSON"}
-              </button>
+              </Button>
               <div className="flex items-center gap-3 rounded-md border border-border-subtle bg-void px-3 py-2 mono text-xs text-text-secondary">
                 <span>Cards {formatInt(aggregatedFilteredTimeline.length)}</span>
                 <span className="text-text-muted">•</span>
@@ -931,7 +942,7 @@ export function BenchmarkDetail() {
                 <button
                   key={phase}
                   type="button"
-                  onClick={() => setPhaseFilter(phase)}
+                  onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => setPhaseFilter(phase); if (typeof handler === 'function') (handler as any)(e); }}
                   className={`mono px-3 py-1.5 text-[11px] rounded-full border transition-colors ${
                     effectivePhaseFilter === phase
                       ? "bg-accent-muted text-accent border-accent"
@@ -1026,7 +1037,7 @@ export function BenchmarkDetail() {
             <button
               key={view}
               type="button"
-              onClick={() => setMetricsView(view)}
+              onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => setMetricsView(view); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 padding: "6px 20px",
                 borderRadius: "7px",
@@ -1333,6 +1344,7 @@ export function BenchmarkDetail() {
                     <th className="text-left py-2 px-3 mono text-xs text-text-muted">CATEGORY</th>
                     <th className="text-right py-2 px-3 mono text-xs text-text-muted">DEBATE</th>
                     <th className="text-right py-2 px-3 mono text-xs text-text-muted">VOTE</th>
+                    <th className="text-right py-2 px-3 mono text-xs text-text-muted">DELPHI</th>
                     <th className="text-right py-2 px-3 mono text-xs text-text-muted">SELECTOR</th>
                   </tr>
                 </thead>
@@ -1342,6 +1354,7 @@ export function BenchmarkDetail() {
                       <td className="py-2 px-3 text-sm text-text-primary">{row.category}</td>
                       <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.debate, 1)}</td>
                       <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.vote, 1)}</td>
+                      <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.delphi, 1)}</td>
                       <td className="py-2 px-3 text-sm text-right text-accent">{formatRowAccuracy(row.selector, 1)}</td>
                     </tr>
                   ))}
@@ -1385,6 +1398,7 @@ function InlineMetricTile({ label, value }: { label: string; value: string }) {
 
 
 function PayloadPanel({ value }: { value: unknown }) {
+    const posthog = usePostHog();
   const [copied, setCopied] = useState(false);
   const json = prettyJson(value);
 
@@ -1401,7 +1415,7 @@ function PayloadPanel({ value }: { value: unknown }) {
         <h3 className="text-lg font-semibold">Benchmark Payload</h3>
         <button
           type="button"
-          onClick={handleCopy}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = handleCopy; if (typeof handler === 'function') (handler as any)(e); }}
           style={{
             display: "inline-flex", alignItems: "center", gap: "6px",
             fontFamily: "'Commit Mono', 'SF Mono', monospace", fontSize: "9px", letterSpacing: "0.06em",
@@ -2158,16 +2172,46 @@ function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
   }
 
   if (event.event === "convergence_update") {
+    const metrics = asConvergenceMetrics(data);
     return {
       label: contextPrefix || "CONVERGENCE",
       title: `Round ${String(data.round_number ?? "?")} convergence`,
       summary: [
-        typeof data.disagreement_entropy === "number" ? `Entropy ${data.disagreement_entropy.toFixed(2)}` : null,
-        typeof data.novelty_score === "number" ? `Novelty ${data.novelty_score.toFixed(2)}` : null,
-        typeof data.information_gain_delta === "number" ? `Info gain ${data.information_gain_delta.toFixed(2)}` : null,
+        typeof metrics.disagreement_entropy === "number" ? `Entropy ${metrics.disagreement_entropy.toFixed(2)}` : null,
+        typeof metrics.novelty_score === "number" ? `Novelty ${metrics.novelty_score.toFixed(2)}` : null,
+        typeof metrics.information_gain_delta === "number" ? `Info gain ${metrics.information_gain_delta.toFixed(2)}` : null,
       ].filter(Boolean).join(" · ") || "Convergence metrics updated.",
       detailsLabel: "convergence metrics",
       tone: "border-violet-400/40 bg-violet-400/10",
+    };
+  }
+
+  if (event.event === "delphi_feedback") {
+    const feedback = data.feedback;
+    let feedbackCount = 0;
+    if (typeof feedback === "object" && feedback !== null && !Array.isArray(feedback)) {
+      feedbackCount = Object.values(feedback as Record<string, unknown>).reduce<number>((total, entries) => (
+        total + (Array.isArray(entries) ? entries.length : 0)
+      ), 0);
+    }
+    return {
+      label: contextPrefix || "DELPHI",
+      title: `Round ${String(data.round_number ?? "?")} anonymous critique`,
+      summary: feedbackCount > 0
+        ? `${feedbackCount} peer critique${feedbackCount === 1 ? "" : "s"} distributed for revision.`
+        : "Anonymous peer feedback distributed for revision.",
+      detailsLabel: "Delphi feedback payload",
+      tone: "border-fuchsia-400/40 bg-fuchsia-400/10",
+    };
+  }
+
+  if (event.event === "delphi_finalize") {
+    return {
+      label: contextPrefix || "DELPHI",
+      title: "Delphi finalization",
+      summary: String(data.final_answer ?? "Delphi produced a final aggregate answer."),
+      detailsLabel: "Delphi finalization payload",
+      tone: "border-indigo-400/40 bg-indigo-400/10",
     };
   }
 

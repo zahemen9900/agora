@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { usePostHog } from "@posthog/react";
 
 export const CHART_FONT = "'Commit Mono', 'SF Mono', monospace";
 export const CHART_KF_ID = "bm-chart-kf";
@@ -38,6 +39,7 @@ export function ShimBlock({ w, h, style }: { w: string; h: string; style?: React
 // ── Info Tooltip ───────────────────────────────────────────────────────────────
 
 export function InfoTooltip({ text }: { text: string }) {
+    const posthog = usePostHog();
   const [visible, setVisible] = useState(false);
   return (
     <span style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
@@ -58,7 +60,7 @@ export function InfoTooltip({ text }: { text: string }) {
           cursor: "default", padding: 0, lineHeight: 1,
           transition: "border-color 0.15s ease, color 0.15s ease, background 0.15s ease",
           flexShrink: 0,
-        }}
+        }} onClick={() => posthog?.capture('chartcard_clicked')}
       >
         ?
       </button>

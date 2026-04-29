@@ -125,9 +125,9 @@ class BenchmarkRunner:
         tasks: list[dict[str, Any]],
         mechanisms_to_test: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Compare forced debate, forced vote, and selector execution."""
+        """Compare forced debate, forced vote, forced delphi, and selector execution."""
 
-        mechanisms = mechanisms_to_test or ["debate", "vote", "selector"]
+        mechanisms = mechanisms_to_test or ["debate", "vote", "delphi", "selector"]
         runs: list[dict[str, Any]] = []
 
         for task_index, task_item in enumerate(tasks):

@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
+import { usePostHog } from "@posthog/react";
 
 interface QuorumOverlayProps {
   finalAnswer: { text: string; confidence: number; mechanism: string } | null;
@@ -7,6 +8,7 @@ interface QuorumOverlayProps {
 }
 
 export function QuorumOverlay({ finalAnswer, taskId }: QuorumOverlayProps) {
+    const posthog = usePostHog();
   const navigate = useNavigate();
 
   const goToReceipt = (e: React.MouseEvent) => {
@@ -85,7 +87,7 @@ export function QuorumOverlay({ finalAnswer, taskId }: QuorumOverlayProps) {
           </div>
 
           <button
-            onClick={goToReceipt}
+            onClick={(e: any) => { posthog?.capture('quorumoverlay_view_receipt_clicked'); const handler = goToReceipt; if (typeof handler === 'function') (handler as any)(e); }}
             data-no-drag
             style={{ 
               flexShrink: 0, 

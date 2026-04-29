@@ -6,7 +6,7 @@ import { Settings2, ArrowRight, Loader2 } from "lucide-react";
 import { ConfigModal } from "../components/task/ConfigModal";
 import { DecisionPopup } from "../components/task/DecisionPopup";
 import { RecentDeliberationsCarousel } from "../components/task/RecentDeliberationsCarousel";
-import { type TaskStatusResponse } from "../lib/api";
+import { type MechanismName, type TaskStatusResponse } from "../lib/api";
 import {
   buildTierModelOverridesPayload,
   buildProviderSummary,
@@ -116,6 +116,7 @@ function makeExampleTask(task: string, index: number): TaskStatusResponse {
 }
 
 const EXAMPLE_TASK_OBJECTS = PROMPT_SETS[0].map((p, i) => makeExampleTask(p.fullPrompt, i));
+type MechanismPreference = MechanismName | "auto";
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function TaskSubmit() {
@@ -131,6 +132,7 @@ export function TaskSubmit() {
   const [taskText, setTaskText] = useState("");
   const [agentCount, setAgentCount] = useState(4);
   const [stakes, setStakes] = useState("0.001");
+  const [mechanismOverride, setMechanismOverride] = useState<MechanismPreference>("auto");
   const [reasoningPresets, setReasoningPresets] = useState<ReasoningPresetState>(
     DEFAULT_REASONING_PRESETS,
   );
@@ -153,17 +155,12 @@ export function TaskSubmit() {
     ? recentTasksQuery.error.message
     : null;
 
-  // ── Rotating prompt set — random on mount, re-randomise on each data refresh ──
-  const [activeSetIdx, setActiveSetIdx] = useState(() => Math.floor(Math.random() * PROMPT_SETS.length));
-  const [hoveredPrompt, setHoveredPrompt] = useState<{ text: string; rect: DOMRect } | null>(null);
-  const prevDataUpdatedAt = useRef(recentTasksQuery.dataUpdatedAt);
-  useEffect(() => {
-    if (recentTasksQuery.dataUpdatedAt !== prevDataUpdatedAt.current) {
-      prevDataUpdatedAt.current = recentTasksQuery.dataUpdatedAt;
-      setActiveSetIdx(Math.floor(Math.random() * PROMPT_SETS.length));
-    }
-  }, [recentTasksQuery.dataUpdatedAt]);
+  // ── Rotating prompt set — deterministic but changing on data refresh ──
+  const activeSetIdx = recentTasksQuery.dataUpdatedAt
+    ? (recentTasksQuery.dataUpdatedAt % PROMPT_SETS.length)
+    : 0;
   const activePrompts = PROMPT_SETS[activeSetIdx];
+  const [hoveredPrompt, setHoveredPrompt] = useState<{ text: string; rect: DOMRect } | null>(null);
 
   useEffect(() => {
     if (recentTasksQuery.error) {
@@ -175,8 +172,11 @@ export function TaskSubmit() {
     if (!runtimeConfig || runtimeDefaultsHydrated) {
       return;
     }
-    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
-    setRuntimeDefaultsHydrated(true);
+    // Defer state updates to avoid synchronous setState in effect warning
+    queueMicrotask(() => {
+      setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
+      setRuntimeDefaultsHydrated(true);
+    });
   }, [runtimeConfig, runtimeDefaultsHydrated]);
 
   const providerSummary = buildProviderSummary(agentCount, runtimeConfig, tierModelOverrides);
@@ -194,6 +194,7 @@ export function TaskSubmit() {
         taskText,
         agentCount,
         stakes: normalizedStake,
+        mechanismOverride: mechanismOverride === "auto" ? null : mechanismOverride,
         reasoningPresets,
         tierModelOverrides: buildTierModelOverridesPayload(tierModelOverrides, runtimeConfig),
       });
@@ -282,7 +283,7 @@ export function TaskSubmit() {
           fontFamily: FONT,
           margin: 0,
         }}>
-          Agora analyzes the task, chooses debate or vote, and records a verifiable receipt.
+          Agora analyzes the task, chooses debate, vote, or Delphi, and records a verifiable receipt.
         </p>
       </div>
 
@@ -450,6 +451,8 @@ export function TaskSubmit() {
       <ConfigModal
         open={configOpen}
         onClose={() => setConfigOpen(false)}
+        mechanismOverride={mechanismOverride}
+        onMechanismOverrideChange={setMechanismOverride}
         reasoningPresets={reasoningPresets}
         onPresetsChange={setReasoningPresets}
         agentCount={agentCount}

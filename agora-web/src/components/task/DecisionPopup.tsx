@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { ArrowRight, Loader2 } from 'lucide-react';
+import { usePostHog } from "@posthog/react";
 
 interface DecisionPopupProps {
   mechanism: string;
@@ -58,6 +59,7 @@ function mechColor(mech: string): string {
 }
 
 export function DecisionPopup({ mechanism, confidence, reasoning, onNavigate, delay = 2800 }: DecisionPopupProps) {
+    const posthog = usePostHog();
   const pct = Math.round(confidence * 100);
   const color = mechColor(mechanism);
 
@@ -175,7 +177,7 @@ export function DecisionPopup({ mechanism, confidence, reasoning, onNavigate, de
         {/* CTA */}
         <button
           type="button"
-          onClick={onNavigate}
+          onClick={(e: any) => { posthog?.capture('decisionpopup_enter_deliberation_clicked'); const handler = onNavigate; if (typeof handler === 'function') (handler as any)(e); }}
           style={{
             display: 'flex',
             alignItems: 'center',

@@ -22,6 +22,7 @@ import type {
   TierModelOverrideState,
 } from "../../lib/deliberationConfig";
 import type { ProviderName } from "../../lib/modelProviders";
+import { usePostHog } from "@posthog/react";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 const WIZARD_KF_ID = "bm-wizard-kf";
@@ -145,6 +146,7 @@ function StepIndicator({ step }: { step: number }) {
 // ── Tooltip Label (with ? button) ─────────────────────────────────────────────
 
 function TooltipLabel({ label, tip }: { label: string; tip: string }) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: "5px", position: "relative" }}>
@@ -158,7 +160,7 @@ function TooltipLabel({ label, tip }: { label: string; tip: string }) {
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         aria-label={`Help: ${label}`}
-        style={{ background: "transparent", border: "none", cursor: "pointer", color: open ? "var(--accent-emerald)" : "var(--text-muted)", padding: "0", display: "flex", alignItems: "center", transition: "color 0.15s ease" }}
+        style={{ background: "transparent", border: "none", cursor: "pointer", color: open ? "var(--accent-emerald)" : "var(--text-muted)", padding: "0", display: "flex", alignItems: "center", transition: "color 0.15s ease" }} onClick={() => posthog?.capture('benchmarkwizard_action_clicked')}
       >
         <HelpCircle size={12} />
       </button>
@@ -187,10 +189,11 @@ const AGENT_OPTIONS = [
 ];
 
 function AgentCard({ option, selected, onClick }: { option: typeof AGENT_OPTIONS[number]; selected: boolean; onClick: () => void }) {
+    const posthog = usePostHog();
   const [hovered, setHovered] = useState(false);
   return (
     <button
-      type="button" onClick={onClick}
+      type="button" onClick={(e: any) => { posthog?.capture('benchmarkwizard_action_clicked'); const handler = onClick; if (typeof handler === 'function') (handler as any)(e); }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       style={{
         flex: 1, padding: "14px 14px 12px", borderRadius: "10px", textAlign: "left",
@@ -233,6 +236,7 @@ function DomainSidebar({
   onDomainChange: (d: BenchmarkDomainName) => void;
   domainStatus: Record<BenchmarkDomainName, { complete: boolean; label: string }>;
 }) {
+    const posthog = usePostHog();
   const configured = BENCHMARK_DOMAINS.filter((d) => domainStatus[d].complete).length;
   return (
     <div style={{
@@ -255,7 +259,7 @@ function DomainSidebar({
           <button
             key={domain}
             type="button"
-            onClick={() => onDomainChange(domain)}
+            onClick={(e: any) => { posthog?.capture('benchmarkwizard_action_clicked'); const handler = () => onDomainChange(domain); if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: "flex", alignItems: "center", gap: "8px",
               padding: "9px 14px", textAlign: "left",
@@ -298,10 +302,11 @@ function TemplateCard({
   selected: boolean;
   onClick: () => void;
 }) {
+    const posthog = usePostHog();
   const [hovered, setHovered] = useState(false);
   return (
     <button
-      type="button" onClick={onClick}
+      type="button" onClick={(e: any) => { posthog?.capture('benchmarkwizard_action_clicked'); const handler = onClick; if (typeof handler === 'function') (handler as any)(e); }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       style={{
         textAlign: "left", padding: "12px 14px", borderRadius: "8px",
@@ -449,13 +454,14 @@ function Step0({
 function EnsemblePlansAccordion({
   ensembleLabel, voteRoster, debateRoster, countBadges, debateFooter,
 }: Pick<BenchmarkWizardProps, "voteRoster" | "debateRoster" | "countBadges" | "ensembleLabel" | "debateFooter">) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   return (
     <div style={{ borderRadius: "10px", border: "1px solid var(--border-default)", overflow: "hidden" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('benchmarkwizard_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
         style={{
@@ -508,6 +514,7 @@ function Step1({
   "activeDomain" | "onDomainChange" | "templates" |
   "domainPromptSelection" | "onDomainUpdate" | "domainStatus"
 >) {
+    const posthog = usePostHog();
   const currentSelection = domainPromptSelection[activeDomain];
   const domainTemplates = templates.domains[activeDomain] ?? [];
   const selectedTemplate = domainTemplates.find((t) => t.id === currentSelection?.templateId);
@@ -537,11 +544,11 @@ function Step1({
           <div style={{ display: "inline-flex", borderRadius: "7px", border: "1px solid var(--border-default)", overflow: "hidden", flexShrink: 0 }}>
             <button
               type="button"
-              onClick={() => onDomainUpdate(activeDomain, (cur) => ({
-                ...cur, useCustomPrompt: false,
-                question: selectedTemplate?.question ?? cur.question,
-                templateTitle: selectedTemplate?.title ?? cur.templateTitle,
-              }))}
+              onClick={(e: any) => { posthog?.capture('benchmarkwizard_template_clicked'); const handler = () => onDomainUpdate(activeDomain, (cur) => ({
+                                                                ...cur, useCustomPrompt: false,
+                                                                question: selectedTemplate?.question ?? cur.question,
+                                                                templateTitle: selectedTemplate?.title ?? cur.templateTitle,
+                                                              })); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 fontFamily: FONT, fontSize: "10px", padding: "5px 12px",
                 background: !isCustom ? "var(--accent-emerald-soft)" : "transparent",
@@ -551,11 +558,11 @@ function Step1({
             >Template</button>
             <button
               type="button"
-              onClick={() => onDomainUpdate(activeDomain, (cur) => {
-                if (cur.useCustomPrompt) return cur;
-                const seeded = normalizeText(cur.customQuestion) || normalizeText(selectedTemplate?.question) || normalizeText(cur.question);
-                return { ...cur, useCustomPrompt: true, customQuestion: seeded, question: seeded || cur.question };
-              })}
+              onClick={(e: any) => { posthog?.capture('benchmarkwizard_custom_clicked'); const handler = () => onDomainUpdate(activeDomain, (cur) => {
+                                                                if (cur.useCustomPrompt) return cur;
+                                                                const seeded = normalizeText(cur.customQuestion) || normalizeText(selectedTemplate?.question) || normalizeText(cur.question);
+                                                                return { ...cur, useCustomPrompt: true, customQuestion: seeded, question: seeded || cur.question };
+                                                              }); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 fontFamily: FONT, fontSize: "10px", padding: "5px 12px",
                 background: isCustom ? "var(--accent-emerald-soft)" : "transparent",
@@ -633,7 +640,7 @@ function Step1({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px", marginTop: "4px" }}>
           <button
             type="button" disabled={activeDomainIndex === 0}
-            onClick={() => onDomainChange(BENCHMARK_DOMAINS[activeDomainIndex - 1]!)}
+            onClick={(e: any) => { posthog?.capture('benchmarkwizard_prev_clicked'); const handler = () => onDomainChange(BENCHMARK_DOMAINS[activeDomainIndex - 1]!); if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: "inline-flex", alignItems: "center", gap: "4px",
               fontFamily: FONT, fontSize: "10px", padding: "5px 10px", borderRadius: "6px",
@@ -644,7 +651,7 @@ function Step1({
           ><ChevronLeft size={12} /> Prev</button>
           <button
             type="button" disabled={activeDomainIndex === domainCount - 1}
-            onClick={() => onDomainChange(BENCHMARK_DOMAINS[activeDomainIndex + 1]!)}
+            onClick={(e: any) => { posthog?.capture('benchmarkwizard_next_clicked'); const handler = () => onDomainChange(BENCHMARK_DOMAINS[activeDomainIndex + 1]!); if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: "inline-flex", alignItems: "center", gap: "4px",
               fontFamily: FONT, fontSize: "10px", padding: "5px 10px", borderRadius: "6px",
@@ -732,6 +739,7 @@ function Step2({
 // ── Main Wizard Component ──────────────────────────────────────────────────────
 
 export function BenchmarkWizard(props: BenchmarkWizardProps) {
+    const posthog = usePostHog();
   const {
     open, onClose,
     agentCount, onAgentCountChange, trainingPerCategory, onTrainingChange,
@@ -780,7 +788,7 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
             </div>
           </div>
           <button
-            type="button" onClick={onClose}
+            type="button" onClick={(e: any) => { posthog?.capture('benchmarkwizard_close_benchmark_wizard_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }}
             aria-label="Close benchmark wizard"
             style={{
               display: "flex", alignItems: "center", justifyContent: "center",
@@ -846,7 +854,7 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px" }}>
             <button
               type="button"
-              onClick={() => setStep((s) => Math.max(0, s - 1) as 0 | 1 | 2)}
+              onClick={(e: any) => { posthog?.capture('benchmarkwizard_back_clicked'); const handler = () => setStep((s) => Math.max(0, s - 1) as 0 | 1 | 2); if (typeof handler === 'function') (handler as any)(e); }}
               disabled={step === 0 || isSubmitting}
               style={{
                 display: "inline-flex", alignItems: "center", gap: "6px",
@@ -864,7 +872,7 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
             {step < 2 ? (
               <button
                 type="button"
-                onClick={() => setStep((s) => Math.min(2, s + 1) as 0 | 1 | 2)}
+                onClick={(e: any) => { posthog?.capture('benchmarkwizard_next_clicked'); const handler = () => setStep((s) => Math.min(2, s + 1) as 0 | 1 | 2); if (typeof handler === 'function') (handler as any)(e); }}
                 disabled={step === 1 && !allDomainsConfigured}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "6px",
@@ -882,7 +890,7 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
             ) : (
               <button
                 type="button"
-                onClick={onSubmit}
+                onClick={(e: any) => { posthog?.capture('benchmarkwizard_action_clicked'); const handler = onSubmit; if (typeof handler === 'function') (handler as any)(e); }}
                 disabled={isSubmitting}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "8px",

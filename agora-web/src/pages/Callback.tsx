@@ -1,5 +1,6 @@
 import { useAuth } from "../lib/useAuth";
 import { useNavigate } from "react-router-dom";
+import { Button } from "../components/ui/Button";
 
 export function Callback() {
   const { isLoading, authStatus } = useAuth();
@@ -29,12 +30,12 @@ export function Callback() {
           configured redirect URI in WorkOS.
         </p>
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
-          <button className="btn-primary" onClick={() => navigate("/login", { replace: true })}>
+          <Button onClick={() => navigate("/login", { replace: true })} variant="primary">
             Try sign in again
-          </button>
-          <button className="btn-secondary" onClick={() => navigate("/auth", { replace: true })}>
+          </Button>
+          <Button onClick={() => navigate("/auth", { replace: true })} variant="secondary">
             Back to auth
-          </button>
+          </Button>
         </div>
       </div>
       </>

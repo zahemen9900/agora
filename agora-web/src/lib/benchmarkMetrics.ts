@@ -39,9 +39,11 @@ export interface BenchmarkCategoryRow {
   category: string;
   debate: number | null;
   vote: number | null;
+  delphi: number | null;
   selector: number | null;
   debateScoredRuns: number;
   voteScoredRuns: number;
+  delphiScoredRuns: number;
   selectorScoredRuns: number;
 }
 
@@ -51,6 +53,7 @@ export interface BenchmarkHeatmapCell {
   scoredRunCount: number;
   proxyRunCount: number;
   runCount: number;
+  relativeSampleWeight: number;
 }
 
 export interface BenchmarkHeatmapRow {
@@ -80,6 +83,14 @@ export interface BenchmarkLearningCurveState {
   saturated: boolean;
 }
 
+export interface BenchmarkCategoryLearningShiftPoint {
+  category: string;
+  pre: number;
+  post: number;
+  delta: number;
+  saturated: boolean;
+}
+
 export type BenchmarkArtifactKind = "validation" | "comparison" | "unknown";
 
 export const BENCHMARK_DOMAIN_KEYS = [
@@ -91,7 +102,8 @@ export const BENCHMARK_DOMAIN_KEYS = [
   "demo",
 ] as const;
 
-export const BENCHMARK_STAGE_KEYS = ["debate", "vote", "selector"] as const;
+export const BENCHMARK_EXECUTED_MECHANISM_KEYS = ["debate", "vote", "delphi"] as const;
+export const BENCHMARK_STAGE_KEYS = ["debate", "vote", "delphi", "selector"] as const;
 
 export const DEFAULT_METRIC: NormalizedMetric = {
   accuracy: 0,
@@ -159,6 +171,7 @@ export function buildOverviewAccuracyData(summary: NormalizedSummary): Array<{
   category: string;
   debate: number | null;
   vote: number | null;
+  delphi: number | null;
   selector: number | null;
 }> {
   const categorySource = hasCategoryAxisData(summary.per_category_by_mechanism)
@@ -168,11 +181,13 @@ export function buildOverviewAccuracyData(summary: NormalizedSummary): Array<{
     const metricsByMode = categorySource[domain] ?? {};
     const debateScored = metricsByMode.debate?.scored_run_count ?? 0;
     const voteScored = metricsByMode.vote?.scored_run_count ?? 0;
+    const delphiScored = metricsByMode.delphi?.scored_run_count ?? 0;
     const selectorScored = metricsByMode.selector?.scored_run_count ?? 0;
     return {
       category: titleCase(domain),
       debate: debateScored > 0 ? ((metricsByMode.debate?.accuracy ?? 0) as number) * 100 : null,
       vote: voteScored > 0 ? ((metricsByMode.vote?.accuracy ?? 0) as number) * 100 : null,
+      delphi: delphiScored > 0 ? ((metricsByMode.delphi?.accuracy ?? 0) as number) * 100 : null,
       selector: selectorScored > 0 ? ((metricsByMode.selector?.accuracy ?? 0) as number) * 100 : null,
     };
   });
@@ -183,7 +198,7 @@ export function buildOverviewCostData(summary: NormalizedSummary): Array<{
   estimatedCostUsd: number | null;
 }> {
   const source = hasMetricAxisData(summary.per_mechanism) ? summary.per_mechanism : summary.per_mode;
-  return BENCHMARK_STAGE_KEYS.map((mechanism) => {
+  return BENCHMARK_EXECUTED_MECHANISM_KEYS.map((mechanism) => {
     const metrics = source[mechanism] ?? DEFAULT_METRIC;
     const runCount = metrics.run_count;
     const avgCost = metrics.avg_estimated_cost_usd;
@@ -195,7 +210,7 @@ export function buildOverviewCostData(summary: NormalizedSummary): Array<{
 }
 
 export function buildOverviewParetoData(summary: NormalizedSummary): BenchmarkParetoPoint[] {
-  const rows = buildMetricRows(summary.per_mechanism);
+  const rows = buildMetricRows(summary.per_mechanism, BENCHMARK_EXECUTED_MECHANISM_KEYS);
   const candidates = rows
     .filter((row) => row.accuracy != null && row.avgCostUsd > 0 && row.scoredRunCount > 0)
     .map((row) => ({
@@ -226,12 +241,20 @@ export function buildOverviewHeatmapRows(summary: NormalizedSummary): BenchmarkH
   const categorySource = hasCategoryAxisData(summary.per_category_by_mechanism)
     ? summary.per_category_by_mechanism
     : summary.per_category;
+  const maxScoredRunCount = BENCHMARK_DOMAIN_KEYS.reduce((maxCount, domain) => {
+    const metricsByMechanism = categorySource[domain] ?? {};
+    const domainMax = BENCHMARK_EXECUTED_MECHANISM_KEYS.reduce((domainCount, mechanism) => {
+      const metrics = metricsByMechanism[mechanism] ?? DEFAULT_METRIC;
+      return Math.max(domainCount, Math.round(metrics.scored_run_count));
+    }, 0);
+    return Math.max(maxCount, domainMax);
+  }, 0);
 
   return BENCHMARK_DOMAIN_KEYS.map((domain) => {
     const metricsByMechanism = categorySource[domain] ?? {};
     return {
       category: titleCase(domain),
-      cells: BENCHMARK_STAGE_KEYS.map((mechanism) => {
+      cells: BENCHMARK_EXECUTED_MECHANISM_KEYS.map((mechanism) => {
         const metrics = metricsByMechanism[mechanism] ?? DEFAULT_METRIC;
         const scoredRunCount = Math.round(metrics.scored_run_count);
         return {
@@ -240,6 +263,11 @@ export function buildOverviewHeatmapRows(summary: NormalizedSummary): BenchmarkH
           scoredRunCount,
           proxyRunCount: Math.round(metrics.proxy_run_count),
           runCount: Math.round(metrics.run_count),
+          relativeSampleWeight: (
+            scoredRunCount > 0 && maxScoredRunCount > 0
+              ? Number((scoredRunCount / maxScoredRunCount).toFixed(4))
+              : 0
+          ),
         };
       }),
     };
@@ -266,24 +294,12 @@ export function buildOverviewLearningCurve(
     };
   }
   const record = payload as Record<string, any>;
-
-  const pre = asNumber(
-    record.pre_learning?.summary?.per_mode?.selector?.accuracy
-    ?? record.pre_learning?.summary?.per_mode?.vote?.accuracy,
-  ) * 100;
-  const rawPostAccuracy = record.post_learning?.summary?.per_mode?.selector?.accuracy
-    ?? record.post_learning?.summary?.per_mode?.vote?.accuracy;
-  const post = (rawPostAccuracy === undefined || rawPostAccuracy === null)
-    ? pre
-    : asNumber(rawPostAccuracy) * 100;
-  const preScored = asNumber(
-    record.pre_learning?.summary?.per_mode?.selector?.scored_run_count
-    ?? record.pre_learning?.summary?.per_mode?.vote?.scored_run_count,
-  );
-  const postScored = asNumber(
-    record.post_learning?.summary?.per_mode?.selector?.scored_run_count
-    ?? record.post_learning?.summary?.per_mode?.vote?.scored_run_count,
-  );
+  const preMetric = asBenchmarkMetricRecord(record.pre_learning?.summary?.per_mode?.selector);
+  const postMetric = asBenchmarkMetricRecord(record.post_learning?.summary?.per_mode?.selector);
+  const pre = preMetric ? asNumber(preMetric.accuracy) * 100 : 0;
+  const post = postMetric ? asNumber(postMetric.accuracy) * 100 : 0;
+  const preScored = preMetric ? asNumber(preMetric.scored_run_count) : 0;
+  const postScored = postMetric ? asNumber(postMetric.scored_run_count) : 0;
 
   if (preScored <= 0 && postScored <= 0) {
     return {
@@ -319,11 +335,11 @@ export function buildOverviewLearningCurve(
 }
 
 export function buildDetailStageRows(summary: NormalizedSummary): BenchmarkMetricRow[] {
-  return buildMetricRows(summary.per_mode);
+  return buildMetricRows(summary.per_mode, BENCHMARK_STAGE_KEYS);
 }
 
 export function buildDetailMechanismRows(summary: NormalizedSummary): BenchmarkMetricRow[] {
-  return buildMetricRows(summary.per_mechanism);
+  return buildMetricRows(summary.per_mechanism, BENCHMARK_EXECUTED_MECHANISM_KEYS);
 }
 
 export function buildDetailCategoryRows(summary: NormalizedSummary): BenchmarkCategoryRow[] {
@@ -335,14 +351,17 @@ export function buildDetailCategoryRows(summary: NormalizedSummary): BenchmarkCa
     const perMode = categorySource[category] ?? {};
     const debateScoredRuns = Math.round(perMode.debate?.scored_run_count ?? 0);
     const voteScoredRuns = Math.round(perMode.vote?.scored_run_count ?? 0);
+    const delphiScoredRuns = Math.round(perMode.delphi?.scored_run_count ?? 0);
     const selectorScoredRuns = Math.round(perMode.selector?.scored_run_count ?? 0);
     return {
       category: titleCase(category),
       debate: debateScoredRuns > 0 ? Number(((perMode.debate?.accuracy ?? 0) * 100).toFixed(1)) : null,
       vote: voteScoredRuns > 0 ? Number(((perMode.vote?.accuracy ?? 0) * 100).toFixed(1)) : null,
+      delphi: delphiScoredRuns > 0 ? Number(((perMode.delphi?.accuracy ?? 0) * 100).toFixed(1)) : null,
       selector: selectorScoredRuns > 0 ? Number(((perMode.selector?.accuracy ?? 0) * 100).toFixed(1)) : null,
       debateScoredRuns,
       voteScoredRuns,
+      delphiScoredRuns,
       selectorScoredRuns,
     };
   });
@@ -350,8 +369,9 @@ export function buildDetailCategoryRows(summary: NormalizedSummary): BenchmarkCa
 
 function buildMetricRows(
   source: Record<string, NormalizedMetric>,
+  primaryKeys: readonly string[],
 ): BenchmarkMetricRow[] {
-  const ordered = new Set<string>(BENCHMARK_STAGE_KEYS);
+  const ordered = new Set<string>(primaryKeys);
   Object.keys(source).forEach((key) => ordered.add(key));
   return Array.from(ordered).map((mechanismKey) => {
     const metric = source[mechanismKey] ?? DEFAULT_METRIC;
@@ -738,6 +758,41 @@ export function buildEnhancedParetoData(summary: NormalizedSummary): EnhancedPar
   });
 }
 
+export function buildCategoryLearningShiftData(
+  payload: BenchmarkPayload | Record<string, unknown> | null | undefined,
+): BenchmarkCategoryLearningShiftPoint[] {
+  if (!isRecord(payload) || detectBenchmarkArtifactKind(payload) !== "validation") {
+    return [];
+  }
+
+  const preSection = asBenchmarkSection(payload.pre_learning);
+  const postSection = asBenchmarkSection(payload.post_learning);
+  const preSummary = preSection ? asBenchmarkSection(preSection.summary) : null;
+  const postSummary = postSection ? asBenchmarkSection(postSection.summary) : null;
+  const preCategory = asNestedCategoryMetricMap(preSummary?.per_category);
+  const postCategory = asNestedCategoryMetricMap(postSummary?.per_category);
+
+  return BENCHMARK_DOMAIN_KEYS.flatMap((domain) => {
+    const preMetric = preCategory?.[domain]?.selector;
+    const postMetric = postCategory?.[domain]?.selector;
+    const preScored = preMetric ? asNumber(preMetric.scored_run_count) : 0;
+    const postScored = postMetric ? asNumber(postMetric.scored_run_count) : 0;
+    if (preScored <= 0 && postScored <= 0) {
+      return [];
+    }
+
+    const pre = preMetric ? Number((asNumber(preMetric.accuracy) * 100).toFixed(1)) : 0;
+    const post = postMetric ? Number((asNumber(postMetric.accuracy) * 100).toFixed(1)) : pre;
+    return [{
+      category: titleCase(domain),
+      pre,
+      post,
+      delta: Number((post - pre).toFixed(1)),
+      saturated: pre >= 99.9 && post >= 99.9,
+    }];
+  });
+}
+
 export function buildPerModelCostData(payload: Record<string, unknown>): PerModelCostRow[] {
   const allRuns: RawBenchmarkRun[] = [
     ...extractPayloadRuns(payload, "pre_learning"),
@@ -779,21 +834,23 @@ export function buildCategoryRadarData(summary: NormalizedSummary): CategoryRada
     if (allMetrics.length === 0) {
       return { domain, accuracy: 0, avgCost: 0, avgLatency: 0, avgThinkingRatio: 0, coverage: 0, runCount: 0, scoredRunCount: 0 };
     }
-    const scoredMetrics = allMetrics.filter((m) => m.scored_run_count > 0);
-    const accuracy = scoredMetrics.length > 0
-      ? scoredMetrics.reduce((s, m) => s + m.accuracy, 0) / scoredMetrics.length * 100
-      : 0;
-    const avgCost = average(allMetrics as unknown as Array<Record<string, any>>, (m) => asNumber((m as NormalizedMetric).avg_estimated_cost_usd));
-    const avgLatency = average(allMetrics as unknown as Array<Record<string, any>>, (m) => asNumber((m as NormalizedMetric).avg_latency_ms));
-    const avgThinkingRatio = average(
-      allMetrics as unknown as Array<Record<string, any>>,
-      (m) => {
-        const metric = m as NormalizedMetric;
-        return metric.avg_tokens > 0 ? metric.avg_thinking_tokens / metric.avg_tokens : 0;
-      },
-    );
     const runCount = allMetrics.reduce((s, m) => s + m.run_count, 0);
     const scoredRunCount = allMetrics.reduce((s, m) => s + m.scored_run_count, 0);
+    const totalTokens = allMetrics.reduce((s, m) => s + (m.avg_tokens * m.run_count), 0);
+    const totalThinkingTokens = allMetrics.reduce((s, m) => s + (m.avg_thinking_tokens * m.run_count), 0);
+    const accuracy = scoredRunCount > 0
+      ? (
+        allMetrics.reduce((s, m) => s + (m.accuracy * m.scored_run_count), 0)
+        / scoredRunCount
+      ) * 100
+      : 0;
+    const avgCost = runCount > 0
+      ? allMetrics.reduce((s, m) => s + (m.avg_estimated_cost_usd * m.run_count), 0) / runCount
+      : 0;
+    const avgLatency = runCount > 0
+      ? allMetrics.reduce((s, m) => s + (m.avg_latency_ms * m.run_count), 0) / runCount
+      : 0;
+    const avgThinkingRatio = totalTokens > 0 ? totalThinkingTokens / totalTokens : 0;
     return { domain, accuracy, avgCost, avgLatency, avgThinkingRatio, coverage: runCount > 0 ? scoredRunCount / runCount : 0, runCount, scoredRunCount };
   });
 
@@ -808,6 +865,20 @@ export function buildCategoryRadarData(summary: NormalizedSummary): CategoryRada
     thinkingRatio: Number((r.avgThinkingRatio * 100).toFixed(1)),
     coverage: Number((r.coverage * 100).toFixed(1)),
   }));
+}
+
+function asBenchmarkMetricRecord(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value : null;
+}
+
+function asBenchmarkSection(value: unknown): Record<string, unknown> | null {
+  return isRecord(value) ? value as Record<string, unknown> : null;
+}
+
+function asNestedCategoryMetricMap(
+  value: unknown,
+): Record<string, Record<string, Record<string, unknown>>> | null {
+  return isRecord(value) ? value as Record<string, Record<string, Record<string, unknown>>> : null;
 }
 
 // ─── Private helpers ──────────────────────────────────────────────────────────

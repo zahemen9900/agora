@@ -13,6 +13,7 @@ import { FooterGraph } from '../components/landing/FooterGraph';
 import { ThemeToggle } from '../components/ui/ThemeToggle';
 import { motion } from 'framer-motion';
 import { useState, useEffect } from 'react';
+import { Button } from "../components/ui/Button";
 
 /* ── Reduced-motion hook ─────────────────────────────────────────── */
 function useReducedMotion() {
@@ -103,7 +104,7 @@ export function LoginPage() {
       <title>Agora — Proof of Deliberation</title>
       <meta
         name="description"
-        content="Multi-agent AI deliberation platform. Submit a task, watch agents debate or vote, and receive a cryptographic proof ready for on-chain submission."
+        content="Multi-agent AI deliberation platform. Submit a task, watch agents debate, vote, or iterate through Delphi, and receive a cryptographic proof ready for on-chain submission."
       />
     <div style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
 
@@ -133,22 +134,22 @@ export function LoginPage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <ThemeToggle />
           {isAuthenticated ? (
-            <button
+            <Button
               onClick={() => navigate('/tasks')}
-              className="btn-primary"
-              style={{ fontSize: '13px', padding: '8px 18px' }}
+              variant="primary"
+              style={{ fontSize: '13px', padding: '8px 18px', background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none' }}
             >
               Go to Dashboard
-            </button>
+            </Button>
           ) : (
-            <button
+            <Button
               onClick={() => signIn()}
               disabled={isLoading}
-              className="btn-secondary"
-              style={{ fontSize: '13px', padding: '8px 18px' }}
+              variant="secondary"
+              style={{ fontSize: '13px', padding: '8px 18px', border: '1.5px solid var(--border-strong)', background: 'transparent', color: 'var(--text-primary)' }}
             >
               {isLoading ? 'Connecting…' : 'Sign In'}
-            </button>
+            </Button>
           )}
         </div>
       </header>
@@ -171,7 +172,7 @@ export function LoginPage() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '24px', marginTop: '48px' }}>
               <StepCard step={1} delay={0.1} vizType="selector" accentColor="var(--text-tertiary)"
                 title="The AI Decides How to Decide"
-                description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal mechanism: debate, vote, Delphi, or MoA." />
+                description="A Thompson Sampling bandit + LLM reasoning agent analyzes your task and selects the optimal mechanism: debate, vote, or Delphi." />
               <StepCard step={2} delay={0.25} vizType="debate" accentColor="var(--accent-emerald)"
                 title="Agents Deliberate with Structure"
                 description="Factional adversarial debate with Devil's Advocate cross-examination. Or confidence-calibrated voting with surprising-popularity weighting." />

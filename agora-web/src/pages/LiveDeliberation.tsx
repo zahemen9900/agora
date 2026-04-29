@@ -121,6 +121,8 @@ import {
   type FinalAnswerState,
   type TimelineEvent,
 } from "../lib/deliberationTimeline";
+import { usePostHog } from "@posthog/react";
+import { Button } from "../components/ui/Button";
 
 const EMPTY_TIMELINE: TimelineEvent[] = [];
 
@@ -129,6 +131,8 @@ function useTaskScopedState<T>(
   initialValue: T,
 ): [T, (value: SetStateAction<T>) => void] {
   const scopedTaskId = taskId ?? null;
+  const initialValueRef = useRef(initialValue);
+  initialValueRef.current = initialValue;
   const [state, setState] = useState<{ taskId: string | null; value: T }>(() => ({
     taskId: scopedTaskId,
     value: initialValue,
@@ -137,16 +141,21 @@ function useTaskScopedState<T>(
   const value = state.taskId === scopedTaskId ? state.value : initialValue;
   const setScopedState = useCallback((nextValue: SetStateAction<T>) => {
     setState((current) => {
-      const currentValue = current.taskId === scopedTaskId ? current.value : initialValue;
+      const currentValue = current.taskId === scopedTaskId
+        ? current.value
+        : initialValueRef.current;
       const resolvedValue = typeof nextValue === "function"
         ? (nextValue as (previous: T) => T)(currentValue)
         : nextValue;
+      if (current.taskId === scopedTaskId && Object.is(current.value, resolvedValue)) {
+        return current;
+      }
       return {
         taskId: scopedTaskId,
         value: resolvedValue,
       };
     });
-  }, [initialValue, scopedTaskId]);
+  }, [scopedTaskId]);
 
   return [value, setScopedState];
 }
@@ -162,6 +171,13 @@ interface ModelUsageSummary {
   solPayout: number;
   latencyMs: number | null;
   estimationMode: string | null;
+}
+
+interface ConvergenceState {
+  entropy: number;
+  prevEntropy: number;
+  infoGain: number;
+  lockedClaims: Array<Record<string, unknown>>;
 }
 
 function safeString(value: unknown, fallback = ""): string {
@@ -184,6 +200,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
+}
+
+function convergenceMetrics(details: Record<string, unknown>): Record<string, unknown> {
+  const nested = asRecord(details.metrics);
+  return nested ?? details;
 }
 
 function eventCardTone(eventType: string): string {
@@ -210,6 +231,12 @@ function eventCardTone(eventType: string): string {
   }
   if (eventType === "convergence_update") {
     return "border-l-violet-400";
+  }
+  if (eventType === "delphi_feedback") {
+    return "border-l-fuchsia-400";
+  }
+  if (eventType === "delphi_finalize") {
+    return "border-l-indigo-400";
   }
   if (eventType === "mechanism_switch") {
     return "border-l-orange-400";
@@ -244,6 +271,12 @@ function detailLabelForEvent(event: TimelineEvent): string {
   }
   if (event.type === "convergence_update") {
     return "convergence metrics";
+  }
+  if (event.type === "delphi_feedback") {
+    return "anonymous peer feedback";
+  }
+  if (event.type === "delphi_finalize") {
+    return "Delphi finalization";
   }
   if (event.type === "mechanism_switch") {
     return "switch rationale";
@@ -588,6 +621,7 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
 }
 
 export function LiveDeliberation() {
+    const posthog = usePostHog();
   const { taskId } = useParams();
   const navigate = useNavigate();
   const { getAccessToken } = useAuth();
@@ -599,7 +633,7 @@ export function LiveDeliberation() {
   const [switchBanner, setSwitchBanner] = useTaskScopedState<string | null>(taskId, null);
   const [retryNotice, setRetryNotice] = useTaskScopedState<string | null>(taskId, null);
   const [errorMessage, setErrorMessage] = useTaskScopedState<string | null>(taskId, null);
-  const [convergence, setConvergence] = useState({
+  const [convergence, setConvergence] = useTaskScopedState<ConvergenceState>(taskId, {
     entropy: 1.0,
     prevEntropy: 1.0,
     infoGain: 0.0,
@@ -686,14 +720,27 @@ export function LiveDeliberation() {
     }
 
     if (segmentedEvent.event === "convergence_update") {
+      const metrics = convergenceMetrics(data);
       setConvergence((current) => ({
         prevEntropy: current.entropy,
-        entropy: Number(data.disagreement_entropy ?? current.entropy),
-        infoGain: Number(data.information_gain_delta ?? 0),
-        lockedClaims: Array.isArray(data.locked_claims)
-          ? (data.locked_claims as Array<Record<string, unknown>>)
+        entropy: Number(metrics.disagreement_entropy ?? current.entropy),
+        infoGain: Number(metrics.information_gain_delta ?? 0),
+        lockedClaims: Array.isArray(metrics.locked_claims)
+          ? (metrics.locked_claims as Array<Record<string, unknown>>)
           : [],
       }));
+      return;
+    }
+
+    if (segmentedEvent.event === "delphi_finalize") {
+      const resolvedMechanism = safeString(data.mechanism, taskMechanismRef.current).toLowerCase();
+      const mechanism = resolvedMechanism === "delphi" ? "delphi" : taskMechanismRef.current;
+      taskMechanismRef.current = mechanism;
+      setFinalAnswer({
+        text: safeString(data.final_answer, ""),
+        confidence: safeNumber(data.confidence, 0),
+        mechanism,
+      });
       return;
     }
 
@@ -707,8 +754,9 @@ export function LiveDeliberation() {
     }
 
     if (segmentedEvent.event === "quorum_reached") {
-      const mechanism = safeString(data.mechanism, taskMechanismRef.current) === "vote"
-        ? "vote"
+      const resolvedMechanism = safeString(data.mechanism, taskMechanismRef.current).toLowerCase();
+      const mechanism = resolvedMechanism === "vote" || resolvedMechanism === "delphi"
+        ? resolvedMechanism
         : "debate";
       taskMechanismRef.current = mechanism;
       if (taskId) {
@@ -824,8 +872,28 @@ export function LiveDeliberation() {
         confidence: task.result.confidence,
         mechanism: task.result.mechanism,
       });
+
+      const convergenceHistory = Array.isArray(task.result.convergence_history)
+        ? task.result.convergence_history
+        : [];
+      const latest = convergenceHistory.at(-1);
+      const previous = convergenceHistory.length > 1 ? convergenceHistory.at(-2) : null;
+      if (latest && typeof latest === "object" && !Array.isArray(latest)) {
+        const latestMetrics = latest as Record<string, unknown>;
+        const previousMetrics = previous && typeof previous === "object" && !Array.isArray(previous)
+          ? (previous as Record<string, unknown>)
+          : null;
+        setConvergence({
+          entropy: safeNumber(latestMetrics.disagreement_entropy, 1.0),
+          prevEntropy: safeNumber(previousMetrics?.disagreement_entropy, safeNumber(latestMetrics.disagreement_entropy, 1.0)),
+          infoGain: safeNumber(latestMetrics.information_gain_delta, 0),
+          lockedClaims: Array.isArray(latestMetrics.locked_claims)
+            ? (latestMetrics.locked_claims as Array<Record<string, unknown>>)
+            : [],
+        });
+      }
     }
-  }, [setFinalAnswer, setTimeline, task]);
+  }, [setConvergence, setFinalAnswer, setTimeline, task]);
 
   useEffect(() => {
     if (!taskId || !task) return;
@@ -1032,7 +1100,7 @@ export function LiveDeliberation() {
       {/* ── Top bar: back button + tab switcher ─────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
         <button
-          onClick={() => navigate("/tasks")}
+          onClick={(e: any) => { posthog?.capture('livedeliberation_tasks_clicked'); const handler = () => navigate("/tasks"); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -1044,7 +1112,7 @@ export function LiveDeliberation() {
           {(["canvas", "logs"] as const).map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={(e: any) => { posthog?.capture('livedeliberation_action_clicked'); const handler = () => setActiveTab(tab); if (typeof handler === 'function') (handler as any)(e); }}
               style={{ padding: "6px 18px", borderRadius: "7px", border: "none", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: activeTab === tab ? 700 : 400, background: activeTab === tab ? "var(--accent-emerald)" : "transparent", color: activeTab === tab ? "#000" : "var(--text-muted)", transition: "all 0.15s ease" }}
             >
               <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
@@ -1156,12 +1224,12 @@ export function LiveDeliberation() {
                   <div className="mono text-accent">
                     Confidence: {(finalAnswer.confidence * 100).toFixed(1)}%
                   </div>
-                  <button
-                    className="btn-primary flex items-center justify-center gap-2"
-                    onClick={() => navigate(`/task/${taskId}/receipt`)}
+                  <Button
+                    className="flex items-center justify-center gap-2"
+                    onClick={() => navigate(`/task/${taskId}/receipt`)} variant="primary" trackingEvent="livedeliberation_view_on_chain_receipt_rarr_clicked"
                   >
                     View On-Chain Receipt &rarr;
-                  </button>
+                  </Button>
                 </div>
               </motion.div>
             )}

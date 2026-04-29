@@ -54,6 +54,40 @@ class Settings(BaseSettings):
     benchmark_admin_token: str = ""
     stream_ticket_ttl_seconds: int = Field(default=60, ge=5, le=600)
     task_run_lock_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+    background_recovery_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "AGORA_BACKGROUND_RECOVERY_ENABLED",
+            "BACKGROUND_RECOVERY_ENABLED",
+        ),
+    )
+    background_recovery_poll_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=3_600,
+        validation_alias=AliasChoices(
+            "AGORA_BACKGROUND_RECOVERY_POLL_SECONDS",
+            "BACKGROUND_RECOVERY_POLL_SECONDS",
+        ),
+    )
+    background_recovery_stale_seconds: int = Field(
+        default=420,
+        ge=30,
+        le=86_400,
+        validation_alias=AliasChoices(
+            "AGORA_BACKGROUND_RECOVERY_STALE_SECONDS",
+            "BACKGROUND_RECOVERY_STALE_SECONDS",
+        ),
+    )
+    background_recovery_scan_limit: int = Field(
+        default=500,
+        ge=1,
+        le=10_000,
+        validation_alias=AliasChoices(
+            "AGORA_BACKGROUND_RECOVERY_SCAN_LIMIT",
+            "BACKGROUND_RECOVERY_SCAN_LIMIT",
+        ),
+    )
     task_create_rate_limit_per_minute: int = Field(
         default=60,
         ge=0,
