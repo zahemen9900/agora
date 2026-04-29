@@ -1,8 +1,8 @@
 # AGORA
 
-On-chain debate-or-vote arbitration for multi-agent LLM systems.
+On-chain multi-mechanism arbitration for multi-agent LLM systems.
 
-AGORA takes a task, chooses a deliberation mechanism (Debate or Vote), runs multi-agent reasoning, computes convergence and quorum signals, and produces cryptographic transcript artifacts (hashes + Merkle root) that are ready for on-chain receipt submission.
+AGORA takes a task, chooses a deliberation mechanism (Debate, Vote, or Delphi), runs multi-agent reasoning, computes convergence and quorum signals, and produces cryptographic transcript artifacts (hashes + Merkle root) that are ready for on-chain receipt submission.
 
 ## Current Implementation Status
 
@@ -66,8 +66,8 @@ Implemented on top of the Week 1 foundation:
   - the debate cross-exam / devil's-advocate lane
   - surfaced in runtime/API result metadata with exact model IDs
 - Hosted mechanism forcing supports either:
-  - request payload `mechanism_override=vote|debate`
-  - env fallback `AGORA_API_FORCE_MECHANISM=vote|debate`
+  - request payload `mechanism_override=vote|debate|delphi`
+  - env fallback `AGORA_API_FORCE_MECHANISM=vote|debate|delphi`
 - Phase 2 telemetry is now first-class across runtime, API, SDK, and benchmarks:
   - per-model token counts
   - per-model input / output / thinking token splits when available
@@ -77,7 +77,7 @@ Implemented on top of the Week 1 foundation:
 ### Still Deferred / Not Implemented Yet
 
 - SDK-side `agora/solana/client.py` remains a stub; the API-side Solana bridge and contract flow are active.
-- Internal Delphi and MoA scaffolding for a later implementation phase; current public support is Debate and Vote.
+- MoA remains a roadmap placeholder; current public support is Debate, Vote, and Delphi.
 - Final production packaging/publication work for the SDK release channel.
 
 ## End-to-End Runtime Flow
@@ -127,8 +127,8 @@ agora/
   engines/
     debate.py            # Debate mechanism
     vote.py              # Vote mechanism
-    delphi.py            # Internal Week 3 scaffold (not publicly supported yet)
-    moa.py               # Internal Week 3 scaffold (not publicly supported yet)
+    delphi.py            # Delphi mechanism
+    moa.py               # Internal roadmap scaffold (not publicly supported yet)
   runtime/
     monitor.py           # Convergence + switch logic
     hasher.py            # Transcript hashing + Merkle root/receipt
@@ -288,8 +288,8 @@ Optional controls:
 - `RUN_ALL_MODELS_E2E=always|auto|never`: force or skip one local 4-provider vote ensemble run
 - `RUN_HOSTED_API_E2E=always|auto|never`: require hosted `/tasks` flow or downgrade hosted failures to a warning in auto mode
 - `RUN_HOSTED_ALL_MODELS_E2E=always|never`: require hosted API to report the full 4-model vote ensemble
-- `AGORA_API_FORCE_MECHANISM=vote|debate`: fallback mechanism pin for hosted strict demo validation
-- Task create payload field `mechanism_override=vote|debate`: request-level mechanism pin for hosted runs
+- `AGORA_API_FORCE_MECHANISM=vote|debate|delphi`: fallback mechanism pin for hosted strict demo validation
+- Task create payload field `mechanism_override=vote|debate|delphi`: request-level mechanism pin for hosted runs
 - `RUN_ORCHESTRATOR_SMOKE=always|auto|never`: control the natural selector-driven local orchestrator smoke
 - `DEMO_AGENT_COUNT`: orchestrator/hosted smoke agent count (defaults to 4 unless both OpenRouter and all-model smokes are disabled)
 - `DEMO_ORCHESTRATOR_TIMEOUT_SECONDS`, `DEMO_MODEL_TIMEOUT_SECONDS`, `DEMO_ALL_MODELS_TIMEOUT_SECONDS`: cap live provider waits so demo failures are clean
@@ -328,7 +328,7 @@ RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL
 RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_API_E2E=never ./scripts/week1_demo.sh
 
 # Pass custom deliberation query from CLI
-./scripts/week1_demo.sh --query "Should our team choose debate or vote for incident response decisions?"
+./scripts/week1_demo.sh --query "Should our team choose debate, vote, or delphi for incident response decisions?"
 ```
 
 ### Validation Runbook (Recommended)
@@ -516,7 +516,7 @@ Optional controls:
 - to override those for debugging, add `--allow-unsafe-overrides` together with:
   - `--stakes <value>`
   - `--agent-count <value>`
-  - `--mechanism vote|debate`
+  - `--mechanism vote|debate|delphi`
 - `--verbose` to print detailed deliberation/result summaries in terminal
 - `--keep-temp`
 
@@ -783,4 +783,4 @@ The codebase already marks the Solana responsibilities as Josh-owned in the clie
 ## Notes
 
 - merkletools is optional for Python 3.11+; deterministic fallback Merkle construction is built in.
-- Week 1 supports Debate and Vote only; Delphi and MoA are intentionally deferred.
+- Current public support covers Debate, Vote, and Delphi; MoA remains intentionally deferred.

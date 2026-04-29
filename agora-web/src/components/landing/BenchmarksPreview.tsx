@@ -13,11 +13,11 @@ const EMERALD = 'var(--accent-emerald)';
 
 // Chart 1 — Accuracy by task category
 const ACCURACY_DATA = [
-  { cat: 'math',      selector: 88, debate: 82, vote: 75 },
-  { cat: 'factual',   selector: 91, debate: 74, vote: 91 },
-  { cat: 'code',      selector: 85, debate: 80, vote: 68 },
-  { cat: 'reasoning', selector: 83, debate: 76, vote: 71 },
-  { cat: 'creative',  selector: 79, debate: 65, vote: 58 },
+  { cat: 'math',      selector: 88, debate: 82, vote: 75, delphi: 73 },
+  { cat: 'factual',   selector: 91, debate: 74, vote: 91, delphi: 79 },
+  { cat: 'code',      selector: 85, debate: 80, vote: 68, delphi: 74 },
+  { cat: 'reasoning', selector: 83, debate: 76, vote: 71, delphi: 81 },
+  { cat: 'creative',  selector: 79, debate: 65, vote: 58, delphi: 77 },
 ];
 
 // Chart 2 — Selector learning curve
@@ -32,7 +32,6 @@ const LEARNING_DATA = Array.from({ length: 21 }, (_, i) => {
 // Chart 3 — Cost vs quality scatter
 const SCATTER_DATA = [
   { name: 'Vote',     tokens: 420,  accuracy: 72,  fill: AXIS_COLOR },
-  { name: 'MoA',     tokens: 1840, accuracy: 78,  fill: AXIS_COLOR },
   { name: 'Delphi',  tokens: 960,  accuracy: 76,  fill: AXIS_COLOR },
   { name: 'Debate',  tokens: 1280, accuracy: 82,  fill: AXIS_COLOR },
   { name: 'Agora',   tokens: 740,  accuracy: 87,  fill: EMERALD },
@@ -112,6 +111,7 @@ export function BenchmarksPreview() {
                 <Bar dataKey="selector" fill="var(--accent-emerald)" name="Selector" radius={[3,3,0,0]}/>
                 <Bar dataKey="debate"   fill="var(--border-strong)"   name="Debate"   radius={[3,3,0,0]}/>
                 <Bar dataKey="vote"     fill="var(--text-tertiary)"   name="Vote"     radius={[3,3,0,0]}/>
+                <Bar dataKey="delphi"   fill="#a78bfa"                name="Delphi"   radius={[3,3,0,0]}/>
               </BarChart>
             </ResponsiveContainer>
           </ChartCard>

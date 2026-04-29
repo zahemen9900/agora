@@ -11,6 +11,7 @@ import structlog
 
 from agora.agent import pro_caller
 from agora.engines.debate import DebateEngine
+from agora.engines.delphi import DelphiEngine
 from agora.engines.vote import VoteEngine
 from agora.runtime.costing import build_result_costing
 from agora.runtime.hasher import TranscriptHasher
@@ -92,6 +93,7 @@ class AgoraOrchestrator:
         self.hasher = TranscriptHasher()
         self.monitor = StateMonitor()
         self.debate_engine = self.build_debate_engine()
+        self.delphi_engine = self.build_delphi_engine(quorum_threshold=0.6)
         self.vote_engine = self.build_vote_engine(quorum_threshold=0.6)
 
     def build_debate_engine(self, **overrides: Any) -> DebateEngine:
@@ -127,6 +129,24 @@ class AgoraOrchestrator:
         return VoteEngine(
             agent_count=self.agent_count,
             hasher=self.hasher,
+            reasoning_presets=self.reasoning_presets,
+            participant_models=self.local_models,
+            provider_keys=self.local_provider_keys,
+            tier_model_overrides=self.tier_model_overrides,
+            **engine_kwargs,
+        )
+
+    def build_delphi_engine(self, **overrides: Any) -> DelphiEngine:
+        """Build a Delphi engine that inherits the orchestrator's runtime policy."""
+
+        engine_kwargs = {
+            "allow_offline_fallback": self.allow_offline_fallback,
+            **overrides,
+        }
+        return DelphiEngine(
+            agent_count=self.agent_count,
+            hasher=self.hasher,
+            monitor=self.monitor,
             reasoning_presets=self.reasoning_presets,
             participant_models=self.local_models,
             provider_keys=self.local_provider_keys,
@@ -467,6 +487,18 @@ class AgoraOrchestrator:
                         switch_round=1,
                     )
             return vote_outcome.result
+
+        if selection.mechanism == MechanismType.DELPHI:
+            delphi_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+            if event_sink is not None:
+                delphi_run_kwargs["event_sink"] = self._segment_event_sink(
+                    event_sink,
+                    execution_segment=0,
+                    mechanism=MechanismType.DELPHI,
+                )
+            if agents is not None:
+                delphi_run_kwargs["custom_agents"] = agents
+            return await self.delphi_engine.run(**delphi_run_kwargs)
 
         raise ValueError(
             f"Mechanism '{selection.mechanism.value}' is not currently supported. "

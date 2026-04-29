@@ -12,9 +12,9 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 class MechanismType(StrEnum):
     """Deliberation mechanisms in the protocol narrative.
 
-    Only ``debate`` and ``vote`` are executable in the current runtime. ``delphi``
-    and ``moa`` remain visible as roadmap values so historical docs and protocol
-    design notes have stable names without widening the public execution surface.
+    ``debate``, ``vote``, and ``delphi`` are executable in the current runtime.
+    ``moa`` remains visible as a roadmap value so historical docs and protocol
+    design notes have a stable name without widening the public execution surface.
     """
 
     DEBATE = "debate"
@@ -24,7 +24,7 @@ class MechanismType(StrEnum):
 
 
 SUPPORTED_MECHANISMS: frozenset[MechanismType] = frozenset(
-    {MechanismType.DEBATE, MechanismType.VOTE}
+    {MechanismType.DEBATE, MechanismType.VOTE, MechanismType.DELPHI}
 )
 
 
@@ -283,6 +283,25 @@ class VoteState(BaseModel):
     final_answer: str | None = None
     transcript_hashes: list[str] = Field(default_factory=list)
     merkle_root: str | None = None
+
+
+class DelphiState(BaseModel):
+    """LangGraph state for the iterative Delphi engine."""
+
+    model_config = ConfigDict(frozen=False)
+
+    task: str
+    task_features: TaskFeatures
+    round: int = Field(default=0, ge=0)
+    max_rounds: int = Field(default=3, ge=1)
+    independent_outputs: list[AgentOutput] = Field(default_factory=list)
+    revision_outputs: list[AgentOutput] = Field(default_factory=list)
+    anonymized_feedback: dict[str, list[str]] = Field(default_factory=dict)
+    convergence_history: list[ConvergenceMetrics] = Field(default_factory=list)
+    transcript_hashes: list[str] = Field(default_factory=list)
+    final_answer: str | None = None
+    merkle_root: str | None = None
+    quorum_reached: bool = False
 
 
 class DeliberationResult(BaseModel):

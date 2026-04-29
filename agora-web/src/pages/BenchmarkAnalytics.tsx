@@ -38,7 +38,7 @@ function extractCategoryAccuracy(
 
   const pick = (map: Record<string, Record<string, unknown>> | undefined) => {
     if (!map) return null;
-    const m = (map.selector ?? map.vote ?? map.debate) as Record<string, unknown> | undefined;
+    const m = (map.selector ?? map.delphi ?? map.vote ?? map.debate) as Record<string, unknown> | undefined;
     if (!m || asNum(m.scored_run_count) === 0) return null;
     return asNum(m.accuracy) * 100;
   };

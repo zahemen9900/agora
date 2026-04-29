@@ -43,7 +43,8 @@ def selector_prompt(
         "Your role is selector. Decide how the group should deliberate, "
         "not how to answer the task. "
         "Available mechanisms: debate for adversarial exploration, "
-        "vote for independent aggregation. "
+        "vote for independent aggregation, "
+        "delphi for iterative anonymous revision toward convergence. "
         "Prefer the mechanism whose failure mode best matches the task."
     )
     user = (
@@ -57,7 +58,7 @@ def selector_prompt(
         "Historical performance:\n"
         f"{json.dumps(historical_payload, indent=2)}\n\n"
         "Respond with a JSON object in this exact schema:\n"
-        '{"mechanism": "debate"|"vote", "confidence": 0.0-1.0, "reasoning": "..."}'
+        '{"mechanism": "debate"|"vote"|"delphi", "confidence": 0.0-1.0, "reasoning": "..."}'
     )
     return PromptBundle(system=system, user=user)
 
@@ -75,6 +76,48 @@ def vote_participant_prompt(*, task: str) -> PromptBundle:
     user = (
         f"Task: {task}\n"
         "Return JSON with fields: answer, confidence (0-1), predicted_group_answer, reasoning."
+    )
+    return PromptBundle(system=system, user=user)
+
+
+def delphi_independent_prompt(*, task: str) -> PromptBundle:
+    """Build independent-round prompts for Delphi participants."""
+
+    system = (
+        f"{_BASE_POLICY} "
+        "Your role is Delphi participant in the independent round. "
+        "Answer without simulating consensus or anticipating what the group wants. "
+        "State your current best answer, a calibrated confidence, and the shortest rationale "
+        "needed for another expert to audit the answer."
+    )
+    user = (
+        f"Task: {task}\n"
+        "Return JSON with fields: answer, confidence (0-1), reasoning."
+    )
+    return PromptBundle(system=system, user=user)
+
+
+def delphi_revision_prompt(
+    *,
+    task: str,
+    prior_answer: str,
+    peer_feedback: list[str],
+) -> PromptBundle:
+    """Build anonymized revision prompts for iterative Delphi rounds."""
+
+    system = (
+        f"{_BASE_POLICY} "
+        "Your role is Delphi participant in an anonymous revision round. "
+        "Read the peer answers, update only if the evidence actually moves you, "
+        "and prefer convergence through better reasoning rather than social mimicry. "
+        "If you keep your answer, justify why it remains stronger than the alternatives."
+    )
+    user = (
+        f"Task: {task}\n"
+        f"Your prior answer: {prior_answer}\n"
+        "Anonymous peer answers:\n"
+        f"{json.dumps(peer_feedback, indent=2)}\n"
+        "Return JSON with fields: answer, confidence (0-1), reasoning."
     )
     return PromptBundle(system=system, user=user)
 

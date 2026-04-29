@@ -792,26 +792,33 @@ async def test_create_task_resolves_and_persists_reasoning_presets(
 
 
 @pytest.mark.asyncio
-async def test_create_task_rejects_unsupported_mechanism_override(
+async def test_create_task_accepts_delphi_mechanism_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "unsupported-override-data"))
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "delphi-override-data"))
     try:
         monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
         monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
 
-        with pytest.raises(ValidationError) as exc_info:
+        created = await task_routes.create_task(
             TaskCreateRequest(
                 task="force unsupported override",
                 agent_count=3,
                 stakes=0.0,
                 mechanism_override="delphi",
-            )
+            ),
+            _override_user(),
+        )
+
+        fetched = await task_routes.get_task_status(created.task_id, _override_user(), detailed=True)
     finally:
         task_routes._store = None
 
-    assert "Input should be 'debate' or 'vote'" in str(exc_info.value)
+    assert created.mechanism == "delphi"
+    assert created.mechanism_override_source == "request"
+    assert fetched.mechanism == "delphi"
+    assert fetched.mechanism_override == "delphi"
 
 
 @pytest.mark.asyncio
@@ -839,30 +846,29 @@ async def test_create_task_rate_limit_returns_429(
 
 
 @pytest.mark.asyncio
-async def test_create_task_rejects_unsupported_forced_mechanism_configuration(
+async def test_create_task_accepts_delphi_forced_mechanism_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "unsupported-forced-data"))
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "delphi-forced-data"))
     try:
         monkeypatch.setattr(task_routes.settings, "api_force_mechanism", "delphi")
         monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
         monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
 
-        with pytest.raises(HTTPException) as exc_info:
-            await task_routes.create_task(
-                TaskCreateRequest(
-                    task="force unsupported from env",
-                    agent_count=3,
-                    stakes=0.0,
-                ),
-                _override_user(),
-            )
+        created = await task_routes.create_task(
+            TaskCreateRequest(
+                task="force unsupported from env",
+                agent_count=3,
+                stakes=0.0,
+            ),
+            _override_user(),
+        )
     finally:
         task_routes._store = None
 
-    assert exc_info.value.status_code == 500
-    assert "Supported mechanisms: debate, vote" in str(exc_info.value.detail)
+    assert created.mechanism == "delphi"
+    assert created.mechanism_override_source == "env_pin"
 
 
 @pytest.mark.asyncio
@@ -885,7 +891,7 @@ async def test_run_task_rejects_unsupported_persisted_mechanism(
         assert store is not None
         task = await store.get_task("user-1", create.task_id)
         assert task is not None
-        task["mechanism"] = "delphi"
+        task["mechanism"] = "moa"
         task["mechanism_override"] = None
         await store.save_task("user-1", create.task_id, task)
 
@@ -898,7 +904,7 @@ async def test_run_task_rejects_unsupported_persisted_mechanism(
         task_routes._store = None
 
     assert exc_info.value.status_code == 409
-    assert "Supported mechanisms: debate, vote" in str(exc_info.value.detail)
+    assert "Supported mechanisms: debate, delphi, vote" in str(exc_info.value.detail)
     assert refreshed["status"] == "pending"
 
 

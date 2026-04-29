@@ -1735,7 +1735,11 @@ async def _execute_task_run(
     if hasattr(orchestrator, "build_vote_engine"):
         orchestrator.vote_engine = orchestrator.build_vote_engine(
             quorum_threshold=task.quorum_threshold,
-    )
+        )
+    if hasattr(orchestrator, "build_delphi_engine"):
+        orchestrator.delphi_engine = orchestrator.build_delphi_engine(
+            quorum_threshold=task.quorum_threshold,
+        )
     try:
         if recovering_stale_in_progress:
             recovery_event = {

@@ -1,3 +1,3 @@
 """Deliberation engines package."""
 
-__all__ = ["debate", "vote"]
+__all__ = ["debate", "vote", "delphi"]

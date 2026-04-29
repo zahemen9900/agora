@@ -39,9 +39,11 @@ export interface BenchmarkCategoryRow {
   category: string;
   debate: number | null;
   vote: number | null;
+  delphi: number | null;
   selector: number | null;
   debateScoredRuns: number;
   voteScoredRuns: number;
+  delphiScoredRuns: number;
   selectorScoredRuns: number;
 }
 
@@ -91,7 +93,7 @@ export const BENCHMARK_DOMAIN_KEYS = [
   "demo",
 ] as const;
 
-export const BENCHMARK_STAGE_KEYS = ["debate", "vote", "selector"] as const;
+export const BENCHMARK_STAGE_KEYS = ["debate", "vote", "delphi", "selector"] as const;
 
 export const DEFAULT_METRIC: NormalizedMetric = {
   accuracy: 0,
@@ -159,6 +161,7 @@ export function buildOverviewAccuracyData(summary: NormalizedSummary): Array<{
   category: string;
   debate: number | null;
   vote: number | null;
+  delphi: number | null;
   selector: number | null;
 }> {
   const categorySource = hasCategoryAxisData(summary.per_category_by_mechanism)
@@ -168,11 +171,13 @@ export function buildOverviewAccuracyData(summary: NormalizedSummary): Array<{
     const metricsByMode = categorySource[domain] ?? {};
     const debateScored = metricsByMode.debate?.scored_run_count ?? 0;
     const voteScored = metricsByMode.vote?.scored_run_count ?? 0;
+    const delphiScored = metricsByMode.delphi?.scored_run_count ?? 0;
     const selectorScored = metricsByMode.selector?.scored_run_count ?? 0;
     return {
       category: titleCase(domain),
       debate: debateScored > 0 ? ((metricsByMode.debate?.accuracy ?? 0) as number) * 100 : null,
       vote: voteScored > 0 ? ((metricsByMode.vote?.accuracy ?? 0) as number) * 100 : null,
+      delphi: delphiScored > 0 ? ((metricsByMode.delphi?.accuracy ?? 0) as number) * 100 : null,
       selector: selectorScored > 0 ? ((metricsByMode.selector?.accuracy ?? 0) as number) * 100 : null,
     };
   });
@@ -335,14 +340,17 @@ export function buildDetailCategoryRows(summary: NormalizedSummary): BenchmarkCa
     const perMode = categorySource[category] ?? {};
     const debateScoredRuns = Math.round(perMode.debate?.scored_run_count ?? 0);
     const voteScoredRuns = Math.round(perMode.vote?.scored_run_count ?? 0);
+    const delphiScoredRuns = Math.round(perMode.delphi?.scored_run_count ?? 0);
     const selectorScoredRuns = Math.round(perMode.selector?.scored_run_count ?? 0);
     return {
       category: titleCase(category),
       debate: debateScoredRuns > 0 ? Number(((perMode.debate?.accuracy ?? 0) * 100).toFixed(1)) : null,
       vote: voteScoredRuns > 0 ? Number(((perMode.vote?.accuracy ?? 0) * 100).toFixed(1)) : null,
+      delphi: delphiScoredRuns > 0 ? Number(((perMode.delphi?.accuracy ?? 0) * 100).toFixed(1)) : null,
       selector: selectorScoredRuns > 0 ? Number(((perMode.selector?.accuracy ?? 0) * 100).toFixed(1)) : null,
       debateScoredRuns,
       voteScoredRuns,
+      delphiScoredRuns,
       selectorScoredRuns,
     };
   });

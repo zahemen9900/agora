@@ -18,7 +18,7 @@ logger = structlog.get_logger(__name__)
 class _ReasoningResponse(BaseModel):
     """Structured response format expected from the selector reasoning model."""
 
-    mechanism: Literal["debate", "vote"]
+    mechanism: Literal["debate", "vote", "delphi"]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str
 

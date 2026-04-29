@@ -9,6 +9,7 @@ import {
   listTasks,
   releaseTaskPayment,
   submitTask,
+  type MechanismName,
   type TaskCreateResponse,
   type TaskEvent,
   type TaskStatusResponse,
@@ -29,6 +30,7 @@ export interface SubmitTaskInput {
   taskText: string;
   agentCount: number;
   stakes: number;
+  mechanismOverride?: MechanismName | null;
   reasoningPresets: Partial<ReasoningPresetState>;
   tierModelOverrides?: RuntimeTierModelOverridesPayload;
 }
@@ -187,9 +189,24 @@ export function useSubmitTaskMutation() {
   const { getAccessToken } = useAuth();
 
   return useMutation<TaskCreateResponse, Error, SubmitTaskInput>({
-    mutationFn: async ({ taskText, agentCount, stakes, reasoningPresets, tierModelOverrides }) => {
+    mutationFn: async ({
+      taskText,
+      agentCount,
+      stakes,
+      mechanismOverride,
+      reasoningPresets,
+      tierModelOverrides,
+    }) => {
       const token = await getAccessToken();
-      return submitTask(taskText, agentCount, stakes, reasoningPresets, tierModelOverrides, token);
+      return submitTask(
+        taskText,
+        agentCount,
+        stakes,
+        mechanismOverride ?? null,
+        reasoningPresets,
+        tierModelOverrides,
+        token,
+      );
     },
   });
 }

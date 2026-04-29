@@ -33,12 +33,20 @@ class HeuristicSelector:
             "bounded, low-disagreement, and easier to resolve through direct aggregation."
         )
 
-        if topic in {"reasoning", "creative"}:
-            mechanism = MechanismType.DEBATE
-            confidence = 0.74
+        if topic == "creative":
+            mechanism = MechanismType.DELPHI
+            confidence = 0.76
             rationale = (
-                "Deterministic heuristic fallback selected debate because this domain tends "
-                "to benefit from adversarial exploration and synthesis."
+                "Deterministic heuristic fallback selected delphi because creative tasks "
+                "benefit from diverse first passes followed by anonymous revision."
+            )
+        elif topic == "reasoning" and (disagreement >= 0.65 or answer_space >= 8):
+            mechanism = MechanismType.DELPHI
+            confidence = 0.73
+            rationale = (
+                "Deterministic heuristic fallback selected delphi because the task has "
+                "high disagreement potential and a broad answer space that benefits from "
+                "iterative anonymous convergence."
             )
         elif topic == "code" and (complexity >= 0.55 or answer_space >= 4):
             mechanism = MechanismType.DEBATE
@@ -47,12 +55,20 @@ class HeuristicSelector:
                 "Deterministic heuristic fallback selected debate because the code task "
                 "looks multi-path or failure-sensitive enough to justify rebuttal."
             )
-        elif disagreement >= 0.6 or answer_space >= 6 or stakes >= 0.7:
+        elif disagreement >= 0.75 or answer_space >= 10:
+            mechanism = MechanismType.DELPHI
+            confidence = 0.7
+            rationale = (
+                "Deterministic heuristic fallback selected delphi because the task shows "
+                "very high disagreement potential or a large answer space that should "
+                "be narrowed through multiple anonymous rounds."
+            )
+        elif stakes >= 0.7 or disagreement >= 0.6 or answer_space >= 6:
             mechanism = MechanismType.DEBATE
             confidence = 0.67
             rationale = (
-                "Deterministic heuristic fallback selected debate because the task shows "
-                "high disagreement potential, large answer space, or elevated stakes."
+                "Deterministic heuristic fallback selected debate because the task is "
+                "high-stakes or contentious enough to justify direct challenge and rebuttal."
             )
         elif topic == "factual" and disagreement <= 0.35 and answer_space <= 3:
             mechanism = MechanismType.VOTE
@@ -68,12 +84,12 @@ class HeuristicSelector:
                 "Deterministic heuristic fallback selected vote because the math task looks "
                 "narrow enough for independent solutions plus aggregation."
             )
-        elif bandit_mechanism == MechanismType.DEBATE and bandit_confidence >= 0.72:
-            mechanism = MechanismType.DEBATE
+        elif bandit_confidence >= 0.72:
+            mechanism = bandit_mechanism
             confidence = min(0.78, max(0.6, bandit_confidence))
             rationale = (
-                "Deterministic heuristic fallback aligned with the learned debate prior "
-                "because the observed features do not justify overriding a strong bandit signal."
+                "Deterministic heuristic fallback aligned with the learned bandit prior "
+                "because the observed features do not justify overriding a strong historical signal."
             )
 
         reasoning_hash = hashlib.sha256(rationale.encode("utf-8")).hexdigest()

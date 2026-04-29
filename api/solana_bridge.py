@@ -40,6 +40,7 @@ MECHANISM_TO_U8: dict[str, int] = {
 EXECUTABLE_MECHANISM_TO_U8: dict[str, int] = {
     "debate": MECHANISM_TO_U8["debate"],
     "vote": MECHANISM_TO_U8["vote"],
+    "delphi": MECHANISM_TO_U8["delphi"],
 }
 _EXECUTABLE_MECHANISMS_TEXT = ", ".join(sorted(EXECUTABLE_MECHANISM_TO_U8))
 
