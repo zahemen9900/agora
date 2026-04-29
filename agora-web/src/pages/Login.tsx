@@ -136,7 +136,8 @@ export function LoginPage() {
           {isAuthenticated ? (
             <Button
               onClick={() => navigate('/tasks')}
-              style={{ fontSize: '13px', padding: '8px 18px' }} variant="primary"
+              variant="primary"
+              style={{ fontSize: '13px', padding: '8px 18px', background: 'var(--accent)', color: 'var(--text-inverse)', border: 'none' }}
             >
               Go to Dashboard
             </Button>
@@ -144,7 +145,8 @@ export function LoginPage() {
             <Button
               onClick={() => signIn()}
               disabled={isLoading}
-              style={{ fontSize: '13px', padding: '8px 18px' }} variant="secondary"
+              variant="secondary"
+              style={{ fontSize: '13px', padding: '8px 18px', border: '1.5px solid var(--border-strong)', background: 'transparent', color: 'var(--text-primary)' }}
             >
               {isLoading ? 'Connecting…' : 'Sign In'}
             </Button>

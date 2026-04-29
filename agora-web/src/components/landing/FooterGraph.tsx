@@ -273,7 +273,7 @@ export function FooterGraph() {
   return (
     <footer style={{ background: 'var(--bg-base)', borderTop: '1px solid var(--border-default)', overflow: 'hidden' }}>
       {/* Above-graph text */}
-      <div style={{ textAlign: 'center', paddingTop: '80px', paddingBottom: '32px' }}>
+      <div style={{ textAlign: 'center', paddingTop: '48px', paddingBottom: '24px' }}>
         <div style={{
           fontFamily: "'Commit Mono', monospace",
           fontSize: '28px',
@@ -297,7 +297,7 @@ export function FooterGraph() {
       </div>
 
       {/* Canvas */}
-      <div style={{ position: 'relative', width: '100%', height: '520px' }}>
+      <div style={{ position: 'relative', width: '100%', height: '480px' }}>
         <canvas
           ref={canvasRef}
           style={{ width: '100%', height: '100%', display: 'block' }}
