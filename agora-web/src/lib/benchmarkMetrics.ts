@@ -91,7 +91,7 @@ export const BENCHMARK_DOMAIN_KEYS = [
   "demo",
 ] as const;
 
-export const BENCHMARK_STAGE_KEYS = ["debate", "vote", "selector"] as const;
+export const BENCHMARK_STAGE_KEYS = ["debate", "vote", "delphi"] as const;
 
 export const DEFAULT_METRIC: NormalizedMetric = {
   accuracy: 0,
@@ -352,7 +352,7 @@ function buildMetricRows(
   source: Record<string, NormalizedMetric>,
 ): BenchmarkMetricRow[] {
   const ordered = new Set<string>(BENCHMARK_STAGE_KEYS);
-  Object.keys(source).forEach((key) => ordered.add(key));
+  Object.keys(source).filter((key) => key !== "selector").forEach((key) => ordered.add(key));
   return Array.from(ordered).map((mechanismKey) => {
     const metric = source[mechanismKey] ?? DEFAULT_METRIC;
     const scoredRunCount = Math.round(metric.scored_run_count);
