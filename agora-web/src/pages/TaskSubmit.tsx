@@ -155,17 +155,12 @@ export function TaskSubmit() {
     ? recentTasksQuery.error.message
     : null;
 
-  // ── Rotating prompt set — random on mount, re-randomise on each data refresh ──
-  const [activeSetIdx, setActiveSetIdx] = useState(() => Math.floor(Math.random() * PROMPT_SETS.length));
-  const [hoveredPrompt, setHoveredPrompt] = useState<{ text: string; rect: DOMRect } | null>(null);
-  const prevDataUpdatedAt = useRef(recentTasksQuery.dataUpdatedAt);
-  useEffect(() => {
-    if (recentTasksQuery.dataUpdatedAt !== prevDataUpdatedAt.current) {
-      prevDataUpdatedAt.current = recentTasksQuery.dataUpdatedAt;
-      setActiveSetIdx(Math.floor(Math.random() * PROMPT_SETS.length));
-    }
-  }, [recentTasksQuery.dataUpdatedAt]);
+  // ── Rotating prompt set — deterministic but changing on data refresh ──
+  const activeSetIdx = recentTasksQuery.dataUpdatedAt
+    ? (recentTasksQuery.dataUpdatedAt % PROMPT_SETS.length)
+    : 0;
   const activePrompts = PROMPT_SETS[activeSetIdx];
+  const [hoveredPrompt, setHoveredPrompt] = useState<{ text: string; rect: DOMRect } | null>(null);
 
   useEffect(() => {
     if (recentTasksQuery.error) {
@@ -177,8 +172,11 @@ export function TaskSubmit() {
     if (!runtimeConfig || runtimeDefaultsHydrated) {
       return;
     }
-    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
-    setRuntimeDefaultsHydrated(true);
+    // Defer state updates to avoid synchronous setState in effect warning
+    queueMicrotask(() => {
+      setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
+      setRuntimeDefaultsHydrated(true);
+    });
   }, [runtimeConfig, runtimeDefaultsHydrated]);
 
   const providerSummary = buildProviderSummary(agentCount, runtimeConfig, tierModelOverrides);
