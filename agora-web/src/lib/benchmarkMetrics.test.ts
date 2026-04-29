@@ -9,6 +9,8 @@ import {
   buildDetailMechanismRows,
   buildDetailStageRows,
   buildOverviewLearningCurve,
+  buildCategoryRadarData,
+  buildCategoryLearningShiftData,
   detectBenchmarkArtifactKind,
   normalizeBenchmarkSummary,
 } from "./benchmarkMetrics";
@@ -58,6 +60,21 @@ test("buildOverviewLearningCurve emits real pre/post values for validation artif
   assert.equal(learningCurve.postScoredRunCount, 3);
   assert.equal(learningCurve.delta, 50);
   assert.equal(learningCurve.saturated, false);
+});
+
+test("buildOverviewLearningCurve does not borrow vote metrics when selector-stage coverage is absent", () => {
+  const learningCurve = buildOverviewLearningCurve({
+    pre_learning: { summary: { per_mode: { vote: { accuracy: 1, scored_run_count: 3 } } } },
+    post_learning: { summary: { per_mode: { vote: { accuracy: 0.5, scored_run_count: 3 } } } },
+  });
+
+  assert.equal(learningCurve.available, false);
+  assert.match(learningCurve.reason ?? "", /selector coverage/i);
+  assert.equal(learningCurve.preAccuracy, 0);
+  assert.equal(learningCurve.postAccuracy, 0);
+  assert.equal(learningCurve.preScoredRunCount, 0);
+  assert.equal(learningCurve.postScoredRunCount, 0);
+  assert.equal(learningCurve.delta, 0);
 });
 
 test("detail rows keep stage metrics separate from actual mechanism metrics", () => {
@@ -110,7 +127,7 @@ test("detail rows keep stage metrics separate from actual mechanism metrics", ()
 
   assert.equal(stageRows.find((row) => row.mechanism === "Selector")?.accuracy, 100);
   assert.equal(stageRows.find((row) => row.mechanism === "Selector")?.runCount, 6);
-  assert.equal(mechanismRows.find((row) => row.mechanism === "Selector")?.accuracy, null);
+  assert.equal(mechanismRows.find((row) => row.mechanism === "Selector"), undefined);
   assert.equal(mechanismRows.find((row) => row.mechanism === "Vote")?.accuracy, 80);
 });
 
@@ -299,7 +316,7 @@ test("overview cost data uses actual executed mechanism cost before requested st
 
   const rows = buildOverviewCostData(summary);
   assert.equal(rows.find((row) => row.mechanism === "Debate")?.estimatedCostUsd, 0.03);
-  assert.equal(rows.find((row) => row.mechanism === "Selector")?.estimatedCostUsd, null);
+  assert.equal(rows.find((row) => row.mechanism === "Selector"), undefined);
 });
 
 test("overview heatmap rows preserve scored counts and proxy markers", () => {
@@ -338,13 +355,67 @@ test("overview heatmap rows preserve scored counts and proxy markers", () => {
   const rows = buildOverviewHeatmapRows(summary);
   const demoDebate = rows.find((row) => row.category === "Demo")?.cells.find((cell) => cell.mechanism === "Debate");
   const mathVote = rows.find((row) => row.category === "Math")?.cells.find((cell) => cell.mechanism === "Vote");
-  const mathSelector = rows.find((row) => row.category === "Math")?.cells.find((cell) => cell.mechanism === "Selector");
-
   assert.equal(demoDebate?.accuracy, 100);
   assert.equal(demoDebate?.proxyRunCount, 1);
   assert.equal(mathVote?.accuracy, 50);
   assert.equal(mathVote?.scoredRunCount, 2);
-  assert.equal(mathSelector?.accuracy, null);
+  assert.equal(demoDebate?.relativeSampleWeight, 0.5);
+  assert.equal(mathVote?.relativeSampleWeight, 1);
+});
+
+test("overview heatmap rows scale sample weight relative to the largest visible bucket", () => {
+  const summary = normalizeBenchmarkSummary(
+    {
+      per_category_by_mechanism: {
+        math: {
+          vote: {
+            accuracy: 1,
+            run_count: 3,
+            scored_run_count: 3,
+            proxy_run_count: 0,
+            avg_tokens: 0,
+            avg_thinking_tokens: 0,
+            avg_latency_ms: 0,
+            avg_estimated_cost_usd: 0,
+          },
+        },
+        factual: {
+          vote: {
+            accuracy: 1,
+            run_count: 2,
+            scored_run_count: 2,
+            proxy_run_count: 0,
+            avg_tokens: 0,
+            avg_thinking_tokens: 0,
+            avg_latency_ms: 0,
+            avg_estimated_cost_usd: 0,
+          },
+        },
+        reasoning: {
+          vote: {
+            accuracy: 1,
+            run_count: 1,
+            scored_run_count: 1,
+            proxy_run_count: 0,
+            avg_tokens: 0,
+            avg_thinking_tokens: 0,
+            avg_latency_ms: 0,
+            avg_estimated_cost_usd: 0,
+          },
+        },
+      },
+    },
+    null,
+  );
+
+  const rows = buildOverviewHeatmapRows(summary);
+  const mathVote = rows.find((row) => row.category === "Math")?.cells.find((cell) => cell.mechanism === "Vote");
+  const factualVote = rows.find((row) => row.category === "Factual")?.cells.find((cell) => cell.mechanism === "Vote");
+  const reasoningVote = rows.find((row) => row.category === "Reasoning")?.cells.find((cell) => cell.mechanism === "Vote");
+
+  assert.equal(mathVote?.relativeSampleWeight, 1);
+  assert.equal(factualVote?.relativeSampleWeight, 0.6667);
+  assert.equal(reasoningVote?.relativeSampleWeight, 0.3333);
 });
 
 test("overview pareto data marks non-dominated mechanisms", () => {
@@ -390,4 +461,95 @@ test("overview pareto data marks non-dominated mechanisms", () => {
   assert.equal(rows.find((row) => row.mechanism === "Debate")?.frontier, true);
   assert.equal(rows.find((row) => row.mechanism === "Vote")?.frontier, true);
   assert.equal(rows.find((row) => row.mechanism === "Selector")?.frontier, false);
+});
+
+test("category radar weights accuracy and coverage by actual run counts", () => {
+  const summary = normalizeBenchmarkSummary(
+    {
+      per_category_by_mechanism: {
+        creative: {
+          vote: {
+            accuracy: 1,
+            run_count: 1,
+            scored_run_count: 1,
+            proxy_run_count: 1,
+            avg_tokens: 100,
+            avg_thinking_tokens: 10,
+            avg_latency_ms: 1000,
+            avg_estimated_cost_usd: 0.01,
+          },
+          delphi: {
+            accuracy: 0,
+            run_count: 9,
+            scored_run_count: 9,
+            proxy_run_count: 9,
+            avg_tokens: 300,
+            avg_thinking_tokens: 150,
+            avg_latency_ms: 9000,
+            avg_estimated_cost_usd: 0.09,
+          },
+        },
+      },
+    },
+    null,
+  );
+
+  const creative = buildCategoryRadarData(summary).find((row) => row.category === "Creative");
+  assert.equal(creative?.accuracy, 10);
+  assert.equal(creative?.coverage, 100);
+});
+
+test("category learning shift data uses selector-stage summaries rather than executed-mechanism fallbacks", () => {
+  const rows = buildCategoryLearningShiftData({
+    pre_learning: {
+      summary: {
+        per_category: {
+          reasoning: {
+            selector: {
+              accuracy: 0.5,
+              scored_run_count: 2,
+            },
+          },
+        },
+        per_category_by_mechanism: {
+          reasoning: {
+            vote: {
+              accuracy: 1,
+              scored_run_count: 2,
+            },
+          },
+        },
+      },
+    },
+    post_learning: {
+      summary: {
+        per_category: {
+          reasoning: {
+            selector: {
+              accuracy: 0.75,
+              scored_run_count: 2,
+            },
+          },
+        },
+        per_category_by_mechanism: {
+          reasoning: {
+            vote: {
+              accuracy: 1,
+              scored_run_count: 2,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(rows, [
+    {
+      category: "Reasoning",
+      pre: 50,
+      post: 75,
+      delta: 25,
+      saturated: false,
+    },
+  ]);
 });

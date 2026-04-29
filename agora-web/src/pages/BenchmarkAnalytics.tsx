@@ -8,7 +8,7 @@ import {
   buildEnhancedParetoData,
   buildPerModelCostData,
   buildCategoryRadarData,
-  BENCHMARK_DOMAIN_KEYS,
+  buildCategoryLearningShiftData,
   type NormalizedMetric,
 } from "../lib/benchmarkMetrics";
 import { injectChartKeyframes, SkeletonChartBlock, CHART_FONT } from "../components/benchmark/ChartCard";
@@ -16,35 +16,6 @@ import { CostLatencyBubble } from "../components/benchmark/analytics/CostLatency
 import { SlopeGraph, type SlopeDataPoint } from "../components/benchmark/analytics/SlopeGraph";
 import { PerModelCostBreakdown } from "../components/benchmark/analytics/PerModelCostBreakdown";
 import { CategoryRadar } from "../components/benchmark/analytics/CategoryRadar";
-
-function asNum(v: unknown): number {
-  return typeof v === "number" && isFinite(v) ? v : 0;
-}
-
-function isObj(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null;
-}
-
-function extractCategoryAccuracy(
-  summary: Record<string, unknown>,
-  domain: string,
-): number | null {
-  const byCat = isObj(summary.per_category_by_mechanism)
-    ? (summary.per_category_by_mechanism as Record<string, Record<string, Record<string, unknown>>>)[domain]
-    : undefined;
-  const flat = isObj(summary.per_category)
-    ? (summary.per_category as Record<string, Record<string, Record<string, unknown>>>)[domain]
-    : undefined;
-
-  const pick = (map: Record<string, Record<string, unknown>> | undefined) => {
-    if (!map) return null;
-    const m = (map.selector ?? map.delphi ?? map.vote ?? map.debate) as Record<string, unknown> | undefined;
-    if (!m || asNum(m.scored_run_count) === 0) return null;
-    return asNum(m.accuracy) * 100;
-  };
-
-  return pick(byCat as Record<string, Record<string, unknown>>) ?? pick(flat as Record<string, Record<string, unknown>>);
-}
 
 export function BenchmarkAnalytics() {
   useEffect(() => { injectChartKeyframes(); }, []);
@@ -68,36 +39,10 @@ export function BenchmarkAnalytics() {
 
   const categoryRadar = useMemo(() => buildCategoryRadarData(summary), [summary]);
 
-  // Build slope data directly from pre/post raw payload summaries
-  const slopeData = useMemo((): SlopeDataPoint[] => {
-    const benchPayload = payload;
-    const preSection = benchPayload.pre_learning;
-    const postSection = benchPayload.post_learning;
-
-    if (!isObj(preSection) || !isObj(postSection)) return [];
-
-    const preSummary = isObj(preSection.summary) ? preSection.summary as Record<string, unknown> : null;
-    const postSummary = isObj(postSection.summary) ? postSection.summary as Record<string, unknown> : null;
-
-    if (!preSummary || !postSummary) return [];
-
-    const points = BENCHMARK_DOMAIN_KEYS.map((domain): SlopeDataPoint | null => {
-      const pre = extractCategoryAccuracy(preSummary, domain);
-      const post = extractCategoryAccuracy(postSummary, domain);
-      if (pre === null) return null;
-      const postVal = post ?? pre;
-      const delta = Number((postVal - pre).toFixed(1));
-      return {
-        category: domain.charAt(0).toUpperCase() + domain.slice(1),
-        pre,
-        post: postVal,
-        delta,
-        saturated: pre >= 99.9 && postVal >= 99.9,
-      };
-    });
-
-    return points.filter((p): p is SlopeDataPoint => p !== null);
-  }, [overview, payload]);
+  const slopeData = useMemo(
+    (): SlopeDataPoint[] => buildCategoryLearningShiftData(payload),
+    [payload],
+  );
 
   // Mechanism-level cost rows as fallback when no run-level telemetry
   const mechanismCostFallback = useMemo(() => {

@@ -307,6 +307,30 @@ class TaskStore:
                 break
         return tasks
 
+    async def list_all_tasks(self, limit: int = 500) -> list[dict[str, Any]]:
+        prefix = f"{self._AGORA_NAMESPACE_PREFIX}/users/"
+        blobs = [
+            blob
+            for blob in self._list_blobs(prefix=prefix, operation="list_all_tasks")
+            if "/tasks/" in blob.name and blob.name.endswith(".json")
+        ]
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        tasks: list[dict[str, Any]] = []
+        for blob in blobs[:limit]:
+            task = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_all_tasks.read_task",
+            )
+            if task is None:
+                continue
+            tasks.append(task)
+        return tasks
+
     async def append_event(self, workspace_id: str, task_id: str, event: dict[str, Any]) -> None:
         await self.append_events(workspace_id, task_id, [event])
 
@@ -674,6 +698,30 @@ class TaskStore:
                 blob,
                 allow_missing=True,
                 operation="list_user_test_results.read_test",
+            )
+            if record is None:
+                continue
+            records.append(record)
+        return records
+
+    async def list_all_user_test_results(self, limit: int = 500) -> list[dict[str, Any]]:
+        prefix = f"{self._AGORA_NAMESPACE_PREFIX}/users/"
+        blobs = [
+            blob
+            for blob in self._list_blobs(prefix=prefix, operation="list_all_user_test_results")
+            if "/tests/" in blob.name and blob.name.endswith(".json")
+        ]
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+
+        records: list[dict[str, Any]] = []
+        for blob in blobs[:limit]:
+            record = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_all_user_test_results.read_test",
             )
             if record is None:
                 continue
