@@ -56,6 +56,7 @@ import {
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
 
 type CatalogSortMode = "recent" | "frequency";
+type ParetoPoint = ReturnType<typeof buildOverviewParetoData>[number];
 
 function normalizeText(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
@@ -217,7 +218,7 @@ function ParetoTooltip({
   payload,
 }: {
   active?: boolean;
-  payload?: Array<{ payload?: { mechanism: string; avgCostUsd: number | null; accuracy: number | null; avgTokens: number; scoredRunCount: number; frontier: boolean } }>;
+  payload?: ReadonlyArray<{ payload?: ParetoPoint }>;
 }) {
   const point = payload?.[0]?.payload;
   if (!active || !point) {
@@ -415,11 +416,13 @@ export function Benchmarks() {
   const [benchmarkAgentCount, setBenchmarkAgentCount] = useState(4);
   const [trainingPerCategory, setTrainingPerCategory] = useState(1);
   const [holdoutPerCategory, setHoldoutPerCategory] = useState(1);
-  const [reasoningPresets, setReasoningPresets] = useState<ReasoningPresetState>(
-    DEFAULT_REASONING_PRESETS,
+  const defaultReasoningPresets = useMemo(
+    () => runtimeConfig ? resolveDefaultReasoningPresets(runtimeConfig) : DEFAULT_REASONING_PRESETS,
+    [runtimeConfig],
   );
+  const [reasoningPresetOverrides, setReasoningPresetOverrides] = useState<ReasoningPresetState | null>(null);
+  const reasoningPresets = reasoningPresetOverrides ?? defaultReasoningPresets;
   const [tierModelOverrides, setTierModelOverrides] = useState<TierModelOverrideState>({});
-  const [runtimeDefaultsHydrated, setRuntimeDefaultsHydrated] = useState(false);
   const [domainPromptSelection, setDomainPromptSelection] = useState<
     Partial<Record<BenchmarkDomainName, DomainPromptSelection>>
   >({});
@@ -429,13 +432,6 @@ export function Benchmarks() {
     const frame = window.requestAnimationFrame(() => setChartsReady(true));
     return () => window.cancelAnimationFrame(frame);
   }, []);
-  useEffect(() => {
-    if (!runtimeConfig || runtimeDefaultsHydrated) {
-      return;
-    }
-    setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
-    setRuntimeDefaultsHydrated(true);
-  }, [runtimeConfig, runtimeDefaultsHydrated]);
 
   const finalizeDomainSelection = useCallback(
     (
@@ -902,13 +898,21 @@ export function Benchmarks() {
                       />
                       <ZAxis dataKey="scoredRunCount" range={[80, 200]} />
                       <Tooltip
-                        content={(props) => <ParetoTooltip active={props.active} payload={props.payload as any} />}
+                        content={(props) => (
+                          <ParetoTooltip
+                            active={props.active}
+                            payload={props.payload as unknown as ReadonlyArray<{ payload?: ParetoPoint }> | undefined}
+                          />
+                        )}
                         cursor={{ fill: "rgba(255,255,255,0.025)" }}
                       />
                       <Scatter
                         data={paretoData}
-                        shape={(props: any) => {
-                          const { cx, cy, payload } = props;
+                        shape={(props) => {
+                          const { cx, cy, payload } = props as { cx?: number; cy?: number; payload?: ParetoPoint };
+                          if (typeof cx !== "number" || typeof cy !== "number" || !payload) {
+                            return <g />;
+                          }
                           if (payload.frontier) {
                             return (
                               <g>
@@ -1182,7 +1186,7 @@ export function Benchmarks() {
           holdoutPerCategory={holdoutPerCategory}
           onHoldoutChange={setHoldoutPerCategory}
           reasoningPresets={reasoningPresets}
-          onPresetsChange={setReasoningPresets}
+          onPresetsChange={setReasoningPresetOverrides}
           runtimeConfig={runtimeConfig}
           tierModelOverrides={tierModelOverrides}
           onTierModelOverridesChange={setTierModelOverrides}
