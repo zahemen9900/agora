@@ -62,6 +62,9 @@ def selector_prompt(
         "public factional lock-in. "
         "Avoid delphi when the task should be resolved in one independent pass or when the answer can be checked "
         "quickly against external facts or deterministic reasoning. "
+        "If two mechanisms seem plausible, choose the one whose failure mode is less costly for this task. "
+        "Do not use stakes alone as a reason to escalate into debate. "
+        "Do not treat delphi as the generic choice for any hard task. "
         "Example for vote: 'What is 17 * 19?' or 'Which log line identifies the failing service?'. "
         "Example for debate: 'Should we centralize orchestration or keep services independent?' or "
         "'Which safety policy better handles adversarial misuse?'. "
@@ -93,6 +96,7 @@ def vote_participant_prompt(*, task: str) -> PromptBundle:
         "what you expect other models to say unless the evidence truly points there. "
         "Do not coordinate with an imagined majority. "
         "Do not game the aggregation rule by trying to predict what answer will win. "
+        "Treat yourself as one independent sample in an ensemble, not a consensus-finding process. "
         "Return your own answer, calibrated "
         "confidence, your forecast of the group's likely answer, and a short rationale."
     )
@@ -111,6 +115,7 @@ def delphi_independent_prompt(*, task: str) -> PromptBundle:
         "Your role is Delphi participant in the independent round. "
         "Answer without simulating consensus or anticipating what the group wants. "
         "Do not anchor on what you think the group will prefer. "
+        "Preserve a minority answer when it is still better supported by the evidence. "
         "State your current best answer, a calibrated confidence, and the shortest rationale "
         "needed for another expert to audit the answer."
     )
@@ -136,6 +141,7 @@ def delphi_revision_prompt(
         "Revise only when the evidence materially changes your view, "
         "and prefer convergence through better reasoning rather than social mimicry. "
         "Do not converge just to reduce disagreement. "
+        "Keep a dissenting answer when the alternatives are weaker. "
         "If you keep your answer, justify why it remains stronger than the alternatives."
     )
     user = (
@@ -194,6 +200,7 @@ def debate_devil_prompt(
         "Prefer falsifiable, task-specific pressure over generic skepticism. "
         "If one faction is obviously weaker, press harder on the stronger faction's hidden assumptions instead of "
         "wasting turns on easy hits. "
+        "Look for mismatches between the confidence of a claim and the evidence actually offered. "
         "Do not ask generic evidence questions. Find the weakest claim, identify the precise "
         "failure mode, and ask a task-specific question that probes evidence gaps, hidden "
         "assumptions, counterexamples, boundary conditions, or incentive failures. "
@@ -226,7 +233,9 @@ def debate_rebuttal_prompt(
         "against the targeted critique. "
         "Do not reward rhetorical confidence without evidence. "
         "Respect locked claims, answer the critique point-by-point, and only revise the faction "
-        "answer when the evidence actually forces it. Preserve genuine uncertainty when the critique lands. "
+        "answer when the evidence actually forces it. "
+        "Answer the targeted challenge before introducing new supporting claims. "
+        "Preserve genuine uncertainty when the critique lands. "
         "Avoid boilerplate and avoid repeating the "
         "same generic fallback sentence."
     )
@@ -251,10 +260,11 @@ def debate_synthesis_prompt(
     system = (
         f"{_BASE_POLICY} "
         "Your role is debate synthesis. Read the trajectory, choose the strongest "
-        "surviving answer, "
+        "surviving answer. "
         "Do not average incompatible positions into fake balance. "
         "Pick the answer that survives scrutiny, not the answer that sounds most moderate. "
-        "and produce a final answer that is concise enough for benchmark comparison and audit logs."
+        "Carry forward only claims that remained defensible under critique. "
+        "Produce a final answer that is concise enough for benchmark comparison and audit logs."
     )
     user = (
         f"Task: {task}\n"

@@ -373,5 +373,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a13`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a14`.
 - Preferred publish path is the trusted GitHub workflow in `.github/workflows/deploy-sdk.yml`.

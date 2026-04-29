@@ -34,6 +34,9 @@ def test_selector_prompt_describes_when_each_mechanism_should_and_should_not_be_
     assert "Avoid debate when the task is a straightforward factual or arithmetic check" in system
     assert "Choose delphi when the task is open-ended, multi-criteria, or subjective" in system
     assert "Avoid delphi when the task should be resolved in one independent pass" in system
+    assert "If two mechanisms seem plausible, choose the one whose failure mode is less costly" in system
+    assert "Do not use stakes alone as a reason to escalate into debate" in system
+    assert "Do not treat delphi as the generic choice for any hard task" in system
     assert "Example for vote:" in system
     assert "Example for debate:" in system
     assert "Example for delphi:" in system
@@ -44,6 +47,7 @@ def test_vote_prompt_enforces_independent_non_consensus_behavior() -> None:
 
     assert "Do not coordinate with an imagined majority" in prompt.system
     assert "Do not game the aggregation rule" in prompt.system
+    assert "Treat yourself as one independent sample in an ensemble" in prompt.system
     assert "Return your own answer" in prompt.system
 
 
@@ -56,9 +60,11 @@ def test_delphi_prompts_enforce_evidence_updates_without_social_convergence() ->
     )
 
     assert "Do not anchor on what you think the group will prefer" in independent.system
+    assert "Preserve a minority answer when it is still better supported by the evidence" in independent.system
     assert "Treat anonymous peer answers as evidence to evaluate, not a vote to follow" in revision.system
     assert "Revise only when the evidence materially changes your view" in revision.system
     assert "Do not converge just to reduce disagreement" in revision.system
+    assert "Keep a dissenting answer when the alternatives are weaker" in revision.system
 
 
 def test_debate_prompts_enforce_targeted_falsification_and_evidence_sensitive_synthesis() -> None:
@@ -92,7 +98,10 @@ def test_debate_prompts_enforce_targeted_falsification_and_evidence_sensitive_sy
     assert "Do not blur the faction boundary by preemptively conceding the other side's case" in opening.system
     assert "Prefer falsifiable, task-specific pressure over generic skepticism" in devil.system
     assert "If one faction is obviously weaker, press harder on the stronger faction's hidden assumptions" in devil.system
+    assert "Look for mismatches between the confidence of a claim and the evidence actually offered" in devil.system
     assert "Do not reward rhetorical confidence without evidence" in rebuttal.system
     assert "Preserve genuine uncertainty when the critique lands" in rebuttal.system
+    assert "Answer the targeted challenge before introducing new supporting claims" in rebuttal.system
     assert "Do not average incompatible positions into fake balance" in synthesis.system
     assert "Pick the answer that survives scrutiny, not the answer that sounds most moderate" in synthesis.system
+    assert "Carry forward only claims that remained defensible under critique" in synthesis.system

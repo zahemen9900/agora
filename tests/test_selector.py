@@ -141,3 +141,5 @@ async def test_reasoning_selector_passes_hardened_routing_policy_to_model() -> N
     assert "Choose vote when the task is bounded, objective, and answer-checkable" in system_prompt
     assert "Choose debate when the task benefits from adversarial pressure" in system_prompt
     assert "Choose delphi when the task is open-ended, multi-criteria, or subjective" in system_prompt
+    assert "Do not use stakes alone as a reason to escalate into debate" in system_prompt
+    assert "Do not treat delphi as the generic choice for any hard task" in system_prompt
