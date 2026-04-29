@@ -281,7 +281,7 @@ function BenchmarkHeatmap({ rows }: { rows: BenchmarkHeatmapRow[] }) {
         {/* Column headers */}
         <div style={{ display: "grid", gridTemplateColumns: "120px repeat(3, minmax(0, 1fr))", gap: "8px", marginBottom: "8px" }}>
           <div />
-          {["Debate", "Vote", "Selector"].map((label) => (
+          {["Debate", "Vote", "Delphi"].map((label) => (
             <div key={label} style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)", textAlign: "center" }}>
               {label}
             </div>
