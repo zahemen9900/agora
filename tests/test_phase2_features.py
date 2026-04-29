@@ -305,6 +305,96 @@ def test_with_complete_summary_derives_scored_coverage_and_cost_from_runs() -> N
     assert summary["per_category_by_mechanism"]["demo"]["vote"]["proxy_run_count"] == 1
 
 
+def test_with_complete_summary_derives_top_level_summary_from_all_stage_runs() -> None:
+    payload = {
+        "artifact_version": "benchmark-tasklike-v2",
+        "pre_learning": {
+            "runs": [
+                {
+                    "item_status": "completed",
+                    "mode": "selector",
+                    "mechanism_used": "debate",
+                    "category": "reasoning",
+                    "correct": True,
+                    "scored": True,
+                    "scoring_mode": "exact_match",
+                    "tokens_used": 100,
+                    "latency_ms": 10.0,
+                    "rounds": 2,
+                    "switches": 0,
+                    "thinking_tokens_used": 15,
+                    "estimated_cost_usd": 0.01,
+                }
+            ],
+            "summary": {
+                "per_mode": {
+                    "selector": {
+                        "accuracy": 1.0,
+                        "run_count": 1,
+                        "scored_run_count": 1,
+                        "proxy_run_count": 0,
+                    }
+                }
+            },
+        },
+        "post_learning": {
+            "runs": [
+                {
+                    "item_status": "completed",
+                    "mode": "selector",
+                    "mechanism_used": "debate",
+                    "category": "reasoning",
+                    "correct": False,
+                    "scored": True,
+                    "scoring_mode": "exact_match",
+                    "tokens_used": 200,
+                    "latency_ms": 20.0,
+                    "rounds": 3,
+                    "switches": 1,
+                    "thinking_tokens_used": 20,
+                    "estimated_cost_usd": 0.02,
+                }
+            ],
+            "summary": {
+                "per_mode": {
+                    "selector": {
+                        "accuracy": 0.0,
+                        "run_count": 1,
+                        "scored_run_count": 1,
+                        "proxy_run_count": 0,
+                    }
+                },
+                "per_mechanism": {
+                    "debate": {
+                        "accuracy": 0.0,
+                        "run_count": 1,
+                        "scored_run_count": 1,
+                        "proxy_run_count": 0,
+                    }
+                },
+                "per_category_by_mechanism": {
+                    "reasoning": {
+                        "debate": {
+                            "accuracy": 0.0,
+                            "run_count": 1,
+                            "scored_run_count": 1,
+                            "proxy_run_count": 0,
+                        }
+                    }
+                },
+            },
+        },
+    }
+
+    normalized = benchmark_routes._with_complete_summary(payload)
+    summary = normalized["summary"]
+
+    assert summary["per_mechanism"]["debate"]["run_count"] == 2
+    assert summary["per_mechanism"]["debate"]["scored_run_count"] == 2
+    assert summary["per_category_by_mechanism"]["reasoning"]["debate"]["run_count"] == 2
+    assert summary["per_category_by_mechanism"]["reasoning"]["debate"]["accuracy"] == pytest.approx(0.5)
+
+
 def test_aggregate_benchmark_payloads_preserve_stage_summaries() -> None:
     payload = benchmark_routes._aggregate_benchmark_payloads(
         [
@@ -3090,6 +3180,9 @@ async def test_sdk_local_model_roster_is_forwarded_to_orchestrator(
             captured["local_debate_config"] = local_debate_config
 
         def build_vote_engine(self, **_overrides: object) -> object:
+            return object()
+
+        def build_delphi_engine(self, **_overrides: object) -> object:
             return object()
 
         async def run(self, task: str, **_kwargs: object) -> Any:

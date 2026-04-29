@@ -78,7 +78,8 @@ export function CostLatencyBubble({ data }: Props) {
             dataKey="y"
             type="number"
             name="accuracy"
-            domain={[0, 100]}
+            domain={[-4, 100]}
+            ticks={[0, 25, 50, 75, 100]}
             tickFormatter={(v) => `${v}%`}
             tick={{ fontFamily: CHART_FONT, fontSize: 9, fill: "var(--text-tertiary)" }}
             axisLine={{ stroke: "var(--border-default)" }}
