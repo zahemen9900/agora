@@ -39,7 +39,7 @@ from agora.types import (
     VerifiedClaim,
 )
 
-MechanismName = Literal["debate", "vote"]
+MechanismName = Literal["debate", "vote", "delphi"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
 BenchmarkRunStatusName = Literal["queued", "running", "completed", "failed"]
@@ -838,6 +838,11 @@ class AgoraArbitrator:
                 local_debate_config=self.config.local_debate_config,
             )
             orchestrator.vote_engine = orchestrator.build_vote_engine(
+                quorum_threshold=(
+                    self.config.quorum_threshold if quorum_threshold is None else quorum_threshold
+                )
+            )
+            orchestrator.delphi_engine = orchestrator.build_delphi_engine(
                 quorum_threshold=(
                     self.config.quorum_threshold if quorum_threshold is None else quorum_threshold
                 )

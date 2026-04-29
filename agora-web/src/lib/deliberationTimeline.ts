@@ -45,6 +45,11 @@ function safeNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function convergenceMetrics(data: Record<string, unknown>): Record<string, unknown> {
+  const nested = asRecord(data.metrics);
+  return nested ?? data;
+}
+
 function buildEventKey(event: TaskEvent): string {
   return `${event.event}:${event.timestamp ?? ""}:${JSON.stringify(event.data)}`;
 }
@@ -262,15 +267,51 @@ export function mapTaskEvent(event: TaskEvent): TimelineEvent {
   }
 
   if (event.event === "convergence_update") {
-    const entropy = safeNumber(data.disagreement_entropy, 0);
-    const novelty = safeNumber(data.information_gain_delta, 0);
+    const metrics = convergenceMetrics(data);
+    const entropy = safeNumber(metrics.disagreement_entropy, 0);
+    const novelty = safeNumber(metrics.information_gain_delta, 0);
     mappedEvent = {
       key: buildEventKey(event),
       type: event.event,
       title: `Convergence round ${safeNumber(data.round_number, 0)}`,
       summary: `Entropy ${entropy.toFixed(2)} · Novelty ${novelty.toFixed(2)}`,
       timestamp: event.timestamp,
+      details: { ...data, ...metrics },
+    };
+    return { ...mappedEvent, ...segmentMetadata };
+  }
+
+  if (event.event === "delphi_feedback") {
+    const feedback = asRecord(data.feedback);
+    const feedbackCount = feedback
+      ? Object.values(feedback as Record<string, unknown>).reduce<number>((total, entries) => (
+        total + (Array.isArray(entries) ? entries.length : 0)
+      ), 0)
+      : 0;
+    mappedEvent = {
+      key: buildEventKey(event),
+      type: event.event,
+      title: `Delphi feedback round ${safeNumber(data.round_number, 0)}`,
+      summary: feedbackCount > 0
+        ? `${feedbackCount} anonymous peer critique${feedbackCount === 1 ? "" : "s"} distributed`
+        : "Anonymous peer feedback distributed",
+      timestamp: event.timestamp,
       details: data,
+      stage: safeString(data.stage, "anonymize_and_distribute"),
+    };
+    return { ...mappedEvent, ...segmentMetadata };
+  }
+
+  if (event.event === "delphi_finalize") {
+    mappedEvent = {
+      key: buildEventKey(event),
+      type: event.event,
+      title: "Delphi finalization",
+      summary: safeString(data.final_answer, "Delphi finalized a consensus candidate"),
+      timestamp: event.timestamp,
+      details: data,
+      confidence: safeNumber(data.confidence, 0),
+      stage: "finalize",
     };
     return { ...mappedEvent, ...segmentMetadata };
   }

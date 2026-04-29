@@ -9,7 +9,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from agora.types import ProviderTierName, ReasoningPresetOverrides, ReasoningPresets
 
-MechanismName = Literal["debate", "vote"]
+MechanismName = Literal["debate", "vote", "delphi"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 PaymentStatusName = Literal["locked", "released", "none"]
 ChainOperationStatusName = Literal["pending", "succeeded", "failed"]

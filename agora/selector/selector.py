@@ -32,7 +32,11 @@ class AgoraSelector:
 
         self.bandit_state_path = bandit_state_path
         self.bandit = ThompsonSamplingSelector(
-            mechanisms=[MechanismType.DEBATE, MechanismType.VOTE]
+            mechanisms=[
+                MechanismType.DEBATE,
+                MechanismType.VOTE,
+                MechanismType.DELPHI,
+            ]
         )
         self.heuristic = HeuristicSelector()
         self.reasoning = ReasoningSelector(caller=reasoning_caller)

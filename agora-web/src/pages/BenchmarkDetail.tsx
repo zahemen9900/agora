@@ -82,6 +82,14 @@ const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
   "usage_delta",
 ]);
 
+function asConvergenceMetrics(data: Record<string, unknown>): Record<string, unknown> {
+  const nested = data.metrics;
+  if (typeof nested !== "object" || nested === null || Array.isArray(nested)) {
+    return data;
+  }
+  return nested as Record<string, unknown>;
+}
+
 export function BenchmarkDetail() {
   const navigate = useNavigate();
   const { benchmarkId } = useParams<{ benchmarkId: string }>();
@@ -1333,6 +1341,7 @@ export function BenchmarkDetail() {
                     <th className="text-left py-2 px-3 mono text-xs text-text-muted">CATEGORY</th>
                     <th className="text-right py-2 px-3 mono text-xs text-text-muted">DEBATE</th>
                     <th className="text-right py-2 px-3 mono text-xs text-text-muted">VOTE</th>
+                    <th className="text-right py-2 px-3 mono text-xs text-text-muted">DELPHI</th>
                     <th className="text-right py-2 px-3 mono text-xs text-text-muted">SELECTOR</th>
                   </tr>
                 </thead>
@@ -1342,6 +1351,7 @@ export function BenchmarkDetail() {
                       <td className="py-2 px-3 text-sm text-text-primary">{row.category}</td>
                       <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.debate, 1)}</td>
                       <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.vote, 1)}</td>
+                      <td className="py-2 px-3 text-sm text-right text-text-secondary">{formatRowAccuracy(row.delphi, 1)}</td>
                       <td className="py-2 px-3 text-sm text-right text-accent">{formatRowAccuracy(row.selector, 1)}</td>
                     </tr>
                   ))}
@@ -2158,16 +2168,46 @@ function describeBenchmarkEvent(event: TaskEvent): BenchmarkTimelineDescriptor {
   }
 
   if (event.event === "convergence_update") {
+    const metrics = asConvergenceMetrics(data);
     return {
       label: contextPrefix || "CONVERGENCE",
       title: `Round ${String(data.round_number ?? "?")} convergence`,
       summary: [
-        typeof data.disagreement_entropy === "number" ? `Entropy ${data.disagreement_entropy.toFixed(2)}` : null,
-        typeof data.novelty_score === "number" ? `Novelty ${data.novelty_score.toFixed(2)}` : null,
-        typeof data.information_gain_delta === "number" ? `Info gain ${data.information_gain_delta.toFixed(2)}` : null,
+        typeof metrics.disagreement_entropy === "number" ? `Entropy ${metrics.disagreement_entropy.toFixed(2)}` : null,
+        typeof metrics.novelty_score === "number" ? `Novelty ${metrics.novelty_score.toFixed(2)}` : null,
+        typeof metrics.information_gain_delta === "number" ? `Info gain ${metrics.information_gain_delta.toFixed(2)}` : null,
       ].filter(Boolean).join(" · ") || "Convergence metrics updated.",
       detailsLabel: "convergence metrics",
       tone: "border-violet-400/40 bg-violet-400/10",
+    };
+  }
+
+  if (event.event === "delphi_feedback") {
+    const feedback = data.feedback;
+    let feedbackCount = 0;
+    if (typeof feedback === "object" && feedback !== null && !Array.isArray(feedback)) {
+      feedbackCount = Object.values(feedback as Record<string, unknown>).reduce<number>((total, entries) => (
+        total + (Array.isArray(entries) ? entries.length : 0)
+      ), 0);
+    }
+    return {
+      label: contextPrefix || "DELPHI",
+      title: `Round ${String(data.round_number ?? "?")} anonymous critique`,
+      summary: feedbackCount > 0
+        ? `${feedbackCount} peer critique${feedbackCount === 1 ? "" : "s"} distributed for revision.`
+        : "Anonymous peer feedback distributed for revision.",
+      detailsLabel: "Delphi feedback payload",
+      tone: "border-fuchsia-400/40 bg-fuchsia-400/10",
+    };
+  }
+
+  if (event.event === "delphi_finalize") {
+    return {
+      label: contextPrefix || "DELPHI",
+      title: "Delphi finalization",
+      summary: String(data.final_answer ?? "Delphi produced a final aggregate answer."),
+      detailsLabel: "Delphi finalization payload",
+      tone: "border-indigo-400/40 bg-indigo-400/10",
     };
   }
 

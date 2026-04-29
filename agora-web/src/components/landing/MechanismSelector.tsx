@@ -3,21 +3,20 @@ import { useState } from 'react';
 const TASKS = ['Code review', 'Factual Q&A', 'Creative syn.', 'Values judgment'] as const;
 type Task = typeof TASKS[number];
 
-const MECHANISMS = ['Debate', 'Vote', 'Delphi', 'MoA'] as const;
+const MECHANISMS = ['Debate', 'Vote', 'Delphi'] as const;
 type Mechanism = typeof MECHANISMS[number];
 
 const DATA: Record<Task, Record<Mechanism, number>> = {
-  'Code review':     { Debate: 78, Vote: 12, Delphi:  4, MoA:  6 },
-  'Factual Q&A':    { Debate: 14, Vote: 72, Delphi:  8, MoA:  6 },
-  'Creative syn.':  { Debate: 11, Vote:  8, Delphi: 18, MoA: 63 },
-  'Values judgment':{ Debate: 22, Vote:  9, Delphi: 61, MoA:  8 },
+  'Code review':     { Debate: 78, Vote: 12, Delphi: 10 },
+  'Factual Q&A':     { Debate: 14, Vote: 72, Delphi: 14 },
+  'Creative syn.':   { Debate: 19, Vote: 10, Delphi: 71 },
+  'Values judgment': { Debate: 24, Vote: 11, Delphi: 65 },
 };
 
 const MECH_COLORS: Record<Mechanism, string> = {
   Debate: 'var(--accent-emerald)',
   Vote:   'var(--text-tertiary)',
-  Delphi: 'var(--accent-amber)',
-  MoA:    'var(--accent-rose)',
+  Delphi: '#a78bfa',
 };
 
 export function MechanismSelector() {
