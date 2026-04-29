@@ -6,14 +6,33 @@ import pytest
 
 from agora.selector.bandit import ThompsonSamplingSelector
 from agora.agent import AgentCallError
+from agora.selector.reasoning import ReasoningSelector, _ReasoningResponse
 from agora.selector.selector import AgoraSelector
 from agora.types import MechanismType
+from tests.helpers import make_features
 
 
 class _FailingReasoningCaller:
     async def call(self, *args: object, **kwargs: object) -> tuple[object, dict[str, object]]:
         del args, kwargs
         raise AgentCallError("selector provider unavailable")
+
+
+class _CapturingReasoningCaller:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def call(self, *args: object, **kwargs: object) -> tuple[object, dict[str, object]]:
+        del args
+        self.calls.append(dict(kwargs))
+        return (
+            _ReasoningResponse(
+                mechanism="delphi",
+                confidence=0.78,
+                reasoning="The task is multi-criteria and benefits from iterative anonymous revision.",
+            ),
+            {"input_tokens": 12, "output_tokens": 8, "latency_ms": 9.0},
+        )
 
 
 @pytest.mark.asyncio
@@ -101,3 +120,24 @@ def test_bandit_load_state_payload_seeds_missing_delphi_arms() -> None:
     assert creative_delphi.total_pulls == 0
     assert reasoning_debate.alpha == pytest.approx(2.0)
     assert reasoning_debate.total_pulls == 3
+
+
+@pytest.mark.asyncio
+async def test_reasoning_selector_passes_hardened_routing_policy_to_model() -> None:
+    caller = _CapturingReasoningCaller()
+    selector = ReasoningSelector(caller=caller)
+
+    selection = await selector.select(
+        task_text="What product roadmap best balances reliability, cost, and research speed?",
+        features=make_features("creative"),
+        bandit_recommendation=(MechanismType.VOTE, 0.61),
+        historical_performance={"creative": {"delphi": {"wins": 5}}},
+    )
+
+    assert selection.mechanism == MechanismType.DELPHI
+    assert len(caller.calls) == 1
+    system_prompt = str(caller.calls[0]["system_prompt"])
+    assert "Do not choose a mechanism by habit" in system_prompt
+    assert "Choose vote when the task is bounded, objective, and answer-checkable" in system_prompt
+    assert "Choose debate when the task benefits from adversarial pressure" in system_prompt
+    assert "Choose delphi when the task is open-ended, multi-criteria, or subjective" in system_prompt
