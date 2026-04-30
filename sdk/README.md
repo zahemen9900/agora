@@ -357,6 +357,27 @@ async with AgoraNode() as agora_node:
 - Strict hosted E2E should use a real staging API key, not a fabricated JWT.
 - Benchmark runs, status polling, detail fetches, and event streams accept the same API keys and workspace ownership model as tasks.
 
+## Axiom Observability
+
+The SDK now emits OpenTelemetry spans for hosted task helpers, hosted benchmark
+helpers, event streams, and local `arbitrate()` runs. If you already configure
+OpenTelemetry in your app, the SDK reuses the active provider. If you want the
+SDK to export directly to Axiom, set the same env vars used by the API before
+constructing `AgoraArbitrator`:
+
+```bash
+export AGORA_AXIOM_ENABLED=true
+export AGORA_AXIOM_TOKEN=axiom_xxx
+export AGORA_AXIOM_TRACES_DATASET=agora-traces
+export AGORA_AXIOM_BASE_URL=https://AXIOM_ORG.axiom.co
+export AGORA_AXIOM_CAPTURE_CONTENT=metadata_only
+```
+
+By default, capture mode should stay `metadata_only`. The SDK records operation
+type, task or benchmark IDs, mechanism, latency, token counts, estimated cost,
+and stream counts. It does not send prompts, model outputs, or tool payloads
+unless you explicitly switch to `full`.
+
 ### Hosted API URL policy
 
 Hosted SDK calls resolve the canonical Cloud Run backend automatically. Do not pass a manual
@@ -373,5 +394,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a14`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a15`.
 - Preferred publish path is the trusted GitHub workflow in `.github/workflows/deploy-sdk.yml`.

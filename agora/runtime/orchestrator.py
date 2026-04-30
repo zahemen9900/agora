@@ -88,6 +88,11 @@ class AgoraOrchestrator:
             reasoning_caller=pro_caller(
                 thinking_level=self.reasoning_presets.gemini_pro,
                 model=self.tier_model_overrides.get("pro"),
+                gemini_api_key=(
+                    None
+                    if self.local_provider_keys is None
+                    else self.local_provider_keys.gemini_api_key
+                ),
             ),
         )
         self.hasher = TranscriptHasher()

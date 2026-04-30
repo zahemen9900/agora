@@ -10,7 +10,7 @@ import agora.runtime.orchestrator as orchestrator_module
 from agora.engines.debate import DebateEngineOutcome
 from agora.engines.vote import VoteEngineOutcome
 from agora.runtime.orchestrator import AgoraOrchestrator
-from agora.types import DebateState, DeliberationResult, MechanismType, VoteState
+from agora.types import DebateState, DeliberationResult, LocalProviderKeys, MechanismType, VoteState
 from tests.helpers import make_features, make_selection
 
 DEBATE_TEST_MODEL = "gemini-3-flash-preview"
@@ -53,6 +53,25 @@ async def test_full_pipeline_returns_populated_result() -> None:
     assert result.total_tokens_used >= 0
     assert result.total_latency_ms >= 0.0
     assert result.agent_models_used
+
+
+def test_orchestrator_passes_local_provider_keys_to_selector_reasoning_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_pro_caller(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(orchestrator_module, "pro_caller", fake_pro_caller)
+
+    AgoraOrchestrator(
+        agent_count=3,
+        local_provider_keys=LocalProviderKeys(gemini_api_key="gem-byok-key"),
+    )
+
+    assert captured["gemini_api_key"] == "gem-byok-key"
 
 
 @pytest.mark.asyncio
