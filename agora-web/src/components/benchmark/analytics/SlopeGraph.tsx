@@ -9,10 +9,10 @@ export interface SlopeDataPoint {
   saturated: boolean;
 }
 
-const W = 340;
+const W = 420;
 const H = 260;
-const LEFT = 70;
-const RIGHT = W - 70;
+const LEFT = 90;
+const RIGHT = W - 90;
 const TOP = 20;
 const BOT = H - 30;
 
@@ -29,6 +29,19 @@ const CATEGORY_COLORS = [
   "#f472b6",
   "#a78bfa",
 ];
+
+function avoidOverlap(ys: number[], minGap = 11): number[] {
+  const items = ys.map((y, i) => ({ y, i })).sort((a, b) => a.y - b.y);
+  for (let j = 1; j < items.length; j++) {
+    if (items[j].y - items[j - 1].y < minGap) items[j].y = items[j - 1].y + minGap;
+  }
+  for (let j = items.length - 2; j >= 0; j--) {
+    if (items[j + 1].y - items[j].y < minGap) items[j].y = items[j + 1].y - minGap;
+  }
+  const out = new Array<number>(ys.length);
+  items.forEach(({ y, i }) => { out[i] = y; });
+  return out;
+}
 
 interface Props {
   data: SlopeDataPoint[];
@@ -73,35 +86,49 @@ export function SlopeGraph({ data }: Props) {
         <line x1={RIGHT} x2={RIGHT} y1={TOP} y2={BOT} stroke="var(--border-default)" strokeWidth={1} />
 
         <g ref={linesRef}>
-          {data.map((d, i) => {
-            const color = d.delta > 0 ? "var(--accent-emerald)" : d.delta < 0 ? "var(--accent-rose)" : "var(--text-muted)";
-            const y1 = yPos(d.pre);
-            const y2 = yPos(d.post);
-            const midX = (LEFT + RIGHT) / 2;
-            const midY = (y1 + y2) / 2;
-            const dotColor = CATEGORY_COLORS[i % CATEGORY_COLORS.length];
-            return (
-              <g key={d.category}>
-                <path
-                  data-animate="1"
-                  d={`M ${LEFT} ${y1} L ${RIGHT} ${y2}`}
-                  stroke={color}
-                  strokeWidth={d.delta !== 0 ? 1.5 : 1}
-                  strokeDasharray={d.saturated ? "4 3" : undefined}
-                  fill="none"
-                  opacity={0.8}
-                />
-                <circle cx={LEFT} cy={y1} r={4} fill={dotColor} />
-                <circle cx={RIGHT} cy={y2} r={4} fill={dotColor} />
-                <text x={LEFT - 6} y={y1 + 3} textAnchor="end" fontFamily={CHART_FONT} fontSize={8} fill="var(--text-secondary)">{d.category}</text>
-                {d.delta !== 0 && (
-                  <text x={midX} y={midY - 5} textAnchor="middle" fontFamily={CHART_FONT} fontSize={8} fill={color} fontWeight={700}>
-                    {d.delta > 0 ? `+${d.delta.toFixed(1)}pp` : `${d.delta.toFixed(1)}pp`}
-                  </text>
-                )}
-              </g>
-            );
-          })}
+          {(() => {
+            const leftLabelYs = avoidOverlap(data.map(d => yPos(d.pre)));
+            const rightLabelYs = avoidOverlap(data.map(d => yPos(d.post)));
+            return data.map((d, i) => {
+              const color = d.delta > 0 ? "var(--accent-emerald)" : d.delta < 0 ? "var(--accent-rose)" : "var(--text-muted)";
+              const y1 = yPos(d.pre);
+              const y2 = yPos(d.post);
+              const midX = (LEFT + RIGHT) / 2;
+              const midY = (y1 + y2) / 2;
+              const dotColor = CATEGORY_COLORS[i % CATEGORY_COLORS.length];
+              const labelY1 = leftLabelYs[i];
+              const labelY2 = rightLabelYs[i];
+              return (
+                <g key={d.category}>
+                  <path
+                    data-animate="1"
+                    d={`M ${LEFT} ${y1} L ${RIGHT} ${y2}`}
+                    stroke={color}
+                    strokeWidth={d.delta !== 0 ? 1.5 : 1}
+                    strokeDasharray={d.saturated ? "4 3" : undefined}
+                    fill="none"
+                    opacity={0.8}
+                  />
+                  <circle cx={LEFT} cy={y1} r={4} fill={dotColor} />
+                  <circle cx={RIGHT} cy={y2} r={4} fill={dotColor} />
+                  {/* tick from dot to label if label was nudged */}
+                  {Math.abs(labelY1 - y1) > 2 && (
+                    <line x1={LEFT - 5} y1={y1} x2={LEFT - 5} y2={labelY1} stroke={dotColor} strokeWidth={0.5} opacity={0.4} />
+                  )}
+                  {Math.abs(labelY2 - y2) > 2 && (
+                    <line x1={RIGHT + 5} y1={y2} x2={RIGHT + 5} y2={labelY2} stroke={dotColor} strokeWidth={0.5} opacity={0.4} />
+                  )}
+                  <text x={LEFT - 8} y={labelY1 + 3} textAnchor="end" fontFamily={CHART_FONT} fontSize={8} fill="var(--text-secondary)">{d.category}</text>
+                  <text x={RIGHT + 8} y={labelY2 + 3} textAnchor="start" fontFamily={CHART_FONT} fontSize={8} fill="var(--text-secondary)">{d.category}</text>
+                  {d.delta !== 0 && (
+                    <text x={midX} y={midY - 5} textAnchor="middle" fontFamily={CHART_FONT} fontSize={8} fill={color} fontWeight={700}>
+                      {d.delta > 0 ? `+${d.delta.toFixed(1)}pp` : `${d.delta.toFixed(1)}pp`}
+                    </text>
+                  )}
+                </g>
+              );
+            });
+          })()}
         </g>
       </svg>
     </ChartCard>

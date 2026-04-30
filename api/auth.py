@@ -24,6 +24,7 @@ from api.config import settings
 from api.security import validate_storage_id
 from api.store import TaskStore, get_store
 from api.store_local import LocalTaskStore
+from api.telemetry import bind_user_to_current_span
 
 security = HTTPBearer(auto_error=False)
 logger = structlog.get_logger(__name__)
@@ -478,7 +479,13 @@ async def get_current_user(
     if not raw_token:
         if _demo_auth_enabled():
             store = get_auth_store()
-            return await _resolve_demo_user(store)
+            demo_user = await _resolve_demo_user(store)
+            bind_user_to_current_span(
+                demo_user,
+                actor_type="demo",
+                actor_id=f"workspace:{demo_user.workspace_id}",
+            )
+            return demo_user
         raise HTTPException(status_code=401, detail="Missing bearer token")
 
     store = get_auth_store()
@@ -513,7 +520,7 @@ async def get_current_user(
                 str(api_key["key_id"]),
                 {"last_used_at": datetime.now(UTC).isoformat()},
             )
-            return AuthenticatedUser(
+            resolved_user = AuthenticatedUser(
                 auth_method="api_key",
                 workspace_id=workspace_id,
                 user_id=None,
@@ -522,6 +529,8 @@ async def get_current_user(
                 scopes=[str(scope) for scope in api_key.get("scopes", DEFAULT_API_KEY_SCOPES)],
                 api_key_id=str(api_key["key_id"]),
             )
+            bind_user_to_current_span(resolved_user)
+            return resolved_user
         except HTTPException:
             raise
         except RuntimeError as exc:
@@ -535,7 +544,13 @@ async def get_current_user(
     except RuntimeError as exc:
         logger.error("auth_verification_misconfigured", error=str(exc))
         if _demo_auth_enabled():
-            return await _resolve_demo_user(store)
+            demo_user = await _resolve_demo_user(store)
+            bind_user_to_current_span(
+                demo_user,
+                actor_type="demo",
+                actor_id=f"workspace:{demo_user.workspace_id}",
+            )
+            return demo_user
         raise HTTPException(status_code=500, detail="Authentication error") from exc
     except jwt.PyJWTError as exc:
         claims = _decode_unverified_claims(raw_token)
@@ -550,24 +565,48 @@ async def get_current_user(
             configured_audiences=_auth_audiences(),
         )
         if _demo_auth_enabled():
-            return await _resolve_demo_user(store)
+            demo_user = await _resolve_demo_user(store)
+            bind_user_to_current_span(
+                demo_user,
+                actor_type="demo",
+                actor_id=f"workspace:{demo_user.workspace_id}",
+            )
+            return demo_user
         raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
 
     user_id = payload.get("sub")
     if not user_id:
         if _demo_auth_enabled():
-            return await _resolve_demo_user(store)
+            demo_user = await _resolve_demo_user(store)
+            bind_user_to_current_span(
+                demo_user,
+                actor_type="demo",
+                actor_id=f"workspace:{demo_user.workspace_id}",
+            )
+            return demo_user
         raise HTTPException(status_code=401, detail="Token missing sub claim")
 
     if not isinstance(user_id, str):
         if _demo_auth_enabled():
-            return await _resolve_demo_user(store)
+            demo_user = await _resolve_demo_user(store)
+            bind_user_to_current_span(
+                demo_user,
+                actor_type="demo",
+                actor_id=f"workspace:{demo_user.workspace_id}",
+            )
+            return demo_user
         raise HTTPException(status_code=401, detail="Token missing sub claim")
     try:
         validate_storage_id(user_id, field_name="sub")
     except ValueError as exc:
         if _demo_auth_enabled():
-            return await _resolve_demo_user(store)
+            demo_user = await _resolve_demo_user(store)
+            bind_user_to_current_span(
+                demo_user,
+                actor_type="demo",
+                actor_id=f"workspace:{demo_user.workspace_id}",
+            )
+            return demo_user
         raise HTTPException(status_code=401, detail="Token has invalid sub claim") from exc
 
     email = payload.get("email")
@@ -581,7 +620,7 @@ async def get_current_user(
         email=email,
         name=display_name,
     )
-    return AuthenticatedUser(
+    resolved_user = AuthenticatedUser(
         auth_method="jwt",
         workspace_id=str(workspace["id"]),
         user_id=user_id,
@@ -589,6 +628,8 @@ async def get_current_user(
         display_name=display_name,
         scopes=list(DEFAULT_API_KEY_SCOPES),
     )
+    bind_user_to_current_span(resolved_user)
+    return resolved_user
 
 
 async def get_optional_user(

@@ -13,14 +13,15 @@ from typing import Any
 import numpy as np
 
 from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
+from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.runtime.task_execution import (
     TaskLikeExecutionOutcome,
     build_pinned_selection,
     execute_task_like_run,
     resolve_task_like_selection,
 )
-from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.types import DeliberationResult, MechanismSelection, MechanismType
+from api.telemetry import observation_context
 
 _DATASET_DIR = Path(__file__).resolve().parent / "datasets"
 _RESULTS_DIR = Path(__file__).resolve().parent / "results"
@@ -138,6 +139,9 @@ class BenchmarkRunner:
                     task_item=task_item,
                     question=question,
                     mechanism_override=override,
+                    phase="benchmark",
+                    run_kind=mechanism,
+                    task_index=task_index,
                 )
                 runs.append(
                     self._build_execution_record(
@@ -245,6 +249,9 @@ class BenchmarkRunner:
                     task_item=task_item,
                     question=question,
                 ),
+                phase="pre_learning",
+                run_kind="selector_initial",
+                task_index=task_index,
             )
 
             _seed_rng(base_seed_offset)
@@ -260,6 +267,9 @@ class BenchmarkRunner:
                     task_item=task_item,
                     question=question,
                 ),
+                phase="pre_learning",
+                run_kind="selector_rerun",
+                task_index=task_index,
             )
 
             record = self._build_execution_record(
@@ -270,7 +280,9 @@ class BenchmarkRunner:
                 task_item=task_item,
                 execution=first,
             )
-            record["merkle_root_rerun"] = second.result.merkle_root if second.result is not None else None
+            record["merkle_root_rerun"] = (
+                second.result.merkle_root if second.result is not None else None
+            )
             record["merkle_deterministic"] = (
                 first.result is not None
                 and second.result is not None
@@ -313,6 +325,9 @@ class BenchmarkRunner:
                     question=question,
                 ),
                 learn=True,
+                phase="learning_updates",
+                run_kind="selector_learn",
+                task_index=task_index,
             )
             learned_record = self._build_execution_record(
                 task_index=task_index,
@@ -350,6 +365,9 @@ class BenchmarkRunner:
                     task_item=task_item,
                     question=question,
                 ),
+                phase="post_learning",
+                run_kind="selector_holdout",
+                task_index=task_index,
             )
             holdout_record = self._build_execution_record(
                 task_index=task_index,
@@ -407,9 +425,16 @@ class BenchmarkRunner:
         mechanism_override: str | None = None,
         event_sink: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
         learn: bool = False,
+        phase: str | None = None,
+        run_kind: str | None = None,
+        task_index: int | None = None,
     ) -> TaskLikeExecutionOutcome:
         default_stakes = getattr(self.orchestrator, "default_stakes", 0.0)
-        agent_count = int(task_item.get("agent_count") or getattr(self.orchestrator, "agent_count", 4) or 4)
+        agent_count = int(
+            task_item.get("agent_count")
+            or getattr(self.orchestrator, "agent_count", 4)
+            or 4
+        )
         stakes = float(task_item.get("stakes", default_stakes) or 0.0)
         requested_override = (
             MechanismType(mechanism_override)
@@ -425,17 +450,26 @@ class BenchmarkRunner:
                 requested_override=requested_override,
             )
         )
-        execution = await execute_task_like_run(
-            orchestrator=self.orchestrator,
-            task_text=question,
-            selection=selection,
-            selector_source=selector_source,
-            selector_fallback_path=selector_fallback_path,
-            mechanism_override_source=mechanism_override_source,
-            event_sink=event_sink,
-            agents=self.agents,
-            allow_switch=requested_override is None,
-        )
+        with observation_context(
+            **{
+                "agora.execution.kind": "benchmark_case",
+                "agora.benchmark.phase": phase,
+                "agora.benchmark.run_kind": run_kind,
+                "agora.benchmark.task_index": task_index,
+                "agora.benchmark.category": str(task_item.get("category") or "unknown"),
+            }
+        ):
+            execution = await execute_task_like_run(
+                orchestrator=self.orchestrator,
+                task_text=question,
+                selection=selection,
+                selector_source=selector_source,
+                selector_fallback_path=selector_fallback_path,
+                mechanism_override_source=mechanism_override_source,
+                event_sink=event_sink,
+                agents=self.agents,
+                allow_switch=requested_override is None,
+            )
         if learn and execution.status == "completed" and execution.result is not None:
             self.orchestrator.selector.update_with_mechanism(
                 execution.result.mechanism_selection,

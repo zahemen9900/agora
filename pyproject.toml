@@ -38,6 +38,10 @@ dev = [
     "google-cloud-secret-manager>=2.20",
     "PyJWT>=2.9",
     "redis>=5.2",
+    "opentelemetry-api==1.41.1",
+    "opentelemetry-sdk==1.41.1",
+    "opentelemetry-exporter-otlp-proto-http==1.41.1",
+    "opentelemetry-instrumentation-fastapi==0.62b1",
     "solders==0.26.0",
     "solana==0.36.6",
 ]

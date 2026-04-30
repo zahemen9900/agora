@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -170,6 +171,45 @@ class Settings(BaseSettings):
         default=365,
         ge=0,
         validation_alias=AliasChoices("AGORA_API_KEY_DEFAULT_TTL_DAYS", "API_KEY_DEFAULT_TTL_DAYS"),
+    )
+    axiom_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AGORA_AXIOM_ENABLED", "AXIOM_ENABLED"),
+    )
+    axiom_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_AXIOM_TOKEN", "AXIOM_TOKEN"),
+    )
+    axiom_traces_dataset: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AGORA_AXIOM_TRACES_DATASET",
+            "AXIOM_DATASET",
+        ),
+    )
+    axiom_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AGORA_AXIOM_BASE_URL",
+            "AXIOM_EDGE_URL",
+        ),
+    )
+    axiom_domain: str = Field(
+        default="",
+        validation_alias=AliasChoices("AXIOM_DOMAIN"),
+    )
+    axiom_sample_ratio: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("AGORA_AXIOM_SAMPLE_RATIO", "AXIOM_SAMPLE_RATIO"),
+    )
+    axiom_capture_content: Literal["metadata_only", "full"] = Field(
+        default="metadata_only",
+        validation_alias=AliasChoices(
+            "AGORA_AXIOM_CAPTURE_CONTENT",
+            "AXIOM_CAPTURE_CONTENT",
+        ),
     )
 
 
