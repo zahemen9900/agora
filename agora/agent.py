@@ -18,13 +18,6 @@ from pydantic import BaseModel, ValidationError
 
 from agora.config import get_config
 from agora.runtime.model_catalog import is_openrouter_model_id, resolve_model_catalog_entry
-from agora.telemetry import (
-    current_capture_content_mode,
-    mark_span_error,
-    set_current_span_attributes,
-    start_observation_span,
-)
-
 try:
     from anthropic import APIConnectionError as AnthropicAPIConnectionError
     from anthropic import APIStatusError as AnthropicAPIStatusError
