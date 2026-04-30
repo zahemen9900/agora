@@ -60,6 +60,7 @@ from api.live_journal import BufferedEventJournal, BufferedStateWriter
 from api.routes.tasks import get_task_store
 from api.security import validate_storage_id
 from api.streaming import DeliberationStream, get_stream_manager
+from api.telemetry import add_span_event, mark_span_error, set_current_span_attributes
 from benchmarks.runner import BenchmarkRunner
 
 router = APIRouter()
@@ -234,6 +235,13 @@ _BUFFERED_BENCHMARK_EVENT_TYPES = {
     "cross_examination_delta",
 }
 _TERMINAL_BENCHMARK_EVENT_TYPES = {"complete", "failed", "error"}
+_BENCHMARK_SPAN_MILESTONE_EVENTS = {
+    "queued",
+    "started",
+    "artifact_created",
+    "complete",
+    "failed",
+}
 _AGGREGATE_BENCHMARK_FULL_CATALOG_LIMIT = 500
 _AGGREGATE_BENCHMARK_DEFAULT_LIMIT = 20
 
@@ -1272,7 +1280,12 @@ async def _resolve_benchmark_summary_payload() -> dict[str, Any] | None:
             continue
         if not _is_completed_runtime_benchmark_payload(artifact):
             continue
-        payload = _artifact_payload(artifact)
+        payload = dict(_artifact_payload(artifact))
+        if not str(payload.get("artifact_id") or "").strip():
+            for candidate in _artifact_identifier_candidates(artifact):
+                if candidate:
+                    payload["artifact_id"] = candidate
+                    break
         normalized = _with_complete_summary(payload)
         await store.save_benchmark_summary(normalized)
         return normalized
@@ -2829,6 +2842,8 @@ async def _persist_and_emit_benchmark_event(
     journal: BufferedEventJournal | None = None,
 ) -> None:
     payload = _benchmark_event_payload(event_type, event_data)
+    if event_type in _BENCHMARK_SPAN_MILESTONE_EVENTS:
+        add_span_event(event_type, event_data)
     if journal is not None:
         await journal.publish(
             payload,
@@ -2937,6 +2952,17 @@ async def _execute_benchmark_run(
     store = get_task_store()
     stream = get_stream_manager()
     backend = get_coordination_backend()
+    set_current_span_attributes(
+        {
+            "agora.route.operation": "benchmarks.run",
+            "agora.execution.kind": "benchmark_run",
+            "agora.benchmark.run_id": run_id,
+            "agora.benchmark.agent_count": request.agent_count,
+            "agora.benchmark.training_per_category": request.training_per_category,
+            "agora.benchmark.holdout_per_category": request.holdout_per_category,
+        },
+        bind=True,
+    )
     run_key = _benchmark_run_key(workspace_id, run_id)
     lease = await backend.acquire_run_lock(
         run_key,
@@ -3290,6 +3316,13 @@ async def _execute_benchmark_run(
         await stream.close(_benchmark_stream_key(workspace_id, run_id))
     except Exception as exc:
         failed_at = datetime.now(UTC).isoformat()
+        mark_span_error(
+            exc,
+            attributes={
+                "agora.execution.status": "failed",
+                "agora.error.type": exc.__class__.__name__,
+            },
+        )
         await event_journal.close()
         await state_writer.close()
         failed_record = running_record_state
@@ -3674,6 +3707,17 @@ async def trigger_benchmark_run(
     store = get_task_store()
     stream = get_stream_manager()
     run_id = _build_run_id(user.workspace_id)
+    set_current_span_attributes(
+        {
+            "agora.route.operation": "benchmarks.run",
+            "agora.execution.kind": "benchmark_run",
+            "agora.benchmark.run_id": run_id,
+            "agora.benchmark.agent_count": request.agent_count,
+            "agora.benchmark.training_per_category": request.training_per_category,
+            "agora.benchmark.holdout_per_category": request.holdout_per_category,
+        },
+        bind=True,
+    )
     created_at = datetime.now(UTC)
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
     resolved_domain_prompts = _resolved_domain_prompts(request)

@@ -551,14 +551,23 @@ export function Benchmarks() {
 
     const artifactId = String(record.artifact_id ?? record.run_id ?? "").trim();
     const generatedAt = String(record.generated_at ?? record.updated_at ?? "").trim();
+    const catalogArtifactId = String(catalog?.global_recent?.[0]?.artifact_id ?? "").trim();
     if (artifactId && generatedAt) {
       return `Current source: ${artifactId} (${generatedAt}).`;
     }
     if (artifactId) {
       return `Current source: ${artifactId}.`;
     }
-    return "Current source: latest compatible benchmark artifact.";
-  }, [benchmarks, overviewMode]);
+    if (catalogArtifactId && generatedAt) {
+      return `Current source: ${catalogArtifactId} (${generatedAt}).`;
+    }
+    if (catalogArtifactId) {
+      return `Current source: ${catalogArtifactId}.`;
+    }
+    return generatedAt
+      ? `Current source: latest compatible benchmark artifact (${generatedAt}).`
+      : "Current source: latest compatible benchmark artifact.";
+  }, [benchmarks, catalog, overviewMode]);
 
   const overviewHeatmapRows = useMemo(
     () => buildOverviewHeatmapRows(normalizedSummary),

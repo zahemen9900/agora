@@ -658,8 +658,65 @@ async def test_resolve_benchmark_summary_payload_prefers_newer_runtime_artifact_
     assert payload is not None
     assert payload["artifact_id"] == "fresh-artifact"
     assert payload["summary"]["per_mechanism"]["delphi"]["run_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_resolve_benchmark_summary_payload_backfills_artifact_id_from_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self.saved_summary: dict[str, Any] | None = None
+
+        async def get_benchmark_summary(self) -> dict[str, Any] | None:
+            return None
+
+        async def list_global_benchmark_artifacts(self, limit: int = 500) -> list[dict[str, Any]]:
+            del limit
+            return [
+                {
+                    "artifact_id": "wrapped-artifact-id",
+                    "status": "completed",
+                    "created_at": "2026-04-30T12:00:00+00:00",
+                    "payload": {
+                        "artifact_version": "benchmark-tasklike-v2",
+                        "generated_at": "2026-04-30T12:00:00+00:00",
+                        "runs": [
+                            {
+                                "item_status": "completed",
+                                "mode": "delphi",
+                                "mechanism_used": "delphi",
+                                "category": "demo",
+                                "correct": False,
+                                "scored": True,
+                                "scoring_mode": "proxy_success",
+                                "tokens_used": 90,
+                                "thinking_tokens_used": 30,
+                                "latency_ms": 11.0,
+                                "estimated_cost_usd": 0.005,
+                            }
+                        ],
+                    },
+                }
+            ]
+
+        async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
+            self.saved_summary = summary
+
+    store = FakeStore()
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "get_task_store", lambda: store)
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
+
+    payload = await benchmark_routes._resolve_benchmark_summary_payload()
+
+    assert payload is not None
+    assert payload["artifact_id"] == "wrapped-artifact-id"
     assert store.saved_summary is not None
-    assert store.saved_summary["artifact_id"] == "fresh-artifact"
+    assert store.saved_summary["artifact_id"] == "wrapped-artifact-id"
 
 
 def test_artifact_telemetry_estimates_cost_from_total_tokens_without_split_counts() -> None:
