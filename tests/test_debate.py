@@ -121,6 +121,58 @@ class _RawTextDebateCaller:
         return self.response, {"input_tokens": 5, "output_tokens": 7, "latency_ms": 11.0}
 
 
+def test_debate_default_tier_callers_use_local_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def fake_flash_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["flash"] = dict(kwargs)
+        return _FakeDebateCaller("flash-model", _InitialAnswerResponse(answer="A", confidence=0.5))
+
+    def fake_pro_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["pro"] = dict(kwargs)
+        return _FakeDebateCaller(
+            "pro-model",
+            _SynthesisResponse(final_answer="A", confidence=0.5, summary=""),
+        )
+
+    def fake_claude_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["claude"] = dict(kwargs)
+        return _FakeDebateCaller(
+            "claude-model",
+            _OpeningResponse(claim="A", evidence="B", confidence=0.5),
+        )
+
+    def fake_openrouter_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["openrouter"] = dict(kwargs)
+        return _FakeDebateCaller("openrouter-model", _CrossExamResponse())
+
+    monkeypatch.setattr("agora.engines.debate.flash_caller", fake_flash_caller)
+    monkeypatch.setattr("agora.engines.debate.pro_caller", fake_pro_caller)
+    monkeypatch.setattr("agora.engines.debate.claude_caller", fake_claude_caller)
+    monkeypatch.setattr("agora.engines.debate.openrouter_caller", fake_openrouter_caller)
+
+    engine = DebateEngine(
+        agent_count=3,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-byok-key",
+            anthropic_api_key="anth-byok-key",
+            openrouter_api_key="or-byok-key",
+        ),
+    )
+
+    engine._get_caller("flash")
+    engine._get_caller("pro")
+    engine._get_caller("claude")
+    engine._get_caller("openrouter")
+
+    assert captured["flash"]["gemini_api_key"] == "gem-byok-key"
+    assert captured["pro"]["gemini_api_key"] == "gem-byok-key"
+    assert captured["claude"]["anthropic_api_key"] == "anth-byok-key"
+    assert captured["openrouter"]["openrouter_api_key"] == "or-byok-key"
+
+
 def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
     """Faction assignment should keep counted debaters and a separate DA id."""
 

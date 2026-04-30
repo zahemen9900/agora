@@ -18,6 +18,12 @@ from pydantic import BaseModel, ValidationError
 
 from agora.config import get_config
 from agora.runtime.model_catalog import is_openrouter_model_id, resolve_model_catalog_entry
+from agora.telemetry import (
+    current_capture_content_mode,
+    mark_span_error,
+    set_current_span_attributes,
+    start_observation_span,
+)
 
 try:
     from anthropic import APIConnectionError as AnthropicAPIConnectionError
@@ -2135,13 +2141,19 @@ class AgentCaller:
         }
 
 
-def flash_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
+def flash_caller(
+    *,
+    thinking_level: str | None = None,
+    model: str | None = None,
+    gemini_api_key: str | None = None,
+) -> AgentCaller:
     """Return cost-efficient generation caller for openings, voting, and rebuttals."""
 
     config = get_config()
     return AgentCaller(
         model=model or config.flash_model,
         temperature=0.7,
+        gemini_api_key=gemini_api_key,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=True,
         thinking_budget=None,
@@ -2149,13 +2161,19 @@ def flash_caller(*, thinking_level: str | None = None, model: str | None = None)
     )
 
 
-def pro_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
+def pro_caller(
+    *,
+    thinking_level: str | None = None,
+    model: str | None = None,
+    gemini_api_key: str | None = None,
+) -> AgentCaller:
     """Return higher-quality reasoning caller for selection and synthesis."""
 
     config = get_config()
     return AgentCaller(
         model=model or config.pro_model,
         temperature=0.5,
+        gemini_api_key=gemini_api_key,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=config.gemini_enable_thinking,
         thinking_budget=None,
@@ -2163,13 +2181,19 @@ def pro_caller(*, thinking_level: str | None = None, model: str | None = None) -
     )
 
 
-def claude_caller(*, effort: str | None = None, model: str | None = None) -> AgentCaller:
+def claude_caller(
+    *,
+    effort: str | None = None,
+    model: str | None = None,
+    anthropic_api_key: str | None = None,
+) -> AgentCaller:
     """Return direct Anthropic Claude caller for diversity or fallback routing."""
 
     config = get_config()
     return AgentCaller(
         model=model or config.claude_model,
         temperature=1.0,
+        anthropic_api_key=anthropic_api_key,
         claude_effort=effort or config.claude_effort,
     )
 
@@ -2179,6 +2203,7 @@ def openrouter_caller(
     effort: str | None = None,
     exclude: bool | None = None,
     model: str | None = None,
+    openrouter_api_key: str | None = None,
 ) -> AgentCaller:
     """Return OpenRouter-compatible caller for challenger or fallback routing."""
 
@@ -2186,6 +2211,7 @@ def openrouter_caller(
     return AgentCaller(
         model=model or config.openrouter_model,
         temperature=0.5,
+        openrouter_api_key=openrouter_api_key,
         openrouter_reasoning_effort=effort or config.openrouter_reasoning_effort,
         openrouter_reasoning_exclude=(
             config.openrouter_reasoning_exclude if exclude is None else exclude
@@ -2198,7 +2224,13 @@ def kimi_caller(
     effort: str | None = None,
     exclude: bool | None = None,
     model: str | None = None,
+    openrouter_api_key: str | None = None,
 ) -> AgentCaller:
     """Backward-compatible alias for the legacy Kimi-specific helper."""
 
-    return openrouter_caller(effort=effort, exclude=exclude, model=model)
+    return openrouter_caller(
+        effort=effort,
+        exclude=exclude,
+        model=model,
+        openrouter_api_key=openrouter_api_key,
+    )

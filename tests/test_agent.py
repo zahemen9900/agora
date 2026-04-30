@@ -894,6 +894,40 @@ async def test_pro_caller_uses_configured_gemini_thinking_level(
 
 
 @pytest.mark.asyncio
+async def test_pro_caller_uses_explicit_gemini_api_key_when_env_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGORA_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("AGORA_GEMINI_PRO_THINKING_LEVEL", "low")
+    response = _FakeGeminiResponse("ok", input_tokens=2, output_tokens=1)
+    created: dict[str, _FakeGeminiClient] = {}
+
+    def _fake_client_ctor(*, api_key: str) -> _FakeGeminiClient:
+        client = _FakeGeminiClient(api_key=api_key, response=response)
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "genai", SimpleNamespace(Client=_fake_client_ctor))
+    monkeypatch.setattr(
+        agent_module,
+        "genai_types",
+        SimpleNamespace(
+            GenerateContentConfig=_FakeGeminiGenerateContentConfig,
+            ThinkingConfig=_FakeGeminiThinkingConfig,
+            ThinkingLevel=_FakeGeminiThinkingLevel,
+        ),
+    )
+
+    caller = agent_module.pro_caller(gemini_api_key="explicit-byok-key")
+    await caller.call(system_prompt="Be careful.", user_prompt="Say OK")
+
+    assert created["client"].api_key == "explicit-byok-key"
+
+
+@pytest.mark.asyncio
 async def test_gemini_thinking_config_falls_back_to_compatible_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

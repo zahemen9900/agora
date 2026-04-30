@@ -4,7 +4,7 @@ import pytest
 
 from agora.engines.delphi import DelphiEngine
 from agora.sdk import AgoraArbitrator, AgoraNode
-from agora.types import MechanismType
+from agora.types import LocalProviderKeys, MechanismType
 from tests.helpers import make_selection
 
 
@@ -38,6 +38,31 @@ def _make_delphi_agents() -> list:
         }
 
     return [btc_agent, revising_agent, btc_agent]
+
+
+def test_delphi_default_flash_caller_uses_local_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeFlashCaller:
+        model = "flash-model"
+
+    def fake_flash_caller(**kwargs: object) -> _FakeFlashCaller:
+        captured.update(kwargs)
+        return _FakeFlashCaller()
+
+    monkeypatch.setattr("agora.engines.delphi.flash_caller", fake_flash_caller)
+
+    engine = DelphiEngine(
+        agent_count=3,
+        provider_keys=LocalProviderKeys(gemini_api_key="gem-byok-key"),
+    )
+
+    caller = engine._get_flash_caller()
+
+    assert caller.model == "flash-model"
+    assert captured["gemini_api_key"] == "gem-byok-key"
 
 
 @pytest.mark.asyncio
