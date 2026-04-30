@@ -1262,23 +1262,23 @@ def _with_complete_summary(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _resolve_benchmark_summary_payload() -> dict[str, Any] | None:
+    await _maybe_backfill_legacy_benchmarks()
     store = get_task_store()
     summary = await store.get_benchmark_summary()
-    if isinstance(summary, dict):
-        return _with_complete_summary(summary)
 
     global_artifacts = await store.list_global_benchmark_artifacts(limit=500)
     for artifact in global_artifacts:
         if not isinstance(artifact, dict):
             continue
+        if not _is_completed_runtime_benchmark_payload(artifact):
+            continue
         payload = _artifact_payload(artifact)
-        if not _is_current_runtime_benchmark_payload(payload):
-            continue
-        if not _is_summary_block(_resolve_summary_block(payload)):
-            continue
         normalized = _with_complete_summary(payload)
         await store.save_benchmark_summary(normalized)
         return normalized
+
+    if isinstance(summary, dict):
+        return _with_complete_summary(summary)
 
     payload = _load_json_payload(_RESULTS_PATH)
     if payload is None:
@@ -3205,6 +3205,7 @@ async def _execute_benchmark_run(
 
         await store.save_global_benchmark_artifact(run_id, artifact_document)
         await store.save_user_benchmark_artifact(workspace_id, run_id, user_artifact_document)
+        await store.save_benchmark_summary(_with_complete_summary(dict(artifact_document)))
 
         completed_at = datetime.now(UTC).isoformat()
         completed_record = running_record_state

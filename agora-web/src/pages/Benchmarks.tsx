@@ -535,6 +535,30 @@ export function Benchmarks() {
     () => String((benchmarks as Record<string, unknown> | null)?.aggregation_window ?? "latest"),
     [benchmarks],
   );
+  const activeOverviewSourceLabel = useMemo(() => {
+    const record = benchmarks as Record<string, unknown> | null;
+    if (!record) {
+      return "Loading benchmark source.";
+    }
+
+    if (overviewMode !== "latest") {
+      const count = Number(record.aggregated_artifact_count ?? 0);
+      const windowLabel = String(record.aggregation_window ?? "recent_20");
+      return windowLabel === "all"
+        ? `Current source: aggregate of ${count || "compatible"} benchmark artifacts from the full catalog.`
+        : `Current source: aggregate of ${count || "compatible"} benchmark artifacts from the recent-20 window.`;
+    }
+
+    const artifactId = String(record.artifact_id ?? record.run_id ?? "").trim();
+    const generatedAt = String(record.generated_at ?? record.updated_at ?? "").trim();
+    if (artifactId && generatedAt) {
+      return `Current source: ${artifactId} (${generatedAt}).`;
+    }
+    if (artifactId) {
+      return `Current source: ${artifactId}.`;
+    }
+    return "Current source: latest compatible benchmark artifact.";
+  }, [benchmarks, overviewMode]);
 
   const overviewHeatmapRows = useMemo(
     () => buildOverviewHeatmapRows(normalizedSummary),
@@ -756,7 +780,7 @@ export function Benchmarks() {
             <ChartCard
               title="Scored Success Heatmap"
               subtitle="Executed mechanism success by category, with explicit sample counts. Creative and demo are proxy-scored; one-sample buckets are directional, not proof. Darker cells indicate stronger relative sample support."
-              tooltip="Each cell shows the accuracy rate for one combination of task category (row) and deliberation mechanism (column). Darker teal = higher success rate. 'n=' is the number of scored runs in that cell — cells with n=1 are directional only. Proxy-scored categories (Creative, Demo) use heuristic evaluation rather than ground-truth comparison."
+              tooltip={`Each cell shows the accuracy rate for one combination of task category (row) and deliberation mechanism (column). Darker teal = higher success rate. 'n=' is the number of scored runs in that cell — cells with n=1 are directional only. Proxy-scored categories (Creative, Demo) use heuristic evaluation rather than ground-truth comparison. ${activeOverviewSourceLabel}`}
             >
               {overviewError ? (
                 <div style={{ padding: "32px 0", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>
