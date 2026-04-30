@@ -55,20 +55,41 @@ async def test_full_pipeline_returns_populated_result() -> None:
     assert result.agent_models_used
 
 
-def test_orchestrator_passes_local_provider_keys_to_selector_reasoning_caller(
+@pytest.mark.asyncio
+async def test_orchestrator_passes_local_provider_keys_to_selector_reasoning_caller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_pro_caller(**kwargs: object) -> object:
+    class _FakeReasoningCaller:
+        async def call(self, **_kwargs: object) -> tuple[object, dict[str, object]]:
+            from agora.selector.reasoning import _ReasoningResponse
+
+            return (
+                _ReasoningResponse(
+                    mechanism="vote",
+                    confidence=0.7,
+                    reasoning="Bounded objective task.",
+                ),
+                {},
+            )
+
+    def fake_pro_caller(**kwargs: object) -> _FakeReasoningCaller:
         captured.update(kwargs)
-        return object()
+        return _FakeReasoningCaller()
 
     monkeypatch.setattr(orchestrator_module, "pro_caller", fake_pro_caller)
 
-    AgoraOrchestrator(
+    orchestrator = AgoraOrchestrator(
         agent_count=3,
         local_provider_keys=LocalProviderKeys(gemini_api_key="gem-byok-key"),
+    )
+
+    await orchestrator.selector.reasoning.select(
+        task_text="What is 17 * 19?",
+        features=make_features("factual"),
+        bandit_recommendation=(MechanismType.VOTE, 0.8),
+        historical_performance={},
     )
 
     assert captured["gemini_api_key"] == "gem-byok-key"
