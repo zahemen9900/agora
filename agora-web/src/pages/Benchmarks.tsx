@@ -3,6 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import {
   CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -29,6 +32,7 @@ import {
   useBenchmarkCatalogQuery,
   useBenchmarkOverviewQuery,
   useBenchmarkPromptTemplatesQuery,
+  useStopBenchmarkMutation,
   useTriggerBenchmarkMutation,
 } from "../lib/benchmarkQueries";
 import {
@@ -39,6 +43,7 @@ import {
   detectBenchmarkArtifactKind,
   normalizeBenchmarkSummary,
   type BenchmarkHeatmapRow,
+  type BenchmarkLearningCurvePoint,
   type NormalizedSummary,
 } from "../lib/benchmarkMetrics";
 import {
@@ -420,6 +425,7 @@ export function Benchmarks() {
   const benchmarkPromptTemplatesQuery = useBenchmarkPromptTemplatesQuery();
   const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
   const triggerBenchmarkMutation = useTriggerBenchmarkMutation();
+  const stopBenchmarkMutation = useStopBenchmarkMutation();
   const benchmarks = benchmarkOverviewQuery.data ?? null;
   const catalog = benchmarkCatalogQuery.data ?? null;
   const runtimeConfig = runtimeConfigQuery.data;
@@ -700,6 +706,20 @@ export function Benchmarks() {
     }
   }, [navigate, queryClient, runPayloadPreview, triggerBenchmarkMutation]);
 
+  const handleStopBenchmarkRun = useCallback(async (run: BenchmarkRunStatusPayload) => {
+    try {
+      setRunError(null);
+      await stopBenchmarkMutation.mutateAsync(run.run_id);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(run.run_id) }),
+      ]);
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Unable to stop benchmark run right now.");
+    }
+  }, [queryClient, stopBenchmarkMutation]);
+
   const updateDomainSelection = (
     domain: BenchmarkDomainName,
     updater: (current: DomainPromptSelection) => DomainPromptSelection,
@@ -838,28 +858,19 @@ export function Benchmarks() {
                 {learningCurveState.reason}
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                {/* Main before → after display */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0", padding: "20px 0 8px" }}>
-                  {/* Pre */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", flex: 1 }}>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Pre-learning</span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "38px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {/* Compact stat row */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0", padding: "8px 0 0" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", flex: 1 }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Pre</span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "26px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
                       {learningCurveState.preAccuracy == null ? "—" : `${Math.round(learningCurveState.preAccuracy)}%`}
                     </span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-muted)" }}>
-                      n={learningCurveState.preScoredRunCount}
-                    </span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "8px", color: "var(--text-muted)" }}>n={learningCurveState.preScoredRunCount}</span>
                   </div>
-
-                  {/* Arrow + delta */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", padding: "0 16px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <div style={{ width: "40px", height: "1px", background: "var(--border-strong)" }} />
-                      <div style={{ width: 0, height: 0, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderLeft: `6px solid var(--border-strong)` }} />
-                    </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", padding: "0 12px" }}>
                     <span style={{
-                      fontFamily: CHART_FONT, fontSize: "12px", fontWeight: 700,
+                      fontFamily: CHART_FONT, fontSize: "11px", fontWeight: 700,
                       color: learningCurveState.delta == null ? "var(--text-muted)"
                         : learningCurveState.delta > 0 ? "var(--accent-emerald)"
                         : learningCurveState.delta < 0 ? "var(--accent-rose)"
@@ -869,50 +880,72 @@ export function Benchmarks() {
                         : learningCurveState.delta > 0 ? `+${learningCurveState.delta.toFixed(1)}pp`
                         : `${learningCurveState.delta.toFixed(1)}pp`}
                     </span>
+                    <span style={{
+                      fontFamily: CHART_FONT, fontSize: "8px", letterSpacing: "0.06em", textTransform: "uppercase",
+                      padding: "2px 8px", borderRadius: "20px",
+                      background: learningCurveState.saturated ? "rgba(251,191,36,0.1)" : "rgba(52,211,153,0.1)",
+                      border: `1px solid ${learningCurveState.saturated ? "rgba(251,191,36,0.3)" : "rgba(52,211,153,0.3)"}`,
+                      color: learningCurveState.saturated ? "var(--accent-amber)" : "var(--accent-emerald)",
+                    }}>
+                      {learningCurveState.saturated ? "Saturated" : "Lift"}
+                    </span>
                   </div>
-
-                  {/* Post */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", flex: 1 }}>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Post-learning</span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "38px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", flex: 1 }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Post</span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "26px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
                       {learningCurveState.postAccuracy == null ? "—" : `${Math.round(learningCurveState.postAccuracy)}%`}
                     </span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-muted)" }}>
-                      n={learningCurveState.postScoredRunCount}
-                    </span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "8px", color: "var(--text-muted)" }}>n={learningCurveState.postScoredRunCount}</span>
                   </div>
                 </div>
 
-                {/* Status badge */}
-                <div style={{ display: "flex", justifyContent: "center" }}>
-                  <span style={{
-                    fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.08em", textTransform: "uppercase",
-                    padding: "3px 10px", borderRadius: "20px",
-                    background: learningCurveState.saturated ? "rgba(251,191,36,0.1)" : "rgba(52,211,153,0.1)",
-                    border: `1px solid ${learningCurveState.saturated ? "rgba(251,191,36,0.3)" : "rgba(52,211,153,0.3)"}`,
-                    color: learningCurveState.saturated ? "var(--accent-amber)" : "var(--accent-emerald)",
-                  }}>
-                    {learningCurveState.saturated ? "Saturated — 100% pre-learning" : "Measured lift"}
-                  </span>
-                </div>
-
-                {/* Visual progress bars */}
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "4px 0 2px" }}>
-                  {[
-                    { label: "Pre", value: learningCurveState.preAccuracy, color: "var(--text-muted)" },
-                    { label: "Post", value: learningCurveState.postAccuracy, color: "var(--accent-emerald)" },
-                  ].map(({ label, value, color }) => (
-                    <div key={label} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "26px", flexShrink: 0 }}>{label}</span>
-                      <div style={{ flex: 1, height: "6px", background: "var(--bg-subtle)", borderRadius: "3px", overflow: "hidden" }}>
-                        <div style={{ width: `${value ?? 0}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.8s ease" }} />
+                {/* Actual learning curve */}
+                {learningCurveState.runPoints.length >= 2 ? (
+                  <ResponsiveContainer width="100%" height={160}>
+                    <LineChart data={learningCurveState.runPoints} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
+                      <XAxis dataKey="index" tick={{ fontFamily: CHART_FONT, fontSize: 8, fill: "var(--text-tertiary)" }} tickLine={false} axisLine={false} label={{ value: "Run #", position: "insideBottomRight", offset: -4, style: { fontFamily: CHART_FONT, fontSize: 8, fill: "var(--text-tertiary)" } }} />
+                      <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontFamily: CHART_FONT, fontSize: 8, fill: "var(--text-tertiary)" }} tickLine={false} axisLine={false} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const pt = payload[0].payload as BenchmarkLearningCurvePoint;
+                          return (
+                            <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-default)", borderRadius: 6, padding: "6px 10px", fontFamily: CHART_FONT, fontSize: 9 }}>
+                              <div style={{ color: "var(--text-tertiary)", marginBottom: 2 }}>Run {pt.index} · {pt.phase}</div>
+                              <div style={{ color: "var(--accent-emerald)", fontWeight: 700 }}>{pt.cumAccuracy.toFixed(1)}% cumulative</div>
+                            </div>
+                          );
+                        }}
+                      />
+                      {learningCurveState.preEndIndex != null && (
+                        <ReferenceLine x={learningCurveState.preEndIndex} stroke="var(--border-strong)" strokeDasharray="3 3" label={{ value: "learning →", position: "top", style: { fontFamily: CHART_FONT, fontSize: 7, fill: "var(--text-tertiary)" } }} />
+                      )}
+                      {learningCurveState.learningEndIndex != null && (
+                        <ReferenceLine x={learningCurveState.learningEndIndex} stroke="var(--border-strong)" strokeDasharray="3 3" label={{ value: "post →", position: "top", style: { fontFamily: CHART_FONT, fontSize: 7, fill: "var(--text-tertiary)" } }} />
+                      )}
+                      <Line type="monotone" dataKey="cumAccuracy" stroke="var(--accent-emerald)" strokeWidth={1.5} dot={false} isAnimationActive animationDuration={800} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  /* Fallback when there's no per-run data (summary-only payloads) */
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "4px 0 2px" }}>
+                    {[
+                      { label: "Pre", value: learningCurveState.preAccuracy, color: "var(--text-muted)" },
+                      { label: "Post", value: learningCurveState.postAccuracy, color: "var(--accent-emerald)" },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "26px", flexShrink: 0 }}>{label}</span>
+                        <div style={{ flex: 1, height: "6px", background: "var(--bg-subtle)", borderRadius: "3px", overflow: "hidden" }}>
+                          <div style={{ width: `${value ?? 0}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.8s ease" }} />
+                        </div>
+                        <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "32px", textAlign: "right", flexShrink: 0 }}>
+                          {value == null ? "—" : `${Math.round(value)}%`}
+                        </span>
                       </div>
-                      <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "32px", textAlign: "right", flexShrink: 0 }}>
-                        {value == null ? "—" : `${Math.round(value)}%`}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </ChartCard>
@@ -1051,6 +1084,8 @@ export function Benchmarks() {
               ) : (
                 <LiveRunRow
                   run={featuredBenchmarkRun}
+                  onStop={handleStopBenchmarkRun}
+                  isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
                   onOpen={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
                 />
               )}
@@ -1124,6 +1159,8 @@ export function Benchmarks() {
                       <LiveRunRow
                         key={run.run_id}
                         run={run}
+                        onStop={handleStopBenchmarkRun}
+                        isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === run.run_id}
                         onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
                       />
                     ))}

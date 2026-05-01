@@ -139,8 +139,16 @@ function RunShell({
 }) {
   const [hovered, setHovered] = useState(false);
   return (
-    <button
-      type="button" onClick={onOpen}
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       style={{
         width: "100%", textAlign: "left", display: "block",
@@ -156,7 +164,7 @@ function RunShell({
         cursor: "pointer",
         transition: "border-color 0.15s ease, background 0.15s ease",
       }}
-    >{children}</button>
+    >{children}</div>
   );
 }
 
@@ -256,7 +264,17 @@ export function CatalogRunRow({ entry, onOpen }: { entry: BenchmarkCatalogEntry;
   );
 }
 
-export function LiveRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; onOpen: () => void }) {
+export function LiveRunRow({
+  run,
+  onOpen,
+  onStop,
+  isStopping = false,
+}: {
+  run: BenchmarkRunStatusPayload;
+  onOpen: () => void;
+  onStop?: (run: BenchmarkRunStatusPayload) => void;
+  isStopping?: boolean;
+}) {
   useEffect(() => { injectRowKeyframes(); }, []);
   const isRunning = run.status === "running";
   const accentHex = isRunning ? "#22D38A" : run.status === "queued" ? "#FBBF24" : undefined;
@@ -277,6 +295,32 @@ export function LiveRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; on
           </span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          {onStop && (
+            <button
+              type="button"
+              disabled={isStopping}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onStop(run);
+              }}
+              style={{
+                fontFamily: FONT,
+                fontSize: "9px",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                padding: "4px 8px",
+                borderRadius: "6px",
+                border: "1px solid rgba(248,113,113,0.35)",
+                background: isStopping ? "rgba(248,113,113,0.08)" : "rgba(248,113,113,0.12)",
+                color: "var(--accent-rose)",
+                cursor: isStopping ? "progress" : "pointer",
+                opacity: isStopping ? 0.8 : 1,
+              }}
+            >
+              {isStopping ? "Stopping…" : "Stop"}
+            </button>
+          )}
           <ModelCluster models={models} />
           <span style={{ fontFamily: FONT, fontSize: "10px", color: "var(--text-muted)" }}>{fmtDate(run.updated_at)}</span>
         </div>

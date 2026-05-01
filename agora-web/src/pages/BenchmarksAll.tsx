@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ChevronDown, ChevronRight, Filter, RefreshCcw, Search } from "lucide-react";
 
-import { type BenchmarkCatalogEntry } from "../lib/api";
-import { useBenchmarkCatalogQuery } from "../lib/benchmarkQueries";
+import { type BenchmarkCatalogEntry, type BenchmarkRunStatusPayload } from "../lib/api";
+import { FailedRunRow, LiveRunRow } from "../components/benchmark/BenchmarkRunRow";
+import { benchmarkQueryKeys, useBenchmarkCatalogQuery, useStopBenchmarkMutation } from "../lib/benchmarkQueries";
+import { mergeCatalogArtifactsWithRuns, type BenchmarkCatalogListRow } from "../lib/benchmarkCatalogRows";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel } from "../lib/modelProviders";
 import { injectChartKeyframes, CHART_FONT, ShimBlock } from "../components/benchmark/ChartCard";
@@ -268,13 +271,15 @@ function FilterDropdown({ value, onChange }: { value: SortMode; onChange: (v: So
 // ── Section ────────────────────────────────────────────────────────────────────
 
 function BenchmarkSection({
-  title, entries, sortMode, onSortChange, onOpen, isLoading,
+  title, rows, sortMode, onSortChange, onOpen, onStop, isStoppingRunId, isLoading,
 }: {
   title: string;
-  entries: BenchmarkCatalogEntry[];
+  rows: BenchmarkCatalogListRow[];
   sortMode: SortMode;
   onSortChange: (v: SortMode) => void;
-  onOpen: (id: string) => void;
+  onOpen: (row: BenchmarkCatalogListRow) => void;
+  onStop: (run: BenchmarkRunStatusPayload) => void;
+  isStoppingRunId: string | null;
   isLoading: boolean;
 }) {
   return (
@@ -301,7 +306,7 @@ function BenchmarkSection({
               background: "var(--bg-elevated)", color: "var(--text-tertiary)",
               border: "1px solid var(--border-default)",
             }}>
-              {entries.length}
+              {rows.length}
             </span>
           )}
         </div>
@@ -316,18 +321,42 @@ function BenchmarkSection({
             <SkeletonBenchmarkCard delay={0.08} />
             <SkeletonBenchmarkCard delay={0.16} />
           </>
-        ) : entries.length === 0 ? (
+        ) : rows.length === 0 ? (
           <p style={{ fontFamily: CHART_FONT, fontSize: "11px", color: "var(--text-muted)", padding: "16px 0", textAlign: "center" }}>
             No matching benchmark artifacts.
           </p>
         ) : (
-          entries.map((entry) => (
-            <BenchmarkCard
-              key={`${entry.scope}:${entry.artifact_id}`}
-              entry={entry}
-              onOpen={() => onOpen(entry.artifact_id)}
-            />
-          ))
+          rows.map((row) => {
+            if (row.kind === "artifact") {
+              const entry = row.entry;
+              return (
+                <BenchmarkCard
+                  key={`${entry.scope}:${entry.artifact_id}`}
+                  entry={entry}
+                  onOpen={() => onOpen(row)}
+                />
+              );
+            }
+            const run = row.run;
+            if (run.status === "failed") {
+              return (
+                <FailedRunRow
+                  key={`run:${run.run_id}`}
+                  run={run}
+                  onOpen={() => onOpen(row)}
+                />
+              );
+            }
+            return (
+              <LiveRunRow
+                key={`run:${run.run_id}`}
+                run={run}
+                onStop={onStop}
+                isStopping={isStoppingRunId === run.run_id}
+                onOpen={() => onOpen(row)}
+              />
+            );
+          })
         )}
       </div>
     </div>
@@ -339,7 +368,9 @@ function BenchmarkSection({
 export function BenchmarksAll() {
   useEffect(() => { injectChartKeyframes(); }, []);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const catalogQuery = useBenchmarkCatalogQuery(100);
+  const stopBenchmarkMutation = useStopBenchmarkMutation();
   const [yourSortMode, setYourSortMode] = useState<SortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<SortMode>("recent");
   const [query, setQuery] = useState("");
@@ -350,7 +381,7 @@ export function BenchmarksAll() {
     ? catalogQuery.error.message
     : null;
 
-  const filterEntries = useCallback((entries: BenchmarkCatalogEntry[]) => {
+  const filterArtifacts = useCallback((entries: BenchmarkCatalogEntry[]) => {
     const q = query.trim().toLowerCase();
     if (!q) return entries;
     return entries.filter((e) => {
@@ -363,14 +394,43 @@ export function BenchmarksAll() {
     });
   }, [query]);
 
-  const yourEntries = useMemo(
-    () => filterEntries(catalog ? (yourSortMode === "recent" ? catalog.user_recent : catalog.user_frequency) : []),
-    [catalog, filterEntries, yourSortMode],
+  const filterRuns = useCallback((runs: BenchmarkRunStatusPayload[]) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return runs;
+    return runs.filter((run) => {
+      const models = Object.keys(run.model_telemetry ?? {});
+      return (
+        run.run_id.toLowerCase().includes(q)
+        || String(run.status).toLowerCase().includes(q)
+        || String(run.latest_mechanism ?? "").toLowerCase().includes(q)
+        || models.some((m) => m.toLowerCase().includes(q))
+      );
+    });
+  }, [query]);
+
+  const yourRows = useMemo(
+    () => mergeCatalogArtifactsWithRuns(
+      filterArtifacts(catalog ? (yourSortMode === "recent" ? catalog.user_recent : catalog.user_frequency) : []),
+      filterRuns(catalog ? (yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency) : []),
+    ),
+    [catalog, filterArtifacts, filterRuns, yourSortMode],
   );
-  const globalEntries = useMemo(
-    () => filterEntries(catalog ? (globalSortMode === "recent" ? catalog.global_recent : catalog.global_frequency) : []),
-    [catalog, filterEntries, globalSortMode],
+  const globalRows = useMemo(
+    () => mergeCatalogArtifactsWithRuns(
+      filterArtifacts(catalog ? (globalSortMode === "recent" ? catalog.global_recent : catalog.global_frequency) : []),
+      filterRuns(catalog ? (globalSortMode === "recent" ? catalog.global_tests_recent : catalog.global_tests_frequency) : []),
+    ),
+    [catalog, filterArtifacts, filterRuns, globalSortMode],
   );
+
+  const handleStopBenchmarkRun = useCallback(async (run: BenchmarkRunStatusPayload) => {
+    await stopBenchmarkMutation.mutateAsync(run.run_id);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(run.run_id) }),
+    ]);
+  }, [queryClient, stopBenchmarkMutation]);
 
   return (
     <>
@@ -468,18 +528,22 @@ export function BenchmarksAll() {
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             <BenchmarkSection
               title="Your Benchmarks"
-              entries={yourEntries}
+              rows={yourRows}
               sortMode={yourSortMode}
               onSortChange={setYourSortMode}
-              onOpen={(id) => navigate(`/benchmarks/${id}`)}
+              onStop={handleStopBenchmarkRun}
+              isStoppingRunId={stopBenchmarkMutation.isPending ? stopBenchmarkMutation.variables ?? null : null}
+              onOpen={(row) => navigate(`/benchmarks/${row.kind === "run" ? row.run.run_id : row.entry.artifact_id}`)}
               isLoading={isLoading}
             />
             <BenchmarkSection
               title="Global Benchmarks"
-              entries={globalEntries}
+              rows={globalRows}
               sortMode={globalSortMode}
               onSortChange={setGlobalSortMode}
-              onOpen={(id) => navigate(`/benchmarks/${id}`)}
+              onStop={handleStopBenchmarkRun}
+              isStoppingRunId={stopBenchmarkMutation.isPending ? stopBenchmarkMutation.variables ?? null : null}
+              onOpen={(row) => navigate(`/benchmarks/${row.kind === "run" ? row.run.run_id : row.entry.artifact_id}`)}
               isLoading={isLoading}
             />
           </div>
