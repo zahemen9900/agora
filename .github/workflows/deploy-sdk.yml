@@ -40,6 +40,17 @@ jobs:
       - name: Check distribution metadata
         run: python -m twine check sdk/dist/*
 
+      - name: Verify isolated wheel import
+        run: |
+          python -m venv /tmp/agora-sdk-verify
+          source /tmp/agora-sdk-verify/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install sdk/dist/*.whl
+          python - <<'PY'
+          from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
+          print("sdk-import-ok")
+          PY
+
       - name: Publish to PyPI
         if: ${{ github.event_name == 'push' || inputs.publish }}
         uses: pypa/gh-action-pypi-publish@release/v1

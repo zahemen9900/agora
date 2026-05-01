@@ -26,6 +26,7 @@ from agora.sdk.arbitrator import (
     ReceiptVerificationError,
 )
 from agora.types import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
+from agora.version import __version__
 
 __all__ = [
     "AgoraArbitrator",
@@ -54,4 +55,5 @@ __all__ = [
     "LocalModelSpec",
     "LocalProviderKeys",
     "ReceiptVerificationError",
+    "__version__",
 ]
