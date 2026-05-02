@@ -447,6 +447,8 @@ class BenchmarkCatalogResponse(BaseModel):
 
     global_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
     global_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    global_tests_recent: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
+    global_tests_frequency: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
     user_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
     user_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
     user_tests_recent: list[BenchmarkRunStatusResponse] = Field(default_factory=list)

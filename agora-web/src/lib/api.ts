@@ -412,6 +412,16 @@ export async function getBenchmarkRunStatus(
   });
 }
 
+export async function stopBenchmarkRun(
+  token: string,
+  runId: string,
+): Promise<BenchmarkRunStatusPayload> {
+  return requestJson<BenchmarkRunStatusPayload>(`/benchmarks/runs/${runId}/stop`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
 export async function streamBenchmarkRun(
   runId: string,
   tokenSupplier: AccessTokenSupplier,

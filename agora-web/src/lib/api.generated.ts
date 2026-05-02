@@ -279,6 +279,8 @@ export interface ResolvedBenchmarkDomainPrompt {
 export interface BenchmarkCatalogResponse {
   global_recent: Array<BenchmarkCatalogEntry>;
   global_frequency: Array<BenchmarkCatalogEntry>;
+  global_tests_recent: Array<BenchmarkRunStatusResponse>;
+  global_tests_frequency: Array<BenchmarkRunStatusResponse>;
   user_recent: Array<BenchmarkCatalogEntry>;
   user_frequency: Array<BenchmarkCatalogEntry>;
   user_tests_recent: Array<BenchmarkRunStatusResponse>;

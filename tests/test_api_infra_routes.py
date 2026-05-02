@@ -4093,6 +4093,269 @@ async def test_benchmark_catalog_returns_recent_and_frequency_views(
     assert payload["global_frequency"][0]["artifact_id"] == "global-one"
     assert payload["user_recent"][0]["artifact_id"] == "user-one"
     assert payload["user_tests_recent"][0]["run_id"] == "run-one"
+    assert payload["global_tests_recent"][0]["run_id"] == "run-one"
+
+
+@pytest.mark.asyncio
+async def test_benchmark_catalog_includes_non_completed_global_and_user_runs(
+    client: httpx.AsyncClient,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+    await store.save_user_test_result(
+        "user-1",
+        "user-running",
+        {
+            "run_id": "user-running",
+            "status": "running",
+            "kind": "benchmark",
+            "created_at": "2026-04-18T01:00:00+00:00",
+            "updated_at": "2026-04-18T01:05:00+00:00",
+            "latest_mechanism": "delphi",
+            "frequency_score": 4,
+        },
+    )
+    await store.save_user_test_result(
+        "user-2",
+        "global-failed",
+        {
+            "run_id": "global-failed",
+            "status": "failed",
+            "kind": "benchmark",
+            "created_at": "2026-04-18T02:00:00+00:00",
+            "updated_at": "2026-04-18T02:05:00+00:00",
+            "latest_mechanism": "vote",
+            "error": "provider unavailable",
+            "frequency_score": 3,
+        },
+    )
+
+    response = await client.get("/benchmarks/catalog")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert any(entry["run_id"] == "user-running" for entry in payload["user_tests_recent"])
+    assert any(entry["run_id"] == "user-running" for entry in payload["global_tests_recent"])
+    assert any(entry["run_id"] == "global-failed" for entry in payload["global_tests_recent"])
+    assert not any(entry["run_id"] == "global-failed" for entry in payload["user_tests_recent"])
+
+
+@pytest.mark.asyncio
+async def test_resume_stale_background_benchmark_runs_skips_legacy_running_records(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+    run_id = "legacy-running-benchmark"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "running",
+            "created_at": "2026-04-18T01:00:00+00:00",
+            "updated_at": "2026-04-18T01:05:00+00:00",
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {},
+            },
+        },
+    )
+
+    launched: list[tuple[str, str]] = []
+
+    def _record_launch(*, workspace_id: str, run_id: str, request: object) -> None:
+        launched.append((workspace_id, run_id))
+
+    monkeypatch.setattr(benchmark_routes, "_launch_background_benchmark_run", _record_launch)
+
+    relaunched = await benchmark_routes.resume_stale_background_benchmark_runs(
+        stale_after_seconds=60,
+        limit=10,
+    )
+
+    assert relaunched == 0
+    assert launched == []
+    updated = await store.get_user_test_result("user-1", run_id)
+    assert updated is not None
+    assert updated["status"] == "failed"
+    assert "background recovery intent" in str(updated["error"]).lower()
+
+
+@pytest.mark.asyncio
+async def test_resume_stale_background_benchmark_runs_relaunches_background_requested_runs(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+    run_id = "recoverable-running-benchmark"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+                "status": "running",
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "updated_at": "2026-04-30T00:05:00+00:00",
+                "background_run_requested_at": "2026-04-30T00:00:00+00:00",
+                "background_recovery_deadline_at": "2026-05-03T00:00:00+00:00",
+                "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {},
+            },
+        },
+    )
+
+    launched: list[tuple[str, str]] = []
+
+    def _record_launch(*, workspace_id: str, run_id: str, request: object) -> None:
+        launched.append((workspace_id, run_id))
+
+    monkeypatch.setattr(benchmark_routes, "_launch_background_benchmark_run", _record_launch)
+
+    relaunched = await benchmark_routes.resume_stale_background_benchmark_runs(
+        stale_after_seconds=60,
+        limit=10,
+    )
+
+    assert relaunched == 1
+    assert launched == [("user-1", run_id)]
+
+
+@pytest.mark.asyncio
+async def test_stop_benchmark_run_marks_stop_requested_and_prevents_recovery(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = task_routes._store
+    assert store is not None
+    run_id = "stoppable-running-benchmark"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "running",
+            "created_at": "2026-04-30T01:00:00+00:00",
+            "updated_at": "2026-04-30T01:05:00+00:00",
+            "background_run_requested_at": "2026-04-30T01:00:00+00:00",
+            "background_recovery_deadline_at": "2026-05-01T01:00:00+00:00",
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {},
+            },
+        },
+    )
+
+    monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "test-admin-token")
+    response = await client.post(
+        f"/benchmarks/runs/{run_id}/stop",
+        headers={"x-agora-admin-token": "test-admin-token"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "running"
+    assert "stopped by admin" in payload["error"].lower()
+
+    updated = await store.get_user_test_result("user-1", run_id)
+    assert updated is not None
+    assert updated["status"] == "running"
+    assert updated["stop_requested_at"]
+    assert updated["stop_requested_by"] == "admin"
+
+    relaunched = await benchmark_routes.resume_stale_background_benchmark_runs(
+        stale_after_seconds=60,
+        limit=10,
+    )
+    assert relaunched == 0
+
+
+@pytest.mark.asyncio
+async def test_stop_benchmark_run_accepts_artifact_identifier_alias(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
+    store = task_routes._store
+    assert store is not None
+    run_id = "stoppable-running-benchmark-alias"
+    artifact_id = "benchmark-artifact-alias"
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "artifact_id": artifact_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "running",
+            "created_at": "2026-04-30T01:00:00+00:00",
+            "updated_at": "2026-04-30T01:05:00+00:00",
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {},
+            },
+        },
+    )
+
+    response = await client.post(
+        f"/benchmarks/runs/{artifact_id}/stop",
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == run_id
+    assert payload["status"] == "running"
+    assert "stopped by user" in payload["error"].lower()
+
+    updated = await store.get_user_test_result("user-1", run_id)
+    assert updated is not None
+    assert updated["stop_requested_at"]
+
+
+def test_merge_benchmark_control_fields_preserves_stop_request() -> None:
+    snapshot = {
+        "run_id": "run-1",
+        "status": "running",
+        "updated_at": "2026-05-01T10:00:00+00:00",
+    }
+    persisted_record = {
+        "run_id": "run-1",
+        "status": "running",
+        "stop_requested_at": "2026-05-01T10:00:05+00:00",
+        "stop_requested_by": "user",
+        "error": "Benchmark stopped by user.",
+    }
+
+    merged = benchmark_routes._merge_benchmark_control_fields(snapshot, persisted_record)
+
+    assert merged["stop_requested_at"] == persisted_record["stop_requested_at"]
+    assert merged["stop_requested_by"] == "user"
+    assert merged["error"] == "Benchmark stopped by user."
 
 
 @pytest.mark.asyncio
@@ -5148,7 +5411,10 @@ async def test_resume_stale_background_benchmark_runs_relaunches_stale_running_r
                 "workspace_id": "user-1",
                 "kind": "benchmark",
                 "status": "running",
+                "created_at": "2026-04-29T00:00:00+00:00",
                 "updated_at": "2026-04-29T00:00:00+00:00",
+                "background_run_requested_at": "2026-04-29T00:00:00+00:00",
+                "background_recovery_deadline_at": "2026-05-29T12:00:00+00:00",
                 "request": request_payload,
             },
         )

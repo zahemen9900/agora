@@ -378,6 +378,21 @@ type, task or benchmark IDs, mechanism, latency, token counts, estimated cost,
 and stream counts. It does not send prompts, model outputs, or tool payloads
 unless you explicitly switch to `full`.
 
+For attribution without adding constructor args, the SDK also reads optional
+identity env vars:
+
+```bash
+export AGORA_SDK_WORKSPACE_ID=workspace_123
+export AGORA_SDK_ACTOR_ID=user:alice
+export AGORA_SDK_ACTOR_TYPE=user
+export AGORA_SDK_APPLICATION=notebook-research
+```
+
+Hosted SDK calls that use first-party Agora API keys automatically tag spans
+with `agora.actor.type=api_key` and `agora.actor.id=api_key:<public_id>`. For
+local SDK runs, set the `AGORA_SDK_*` env vars above if you want direct Axiom
+traces to be queryable by workspace or actor.
+
 ### Hosted API URL policy
 
 Hosted SDK calls resolve the canonical Cloud Run backend automatically. Do not pass a manual

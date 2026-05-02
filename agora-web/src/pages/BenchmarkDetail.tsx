@@ -24,6 +24,7 @@ import {
   patchBenchmarkDetailCache,
   setBenchmarkDetailCache,
   useBenchmarkDetailQuery,
+  useStopBenchmarkMutation,
 } from "../lib/benchmarkQueries";
 import {
   buildDetailCategoryRows,
@@ -96,6 +97,7 @@ export function BenchmarkDetail() {
   const { getAccessToken } = useAuth();
   const queryClient = useQueryClient();
   const detailQuery = useBenchmarkDetailQuery(benchmarkId);
+  const stopBenchmarkMutation = useStopBenchmarkMutation();
   const detail = detailQuery.data ?? null;
   const loadError = !benchmarkId
     ? "Benchmark id is required."
@@ -112,12 +114,45 @@ export function BenchmarkDetail() {
   const [hydratedItemEvents, setHydratedItemEvents] = useState<Record<string, TaskEvent[]>>({});
   const [hydratingItemId, setHydratingItemId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [stopError, setStopError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [phaseFilter, setPhaseFilter] = useState<string>("all");
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const followTimelineRef = useRef(true);
   const copyTimeoutRef = useRef<number | null>(null);
+
+  const handleStopBenchmark = useCallback(() => {
+    if (!detail?.run_id || stopBenchmarkMutation.isPending) {
+      return;
+    }
+    setStopError(null);
+    stopBenchmarkMutation.mutate(detail.run_id, {
+      onSuccess: async (status) => {
+        patchBenchmarkDetailCache(queryClient, detail.run_id!, (current) => (
+          current
+            ? {
+              ...current,
+              status: status.status,
+              updated_at: status.updated_at,
+              cost: status.cost ?? current.cost,
+              total_tokens: status.total_tokens ?? current.total_tokens,
+              thinking_tokens: status.thinking_tokens ?? current.thinking_tokens,
+              total_latency_ms: status.total_latency_ms ?? current.total_latency_ms,
+            }
+            : current
+        ));
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(detail.run_id!) }),
+          queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+          queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        ]);
+      },
+      onError: (error) => {
+        setStopError(error instanceof Error ? error.message : "Failed to stop benchmark run.");
+      },
+    });
+  }, [detail?.run_id, queryClient, stopBenchmarkMutation]);
   const streamedEventKeysRef = useRef<Set<string>>(new Set());
   const historyRepairAttemptedRef = useRef<string | null>(null);
   const itemHydrationAttemptedRef = useRef<Set<string>>(new Set());
@@ -707,6 +742,45 @@ export function BenchmarkDetail() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
+              {detail.run_id ? (
+                <button
+                  type="button"
+                  onClick={handleStopBenchmark}
+                  disabled={stopBenchmarkMutation.isPending}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "6px 14px",
+                    borderRadius: "8px",
+                    background: stopBenchmarkMutation.isPending
+                      ? "rgba(248,113,113,0.12)"
+                      : "rgba(248,113,113,0.10)",
+                    border: "1px solid rgba(248,113,113,0.35)",
+                    cursor: stopBenchmarkMutation.isPending ? "progress" : "pointer",
+                    fontFamily: "'Commit Mono', monospace",
+                    fontSize: "11px",
+                    color: "rgb(248,113,113)",
+                    opacity: stopBenchmarkMutation.isPending ? 0.8 : 1,
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  {stopBenchmarkMutation.isPending ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <span
+                      style={{
+                        width: "8px",
+                        height: "8px",
+                        borderRadius: "2px",
+                        background: "currentColor",
+                        display: "inline-block",
+                      }}
+                    />
+                  )}
+                  {stopBenchmarkMutation.isPending ? "Stopping…" : "Stop benchmark"}
+                </button>
+              ) : null}
               <div className={`mono text-[11px] px-2 py-1 rounded-full border ${streamState.tone}`}>
                 {streamState.label}
               </div>
@@ -722,6 +796,9 @@ export function BenchmarkDetail() {
             <div>Cost {formatUsd(detail.cost?.estimated_cost_usd ?? null)}</div>
             <div>{selectedItem ? `Active item ${selectedItem.item_index + 1}` : "No active item"}</div>
           </div>
+          {stopError ? (
+            <div className="mono text-xs text-red-400 mt-3">{stopError}</div>
+          ) : null}
         </div>
       ) : null}
 

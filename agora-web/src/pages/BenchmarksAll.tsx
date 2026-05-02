@@ -381,10 +381,11 @@ export function BenchmarksAll() {
     ? catalogQuery.error.message
     : null;
 
-  const filterArtifacts = useCallback((entries: BenchmarkCatalogEntry[]) => {
+  const filterArtifacts = useCallback((entries: BenchmarkCatalogEntry[] | null | undefined) => {
+    const safeEntries = Array.isArray(entries) ? entries : [];
     const q = query.trim().toLowerCase();
-    if (!q) return entries;
-    return entries.filter((e) => {
+    if (!q) return safeEntries;
+    return safeEntries.filter((e) => {
       const models = e.models?.length ? e.models : Object.keys(e.model_counts);
       return (
         e.artifact_id.toLowerCase().includes(q)
@@ -394,10 +395,11 @@ export function BenchmarksAll() {
     });
   }, [query]);
 
-  const filterRuns = useCallback((runs: BenchmarkRunStatusPayload[]) => {
+  const filterRuns = useCallback((runs: BenchmarkRunStatusPayload[] | null | undefined) => {
+    const safeRuns = Array.isArray(runs) ? runs : [];
     const q = query.trim().toLowerCase();
-    if (!q) return runs;
-    return runs.filter((run) => {
+    if (!q) return safeRuns;
+    return safeRuns.filter((run) => {
       const models = Object.keys(run.model_telemetry ?? {});
       return (
         run.run_id.toLowerCase().includes(q)

@@ -9,6 +9,7 @@ import {
   getBenchmarkDetail,
   getBenchmarkPromptTemplates,
   getBenchmarks,
+  stopBenchmarkRun,
   triggerBenchmarkRun,
   type BenchmarkCatalogEntry,
   type BenchmarkCatalogPayload,
@@ -369,6 +370,20 @@ export function useTriggerBenchmarkMutation() {
         throw new Error("Authentication token is unavailable.");
       }
       return triggerBenchmarkRun(token, payload);
+    },
+  });
+}
+
+export function useStopBenchmarkMutation() {
+  const { getAccessToken } = useAuth();
+
+  return useMutation<BenchmarkRunStatusPayload, Error, string>({
+    mutationFn: async (runId) => {
+      const token = await getAccessToken();
+      if (!token) {
+        throw new Error("Authentication token is unavailable.");
+      }
+      return stopBenchmarkRun(token, runId);
     },
   });
 }

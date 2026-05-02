@@ -20,8 +20,8 @@ from agora.runtime.task_execution import (
     execute_task_like_run,
     resolve_task_like_selection,
 )
+from agora.telemetry import observation_context
 from agora.types import DeliberationResult, MechanismSelection, MechanismType
-from api.telemetry import observation_context
 
 _DATASET_DIR = Path(__file__).resolve().parent / "datasets"
 _RESULTS_DIR = Path(__file__).resolve().parent / "results"

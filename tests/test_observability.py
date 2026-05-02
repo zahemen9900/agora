@@ -9,6 +9,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from agora import telemetry
 from agora.agent import AgentCaller
 from agora.runtime.task_execution import execute_task_like_run
 from agora.types import (
@@ -19,7 +20,6 @@ from agora.types import (
     MechanismType,
     ModelTelemetry,
 )
-from api import telemetry
 from api.auth import AuthenticatedUser
 from tests.helpers import make_selection
 
@@ -157,6 +157,27 @@ def test_resolve_axiom_telemetry_config_requires_required_values_when_enabled() 
                 environment="development",
             )
         )
+
+
+def test_initialize_telemetry_from_env_loads_axiom_token_from_secret_manager_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AGORA_AXIOM_TOKEN", raising=False)
+    monkeypatch.delenv("AXIOM_TOKEN", raising=False)
+    monkeypatch.setenv("AGORA_AXIOM_ENABLED", "true")
+    monkeypatch.setenv("AGORA_AXIOM_TRACES_DATASET", "agora-traces")
+    monkeypatch.setenv("AGORA_AXIOM_BASE_URL", "https://api.axiom.co")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agora-ai-493714")
+    monkeypatch.setenv("AGORA_AXIOM_SECRET_NAME", "agora-axiom-token")
+    monkeypatch.setattr(telemetry, "_load_dotenv_if_present", lambda: None)
+    monkeypatch.setattr(telemetry, "_load_secret_manager_value", lambda **_kwargs: "secret-token")
+
+    config = telemetry.resolve_axiom_telemetry_config(telemetry._telemetry_settings_from_env())
+
+    assert config.enabled is True
+    assert config.token == "secret-token"
+    assert config.dataset == "agora-traces"
+    assert config.base_url == "https://api.axiom.co"
 
 
 def test_bind_user_to_current_span_omits_pii_and_sets_actor_attributes() -> None:

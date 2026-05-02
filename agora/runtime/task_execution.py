@@ -12,6 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator, EventSink
 from agora.selector.features import extract_features
+from agora.telemetry import (
+    add_span_event,
+    mark_span_error,
+    set_current_span_attributes,
+    start_observation_span,
+)
 from agora.types import (
     DeliberationResult,
     MechanismOverrideSource,
@@ -19,12 +25,6 @@ from agora.types import (
     MechanismType,
     SelectorSource,
     mechanism_is_supported,
-)
-from api.telemetry import (
-    add_span_event,
-    mark_span_error,
-    set_current_span_attributes,
-    start_observation_span,
 )
 
 TaskLikeStatus = Literal["completed", "failed"]
