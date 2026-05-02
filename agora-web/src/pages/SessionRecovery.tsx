@@ -2,6 +2,7 @@ import { ArrowRight, ShieldAlert } from "lucide-react";
 
 import { useAuth } from "../lib/useAuth";
 import type { AuthIssue } from "../lib/authContext";
+import { Button } from "../components/ui/Button";
 
 const ISSUE_COPY: Record<AuthIssue, { eyebrow: string; title: string; body: string }> = {
   session_expired: {
@@ -43,9 +44,9 @@ export function SessionRecoveryPage({ issue }: { issue: AuthIssue }) {
           </p>
 
           <div className="mt-8 flex flex-col sm:flex-row gap-3">
-            <button type="button" className="btn-primary inline-flex items-center gap-2" onClick={() => signIn()}>
+            <Button type="button" className="inline-flex items-center gap-2" onClick={() => signIn()} variant="primary">
               Sign in again <ArrowRight size={16} />
-            </button>
+            </Button>
             <a href="/auth" className="btn-secondary inline-flex items-center justify-center gap-2">
               Go to login
             </a>

@@ -142,7 +142,10 @@ function RunShell({
     <div
       role="button"
       tabIndex={0}
-      onClick={onOpen}
+      onClick={() => {
+        posthog?.capture("benchmarkrunrow_action_clicked");
+        onOpen();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();

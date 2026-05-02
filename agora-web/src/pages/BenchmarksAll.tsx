@@ -10,6 +10,7 @@ import { mergeCatalogArtifactsWithRuns, type BenchmarkCatalogListRow } from "../
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel } from "../lib/modelProviders";
 import { injectChartKeyframes, CHART_FONT, ShimBlock } from "../components/benchmark/ChartCard";
+import { usePostHog } from "@posthog/react";
 
 type SortMode = "recent" | "frequency";
 
@@ -121,6 +122,7 @@ function Chip({ label }: { label: string }) {
 // ── Card ───────────────────────────────────────────────────────────────────────
 
 function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen: () => void }) {
+    const posthog = usePostHog();
   const [hovered, setHovered] = useState(false);
   const models = (entry.models?.length ? entry.models : Object.keys(entry.model_counts));
   const mechanism = Object.keys(entry.mechanism_counts ?? {})[0] ?? entry.latest_mechanism ?? null;
@@ -131,7 +133,7 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
   return (
     <button
       type="button"
-      onClick={onOpen}
+      onClick={(e: any) => { posthog?.capture('benchmarksall_action_clicked'); const handler = onOpen; if (typeof handler === 'function') (handler as any)(e); }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -206,6 +208,7 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
 // ── Filter dropdown ────────────────────────────────────────────────────────────
 
 function FilterDropdown({ value, onChange }: { value: SortMode; onChange: (v: SortMode) => void }) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -222,7 +225,7 @@ function FilterDropdown({ value, onChange }: { value: SortMode; onChange: (v: So
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('benchmarksall_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -248,7 +251,7 @@ function FilterDropdown({ value, onChange }: { value: SortMode; onChange: (v: So
             <button
               key={option}
               type="button"
-              onClick={() => { onChange(option); setOpen(false); }}
+              onClick={(e: any) => { posthog?.capture('benchmarksall_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px", fontFamily: CHART_FONT, fontSize: "11px",
@@ -366,6 +369,7 @@ function BenchmarkSection({
 // ── Page ───────────────────────────────────────────────────────────────────────
 
 export function BenchmarksAll() {
+    const posthog = usePostHog();
   useEffect(() => { injectChartKeyframes(); }, []);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -446,7 +450,7 @@ export function BenchmarksAll() {
         <header style={{ marginBottom: "28px" }}>
           <button
             type="button"
-            onClick={() => navigate("/benchmarks")}
+            onClick={(e: any) => { posthog?.capture('benchmarksall_benchmarks_clicked'); const handler = () => navigate("/benchmarks"); if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: "inline-flex", alignItems: "center", gap: "5px",
               fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.08em",
@@ -492,7 +496,7 @@ export function BenchmarksAll() {
           {query && (
             <button
               type="button"
-              onClick={() => setQuery("")}
+              onClick={(e: any) => { posthog?.capture('benchmarksall_clicked'); const handler = () => setQuery(""); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 background: "none", border: "none", cursor: "pointer",
                 color: "var(--text-muted)", fontFamily: CHART_FONT, fontSize: "10px",
@@ -504,7 +508,7 @@ export function BenchmarksAll() {
           )}
           <button
             type="button"
-            onClick={() => void catalogQuery.refetch()}
+            onClick={(e: any) => { posthog?.capture('benchmarksall_refresh_clicked'); const handler = () => void catalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
             title="Refresh"
             style={{
               background: "none", border: "none", cursor: "pointer",

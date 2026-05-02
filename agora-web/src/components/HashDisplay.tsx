@@ -1,7 +1,9 @@
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
+import { usePostHog } from "@posthog/react";
 
 export function HashDisplay({ hash }: { hash: string }) {
+    const posthog = usePostHog();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -14,7 +16,7 @@ export function HashDisplay({ hash }: { hash: string }) {
     <div className="inline-flex items-center gap-2 bg-elevated border border-border-muted rounded-md px-3 py-1">
       <span className="mono text-text-primary text-[0.85rem]">{hash}</span>
       <button 
-        onClick={handleCopy}
+        onClick={(e: any) => { posthog?.capture('hashdisplay_copy_hash_clicked'); const handler = handleCopy; if (typeof handler === 'function') (handler as any)(e); }}
         className={`p-1 flex items-center justify-center rounded transition-colors ${copied ? 'text-accent' : 'text-text-muted hover:bg-border-subtle'}`}
         title="Copy Hash"
       >

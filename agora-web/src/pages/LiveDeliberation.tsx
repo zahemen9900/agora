@@ -121,6 +121,8 @@ import {
   type FinalAnswerState,
   type TimelineEvent,
 } from "../lib/deliberationTimeline";
+import { usePostHog } from "@posthog/react";
+import { Button } from "../components/ui/Button";
 
 const EMPTY_TIMELINE: TimelineEvent[] = [];
 
@@ -619,6 +621,7 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
 }
 
 export function LiveDeliberation() {
+    const posthog = usePostHog();
   const { taskId } = useParams();
   const navigate = useNavigate();
   const { getAccessToken } = useAuth();
@@ -1097,7 +1100,7 @@ export function LiveDeliberation() {
       {/* ── Top bar: back button + tab switcher ─────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
         <button
-          onClick={() => navigate("/tasks")}
+          onClick={(e: any) => { posthog?.capture('livedeliberation_tasks_clicked'); const handler = () => navigate("/tasks"); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -1109,7 +1112,7 @@ export function LiveDeliberation() {
           {(["canvas", "logs"] as const).map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={(e: any) => { posthog?.capture('livedeliberation_action_clicked'); const handler = () => setActiveTab(tab); if (typeof handler === 'function') (handler as any)(e); }}
               style={{ padding: "6px 18px", borderRadius: "7px", border: "none", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: activeTab === tab ? 700 : 400, background: activeTab === tab ? "var(--accent-emerald)" : "transparent", color: activeTab === tab ? "#000" : "var(--text-muted)", transition: "all 0.15s ease" }}
             >
               <span style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}>
@@ -1221,12 +1224,12 @@ export function LiveDeliberation() {
                   <div className="mono text-accent">
                     Confidence: {(finalAnswer.confidence * 100).toFixed(1)}%
                   </div>
-                  <button
-                    className="btn-primary flex items-center justify-center gap-2"
-                    onClick={() => navigate(`/task/${taskId}/receipt`)}
+                  <Button
+                    className="flex items-center justify-center gap-2"
+                    onClick={() => navigate(`/task/${taskId}/receipt`)} variant="primary" trackingEvent="livedeliberation_view_on_chain_receipt_rarr_clicked"
                   >
                     View On-Chain Receipt &rarr;
-                  </button>
+                  </Button>
                 </div>
               </motion.div>
             )}

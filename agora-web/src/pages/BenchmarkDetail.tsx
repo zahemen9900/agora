@@ -54,6 +54,8 @@ import {
   shouldFetchBenchmarkItemEvents,
 } from "../lib/benchmarkCanvas";
 import { providerFromModel } from "../lib/modelProviders";
+import { usePostHog } from "@posthog/react";
+import { Button } from "../components/ui/Button";
 
 interface BenchmarkTimelineDescriptor {
   label: string;
@@ -92,6 +94,7 @@ function asConvergenceMetrics(data: Record<string, unknown>): Record<string, unk
 }
 
 export function BenchmarkDetail() {
+    const posthog = usePostHog();
   const navigate = useNavigate();
   const { benchmarkId } = useParams<{ benchmarkId: string }>();
   const { getAccessToken } = useAuth();
@@ -616,9 +619,9 @@ export function BenchmarkDetail() {
         <title>{benchmarkId ? `${benchmarkId} · Benchmark — Agora` : "Benchmark — Agora"}</title>
         <meta name="description" content="Detailed benchmark results — mechanism breakdown, model performance, accuracy scores, and cost." />
         <div className="max-w-250 mx-auto pb-20 w-full">
-          <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
+          <Button type="button" className="mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks")} variant="secondary" trackingEvent="benchmarkdetail_back_to_overview_clicked">
             <ArrowLeft size={14} /> Back to overview
-          </button>
+          </Button>
           <div className="card p-6 border border-border-subtle">
             <p className="text-text-secondary">{loadError}</p>
           </div>
@@ -673,7 +676,7 @@ export function BenchmarkDetail() {
       <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "24px", flexWrap: "wrap" }}>
         <button
           type="button"
-          onClick={() => navigate("/benchmarks")}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_overview_clicked'); const handler = () => navigate("/benchmarks"); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7.5 2L3 6l4.5 4" /></svg>
@@ -681,7 +684,7 @@ export function BenchmarkDetail() {
         </button>
         <button
           type="button"
-          onClick={() => navigate("/benchmarks/all")}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_all_artifacts_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M7.5 2L3 6l4.5 4" /></svg>
@@ -689,7 +692,7 @@ export function BenchmarkDetail() {
         </button>
         <button
           type="button"
-          onClick={() => void detailQuery.refetch()}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_refresh_clicked'); const handler = () => void detailQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
           style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
         >
           <RefreshCcw size={12} className={isRefreshing ? "animate-spin" : ""} />
@@ -702,7 +705,7 @@ export function BenchmarkDetail() {
             <button
               key={tab}
               type="button"
-              onClick={() => setActiveTab(tab)}
+              onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => setActiveTab(tab); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 padding: "6px 16px",
                 borderRadius: "7px",
@@ -954,7 +957,7 @@ export function BenchmarkDetail() {
                   <button
                     key={item.item_id}
                     type="button"
-                    onClick={() => handleSelectItem(item.item_id)}
+                    onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => handleSelectItem(item.item_id); if (typeof handler === 'function') (handler as any)(e); }}
                     className={`w-full text-left rounded-md border p-3 transition-colors ${
                       selected
                         ? "border-accent bg-accent/5"
@@ -993,14 +996,14 @@ export function BenchmarkDetail() {
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-3">
             <h3 className="text-lg font-semibold">Raw Event Timeline</h3>
             <div className="flex flex-wrap items-center gap-3">
-              <button
+              <Button
                 type="button"
-                className="btn-secondary inline-flex items-center gap-2"
-                onClick={() => void handleCopyTimeline()}
+                className="inline-flex items-center gap-2"
+                onClick={() => void handleCopyTimeline()} variant="secondary" trackingEvent="benchmarkdetail_action_clicked"
               >
                 {copyState === "copied" ? <Check size={14} /> : <Clipboard size={14} />}
                 {copyState === "copied" ? "Copied" : "Copy JSON"}
-              </button>
+              </Button>
               <div className="flex items-center gap-3 rounded-md border border-border-subtle bg-void px-3 py-2 mono text-xs text-text-secondary">
                 <span>Cards {formatInt(aggregatedFilteredTimeline.length)}</span>
                 <span className="text-text-muted">•</span>
@@ -1016,7 +1019,7 @@ export function BenchmarkDetail() {
                 <button
                   key={phase}
                   type="button"
-                  onClick={() => setPhaseFilter(phase)}
+                  onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => setPhaseFilter(phase); if (typeof handler === 'function') (handler as any)(e); }}
                   className={`mono px-3 py-1.5 text-[11px] rounded-full border transition-colors ${
                     effectivePhaseFilter === phase
                       ? "bg-accent-muted text-accent border-accent"
@@ -1111,7 +1114,7 @@ export function BenchmarkDetail() {
             <button
               key={view}
               type="button"
-              onClick={() => setMetricsView(view)}
+              onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = () => setMetricsView(view); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 padding: "6px 20px",
                 borderRadius: "7px",
@@ -1472,6 +1475,7 @@ function InlineMetricTile({ label, value }: { label: string; value: string }) {
 
 
 function PayloadPanel({ value }: { value: unknown }) {
+    const posthog = usePostHog();
   const [copied, setCopied] = useState(false);
   const json = prettyJson(value);
 
@@ -1488,7 +1492,7 @@ function PayloadPanel({ value }: { value: unknown }) {
         <h3 className="text-lg font-semibold">Benchmark Payload</h3>
         <button
           type="button"
-          onClick={handleCopy}
+          onClick={(e: any) => { posthog?.capture('benchmarkdetail_action_clicked'); const handler = handleCopy; if (typeof handler === 'function') (handler as any)(e); }}
           style={{
             display: "inline-flex", alignItems: "center", gap: "6px",
             fontFamily: "'Commit Mono', 'SF Mono', monospace", fontSize: "9px", letterSpacing: "0.06em",

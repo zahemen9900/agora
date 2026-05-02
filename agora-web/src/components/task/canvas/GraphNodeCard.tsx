@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ProviderGlyph } from "../../ProviderGlyph";
 import type { ProviderName } from "../../../lib/modelProviders";
 import type { GraphNode, NodeKind } from "./canvasTypes";
+import { usePostHog } from "@posthog/react";
 
 export const NODE_WIDTH = 240;
 export const NODE_HEIGHT = 170;
@@ -149,6 +150,7 @@ function TelRow({ label, value }: { label: string; value: string }) {
 }
 
 function TelemetryPopover({ node, onClose }: { node: GraphNode; onClose: () => void }) {
+    const posthog = usePostHog();
   const t = node.telemetry;
   return (
     <div
@@ -169,7 +171,7 @@ function TelemetryPopover({ node, onClose }: { node: GraphNode; onClose: () => v
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
         <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.08em" }}>TELEMETRY</span>
-        <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "14px", lineHeight: 1 }}>×</button>
+        <button onClick={(e: any) => { posthog?.capture('graphnodecard_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "14px", lineHeight: 1 }}>×</button>
       </div>
       {node.reason && (
         <div style={{ marginBottom: "10px", padding: "8px 10px", background: "var(--bg-base)", borderRadius: "8px", border: "1px solid var(--border-subtle)" }}>
@@ -190,6 +192,7 @@ function TelemetryPopover({ node, onClose }: { node: GraphNode; onClose: () => v
 
 // ─── Info popover ─────────────────────────────────────────────────────────────
 function InfoPopover({ label, value, onClose }: { label: string; value: string; onClose: () => void }) {
+    const posthog = usePostHog();
   return (
     <div
       onClick={(e) => e.stopPropagation()}
@@ -209,7 +212,7 @@ function InfoPopover({ label, value, onClose }: { label: string; value: string; 
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "6px" }}>
         <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.08em" }}>{label}</span>
-        <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "14px", lineHeight: 1 }}>×</button>
+        <button onClick={(e: any) => { posthog?.capture('graphnodecard_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "14px", lineHeight: 1 }}>×</button>
       </div>
       <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-primary)", wordBreak: "break-all" }}>{value}</div>
     </div>
@@ -241,9 +244,10 @@ function StatusBadge({ status }: { status: GraphNode["status"] }) {
 
 // ─── Icon button ──────────────────────────────────────────────────────────────
 function QBtn({ onClick }: { onClick: () => void }) {
+    const posthog = usePostHog();
   return (
     <button
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      onClick={(e: any) => { posthog?.capture('graphnodecard_clicked'); const handler = (evt: any) => { evt.stopPropagation(); onClick(); }; if (typeof handler === 'function') (handler as any)(e); }}
       style={{
         background: "var(--bg-base)",
         border: "1px solid var(--border-subtle)",
@@ -270,6 +274,7 @@ interface GraphNodeCardProps { node: GraphNode; onShowMore?: () => void; }
 const PREVIEW_LIMIT = 160;
 
 export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
+    const posthog = usePostHog();
   const [thinkingOpen,  setThinkingOpen]  = useState(false);
   const [telemetryOpen, setTelemetryOpen] = useState(false);
   const [infoOpen,      setInfoOpen]      = useState(false);
@@ -384,7 +389,7 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
       {hasThinking && (
         <div>
           <button
-            onClick={() => setThinkingOpen((v) => !v)}
+            onClick={(e: any) => { posthog?.capture('graphnodecard_thinking_chars_clicked'); const handler = () => setThinkingOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
             style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px", padding: 0, color: "var(--text-muted)", fontFamily: "'Commit Mono', monospace", fontSize: "10px" }}
           >
             <span style={{ transform: thinkingOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", display: "inline-block" }}>▶</span>

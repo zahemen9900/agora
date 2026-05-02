@@ -10,6 +10,7 @@ import {
   type ProviderTier,
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
+import { usePostHog } from "@posthog/react";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 const TIER_ORDER: ProviderTier[] = ["pro", "flash", "openrouter", "claude"];
@@ -33,6 +34,7 @@ interface TierSelectProps {
 }
 
 function TierSelect({ value, options, onChange, ariaLabel }: TierSelectProps) {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const selected = options.find((o) => o.model_id === value) ?? options[0];
@@ -50,7 +52,7 @@ function TierSelect({ value, options, onChange, ariaLabel }: TierSelectProps) {
     <div ref={ref} style={{ position: "relative" }} aria-label={ariaLabel}>
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: any) => { posthog?.capture('tiermodelselectorgrid_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
         style={{
           display: "flex", alignItems: "center", justifyContent: "space-between",
           width: "100%", padding: "8px 10px",
@@ -87,7 +89,7 @@ function TierSelect({ value, options, onChange, ariaLabel }: TierSelectProps) {
             <button
               key={opt.model_id}
               type="button"
-              onClick={() => { onChange(opt.model_id); setOpen(false); }}
+              onClick={(e: any) => { posthog?.capture('tiermodelselectorgrid_action_clicked'); const handler = () => { onChange(opt.model_id); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "8px 12px",
