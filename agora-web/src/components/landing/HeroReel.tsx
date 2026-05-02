@@ -655,7 +655,7 @@ export function HeroReel() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
           >
-            AI agents<br />debate,<br />vote &amp;<br />prove it.
+            Debate.<br />Vote.<br />Delphi.<br />Proved.
           </motion.h1>
 
           <motion.p
