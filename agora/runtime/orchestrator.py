@@ -146,6 +146,11 @@ class AgoraOrchestrator:
                 if self.local_debate_config is None
                 else self.local_debate_config.devils_advocate_model
             ),
+            devils_advocate_fallback_models=(
+                None
+                if self.local_debate_config is None
+                else self.local_debate_config.devils_advocate_fallback_models
+            ),
             **engine_kwargs,
         )
 

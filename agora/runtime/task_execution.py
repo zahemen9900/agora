@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime
 import inspect
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,11 +12,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator, EventSink
 from agora.selector.features import extract_features
+from agora.telemetry import (
+    add_span_event,
+    mark_span_error,
+    set_current_span_attributes,
+    start_observation_span,
+)
 from agora.types import (
     DeliberationResult,
+    MechanismOverrideSource,
     MechanismSelection,
     MechanismType,
-    MechanismOverrideSource,
     SelectorSource,
     mechanism_is_supported,
 )
@@ -68,7 +74,9 @@ async def _invoke_orchestrator_run(
         "agents": agents,
     }
     parameters = inspect.signature(orchestrator.run).parameters.values()
-    accepts_kwargs = any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
     if accepts_kwargs:
         return await orchestrator.run(**kwargs)
 
@@ -182,63 +190,149 @@ async def execute_task_like_run(
         if selector_fallback_path is not None
         else list(selection.selector_fallback_path)
     )
+    span_attributes = {
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.capability.name": "agora_deliberation",
+        "gen_ai.step.name": "orchestrate_task",
+        "gen_ai.agent.name": "agora_orchestrator",
+        "agora.mechanism.requested": selection.mechanism.value,
+        "agora.mechanism.selected": selection.mechanism.value,
+        "agora.selector.source": resolved_selector_source,
+        "agora.selector.fallback_path": resolved_fallback_path,
+        "agora.allow_mechanism_switch": allow_switch,
+        "agora.execution.stakes": selection.task_features.stakes,
+        "agora.execution.agent_count": selection.task_features.agent_count,
+        "agora.execution.category": selection.task_features.topic_category,
+    }
 
-    try:
-        if mechanism_override_source is not None:
-            result = await _invoke_orchestrator_run(
-                orchestrator,
-                task_text=task_text,
-                stakes=selection.task_features.stakes,
-                mechanism_override=selection.mechanism,
-                event_sink=event_sink,
-                agents=agents,
+    async def instrumented_event_sink(event_type: str, data: dict[str, Any]) -> None:
+        if event_type == "mechanism_switch":
+            add_span_event(
+                "mechanism_switch",
+                {
+                    "agora.mechanism.from": data.get("from_mechanism"),
+                    "agora.mechanism.to": data.get("to_mechanism"),
+                    "agora.segment.round": data.get("segment_round") or data.get("round_number"),
+                    "agora.execution.segment": data.get("execution_segment"),
+                    "agora.next.execution.segment": data.get("next_execution_segment"),
+                },
             )
-        elif hasattr(orchestrator, "execute_selection"):
-            result = await orchestrator.execute_selection(
-                task=task_text,
-                selection=selection,
-                event_sink=event_sink,
-                agents=agents,
-                allow_switch=allow_switch,
-            )
-        else:
-            # Compatibility path for legacy orchestrator adapters and test doubles.
-            result = await _invoke_orchestrator_run(
-                orchestrator,
-                task_text=task_text,
-                stakes=selection.task_features.stakes,
-                mechanism_override=selection.mechanism,
-                event_sink=event_sink,
-                agents=agents,
-            )
-        if result.fallback_count > 0 and not getattr(orchestrator, "allow_offline_fallback", True):
-            raise RuntimeError("Provider fallback occurred but allow_offline_fallback=false")
-        normalized_result = result.model_copy(
-            update={
-                "selector_source": resolved_selector_source,
-                "mechanism_override_source": mechanism_override_source,
-            }
-        )
-        return TaskLikeExecutionOutcome(
-            status="completed",
-            selection=selection,
-            selector_source=resolved_selector_source,
-            selector_fallback_path=resolved_fallback_path,
-            mechanism_override_source=mechanism_override_source,
-            result=normalized_result,
-        )
-    except Exception as exc:
-        message = str(exc) or exc.__class__.__name__
-        return TaskLikeExecutionOutcome(
-            status="failed",
-            selection=selection,
-            selector_source=resolved_selector_source,
-            selector_fallback_path=resolved_fallback_path,
-            mechanism_override_source=mechanism_override_source,
-            failure_reason=message,
-            latest_error_event={
-                "event": "error",
-                "data": {"message": message},
-                "timestamp": datetime.now(UTC).isoformat(),
+        elif event_type == "quorum_reached":
+            add_span_event("quorum_reached", data)
+
+        if event_sink is not None:
+            await event_sink(event_type, data)
+
+    with start_observation_span("execute_task_like_run", attributes=span_attributes):
+        add_span_event(
+            "mechanism_selected",
+            {
+                "agora.mechanism.selected": selection.mechanism.value,
+                "agora.selector.source": resolved_selector_source,
             },
         )
+        try:
+            if mechanism_override_source is not None:
+                result = await _invoke_orchestrator_run(
+                    orchestrator,
+                    task_text=task_text,
+                    stakes=selection.task_features.stakes,
+                    mechanism_override=selection.mechanism,
+                    event_sink=instrumented_event_sink,
+                    agents=agents,
+                )
+            elif hasattr(orchestrator, "execute_selection"):
+                result = await orchestrator.execute_selection(
+                    task=task_text,
+                    selection=selection,
+                    event_sink=instrumented_event_sink,
+                    agents=agents,
+                    allow_switch=allow_switch,
+                )
+            else:
+                # Compatibility path for legacy orchestrator adapters and test doubles.
+                result = await _invoke_orchestrator_run(
+                    orchestrator,
+                    task_text=task_text,
+                    stakes=selection.task_features.stakes,
+                    mechanism_override=selection.mechanism,
+                    event_sink=instrumented_event_sink,
+                    agents=agents,
+                )
+            if result.fallback_count > 0 and not getattr(
+                orchestrator, "allow_offline_fallback", True
+            ):
+                raise RuntimeError("Provider fallback occurred but allow_offline_fallback=false")
+            normalized_result = result.model_copy(
+                update={
+                    "selector_source": resolved_selector_source,
+                    "mechanism_override_source": mechanism_override_source,
+                }
+            )
+            set_current_span_attributes(
+                {
+                    "agora.execution.mode": normalized_result.execution_mode,
+                    "agora.quorum.reached": normalized_result.quorum_reached,
+                    "agora.fallback.count": normalized_result.fallback_count,
+                    "agora.round.count": normalized_result.round_count,
+                    "agora.mechanism.switches": normalized_result.mechanism_switches,
+                    "agora.total.tokens": normalized_result.total_tokens_used,
+                    "agora.total.latency_ms": normalized_result.total_latency_ms,
+                    "agora.cost.estimated_usd": (
+                        normalized_result.cost.estimated_cost_usd
+                        if normalized_result.cost is not None
+                        else None
+                    ),
+                }
+            )
+            if normalized_result.fallback_count > 0:
+                add_span_event(
+                    "fallback_applied",
+                    {"agora.fallback.count": normalized_result.fallback_count},
+                )
+            if normalized_result.quorum_reached:
+                add_span_event(
+                    "quorum_reached",
+                    {
+                        "agora.quorum.reached": True,
+                        "agora.confidence": normalized_result.confidence,
+                    },
+                )
+            add_span_event(
+                "execution_completed",
+                {
+                    "agora.mechanism.selected": normalized_result.mechanism_used.value,
+                    "agora.execution.mode": normalized_result.execution_mode,
+                },
+            )
+            return TaskLikeExecutionOutcome(
+                status="completed",
+                selection=selection,
+                selector_source=resolved_selector_source,
+                selector_fallback_path=resolved_fallback_path,
+                mechanism_override_source=mechanism_override_source,
+                result=normalized_result,
+            )
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            mark_span_error(
+                exc,
+                attributes={
+                    "agora.execution.status": "failed",
+                    "agora.error.type": exc.__class__.__name__,
+                },
+            )
+            add_span_event("execution_failed", {"agora.error.message": message})
+            return TaskLikeExecutionOutcome(
+                status="failed",
+                selection=selection,
+                selector_source=resolved_selector_source,
+                selector_fallback_path=resolved_fallback_path,
+                mechanism_override_source=mechanism_override_source,
+                failure_reason=message,
+                latest_error_event={
+                    "event": "error",
+                    "data": {"message": message},
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )

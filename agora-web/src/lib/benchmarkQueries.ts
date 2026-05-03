@@ -5,13 +5,16 @@ import {
 } from "@tanstack/react-query";
 
 import {
+  deleteBenchmark,
   getBenchmarkCatalog,
   getBenchmarkDetail,
   getBenchmarkPromptTemplates,
   getBenchmarks,
+  stopBenchmarkRun,
   triggerBenchmarkRun,
   type BenchmarkCatalogEntry,
   type BenchmarkCatalogPayload,
+  type BenchmarkDeletePayload,
   type BenchmarkDetailPayload,
   type BenchmarkPromptTemplatesPayload,
   type BenchmarkRunRequestPayload,
@@ -261,6 +264,48 @@ export function syncBenchmarkCatalogCache(
   );
 }
 
+export function removeDeletedBenchmarkFromCaches(
+  queryClient: QueryClient,
+  deleted: BenchmarkDeletePayload,
+): void {
+  const artifactId = deleted.artifact_id?.trim() || null;
+  const runId = deleted.run_id?.trim() || null;
+  const aliases = Array.from(
+    new Set(
+      [deleted.benchmark_id, artifactId, runId]
+        .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
+    ),
+  );
+
+  for (const alias of aliases) {
+    queryClient.removeQueries({ queryKey: benchmarkQueryKeys.detail(alias), exact: true });
+  }
+
+  queryClient.setQueriesData<BenchmarkCatalogPayload | undefined>(
+    { queryKey: benchmarkQueryKeys.catalogAll() },
+    (current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        user_recent: artifactId
+          ? current.user_recent.filter((entry) => entry.artifact_id !== artifactId)
+          : current.user_recent,
+        user_frequency: artifactId
+          ? current.user_frequency.filter((entry) => entry.artifact_id !== artifactId)
+          : current.user_frequency,
+        user_tests_recent: runId
+          ? current.user_tests_recent.filter((entry) => entry.run_id !== runId)
+          : current.user_tests_recent,
+        user_tests_frequency: runId
+          ? current.user_tests_frequency.filter((entry) => entry.run_id !== runId)
+          : current.user_tests_frequency,
+      };
+    },
+  );
+}
+
 export function seedTriggeredBenchmarkRunCache(
   queryClient: QueryClient,
   run: BenchmarkRunResponsePayload,
@@ -369,6 +414,34 @@ export function useTriggerBenchmarkMutation() {
         throw new Error("Authentication token is unavailable.");
       }
       return triggerBenchmarkRun(token, payload);
+    },
+  });
+}
+
+export function useStopBenchmarkMutation() {
+  const { getAccessToken } = useAuth();
+
+  return useMutation<BenchmarkRunStatusPayload, Error, string>({
+    mutationFn: async (runId) => {
+      const token = await getAccessToken();
+      if (!token) {
+        throw new Error("Authentication token is unavailable.");
+      }
+      return stopBenchmarkRun(token, runId);
+    },
+  });
+}
+
+export function useDeleteBenchmarkMutation() {
+  const { getAccessToken } = useAuth();
+
+  return useMutation<BenchmarkDeletePayload, Error, string>({
+    mutationFn: async (benchmarkId) => {
+      const token = await getAccessToken();
+      if (!token) {
+        throw new Error("Authentication token is unavailable.");
+      }
+      return deleteBenchmark(token, benchmarkId);
     },
   });
 }

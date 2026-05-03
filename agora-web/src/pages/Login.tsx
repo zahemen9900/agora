@@ -108,18 +108,23 @@ export function LoginPage() {
       />
     <div style={{ display: 'flex', flexDirection: 'column', position: 'relative' }}>
 
-      {/* Redirect notice — shown when bounced from a protected route */}
-      {fromPage && (
-        <div className="w-full z-50 bg-accent/10 border-b border-accent/20 text-center py-2.5 text-sm text-accent sticky top-0" style={{ zIndex: 200 }}>
-          Sign in again to access {fromPage}.
-        </div>
-      )}
-
-      {/* ── §8.1 NAV ─────────────────────────────────────────────── */}
+      {/* ── §8.1 NAV (+ optional redirect banner, both sticky as one unit) ── */}
+      <div style={{ position: 'sticky', top: 0, zIndex: 100 }}>
+        {fromPage && (
+          <div style={{
+            width: '100%',
+            background: 'var(--accent-emerald)',
+            color: 'var(--text-inverse)',
+            textAlign: 'center',
+            padding: '10px 16px',
+            fontSize: '13px',
+            fontFamily: 'var(--font-sans)',
+            letterSpacing: '0.01em',
+          }}>
+            Sign in again to access {fromPage}.
+          </div>
+        )}
       <header style={{
-        position: 'sticky',
-        top: fromPage ? '42px' : 0,
-        zIndex: 100,
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
@@ -153,6 +158,7 @@ export function LoginPage() {
           )}
         </div>
       </header>
+      </div>{/* end sticky nav+banner wrapper */}
 
       {/* ── §8.2 HERO WITH SCROLL-TIED DELIBERATION REEL ─────────── */}
       <HeroReel />

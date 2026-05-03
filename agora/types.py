@@ -174,6 +174,9 @@ class FallbackEvent(BaseModel):
     component: str
     reason: str
     fallback_type: str = "deterministic"
+    original_model: str | None = None
+    fallback_model: str | None = None
+    provider: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -244,6 +247,7 @@ class LocalDebateConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     devils_advocate_model: LocalModelSpec | None = None
+    devils_advocate_fallback_models: list[LocalModelSpec] | None = None
 
 
 class DebateState(BaseModel):

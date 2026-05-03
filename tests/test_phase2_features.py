@@ -576,6 +576,149 @@ async def test_resolve_aggregate_benchmark_summary_payload_uses_full_catalog_for
     assert store.user_limit == benchmark_routes._AGGREGATE_BENCHMARK_FULL_CATALOG_LIMIT
 
 
+@pytest.mark.anyio
+async def test_resolve_benchmark_summary_payload_prefers_newer_runtime_artifact_over_stale_cached_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self.saved_summary: dict[str, Any] | None = None
+
+        async def get_benchmark_summary(self) -> dict[str, Any] | None:
+            return {
+                "artifact_id": "stale-summary-artifact",
+                "artifact_version": "benchmark-tasklike-v2",
+                "summary": {
+                    "per_mechanism": {
+                        "vote": {
+                            "accuracy": 1.0,
+                            "run_count": 1,
+                            "scored_run_count": 1,
+                            "proxy_run_count": 0,
+                            "avg_tokens": 10.0,
+                            "avg_latency_ms": 10.0,
+                            "avg_rounds": 1.0,
+                            "switch_rate": 0.0,
+                            "avg_thinking_tokens": 0.0,
+                            "avg_estimated_cost_usd": 0.001,
+                        }
+                    },
+                    "per_mode": {},
+                    "per_category": {},
+                    "per_category_by_mechanism": {},
+                    "completed_run_count": 1,
+                    "failed_run_count": 0,
+                    "degraded_run_count": 0,
+                    "scored_run_count": 1,
+                    "proxy_run_count": 0,
+                },
+            }
+
+        async def list_global_benchmark_artifacts(self, limit: int = 500) -> list[dict[str, Any]]:
+            del limit
+            return [
+                {
+                    "artifact_id": "fresh-artifact",
+                    "status": "completed",
+                    "created_at": "2026-04-29T12:00:00+00:00",
+                    "payload": {
+                        "artifact_id": "fresh-artifact",
+                        "artifact_version": "benchmark-tasklike-v2",
+                        "runs": [
+                            {
+                                "item_status": "completed",
+                                "mode": "delphi",
+                                "mechanism_used": "delphi",
+                                "category": "creative",
+                                "correct": False,
+                                "scored": True,
+                                "scoring_mode": "proxy_success",
+                                "tokens_used": 120,
+                                "thinking_tokens_used": 40,
+                                "latency_ms": 25.0,
+                                "estimated_cost_usd": 0.012,
+                            }
+                        ],
+                    },
+                }
+            ]
+
+        async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
+            self.saved_summary = summary
+
+    store = FakeStore()
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "get_task_store", lambda: store)
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
+
+    payload = await benchmark_routes._resolve_benchmark_summary_payload()
+
+    assert payload is not None
+    assert payload["artifact_id"] == "fresh-artifact"
+    assert payload["summary"]["per_mechanism"]["delphi"]["run_count"] == 1
+
+
+@pytest.mark.anyio
+async def test_resolve_benchmark_summary_payload_backfills_artifact_id_from_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStore:
+        def __init__(self) -> None:
+            self.saved_summary: dict[str, Any] | None = None
+
+        async def get_benchmark_summary(self) -> dict[str, Any] | None:
+            return None
+
+        async def list_global_benchmark_artifacts(self, limit: int = 500) -> list[dict[str, Any]]:
+            del limit
+            return [
+                {
+                    "artifact_id": "wrapped-artifact-id",
+                    "status": "completed",
+                    "created_at": "2026-04-30T12:00:00+00:00",
+                    "payload": {
+                        "artifact_version": "benchmark-tasklike-v2",
+                        "generated_at": "2026-04-30T12:00:00+00:00",
+                        "runs": [
+                            {
+                                "item_status": "completed",
+                                "mode": "delphi",
+                                "mechanism_used": "delphi",
+                                "category": "demo",
+                                "correct": False,
+                                "scored": True,
+                                "scoring_mode": "proxy_success",
+                                "tokens_used": 90,
+                                "thinking_tokens_used": 30,
+                                "latency_ms": 11.0,
+                                "estimated_cost_usd": 0.005,
+                            }
+                        ],
+                    },
+                }
+            ]
+
+        async def save_benchmark_summary(self, summary: dict[str, Any]) -> None:
+            self.saved_summary = summary
+
+    store = FakeStore()
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "get_task_store", lambda: store)
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
+
+    payload = await benchmark_routes._resolve_benchmark_summary_payload()
+
+    assert payload is not None
+    assert payload["artifact_id"] == "wrapped-artifact-id"
+    assert store.saved_summary is not None
+    assert store.saved_summary["artifact_id"] == "wrapped-artifact-id"
+
+
 def test_artifact_telemetry_estimates_cost_from_total_tokens_without_split_counts() -> None:
     payload = {
         "artifact_version": "benchmark-tasklike-v2",
@@ -3240,7 +3383,13 @@ async def test_sdk_local_model_roster_is_forwarded_to_orchestrator(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
             model="moonshotai/kimi-k2-thinking",
-        )
+        ),
+        devils_advocate_fallback_models=[
+            LocalModelSpec(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+            )
+        ],
     )
 
     arbitrator = AgoraArbitrator(
@@ -3261,6 +3410,54 @@ async def test_sdk_local_model_roster_is_forwarded_to_orchestrator(
     assert captured["local_models"] == local_models
     assert captured["local_provider_keys"] == provider_keys
     assert captured["local_debate_config"] == debate_config
+
+
+@pytest.mark.asyncio
+async def test_sdk_local_debate_fallback_models_require_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
+    from agora.config import get_config
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_SECRET_NAME", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_SECRET_PROJECT", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_SECRET_VERSION", raising=False)
+    get_config.cache_clear()
+
+    arbitrator = AgoraArbitrator(
+        mechanism="debate",
+        local_models=[
+            LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+            LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+            LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+        ],
+        local_provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            openrouter_api_key="or-key",
+        ),
+        local_debate_config=LocalDebateConfig(
+            devils_advocate_model=LocalModelSpec(
+                provider="openrouter",
+                model="qwen/qwen3.5-flash-02-23",
+            ),
+            devils_advocate_fallback_models=[
+                LocalModelSpec(
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                )
+            ],
+        ),
+        strict_verification=False,
+    )
+
+    try:
+        with pytest.raises(ValueError, match="Claude|anthropic_api_key"):
+            await arbitrator.arbitrate("Should we use microservices or a monolith?")
+    finally:
+        await arbitrator.aclose()
+        get_config.cache_clear()
 
 
 @pytest.mark.asyncio

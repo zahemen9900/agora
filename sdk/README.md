@@ -162,7 +162,17 @@ arbitrator = AgoraArbitrator(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
             model="qwen/qwen3.5-flash-02-23",
-        )
+        ),
+        devils_advocate_fallback_models=[
+            LocalModelSpec(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+            ),
+            LocalModelSpec(
+                provider="gemini",
+                model="gemini-3-flash-preview",
+            ),
+        ],
     ),
     allow_offline_fallback=False,
 )
@@ -178,6 +188,10 @@ Explicit local roster mode runs the exact model list you pass in roster order.
 Do not combine `auth_token=` with `local_models=`. Every provider referenced in
 `local_models` or `devils_advocate_model` must also have a key in
 `LocalProviderKeys`.
+
+With `allow_offline_fallback=False`, deterministic rescue stays disabled, but
+the debate engine may still use alternate **live** cross-examination models
+from `devils_advocate_fallback_models` before failing the run.
 
 ### Local provider keys from environment
 
@@ -253,7 +267,11 @@ arbitrator = AgoraArbitrator(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
             model="openai/gpt-oss-120b",
-        )
+        ),
+        devils_advocate_fallback_models=[
+            LocalModelSpec(provider="anthropic", model="claude-haiku-4-5"),
+            LocalModelSpec(provider="gemini", model="gemini-2.5-flash"),
+        ],
     ),
     allow_offline_fallback=False,
 )
@@ -377,6 +395,21 @@ By default, capture mode should stay `metadata_only`. The SDK records operation
 type, task or benchmark IDs, mechanism, latency, token counts, estimated cost,
 and stream counts. It does not send prompts, model outputs, or tool payloads
 unless you explicitly switch to `full`.
+
+For attribution without adding constructor args, the SDK also reads optional
+identity env vars:
+
+```bash
+export AGORA_SDK_WORKSPACE_ID=workspace_123
+export AGORA_SDK_ACTOR_ID=user:alice
+export AGORA_SDK_ACTOR_TYPE=user
+export AGORA_SDK_APPLICATION=notebook-research
+```
+
+Hosted SDK calls that use first-party Agora API keys automatically tag spans
+with `agora.actor.type=api_key` and `agora.actor.id=api_key:<public_id>`. For
+local SDK runs, set the `AGORA_SDK_*` env vars above if you want direct Axiom
+traces to be queryable by workspace or actor.
 
 ### Hosted API URL policy
 

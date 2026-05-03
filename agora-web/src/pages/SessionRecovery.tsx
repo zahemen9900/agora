@@ -32,7 +32,7 @@ export function SessionRecoveryPage({ issue }: { issue: AuthIssue }) {
       <meta name="description" content="Re-authenticate or recover your Agora session to continue." />
     <div className="min-h-screen px-6 py-10 flex items-center justify-center">
       <div className="relative max-w-xl w-full card p-8 sm:p-10 border border-border-subtle overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(0,212,170,0.12),_transparent_45%)] pointer-events-none" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(0,212,170,0.12),transparent_45%)] pointer-events-none" />
         <div className="relative z-10">
           <div className="wordmark text-xl mb-8">AGORA</div>
           <div className="badge mb-4 inline-flex items-center gap-2">

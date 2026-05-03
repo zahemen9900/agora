@@ -1,9 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, ChevronDown, ChevronRight, Filter, RefreshCcw, Search } from "lucide-react";
 
-import { type BenchmarkCatalogEntry } from "../lib/api";
-import { useBenchmarkCatalogQuery } from "../lib/benchmarkQueries";
+import { type BenchmarkCatalogEntry, type BenchmarkRunStatusPayload } from "../lib/api";
+import { Flyout } from "../components/Flyout";
+import { BenchmarkActionsMenu } from "../components/benchmark/BenchmarkActionsMenu";
+import { FailedRunRow, LiveRunRow } from "../components/benchmark/BenchmarkRunRow";
+import {
+  benchmarkQueryKeys,
+  removeDeletedBenchmarkFromCaches,
+  useBenchmarkCatalogQuery,
+  useDeleteBenchmarkMutation,
+  useStopBenchmarkMutation,
+} from "../lib/benchmarkQueries";
+import { mergeCatalogArtifactsWithRuns, type BenchmarkCatalogListRow } from "../lib/benchmarkCatalogRows";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel } from "../lib/modelProviders";
 import { injectChartKeyframes, CHART_FONT, ShimBlock } from "../components/benchmark/ChartCard";
@@ -118,7 +129,15 @@ function Chip({ label }: { label: string }) {
 
 // ── Card ───────────────────────────────────────────────────────────────────────
 
-function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen: () => void }) {
+function BenchmarkCard({
+  entry,
+  onOpen,
+  actions,
+}: {
+  entry: BenchmarkCatalogEntry;
+  onOpen: () => void;
+  actions?: ReactNode;
+}) {
     const posthog = usePostHog();
   const [hovered, setHovered] = useState(false);
   const models = (entry.models?.length ? entry.models : Object.keys(entry.model_counts));
@@ -128,9 +147,16 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
     : entry.artifact_id;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={(e: any) => { posthog?.capture('benchmarksall_action_clicked'); const handler = onOpen; if (typeof handler === 'function') (handler as any)(e); }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -161,6 +187,7 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
         {entry.scope && <Chip label={entry.scope} />}
         {mechanism && <Chip label={mechanism} />}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          {actions}
           <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-muted)" }}>
             {fmtDate(entry.created_at)}
           </span>
@@ -198,7 +225,7 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
           </span>
         ))}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -271,14 +298,19 @@ function FilterDropdown({ value, onChange }: { value: SortMode; onChange: (v: So
 // ── Section ────────────────────────────────────────────────────────────────────
 
 function BenchmarkSection({
-  title, entries, sortMode, onSortChange, onOpen, isLoading,
+  title, rows, sortMode, onSortChange, onOpen, onStop, onDelete, isStoppingRunId, isDeletingBenchmarkId, isLoading, allowActions = false,
 }: {
   title: string;
-  entries: BenchmarkCatalogEntry[];
+  rows: BenchmarkCatalogListRow[];
   sortMode: SortMode;
   onSortChange: (v: SortMode) => void;
-  onOpen: (id: string) => void;
+  onOpen: (row: BenchmarkCatalogListRow) => void;
+  onStop: (run: BenchmarkRunStatusPayload) => void;
+  onDelete: (benchmarkId: string) => void;
+  isStoppingRunId: string | null;
+  isDeletingBenchmarkId: string | null;
   isLoading: boolean;
+  allowActions?: boolean;
 }) {
   return (
     <div style={{
@@ -304,7 +336,7 @@ function BenchmarkSection({
               background: "var(--bg-elevated)", color: "var(--text-tertiary)",
               border: "1px solid var(--border-default)",
             }}>
-              {entries.length}
+              {rows.length}
             </span>
           )}
         </div>
@@ -319,18 +351,65 @@ function BenchmarkSection({
             <SkeletonBenchmarkCard delay={0.08} />
             <SkeletonBenchmarkCard delay={0.16} />
           </>
-        ) : entries.length === 0 ? (
+        ) : rows.length === 0 ? (
           <p style={{ fontFamily: CHART_FONT, fontSize: "11px", color: "var(--text-muted)", padding: "16px 0", textAlign: "center" }}>
             No matching benchmark artifacts.
           </p>
         ) : (
-          entries.map((entry) => (
-            <BenchmarkCard
-              key={`${entry.scope}:${entry.artifact_id}`}
-              entry={entry}
-              onOpen={() => onOpen(entry.artifact_id)}
-            />
-          ))
+          rows.map((row) => {
+            if (row.kind === "artifact") {
+              const entry = row.entry;
+              return (
+                <BenchmarkCard
+                  key={`${entry.scope}:${entry.artifact_id}`}
+                  entry={entry}
+                  onOpen={() => onOpen(row)}
+                  actions={allowActions && entry.scope === "user" ? (
+                    <BenchmarkActionsMenu
+                      canDelete
+                      isDeleting={isDeletingBenchmarkId === entry.artifact_id}
+                      onDelete={() => onDelete(entry.artifact_id)}
+                    />
+                  ) : undefined}
+                />
+              );
+            }
+            const run = row.run;
+            if (run.status === "failed") {
+              return (
+                <FailedRunRow
+                  key={`run:${run.run_id}`}
+                  run={run}
+                  onOpen={() => onOpen(row)}
+                  actions={allowActions ? (
+                    <BenchmarkActionsMenu
+                      canDelete
+                      isDeleting={isDeletingBenchmarkId === run.run_id}
+                      onDelete={() => onDelete(run.run_id)}
+                    />
+                  ) : undefined}
+                />
+              );
+            }
+            return (
+              <LiveRunRow
+                key={`run:${run.run_id}`}
+                run={run}
+                actions={allowActions ? (
+                  <BenchmarkActionsMenu
+                    canStop
+                    canDelete
+                    isRunning={run.status === "running" || run.status === "queued"}
+                    isStopping={isStoppingRunId === run.run_id}
+                    isDeleting={isDeletingBenchmarkId === run.run_id}
+                    onStop={() => onStop(run)}
+                    onDelete={() => onDelete(run.run_id)}
+                  />
+                ) : undefined}
+                onOpen={() => onOpen(row)}
+              />
+            );
+          })
         )}
       </div>
     </div>
@@ -342,11 +421,16 @@ function BenchmarkSection({
 export function BenchmarksAll() {
     const posthog = usePostHog();
   useEffect(() => { injectChartKeyframes(); }, []);
+  const location = useLocation();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const catalogQuery = useBenchmarkCatalogQuery(100);
+  const stopBenchmarkMutation = useStopBenchmarkMutation();
+  const deleteBenchmarkMutation = useDeleteBenchmarkMutation();
   const [yourSortMode, setYourSortMode] = useState<SortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<SortMode>("recent");
   const [query, setQuery] = useState("");
+  const [deleteFlyout, setDeleteFlyout] = useState<{ title: string; body: string } | null>(null);
   const catalog = catalogQuery.data ?? null;
   const isLoading = catalogQuery.isLoading;
   const isRefreshing = catalogQuery.isFetching && Boolean(catalog);
@@ -354,10 +438,11 @@ export function BenchmarksAll() {
     ? catalogQuery.error.message
     : null;
 
-  const filterEntries = useCallback((entries: BenchmarkCatalogEntry[]) => {
+  const filterArtifacts = useCallback((entries: BenchmarkCatalogEntry[] | null | undefined) => {
+    const safeEntries = Array.isArray(entries) ? entries : [];
     const q = query.trim().toLowerCase();
-    if (!q) return entries;
-    return entries.filter((e) => {
+    if (!q) return safeEntries;
+    return safeEntries.filter((e) => {
       const models = e.models?.length ? e.models : Object.keys(e.model_counts);
       return (
         e.artifact_id.toLowerCase().includes(q)
@@ -367,14 +452,69 @@ export function BenchmarksAll() {
     });
   }, [query]);
 
-  const yourEntries = useMemo(
-    () => filterEntries(catalog ? (yourSortMode === "recent" ? catalog.user_recent : catalog.user_frequency) : []),
-    [catalog, filterEntries, yourSortMode],
+  const filterRuns = useCallback((runs: BenchmarkRunStatusPayload[] | null | undefined) => {
+    const safeRuns = Array.isArray(runs) ? runs : [];
+    const q = query.trim().toLowerCase();
+    if (!q) return safeRuns;
+    return safeRuns.filter((run) => {
+      const models = Object.keys(run.model_telemetry ?? {});
+      return (
+        run.run_id.toLowerCase().includes(q)
+        || String(run.status).toLowerCase().includes(q)
+        || String(run.latest_mechanism ?? "").toLowerCase().includes(q)
+        || models.some((m) => m.toLowerCase().includes(q))
+      );
+    });
+  }, [query]);
+
+  const yourRows = useMemo(
+    () => mergeCatalogArtifactsWithRuns(
+      filterArtifacts(catalog ? (yourSortMode === "recent" ? catalog.user_recent : catalog.user_frequency) : []),
+      filterRuns(catalog ? (yourSortMode === "recent" ? catalog.user_tests_recent : catalog.user_tests_frequency) : []),
+    ),
+    [catalog, filterArtifacts, filterRuns, yourSortMode],
   );
-  const globalEntries = useMemo(
-    () => filterEntries(catalog ? (globalSortMode === "recent" ? catalog.global_recent : catalog.global_frequency) : []),
-    [catalog, filterEntries, globalSortMode],
+  const globalRows = useMemo(
+    () => mergeCatalogArtifactsWithRuns(
+      filterArtifacts(catalog ? (globalSortMode === "recent" ? catalog.global_recent : catalog.global_frequency) : []),
+      filterRuns(catalog ? (globalSortMode === "recent" ? catalog.global_tests_recent : catalog.global_tests_frequency) : []),
+    ),
+    [catalog, filterArtifacts, filterRuns, globalSortMode],
   );
+
+  const handleStopBenchmarkRun = useCallback(async (run: BenchmarkRunStatusPayload) => {
+    await stopBenchmarkMutation.mutateAsync(run.run_id);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(run.run_id) }),
+    ]);
+  }, [queryClient, stopBenchmarkMutation]);
+
+  const handleDeleteBenchmark = useCallback(async (benchmarkId: string) => {
+    const deleted = await deleteBenchmarkMutation.mutateAsync(benchmarkId);
+    removeDeletedBenchmarkFromCaches(queryClient, deleted);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(benchmarkId) }),
+    ]);
+    setDeleteFlyout({
+      title: deleted.stopped_before_delete ? "Benchmark stopped and deleted" : "Benchmark deleted",
+      body: deleted.stopped_before_delete
+        ? "The live benchmark was stopped and removed from your personal catalog."
+        : "The benchmark was removed from your personal benchmark catalog.",
+    });
+  }, [deleteBenchmarkMutation, queryClient]);
+
+  useEffect(() => {
+    const state = location.state as { deletedBenchmarkFlyout?: { title: string; body: string } } | null;
+    if (!state?.deletedBenchmarkFlyout) {
+      return;
+    }
+    setDeleteFlyout(state.deletedBenchmarkFlyout);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
 
   return (
     <>
@@ -472,23 +612,39 @@ export function BenchmarksAll() {
           <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             <BenchmarkSection
               title="Your Benchmarks"
-              entries={yourEntries}
+              rows={yourRows}
               sortMode={yourSortMode}
               onSortChange={setYourSortMode}
-              onOpen={(id) => navigate(`/benchmarks/${id}`)}
+              onStop={handleStopBenchmarkRun}
+              onDelete={handleDeleteBenchmark}
+              isStoppingRunId={stopBenchmarkMutation.isPending ? stopBenchmarkMutation.variables ?? null : null}
+              isDeletingBenchmarkId={deleteBenchmarkMutation.isPending ? deleteBenchmarkMutation.variables ?? null : null}
+              onOpen={(row) => navigate(`/benchmarks/${row.kind === "run" ? row.run.run_id : row.entry.artifact_id}`)}
               isLoading={isLoading}
+              allowActions
             />
             <BenchmarkSection
               title="Global Benchmarks"
-              entries={globalEntries}
+              rows={globalRows}
               sortMode={globalSortMode}
               onSortChange={setGlobalSortMode}
-              onOpen={(id) => navigate(`/benchmarks/${id}`)}
+              onStop={handleStopBenchmarkRun}
+              onDelete={handleDeleteBenchmark}
+              isStoppingRunId={stopBenchmarkMutation.isPending ? stopBenchmarkMutation.variables ?? null : null}
+              isDeletingBenchmarkId={deleteBenchmarkMutation.isPending ? deleteBenchmarkMutation.variables ?? null : null}
+              onOpen={(row) => navigate(`/benchmarks/${row.kind === "run" ? row.run.run_id : row.entry.artifact_id}`)}
               isLoading={isLoading}
             />
           </div>
         )}
       </div>
+      <Flyout
+        show={deleteFlyout !== null}
+        variant="success"
+        title={deleteFlyout?.title ?? ""}
+        body={deleteFlyout?.body}
+        onDismiss={() => setDeleteFlyout(null)}
+      />
     </>
   );
 }
