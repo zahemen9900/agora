@@ -120,6 +120,14 @@ export type BenchmarkRunStatusName = "queued" | "running" | "completed" | "faile
 export type BenchmarkRunStatusPayload = GeneratedBenchmarkRunStatusResponse;
 export type BenchmarkCatalogEntry = GeneratedBenchmarkCatalogEntry;
 export type BenchmarkCatalogPayload = GeneratedBenchmarkCatalogResponse;
+export interface BenchmarkDeletePayload {
+  benchmark_id: string;
+  run_id: string | null;
+  artifact_id: string | null;
+  scope: "global" | "user";
+  deleted_at: string;
+  stopped_before_delete: boolean;
+}
 
 export type BenchmarkRunRequestPayload = Partial<GeneratedBenchmarkRunRequest> & {
   domain_prompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>>;
@@ -418,6 +426,16 @@ export async function stopBenchmarkRun(
 ): Promise<BenchmarkRunStatusPayload> {
   return requestJson<BenchmarkRunStatusPayload>(`/benchmarks/runs/${runId}/stop`, {
     method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function deleteBenchmark(
+  token: string,
+  benchmarkId: string,
+): Promise<BenchmarkDeletePayload> {
+  return requestJson<BenchmarkDeletePayload>(`/benchmarks/${encodeURIComponent(benchmarkId)}`, {
+    method: "DELETE",
     headers: authHeaders(token),
   });
 }

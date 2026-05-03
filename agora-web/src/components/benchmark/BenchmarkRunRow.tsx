@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { usePostHog } from "@posthog/react";
 import { ChevronRight } from "lucide-react";
 import type { BenchmarkCatalogEntry, BenchmarkRunStatusPayload } from "../../lib/api";
 import { ProviderGlyph } from "../ProviderGlyph";
 import { providerFromModel } from "../../lib/modelProviders";
-import { usePostHog } from "@posthog/react";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 const ROW_KF_ID = "bm-row-kf";
@@ -134,16 +134,26 @@ function ModelCluster({ models }: { models: string[] }) {
 function RunShell({
   children, onOpen, accentHex,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   onOpen: () => void;
   accentHex?: string;
 }) {
-    const posthog = usePostHog();
+  const posthog = usePostHog();
   const [hovered, setHovered] = useState(false);
   return (
-    <button
-      type="button"
-      onClick={() => { posthog?.capture('benchmarkrunrow_action_clicked'); onOpen(); }}
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => {
+        posthog?.capture("benchmarkrunrow_action_clicked");
+        onOpen();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       style={{
         width: "100%", textAlign: "left", display: "block",
@@ -159,7 +169,7 @@ function RunShell({
         cursor: "pointer",
         transition: "border-color 0.15s ease, background 0.15s ease",
       }}
-    >{children}</button>
+    >{children}</div>
   );
 }
 
@@ -224,7 +234,15 @@ export function SkeletonRunRow({ delay = 0 }: { delay?: number }) {
 
 // ── Public Components ──────────────────────────────────────────────────────────
 
-export function CatalogRunRow({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen: () => void }) {
+export function CatalogRunRow({
+  entry,
+  onOpen,
+  actions,
+}: {
+  entry: BenchmarkCatalogEntry;
+  onOpen: () => void;
+  actions?: ReactNode;
+}) {
   useEffect(() => { injectRowKeyframes(); }, []);
   const models = (entry.models?.length ? entry.models : Object.keys(entry.model_telemetry ?? {})).length
     ? (entry.models?.length ? entry.models : Object.keys(entry.model_telemetry ?? {}))
@@ -240,6 +258,7 @@ export function CatalogRunRow({ entry, onOpen }: { entry: BenchmarkCatalogEntry;
         {entry.scope && <TagBadge label={entry.scope} />}
         {mechanism && <TagBadge label={mechanism} />}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          {actions}
           <ModelCluster models={models} />
           <span style={{ fontFamily: FONT, fontSize: "10px", color: "var(--text-muted)" }}>{fmtDate(entry.created_at)}</span>
         </div>
@@ -262,13 +281,11 @@ export function CatalogRunRow({ entry, onOpen }: { entry: BenchmarkCatalogEntry;
 export function LiveRunRow({
   run,
   onOpen,
-  onStop,
-  isStopping = false,
+  actions,
 }: {
   run: BenchmarkRunStatusPayload;
   onOpen: () => void;
-  onStop?: (run: BenchmarkRunStatusPayload) => void;
-  isStopping?: boolean;
+  actions?: ReactNode;
 }) {
   useEffect(() => { injectRowKeyframes(); }, []);
   const isRunning = run.status === "running";
@@ -290,32 +307,7 @@ export function LiveRunRow({
           </span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
-          {onStop && (
-            <button
-              type="button"
-              disabled={isStopping}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onStop(run);
-              }}
-              style={{
-                fontFamily: FONT,
-                fontSize: "9px",
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                padding: "4px 8px",
-                borderRadius: "6px",
-                border: "1px solid rgba(248,113,113,0.35)",
-                background: isStopping ? "rgba(248,113,113,0.08)" : "rgba(248,113,113,0.12)",
-                color: "var(--accent-rose)",
-                cursor: isStopping ? "progress" : "pointer",
-                opacity: isStopping ? 0.8 : 1,
-              }}
-            >
-              {isStopping ? "Stopping…" : "Stop"}
-            </button>
-          )}
+          {actions}
           <ModelCluster models={models} />
           <span style={{ fontFamily: FONT, fontSize: "10px", color: "var(--text-muted)" }}>{fmtDate(run.updated_at)}</span>
         </div>
@@ -334,7 +326,15 @@ export function LiveRunRow({
   );
 }
 
-export function FailedRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; onOpen: () => void }) {
+export function FailedRunRow({
+  run,
+  onOpen,
+  actions,
+}: {
+  run: BenchmarkRunStatusPayload;
+  onOpen: () => void;
+  actions?: ReactNode;
+}) {
   useEffect(() => { injectRowKeyframes(); }, []);
   const models = Object.keys(run.model_telemetry ?? {});
   return (
@@ -347,6 +347,7 @@ export function FailedRunRow({ run, onOpen }: { run: BenchmarkRunStatusPayload; 
         <StatusBadge status="failed" />
         {run.latest_mechanism && <TagBadge label={titleCase(run.latest_mechanism)} />}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          {actions}
           <ModelCluster models={models} />
           <span style={{ fontFamily: FONT, fontSize: "10px", color: "var(--text-muted)" }}>{fmtDate(run.updated_at)}</span>
         </div>

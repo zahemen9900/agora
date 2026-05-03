@@ -22,7 +22,9 @@ import {
 import {
   benchmarkQueryKeys,
   patchBenchmarkDetailCache,
+  removeDeletedBenchmarkFromCaches,
   setBenchmarkDetailCache,
+  useDeleteBenchmarkMutation,
   useBenchmarkDetailQuery,
   useStopBenchmarkMutation,
 } from "../lib/benchmarkQueries";
@@ -47,6 +49,7 @@ import { RunNarrative } from "../components/benchmark/detail/RunNarrative";
 import { useAuth } from "../lib/useAuth";
 import { BenchmarkLiveCanvas } from "../components/benchmark/BenchmarkLiveCanvas";
 import { Flyout } from "../components/Flyout";
+import { BenchmarkActionsMenu } from "../components/benchmark/BenchmarkActionsMenu";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import {
   deriveBenchmarkItemTimelineEvents,
@@ -101,6 +104,7 @@ export function BenchmarkDetail() {
   const queryClient = useQueryClient();
   const detailQuery = useBenchmarkDetailQuery(benchmarkId);
   const stopBenchmarkMutation = useStopBenchmarkMutation();
+  const deleteBenchmarkMutation = useDeleteBenchmarkMutation();
   const detail = detailQuery.data ?? null;
   const loadError = !benchmarkId
     ? "Benchmark id is required."
@@ -156,6 +160,37 @@ export function BenchmarkDetail() {
       },
     });
   }, [detail?.run_id, queryClient, stopBenchmarkMutation]);
+  const handleDeleteBenchmark = useCallback(async () => {
+    const deleteTarget = detail?.scope === "user"
+      ? (detail.run_id ?? detail.artifact_id ?? benchmarkId ?? null)
+      : null;
+    if (!deleteTarget || deleteBenchmarkMutation.isPending) {
+      return;
+    }
+
+    setStopError(null);
+    try {
+      const deleted = await deleteBenchmarkMutation.mutateAsync(deleteTarget);
+      removeDeletedBenchmarkFromCaches(queryClient, deleted);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(deleteTarget) }),
+      ]);
+      navigate("/benchmarks/all", {
+        state: {
+          deletedBenchmarkFlyout: {
+            title: deleted.stopped_before_delete ? "Benchmark stopped and deleted" : "Benchmark deleted",
+            body: deleted.stopped_before_delete
+              ? "The live benchmark was stopped and removed from your personal catalog."
+              : "The benchmark was removed from your personal benchmark catalog.",
+          },
+        },
+      });
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : "Failed to delete benchmark.");
+    }
+  }, [benchmarkId, deleteBenchmarkMutation, detail?.artifact_id, detail?.run_id, detail?.scope, navigate, queryClient]);
   const streamedEventKeysRef = useRef<Set<string>>(new Set());
   const historyRepairAttemptedRef = useRef<string | null>(null);
   const itemHydrationAttemptedRef = useRef<Set<string>>(new Set());
@@ -699,8 +734,21 @@ export function BenchmarkDetail() {
           Refresh
         </button>
 
-        {/* Tab switcher – pushed to the right */}
-        <div style={{ marginLeft: "auto", display: "flex", gap: "4px", padding: "4px", background: "var(--bg-elevated)", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "10px" }}>
+          {detail?.scope === "user" && (detail.run_id || detail.artifact_id || benchmarkId) ? (
+            <BenchmarkActionsMenu
+              canStop={detail.status === "queued" || detail.status === "running"}
+              canDelete
+              isRunning={detail.status === "queued" || detail.status === "running"}
+              isStopping={stopBenchmarkMutation.isPending}
+              isDeleting={deleteBenchmarkMutation.isPending}
+              onStop={handleStopBenchmark}
+              onDelete={() => void handleDeleteBenchmark()}
+            />
+          ) : null}
+
+          {/* Tab switcher – pushed to the right */}
+          <div style={{ display: "flex", gap: "4px", padding: "4px", background: "var(--bg-elevated)", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
           {(["canvas", "logs", "metrics"] as const).map((tab) => (
             <button
               key={tab}
@@ -731,6 +779,7 @@ export function BenchmarkDetail() {
               </span>
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -745,45 +794,6 @@ export function BenchmarkDetail() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {detail.run_id ? (
-                <button
-                  type="button"
-                  onClick={handleStopBenchmark}
-                  disabled={stopBenchmarkMutation.isPending}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "6px 14px",
-                    borderRadius: "8px",
-                    background: stopBenchmarkMutation.isPending
-                      ? "rgba(248,113,113,0.12)"
-                      : "rgba(248,113,113,0.10)",
-                    border: "1px solid rgba(248,113,113,0.35)",
-                    cursor: stopBenchmarkMutation.isPending ? "progress" : "pointer",
-                    fontFamily: "'Commit Mono', monospace",
-                    fontSize: "11px",
-                    color: "rgb(248,113,113)",
-                    opacity: stopBenchmarkMutation.isPending ? 0.8 : 1,
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  {stopBenchmarkMutation.isPending ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <span
-                      style={{
-                        width: "8px",
-                        height: "8px",
-                        borderRadius: "2px",
-                        background: "currentColor",
-                        display: "inline-block",
-                      }}
-                    />
-                  )}
-                  {stopBenchmarkMutation.isPending ? "Stopping…" : "Stop benchmark"}
-                </button>
-              ) : null}
               <div className={`mono text-[11px] px-2 py-1 rounded-full border ${streamState.tone}`}>
                 {streamState.label}
               </div>

@@ -16,6 +16,8 @@ import {
 } from "recharts";
 import { ChevronDown, Filter, RotateCcw } from "lucide-react";
 
+import { Flyout } from "../components/Flyout";
+import { BenchmarkActionsMenu } from "../components/benchmark/BenchmarkActionsMenu";
 import { BenchmarkWizard, type DomainPromptSelection } from "../components/benchmark/BenchmarkWizard";
 import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
 import { ChartCard, injectChartKeyframes, SkeletonChartBlock, ShimBlock, CHART_FONT } from "../components/benchmark/ChartCard";
@@ -27,9 +29,11 @@ import {
 } from "../lib/api";
 import {
   benchmarkQueryKeys,
+  removeDeletedBenchmarkFromCaches,
   seedTriggeredBenchmarkRunCache,
   type BenchmarkOverviewMode,
   useBenchmarkCatalogQuery,
+  useDeleteBenchmarkMutation,
   useBenchmarkOverviewQuery,
   useBenchmarkPromptTemplatesQuery,
   useStopBenchmarkMutation,
@@ -59,8 +63,6 @@ import {
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
-import { usePostHog } from "@posthog/react";
-import { Button } from "../components/ui/Button";
 
 type CatalogSortMode = "recent" | "frequency";
 type ParetoPoint = ReturnType<typeof buildOverviewParetoData>[number];
@@ -419,7 +421,6 @@ function SectionHeader({ label, count, countColor }: { label: string; count: num
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export function Benchmarks() {
-    const posthog = usePostHog();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("latest");
@@ -429,6 +430,7 @@ export function Benchmarks() {
   const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
   const triggerBenchmarkMutation = useTriggerBenchmarkMutation();
   const stopBenchmarkMutation = useStopBenchmarkMutation();
+  const deleteBenchmarkMutation = useDeleteBenchmarkMutation();
   const benchmarks = benchmarkOverviewQuery.data ?? null;
   const catalog = benchmarkCatalogQuery.data ?? null;
   const runtimeConfig = runtimeConfigQuery.data;
@@ -437,6 +439,7 @@ export function Benchmarks() {
     : FALLBACK_PROMPT_TEMPLATES;
 
   const [runError, setRunError] = useState<string | null>(null);
+  const [deleteFlyout, setDeleteFlyout] = useState<{ title: string; body: string } | null>(null);
   const [chartsReady, setChartsReady] = useState(false);
   const [yourSortMode, setYourSortMode] = useState<CatalogSortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<CatalogSortMode>("recent");
@@ -722,6 +725,27 @@ export function Benchmarks() {
       setRunError(error instanceof Error ? error.message : "Unable to stop benchmark run right now.");
     }
   }, [queryClient, stopBenchmarkMutation]);
+
+  const handleDeleteBenchmark = useCallback(async (benchmarkId: string) => {
+    try {
+      setRunError(null);
+      const deleted = await deleteBenchmarkMutation.mutateAsync(benchmarkId);
+      removeDeletedBenchmarkFromCaches(queryClient, deleted);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(benchmarkId) }),
+      ]);
+      setDeleteFlyout({
+        title: deleted.stopped_before_delete ? "Benchmark stopped and deleted" : "Benchmark deleted",
+        body: deleted.stopped_before_delete
+          ? "The live benchmark was stopped and removed from your personal catalog."
+          : "The benchmark was removed from your personal benchmark catalog.",
+      });
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Unable to delete benchmark right now.");
+    }
+  }, [deleteBenchmarkMutation, queryClient]);
 
   const updateDomainSelection = (
     domain: BenchmarkDomainName,
@@ -1072,9 +1096,9 @@ export function Benchmarks() {
                 Configure benchmark questions per domain, trigger a run, and persist rich artifacts in global and user-specific cloud paths.
               </p>
             </div>
-            <Button type="button" onClick={openWizard} variant="primary" trackingEvent="benchmarks_configure_and_run_clicked">
+            <button type="button" className="btn-primary" onClick={openWizard}>
               Configure and Run
-            </Button>
+            </button>
           </div>
 
           {featuredBenchmarkRun && (
@@ -1082,13 +1106,29 @@ export function Benchmarks() {
               {featuredBenchmarkRun.status === "failed" ? (
                 <FailedRunRow
                   run={featuredBenchmarkRun}
+                  actions={(
+                    <BenchmarkActionsMenu
+                      canDelete
+                      isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
+                      onDelete={() => void handleDeleteBenchmark(featuredBenchmarkRun.run_id)}
+                    />
+                  )}
                   onOpen={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
                 />
               ) : (
                 <LiveRunRow
                   run={featuredBenchmarkRun}
-                  onStop={handleStopBenchmarkRun}
-                  isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
+                  actions={(
+                    <BenchmarkActionsMenu
+                      canStop
+                      canDelete
+                      isRunning={featuredBenchmarkRun.status === "running" || featuredBenchmarkRun.status === "queued"}
+                      isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
+                      isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
+                      onStop={() => void handleStopBenchmarkRun(featuredBenchmarkRun)}
+                      onDelete={() => void handleDeleteBenchmark(featuredBenchmarkRun.run_id)}
+                    />
+                  )}
                   onOpen={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
                 />
               )}
@@ -1117,7 +1157,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => void benchmarkCatalogQuery.refetch()}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1126,7 +1166,7 @@ export function Benchmarks() {
               <FilterButton value={yourSortMode} onChange={setYourSortMode} />
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => navigate("/benchmarks/all")}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1162,8 +1202,17 @@ export function Benchmarks() {
                       <LiveRunRow
                         key={run.run_id}
                         run={run}
-                        onStop={handleStopBenchmarkRun}
-                        isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === run.run_id}
+                        actions={(
+                          <BenchmarkActionsMenu
+                            canStop
+                            canDelete
+                            isRunning={run.status === "running" || run.status === "queued"}
+                            isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === run.run_id}
+                            isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === run.run_id}
+                            onStop={() => void handleStopBenchmarkRun(run)}
+                            onDelete={() => void handleDeleteBenchmark(run.run_id)}
+                          />
+                        )}
                         onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
                       />
                     ))}
@@ -1181,6 +1230,13 @@ export function Benchmarks() {
                       <CatalogRunRow
                         key={entry.artifact_id}
                         entry={entry}
+                        actions={(
+                          <BenchmarkActionsMenu
+                            canDelete
+                            isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === entry.artifact_id}
+                            onDelete={() => void handleDeleteBenchmark(entry.artifact_id)}
+                          />
+                        )}
                         onOpen={() => navigate(`/benchmarks/${entry.artifact_id}`)}
                       />
                     ))}
@@ -1201,6 +1257,13 @@ export function Benchmarks() {
                       <FailedRunRow
                         key={run.run_id}
                         run={run}
+                        actions={(
+                          <BenchmarkActionsMenu
+                            canDelete
+                            isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === run.run_id}
+                            onDelete={() => void handleDeleteBenchmark(run.run_id)}
+                          />
+                        )}
                         onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
                       />
                     ))}
@@ -1219,7 +1282,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => void benchmarkCatalogQuery.refetch()}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1228,7 +1291,7 @@ export function Benchmarks() {
               <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => navigate("/benchmarks/all")}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1270,6 +1333,14 @@ export function Benchmarks() {
 
         </div>
       </div>
+
+      <Flyout
+        show={deleteFlyout !== null}
+        variant="success"
+        title={deleteFlyout?.title ?? ""}
+        body={deleteFlyout?.body}
+        onDismiss={() => setDeleteFlyout(null)}
+      />
 
       {/* ── Wizard ────────────────────────────────────────────────────────── */}
       {wizardOpen ? (
@@ -1317,7 +1388,6 @@ const MODE_LABELS: Record<BenchmarkOverviewMode, string> = {
 };
 
 function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onChange: (v: BenchmarkOverviewMode) => void }) {
-    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1338,7 +1408,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
+        onClick={() => setOpen((v) => !v)}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1367,7 +1437,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
             <button
               key={option}
               type="button"
-              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
+              onClick={() => { onChange(option); setOpen(false); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",
@@ -1390,7 +1460,6 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
 }
 
 function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (value: CatalogSortMode) => void }) {
-    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1407,7 +1476,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
+        onClick={() => setOpen((v) => !v)}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1437,7 +1506,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
             <button
               key={option}
               type="button"
-              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
+              onClick={() => { onChange(option); setOpen(false); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",

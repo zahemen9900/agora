@@ -4337,6 +4337,219 @@ async def test_stop_benchmark_run_accepts_artifact_identifier_alias(
     assert updated["stop_requested_at"]
 
 
+@pytest.mark.asyncio
+async def test_delete_benchmark_tombstones_user_owned_artifact_and_run(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    artifact_id = "user-delete-artifact"
+    run_id = "run-user-delete-artifact"
+    await store.save_user_benchmark_artifact(
+        "user-1",
+        artifact_id,
+        {
+            "artifact_id": artifact_id,
+            "scope": "user",
+            "owner_user_id": "user-1",
+            "source": "user_triggered",
+            "status": "completed",
+            "created_at": "2026-05-01T02:00:00+00:00",
+            "benchmark_payload": {
+                "generated_at": "2026-05-01T02:00:00+00:00",
+                "benchmark_config": {"agent_count": 4},
+                "runs": [{"mechanism_used": "delphi", "model": "model-a"}],
+            },
+        },
+    )
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "completed",
+            "artifact_id": artifact_id,
+            "created_at": "2026-05-01T02:00:00+00:00",
+            "updated_at": "2026-05-01T02:05:00+00:00",
+            "frequency_score": 2,
+        },
+    )
+
+    response = await client.request("DELETE", f"/benchmarks/{artifact_id}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["benchmark_id"] == artifact_id
+    assert payload["run_id"] == run_id
+    assert payload["artifact_id"] == artifact_id
+    assert payload["scope"] == "user"
+    assert payload["stopped_before_delete"] is False
+    assert payload["deleted_at"]
+    deleted_at = datetime.fromisoformat(payload["deleted_at"].replace("Z", "+00:00"))
+
+    deleted_artifact = await store.get_user_benchmark_artifact("user-1", artifact_id)
+    assert deleted_artifact is not None
+    assert datetime.fromisoformat(deleted_artifact["deleted_at"]) == deleted_at
+
+    deleted_record = await store.get_user_test_result("user-1", run_id)
+    assert deleted_record is not None
+    assert datetime.fromisoformat(deleted_record["deleted_at"]) == deleted_at
+
+    status_response = await client.get(f"/benchmarks/runs/{run_id}")
+    assert status_response.status_code == 404
+
+    detail_response = await client.get(f"/benchmarks/{artifact_id}")
+    assert detail_response.status_code == 404
+
+    catalog_response = await client.get("/benchmarks/catalog")
+    assert catalog_response.status_code == 200
+    catalog_payload = catalog_response.json()
+    assert not any(entry["artifact_id"] == artifact_id for entry in catalog_payload["user_recent"])
+    assert not any(entry["run_id"] == run_id for entry in catalog_payload["user_tests_recent"])
+
+
+@pytest.mark.asyncio
+async def test_delete_running_benchmark_by_run_id_stops_then_hides_user_copy_but_keeps_global(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    artifact_id = "shared-delete-artifact"
+    run_id = "shared-delete-run"
+    await store.save_global_benchmark_artifact(
+        artifact_id,
+        {
+            "artifact_id": artifact_id,
+            "scope": "global",
+            "source": "published",
+            "status": "completed",
+            "created_at": "2026-05-01T01:00:00+00:00",
+            "benchmark_payload": {
+                "generated_at": "2026-05-01T01:00:00+00:00",
+                "benchmark_config": {"agent_count": 8},
+                "runs": [{"mechanism_used": "vote", "model": "model-global"}],
+            },
+        },
+    )
+    await store.save_user_benchmark_artifact(
+        "user-1",
+        artifact_id,
+        {
+            "artifact_id": artifact_id,
+            "scope": "user",
+            "owner_user_id": "user-1",
+            "source": "user_triggered",
+            "status": "running",
+            "created_at": "2026-05-01T02:00:00+00:00",
+            "benchmark_payload": {
+                "generated_at": "2026-05-01T02:00:00+00:00",
+                "benchmark_config": {"agent_count": 4},
+                "runs": [{"mechanism_used": "debate", "model": "model-user"}],
+            },
+        },
+    )
+    await store.save_user_test_result(
+        "user-1",
+        run_id,
+        {
+            "run_id": run_id,
+            "workspace_id": "user-1",
+            "kind": "benchmark",
+            "status": "running",
+            "artifact_id": artifact_id,
+            "created_at": "2026-05-01T02:00:00+00:00",
+            "updated_at": "2026-05-01T02:05:00+00:00",
+            "request": {
+                "training_per_category": 1,
+                "holdout_per_category": 1,
+                "agent_count": 4,
+                "live_agents": True,
+                "seed": 42,
+                "domain_prompts": {},
+            },
+        },
+    )
+
+    response = await client.request("DELETE", f"/benchmarks/{run_id}")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["benchmark_id"] == run_id
+    assert payload["run_id"] == run_id
+    assert payload["artifact_id"] == artifact_id
+    assert payload["scope"] == "user"
+    assert payload["stopped_before_delete"] is True
+    assert payload["deleted_at"]
+    deleted_at = datetime.fromisoformat(payload["deleted_at"].replace("Z", "+00:00"))
+
+    deleted_record = await store.get_user_test_result("user-1", run_id)
+    assert deleted_record is not None
+    assert datetime.fromisoformat(deleted_record["deleted_at"]) == deleted_at
+    assert deleted_record["stop_requested_at"]
+    assert deleted_record["stop_requested_by"] == "user"
+
+    deleted_artifact = await store.get_user_benchmark_artifact("user-1", artifact_id)
+    assert deleted_artifact is not None
+    assert datetime.fromisoformat(deleted_artifact["deleted_at"]) == deleted_at
+
+    detail_response = await client.get(f"/benchmarks/{artifact_id}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["scope"] == "global"
+    assert detail_payload["artifact_id"] == artifact_id
+
+    status_response = await client.get(f"/benchmarks/runs/{run_id}")
+    assert status_response.status_code == 404
+
+    catalog_response = await client.get("/benchmarks/catalog")
+    assert catalog_response.status_code == 200
+    catalog_payload = catalog_response.json()
+    assert any(entry["artifact_id"] == artifact_id for entry in catalog_payload["global_recent"])
+    assert not any(entry["artifact_id"] == artifact_id for entry in catalog_payload["user_recent"])
+    assert not any(entry["run_id"] == run_id for entry in catalog_payload["user_tests_recent"])
+
+
+@pytest.mark.asyncio
+async def test_delete_benchmark_rejects_global_only_artifacts(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(benchmark_routes, "_legacy_backfill_complete", True)
+
+    store = task_routes._store
+    assert store is not None
+
+    artifact_id = "global-only-delete"
+    await store.save_global_benchmark_artifact(
+        artifact_id,
+        {
+            "artifact_id": artifact_id,
+            "scope": "global",
+            "source": "published",
+            "status": "completed",
+            "created_at": "2026-05-01T01:00:00+00:00",
+            "benchmark_payload": {
+                "generated_at": "2026-05-01T01:00:00+00:00",
+                "benchmark_config": {"agent_count": 8},
+                "runs": [{"mechanism_used": "vote", "model": "model-global"}],
+            },
+        },
+    )
+
+    response = await client.request("DELETE", f"/benchmarks/{artifact_id}")
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Only user-owned benchmarks can be deleted"
+    detail_response = await client.get(f"/benchmarks/{artifact_id}")
+    assert detail_response.status_code == 200
+
 def test_merge_benchmark_control_fields_preserves_stop_request() -> None:
     snapshot = {
         "run_id": "run-1",

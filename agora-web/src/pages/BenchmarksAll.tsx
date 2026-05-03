@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft, ChevronDown, ChevronRight, Filter, RefreshCcw, Search } from "lucide-react";
 
 import { type BenchmarkCatalogEntry, type BenchmarkRunStatusPayload } from "../lib/api";
+import { Flyout } from "../components/Flyout";
+import { BenchmarkActionsMenu } from "../components/benchmark/BenchmarkActionsMenu";
 import { FailedRunRow, LiveRunRow } from "../components/benchmark/BenchmarkRunRow";
-import { benchmarkQueryKeys, useBenchmarkCatalogQuery, useStopBenchmarkMutation } from "../lib/benchmarkQueries";
+import {
+  benchmarkQueryKeys,
+  removeDeletedBenchmarkFromCaches,
+  useBenchmarkCatalogQuery,
+  useDeleteBenchmarkMutation,
+  useStopBenchmarkMutation,
+} from "../lib/benchmarkQueries";
 import { mergeCatalogArtifactsWithRuns, type BenchmarkCatalogListRow } from "../lib/benchmarkCatalogRows";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { providerFromModel } from "../lib/modelProviders";
@@ -121,7 +129,15 @@ function Chip({ label }: { label: string }) {
 
 // ── Card ───────────────────────────────────────────────────────────────────────
 
-function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen: () => void }) {
+function BenchmarkCard({
+  entry,
+  onOpen,
+  actions,
+}: {
+  entry: BenchmarkCatalogEntry;
+  onOpen: () => void;
+  actions?: ReactNode;
+}) {
     const posthog = usePostHog();
   const [hovered, setHovered] = useState(false);
   const models = (entry.models?.length ? entry.models : Object.keys(entry.model_counts));
@@ -131,9 +147,16 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
     : entry.artifact_id;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={(e: any) => { posthog?.capture('benchmarksall_action_clicked'); const handler = onOpen; if (typeof handler === 'function') (handler as any)(e); }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -164,6 +187,7 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
         {entry.scope && <Chip label={entry.scope} />}
         {mechanism && <Chip label={mechanism} />}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+          {actions}
           <span style={{ fontFamily: CHART_FONT, fontSize: "10px", color: "var(--text-muted)" }}>
             {fmtDate(entry.created_at)}
           </span>
@@ -201,7 +225,7 @@ function BenchmarkCard({ entry, onOpen }: { entry: BenchmarkCatalogEntry; onOpen
           </span>
         ))}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -274,7 +298,7 @@ function FilterDropdown({ value, onChange }: { value: SortMode; onChange: (v: So
 // ── Section ────────────────────────────────────────────────────────────────────
 
 function BenchmarkSection({
-  title, rows, sortMode, onSortChange, onOpen, onStop, isStoppingRunId, isLoading,
+  title, rows, sortMode, onSortChange, onOpen, onStop, onDelete, isStoppingRunId, isDeletingBenchmarkId, isLoading, allowActions = false,
 }: {
   title: string;
   rows: BenchmarkCatalogListRow[];
@@ -282,8 +306,11 @@ function BenchmarkSection({
   onSortChange: (v: SortMode) => void;
   onOpen: (row: BenchmarkCatalogListRow) => void;
   onStop: (run: BenchmarkRunStatusPayload) => void;
+  onDelete: (benchmarkId: string) => void;
   isStoppingRunId: string | null;
+  isDeletingBenchmarkId: string | null;
   isLoading: boolean;
+  allowActions?: boolean;
 }) {
   return (
     <div style={{
@@ -337,6 +364,13 @@ function BenchmarkSection({
                   key={`${entry.scope}:${entry.artifact_id}`}
                   entry={entry}
                   onOpen={() => onOpen(row)}
+                  actions={allowActions && entry.scope === "user" ? (
+                    <BenchmarkActionsMenu
+                      canDelete
+                      isDeleting={isDeletingBenchmarkId === entry.artifact_id}
+                      onDelete={() => onDelete(entry.artifact_id)}
+                    />
+                  ) : undefined}
                 />
               );
             }
@@ -347,6 +381,13 @@ function BenchmarkSection({
                   key={`run:${run.run_id}`}
                   run={run}
                   onOpen={() => onOpen(row)}
+                  actions={allowActions ? (
+                    <BenchmarkActionsMenu
+                      canDelete
+                      isDeleting={isDeletingBenchmarkId === run.run_id}
+                      onDelete={() => onDelete(run.run_id)}
+                    />
+                  ) : undefined}
                 />
               );
             }
@@ -354,8 +395,17 @@ function BenchmarkSection({
               <LiveRunRow
                 key={`run:${run.run_id}`}
                 run={run}
-                onStop={onStop}
-                isStopping={isStoppingRunId === run.run_id}
+                actions={allowActions ? (
+                  <BenchmarkActionsMenu
+                    canStop
+                    canDelete
+                    isRunning={run.status === "running" || run.status === "queued"}
+                    isStopping={isStoppingRunId === run.run_id}
+                    isDeleting={isDeletingBenchmarkId === run.run_id}
+                    onStop={() => onStop(run)}
+                    onDelete={() => onDelete(run.run_id)}
+                  />
+                ) : undefined}
                 onOpen={() => onOpen(row)}
               />
             );
@@ -371,13 +421,16 @@ function BenchmarkSection({
 export function BenchmarksAll() {
     const posthog = usePostHog();
   useEffect(() => { injectChartKeyframes(); }, []);
+  const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const catalogQuery = useBenchmarkCatalogQuery(100);
   const stopBenchmarkMutation = useStopBenchmarkMutation();
+  const deleteBenchmarkMutation = useDeleteBenchmarkMutation();
   const [yourSortMode, setYourSortMode] = useState<SortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<SortMode>("recent");
   const [query, setQuery] = useState("");
+  const [deleteFlyout, setDeleteFlyout] = useState<{ title: string; body: string } | null>(null);
   const catalog = catalogQuery.data ?? null;
   const isLoading = catalogQuery.isLoading;
   const isRefreshing = catalogQuery.isFetching && Boolean(catalog);
@@ -437,6 +490,31 @@ export function BenchmarksAll() {
       queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(run.run_id) }),
     ]);
   }, [queryClient, stopBenchmarkMutation]);
+
+  const handleDeleteBenchmark = useCallback(async (benchmarkId: string) => {
+    const deleted = await deleteBenchmarkMutation.mutateAsync(benchmarkId);
+    removeDeletedBenchmarkFromCaches(queryClient, deleted);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+      queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(benchmarkId) }),
+    ]);
+    setDeleteFlyout({
+      title: deleted.stopped_before_delete ? "Benchmark stopped and deleted" : "Benchmark deleted",
+      body: deleted.stopped_before_delete
+        ? "The live benchmark was stopped and removed from your personal catalog."
+        : "The benchmark was removed from your personal benchmark catalog.",
+    });
+  }, [deleteBenchmarkMutation, queryClient]);
+
+  useEffect(() => {
+    const state = location.state as { deletedBenchmarkFlyout?: { title: string; body: string } } | null;
+    if (!state?.deletedBenchmarkFlyout) {
+      return;
+    }
+    setDeleteFlyout(state.deletedBenchmarkFlyout);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
 
   return (
     <>
@@ -538,9 +616,12 @@ export function BenchmarksAll() {
               sortMode={yourSortMode}
               onSortChange={setYourSortMode}
               onStop={handleStopBenchmarkRun}
+              onDelete={handleDeleteBenchmark}
               isStoppingRunId={stopBenchmarkMutation.isPending ? stopBenchmarkMutation.variables ?? null : null}
+              isDeletingBenchmarkId={deleteBenchmarkMutation.isPending ? deleteBenchmarkMutation.variables ?? null : null}
               onOpen={(row) => navigate(`/benchmarks/${row.kind === "run" ? row.run.run_id : row.entry.artifact_id}`)}
               isLoading={isLoading}
+              allowActions
             />
             <BenchmarkSection
               title="Global Benchmarks"
@@ -548,13 +629,22 @@ export function BenchmarksAll() {
               sortMode={globalSortMode}
               onSortChange={setGlobalSortMode}
               onStop={handleStopBenchmarkRun}
+              onDelete={handleDeleteBenchmark}
               isStoppingRunId={stopBenchmarkMutation.isPending ? stopBenchmarkMutation.variables ?? null : null}
+              isDeletingBenchmarkId={deleteBenchmarkMutation.isPending ? deleteBenchmarkMutation.variables ?? null : null}
               onOpen={(row) => navigate(`/benchmarks/${row.kind === "run" ? row.run.run_id : row.entry.artifact_id}`)}
               isLoading={isLoading}
             />
           </div>
         )}
       </div>
+      <Flyout
+        show={deleteFlyout !== null}
+        variant="success"
+        title={deleteFlyout?.title ?? ""}
+        body={deleteFlyout?.body}
+        onDismiss={() => setDeleteFlyout(null)}
+      />
     </>
   );
 }
