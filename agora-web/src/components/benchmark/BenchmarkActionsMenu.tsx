@@ -120,8 +120,8 @@ export function BenchmarkActionsMenu({
               padding: "8px",
               borderRadius: "12px",
               border: "1px solid var(--border-strong)",
-              background: "rgba(10,14,22,0.96)",
-              boxShadow: "0 16px 40px rgba(0,0,0,0.4)",
+              background: "var(--bg-elevated)",
+              boxShadow: "0 16px 40px rgba(0,0,0,0.2)",
               zIndex: 40,
               backdropFilter: "blur(12px)",
             }}
@@ -194,6 +194,7 @@ export function BenchmarkActionsMenu({
 
       <ConfirmActionModal
         open={showStopWarning}
+        eyebrow="Benchmark action"
         title="Stop before deleting?"
         body="This benchmark is still running. Deleting it will first issue a stop request, then remove your personal benchmark from the catalog. Shared global benchmarks stay untouched."
         confirmLabel={isDeleting ? "Deleting…" : "Stop and delete"}

@@ -35,6 +35,7 @@ export interface ConfirmActionModalProps {
   body: string;
   confirmLabel: string;
   cancelLabel?: string;
+  eyebrow?: string;
   tone?: "warning" | "danger";
   isLoading?: boolean;
   onConfirm: () => void;
@@ -47,6 +48,7 @@ export function ConfirmActionModal({
   body,
   confirmLabel,
   cancelLabel = "Cancel",
+  eyebrow = "Confirm action",
   tone = "warning",
   isLoading = false,
   onConfirm,
@@ -101,7 +103,7 @@ export function ConfirmActionModal({
         alignItems: "center",
         justifyContent: "center",
         padding: "24px",
-        background: "rgba(5, 8, 15, 0.72)",
+        background: "rgba(0,0,0,0.5)",
         backdropFilter: "blur(10px)",
         animation: "confirm-modal-backdrop-in 160ms ease-out both",
       }}
@@ -114,8 +116,8 @@ export function ConfirmActionModal({
           borderRadius: "18px",
           overflow: "hidden",
           border: `1px solid ${panelBorder}`,
-          background: `linear-gradient(180deg, ${panelGlow}, rgba(10, 14, 22, 0.96))`,
-          boxShadow: `0 30px 90px rgba(0,0,0,0.5), 0 0 0 1px ${panelGlow}`,
+          background: "var(--bg-elevated)",
+          boxShadow: `0 30px 90px rgba(0,0,0,0.3), 0 0 0 1px ${panelGlow}`,
           animation: "confirm-modal-panel-in 220ms cubic-bezier(0.22,1,0.36,1) both",
         }}
       >
@@ -141,7 +143,7 @@ export function ConfirmActionModal({
                 height: "42px",
                 borderRadius: "12px",
                 border: `1px solid ${panelBorder}`,
-                background: "rgba(255,255,255,0.03)",
+                background: "var(--bg-subtle)",
                 display: "grid",
                 placeItems: "center",
                 color: iconColor,
@@ -161,7 +163,7 @@ export function ConfirmActionModal({
                   marginBottom: "4px",
                 }}
               >
-                Benchmark action
+                {eyebrow}
               </div>
               <h3
                 style={{
