@@ -66,6 +66,60 @@ def test_delphi_default_flash_caller_uses_local_provider_keys(
 
 
 @pytest.mark.asyncio
+async def test_delphi_hosted_participants_use_balanced_provider_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeCaller:
+        def __init__(self, model: str) -> None:
+            self.model = model
+
+        async def call(self, **kwargs: object) -> tuple[object, dict[str, object]]:
+            response_format = kwargs["response_format"]
+            response = response_format(
+                answer=f"answer-from-{self.model}",
+                confidence=0.7,
+                reasoning=f"reasoning-from-{self.model}",
+            )
+            return response, {"tokens": 11, "latency_ms": 7.0}
+
+    monkeypatch.setattr(
+        "agora.engines.delphi.pro_caller",
+        lambda **_: _FakeCaller("gemini-pro-model"),
+    )
+    monkeypatch.setattr(
+        "agora.engines.delphi.flash_caller",
+        lambda **_: _FakeCaller("gemini-flash-model"),
+    )
+    monkeypatch.setattr(
+        "agora.engines.delphi.openrouter_caller",
+        lambda **_: _FakeCaller("openrouter-model"),
+    )
+    monkeypatch.setattr(
+        "agora.engines.delphi.claude_caller",
+        lambda **_: _FakeCaller("claude-model"),
+    )
+
+    engine = DelphiEngine(
+        agent_count=4,
+        quorum_threshold=0.95,
+        allow_offline_fallback=False,
+    )
+
+    result = await engine.run(
+        task="Should we start with a monolith or microservices?",
+        selection=make_selection(mechanism=MechanismType.DELPHI, topic_category="reasoning"),
+    )
+
+    assert result.agent_models_used == [
+        "gemini-pro-model",
+        "gemini-flash-model",
+        "openrouter-model",
+        "claude-model",
+    ]
+    assert result.fallback_count == 0
+
+
+@pytest.mark.asyncio
 async def test_delphi_engine_converges_with_custom_agents() -> None:
     engine = DelphiEngine(
         agent_count=3,
