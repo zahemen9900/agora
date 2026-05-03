@@ -3383,7 +3383,13 @@ async def test_sdk_local_model_roster_is_forwarded_to_orchestrator(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
             model="moonshotai/kimi-k2-thinking",
-        )
+        ),
+        devils_advocate_fallback_models=[
+            LocalModelSpec(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+            )
+        ],
     )
 
     arbitrator = AgoraArbitrator(
@@ -3404,6 +3410,54 @@ async def test_sdk_local_model_roster_is_forwarded_to_orchestrator(
     assert captured["local_models"] == local_models
     assert captured["local_provider_keys"] == provider_keys
     assert captured["local_debate_config"] == debate_config
+
+
+@pytest.mark.asyncio
+async def test_sdk_local_debate_fallback_models_require_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agora.sdk import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
+    from agora.config import get_config
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_SECRET_NAME", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_SECRET_PROJECT", raising=False)
+    monkeypatch.delenv("AGORA_ANTHROPIC_SECRET_VERSION", raising=False)
+    get_config.cache_clear()
+
+    arbitrator = AgoraArbitrator(
+        mechanism="debate",
+        local_models=[
+            LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+            LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+            LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+        ],
+        local_provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            openrouter_api_key="or-key",
+        ),
+        local_debate_config=LocalDebateConfig(
+            devils_advocate_model=LocalModelSpec(
+                provider="openrouter",
+                model="qwen/qwen3.5-flash-02-23",
+            ),
+            devils_advocate_fallback_models=[
+                LocalModelSpec(
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                )
+            ],
+        ),
+        strict_verification=False,
+    )
+
+    try:
+        with pytest.raises(ValueError, match="Claude|anthropic_api_key"):
+            await arbitrator.arbitrate("Should we use microservices or a monolith?")
+    finally:
+        await arbitrator.aclose()
+        get_config.cache_clear()
 
 
 @pytest.mark.asyncio
