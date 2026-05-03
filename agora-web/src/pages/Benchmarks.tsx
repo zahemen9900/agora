@@ -3,6 +3,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import {
   CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -13,6 +16,8 @@ import {
 } from "recharts";
 import { ChevronDown, Filter, RotateCcw } from "lucide-react";
 
+import { Flyout } from "../components/Flyout";
+import { BenchmarkActionsMenu } from "../components/benchmark/BenchmarkActionsMenu";
 import { BenchmarkWizard, type DomainPromptSelection } from "../components/benchmark/BenchmarkWizard";
 import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
 import { ChartCard, injectChartKeyframes, SkeletonChartBlock, ShimBlock, CHART_FONT } from "../components/benchmark/ChartCard";
@@ -24,11 +29,14 @@ import {
 } from "../lib/api";
 import {
   benchmarkQueryKeys,
+  removeDeletedBenchmarkFromCaches,
   seedTriggeredBenchmarkRunCache,
   type BenchmarkOverviewMode,
   useBenchmarkCatalogQuery,
+  useDeleteBenchmarkMutation,
   useBenchmarkOverviewQuery,
   useBenchmarkPromptTemplatesQuery,
+  useStopBenchmarkMutation,
   useTriggerBenchmarkMutation,
 } from "../lib/benchmarkQueries";
 import {
@@ -39,6 +47,7 @@ import {
   detectBenchmarkArtifactKind,
   normalizeBenchmarkSummary,
   type BenchmarkHeatmapRow,
+  type BenchmarkLearningCurvePoint,
   type NormalizedSummary,
 } from "../lib/benchmarkMetrics";
 import {
@@ -54,8 +63,6 @@ import {
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
-import { usePostHog } from "@posthog/react";
-import { Button } from "../components/ui/Button";
 
 type CatalogSortMode = "recent" | "frequency";
 type ParetoPoint = ReturnType<typeof buildOverviewParetoData>[number];
@@ -414,7 +421,6 @@ function SectionHeader({ label, count, countColor }: { label: string; count: num
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export function Benchmarks() {
-    const posthog = usePostHog();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("latest");
@@ -423,6 +429,8 @@ export function Benchmarks() {
   const benchmarkPromptTemplatesQuery = useBenchmarkPromptTemplatesQuery();
   const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
   const triggerBenchmarkMutation = useTriggerBenchmarkMutation();
+  const stopBenchmarkMutation = useStopBenchmarkMutation();
+  const deleteBenchmarkMutation = useDeleteBenchmarkMutation();
   const benchmarks = benchmarkOverviewQuery.data ?? null;
   const catalog = benchmarkCatalogQuery.data ?? null;
   const runtimeConfig = runtimeConfigQuery.data;
@@ -431,6 +439,7 @@ export function Benchmarks() {
     : FALLBACK_PROMPT_TEMPLATES;
 
   const [runError, setRunError] = useState<string | null>(null);
+  const [deleteFlyout, setDeleteFlyout] = useState<{ title: string; body: string } | null>(null);
   const [chartsReady, setChartsReady] = useState(false);
   const [yourSortMode, setYourSortMode] = useState<CatalogSortMode>("recent");
   const [globalSortMode, setGlobalSortMode] = useState<CatalogSortMode>("recent");
@@ -538,6 +547,39 @@ export function Benchmarks() {
     () => String((benchmarks as Record<string, unknown> | null)?.aggregation_window ?? "latest"),
     [benchmarks],
   );
+  const activeOverviewSourceLabel = useMemo(() => {
+    const record = benchmarks as Record<string, unknown> | null;
+    if (!record) {
+      return "Loading benchmark source.";
+    }
+
+    if (overviewMode !== "latest") {
+      const count = Number(record.aggregated_artifact_count ?? 0);
+      const windowLabel = String(record.aggregation_window ?? "recent_20");
+      return windowLabel === "all"
+        ? `Current source: aggregate of ${count || "compatible"} benchmark artifacts from the full catalog.`
+        : `Current source: aggregate of ${count || "compatible"} benchmark artifacts from the recent-20 window.`;
+    }
+
+    const artifactId = String(record.artifact_id ?? record.run_id ?? "").trim();
+    const generatedAt = String(record.generated_at ?? record.updated_at ?? "").trim();
+    const catalogArtifactId = String(catalog?.global_recent?.[0]?.artifact_id ?? "").trim();
+    if (artifactId && generatedAt) {
+      return `Current source: ${artifactId} (${generatedAt}).`;
+    }
+    if (artifactId) {
+      return `Current source: ${artifactId}.`;
+    }
+    if (catalogArtifactId && generatedAt) {
+      return `Current source: ${catalogArtifactId} (${generatedAt}).`;
+    }
+    if (catalogArtifactId) {
+      return `Current source: ${catalogArtifactId}.`;
+    }
+    return generatedAt
+      ? `Current source: latest compatible benchmark artifact (${generatedAt}).`
+      : "Current source: latest compatible benchmark artifact.";
+  }, [benchmarks, catalog, overviewMode]);
 
   const overviewHeatmapRows = useMemo(
     () => buildOverviewHeatmapRows(normalizedSummary),
@@ -670,6 +712,41 @@ export function Benchmarks() {
     }
   }, [navigate, queryClient, runPayloadPreview, triggerBenchmarkMutation]);
 
+  const handleStopBenchmarkRun = useCallback(async (run: BenchmarkRunStatusPayload) => {
+    try {
+      setRunError(null);
+      await stopBenchmarkMutation.mutateAsync(run.run_id);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(run.run_id) }),
+      ]);
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Unable to stop benchmark run right now.");
+    }
+  }, [queryClient, stopBenchmarkMutation]);
+
+  const handleDeleteBenchmark = useCallback(async (benchmarkId: string) => {
+    try {
+      setRunError(null);
+      const deleted = await deleteBenchmarkMutation.mutateAsync(benchmarkId);
+      removeDeletedBenchmarkFromCaches(queryClient, deleted);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(benchmarkId) }),
+      ]);
+      setDeleteFlyout({
+        title: deleted.stopped_before_delete ? "Benchmark stopped and deleted" : "Benchmark deleted",
+        body: deleted.stopped_before_delete
+          ? "The live benchmark was stopped and removed from your personal catalog."
+          : "The benchmark was removed from your personal benchmark catalog.",
+      });
+    } catch (error) {
+      setRunError(error instanceof Error ? error.message : "Unable to delete benchmark right now.");
+    }
+  }, [deleteBenchmarkMutation, queryClient]);
+
   const updateDomainSelection = (
     domain: BenchmarkDomainName,
     updater: (current: DomainPromptSelection) => DomainPromptSelection,
@@ -759,7 +836,7 @@ export function Benchmarks() {
             <ChartCard
               title="Scored Success Heatmap"
               subtitle="Executed mechanism success by category, with explicit sample counts. Creative and demo are proxy-scored; one-sample buckets are directional, not proof. Darker cells indicate stronger relative sample support."
-              tooltip="Each cell shows the accuracy rate for one combination of task category (row) and deliberation mechanism (column). Darker teal = higher success rate. 'n=' is the number of scored runs in that cell — cells with n=1 are directional only. Proxy-scored categories (Creative, Demo) use heuristic evaluation rather than ground-truth comparison."
+              tooltip={`Each cell shows the accuracy rate for one combination of task category (row) and deliberation mechanism (column). Darker teal = higher success rate. 'n=' is the number of scored runs in that cell — cells with n=1 are directional only. Proxy-scored categories (Creative, Demo) use heuristic evaluation rather than ground-truth comparison. ${activeOverviewSourceLabel}`}
             >
               {overviewError ? (
                 <div style={{ padding: "32px 0", fontFamily: CHART_FONT, fontSize: "11px", color: "var(--accent-rose)" }}>
@@ -808,28 +885,19 @@ export function Benchmarks() {
                 {learningCurveState.reason}
               </div>
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                {/* Main before → after display */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0", padding: "20px 0 8px" }}>
-                  {/* Pre */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", flex: 1 }}>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Pre-learning</span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "38px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                {/* Compact stat row */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0", padding: "8px 0 0" }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", flex: 1 }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Pre</span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "26px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
                       {learningCurveState.preAccuracy == null ? "—" : `${Math.round(learningCurveState.preAccuracy)}%`}
                     </span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-muted)" }}>
-                      n={learningCurveState.preScoredRunCount}
-                    </span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "8px", color: "var(--text-muted)" }}>n={learningCurveState.preScoredRunCount}</span>
                   </div>
-
-                  {/* Arrow + delta */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", padding: "0 16px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                      <div style={{ width: "40px", height: "1px", background: "var(--border-strong)" }} />
-                      <div style={{ width: 0, height: 0, borderTop: "4px solid transparent", borderBottom: "4px solid transparent", borderLeft: `6px solid var(--border-strong)` }} />
-                    </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", padding: "0 12px" }}>
                     <span style={{
-                      fontFamily: CHART_FONT, fontSize: "12px", fontWeight: 700,
+                      fontFamily: CHART_FONT, fontSize: "11px", fontWeight: 700,
                       color: learningCurveState.delta == null ? "var(--text-muted)"
                         : learningCurveState.delta > 0 ? "var(--accent-emerald)"
                         : learningCurveState.delta < 0 ? "var(--accent-rose)"
@@ -839,50 +907,72 @@ export function Benchmarks() {
                         : learningCurveState.delta > 0 ? `+${learningCurveState.delta.toFixed(1)}pp`
                         : `${learningCurveState.delta.toFixed(1)}pp`}
                     </span>
+                    <span style={{
+                      fontFamily: CHART_FONT, fontSize: "8px", letterSpacing: "0.06em", textTransform: "uppercase",
+                      padding: "2px 8px", borderRadius: "20px",
+                      background: learningCurveState.saturated ? "rgba(251,191,36,0.1)" : "rgba(52,211,153,0.1)",
+                      border: `1px solid ${learningCurveState.saturated ? "rgba(251,191,36,0.3)" : "rgba(52,211,153,0.3)"}`,
+                      color: learningCurveState.saturated ? "var(--accent-amber)" : "var(--accent-emerald)",
+                    }}>
+                      {learningCurveState.saturated ? "Saturated" : "Lift"}
+                    </span>
                   </div>
-
-                  {/* Post */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "4px", flex: 1 }}>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Post-learning</span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "38px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "2px", flex: 1 }}>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text-tertiary)" }}>Post</span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "26px", fontWeight: 700, color: "var(--text-primary)", lineHeight: 1 }}>
                       {learningCurveState.postAccuracy == null ? "—" : `${Math.round(learningCurveState.postAccuracy)}%`}
                     </span>
-                    <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-muted)" }}>
-                      n={learningCurveState.postScoredRunCount}
-                    </span>
+                    <span style={{ fontFamily: CHART_FONT, fontSize: "8px", color: "var(--text-muted)" }}>n={learningCurveState.postScoredRunCount}</span>
                   </div>
                 </div>
 
-                {/* Status badge */}
-                <div style={{ display: "flex", justifyContent: "center" }}>
-                  <span style={{
-                    fontFamily: CHART_FONT, fontSize: "9px", letterSpacing: "0.08em", textTransform: "uppercase",
-                    padding: "3px 10px", borderRadius: "20px",
-                    background: learningCurveState.saturated ? "rgba(251,191,36,0.1)" : "rgba(52,211,153,0.1)",
-                    border: `1px solid ${learningCurveState.saturated ? "rgba(251,191,36,0.3)" : "rgba(52,211,153,0.3)"}`,
-                    color: learningCurveState.saturated ? "var(--accent-amber)" : "var(--accent-emerald)",
-                  }}>
-                    {learningCurveState.saturated ? "Saturated — 100% pre-learning" : "Measured lift"}
-                  </span>
-                </div>
-
-                {/* Visual progress bars */}
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "4px 0 2px" }}>
-                  {[
-                    { label: "Pre", value: learningCurveState.preAccuracy, color: "var(--text-muted)" },
-                    { label: "Post", value: learningCurveState.postAccuracy, color: "var(--accent-emerald)" },
-                  ].map(({ label, value, color }) => (
-                    <div key={label} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "26px", flexShrink: 0 }}>{label}</span>
-                      <div style={{ flex: 1, height: "6px", background: "var(--bg-subtle)", borderRadius: "3px", overflow: "hidden" }}>
-                        <div style={{ width: `${value ?? 0}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.8s ease" }} />
+                {/* Actual learning curve */}
+                {learningCurveState.runPoints.length >= 2 ? (
+                  <ResponsiveContainer width="100%" height={160}>
+                    <LineChart data={learningCurveState.runPoints} margin={{ top: 8, right: 8, left: -20, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-subtle)" vertical={false} />
+                      <XAxis dataKey="index" tick={{ fontFamily: CHART_FONT, fontSize: 8, fill: "var(--text-tertiary)" }} tickLine={false} axisLine={false} label={{ value: "Run #", position: "insideBottomRight", offset: -4, style: { fontFamily: CHART_FONT, fontSize: 8, fill: "var(--text-tertiary)" } }} />
+                      <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} tick={{ fontFamily: CHART_FONT, fontSize: 8, fill: "var(--text-tertiary)" }} tickLine={false} axisLine={false} />
+                      <Tooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload?.length) return null;
+                          const pt = payload[0].payload as BenchmarkLearningCurvePoint;
+                          return (
+                            <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-default)", borderRadius: 6, padding: "6px 10px", fontFamily: CHART_FONT, fontSize: 9 }}>
+                              <div style={{ color: "var(--text-tertiary)", marginBottom: 2 }}>Run {pt.index} · {pt.phase}</div>
+                              <div style={{ color: "var(--accent-emerald)", fontWeight: 700 }}>{pt.cumAccuracy.toFixed(1)}% cumulative</div>
+                            </div>
+                          );
+                        }}
+                      />
+                      {learningCurveState.preEndIndex != null && (
+                        <ReferenceLine x={learningCurveState.preEndIndex} stroke="var(--border-strong)" strokeDasharray="3 3" label={{ value: "learning →", position: "top", style: { fontFamily: CHART_FONT, fontSize: 7, fill: "var(--text-tertiary)" } }} />
+                      )}
+                      {learningCurveState.learningEndIndex != null && (
+                        <ReferenceLine x={learningCurveState.learningEndIndex} stroke="var(--border-strong)" strokeDasharray="3 3" label={{ value: "post →", position: "top", style: { fontFamily: CHART_FONT, fontSize: 7, fill: "var(--text-tertiary)" } }} />
+                      )}
+                      <Line type="monotone" dataKey="cumAccuracy" stroke="var(--accent-emerald)" strokeWidth={1.5} dot={false} isAnimationActive animationDuration={800} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  /* Fallback when there's no per-run data (summary-only payloads) */
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "4px 0 2px" }}>
+                    {[
+                      { label: "Pre", value: learningCurveState.preAccuracy, color: "var(--text-muted)" },
+                      { label: "Post", value: learningCurveState.postAccuracy, color: "var(--accent-emerald)" },
+                    ].map(({ label, value, color }) => (
+                      <div key={label} style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "26px", flexShrink: 0 }}>{label}</span>
+                        <div style={{ flex: 1, height: "6px", background: "var(--bg-subtle)", borderRadius: "3px", overflow: "hidden" }}>
+                          <div style={{ width: `${value ?? 0}%`, height: "100%", background: color, borderRadius: "3px", transition: "width 0.8s ease" }} />
+                        </div>
+                        <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "32px", textAlign: "right", flexShrink: 0 }}>
+                          {value == null ? "—" : `${Math.round(value)}%`}
+                        </span>
                       </div>
-                      <span style={{ fontFamily: CHART_FONT, fontSize: "9px", color: "var(--text-tertiary)", width: "32px", textAlign: "right", flexShrink: 0 }}>
-                        {value == null ? "—" : `${Math.round(value)}%`}
-                      </span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </ChartCard>
@@ -1006,9 +1096,9 @@ export function Benchmarks() {
                 Configure benchmark questions per domain, trigger a run, and persist rich artifacts in global and user-specific cloud paths.
               </p>
             </div>
-            <Button type="button" onClick={openWizard} variant="primary" trackingEvent="benchmarks_configure_and_run_clicked">
+            <button type="button" className="btn-primary" onClick={openWizard}>
               Configure and Run
-            </Button>
+            </button>
           </div>
 
           {featuredBenchmarkRun && (
@@ -1016,11 +1106,29 @@ export function Benchmarks() {
               {featuredBenchmarkRun.status === "failed" ? (
                 <FailedRunRow
                   run={featuredBenchmarkRun}
+                  actions={(
+                    <BenchmarkActionsMenu
+                      canDelete
+                      isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
+                      onDelete={() => void handleDeleteBenchmark(featuredBenchmarkRun.run_id)}
+                    />
+                  )}
                   onOpen={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
                 />
               ) : (
                 <LiveRunRow
                   run={featuredBenchmarkRun}
+                  actions={(
+                    <BenchmarkActionsMenu
+                      canStop
+                      canDelete
+                      isRunning={featuredBenchmarkRun.status === "running" || featuredBenchmarkRun.status === "queued"}
+                      isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
+                      isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === featuredBenchmarkRun.run_id}
+                      onStop={() => void handleStopBenchmarkRun(featuredBenchmarkRun)}
+                      onDelete={() => void handleDeleteBenchmark(featuredBenchmarkRun.run_id)}
+                    />
+                  )}
                   onOpen={() => navigate(`/benchmarks/${featuredBenchmarkRun.run_id}`)}
                 />
               )}
@@ -1049,7 +1157,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => void benchmarkCatalogQuery.refetch()}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1058,7 +1166,7 @@ export function Benchmarks() {
               <FilterButton value={yourSortMode} onChange={setYourSortMode} />
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => navigate("/benchmarks/all")}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1094,6 +1202,17 @@ export function Benchmarks() {
                       <LiveRunRow
                         key={run.run_id}
                         run={run}
+                        actions={(
+                          <BenchmarkActionsMenu
+                            canStop
+                            canDelete
+                            isRunning={run.status === "running" || run.status === "queued"}
+                            isStopping={stopBenchmarkMutation.isPending && stopBenchmarkMutation.variables === run.run_id}
+                            isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === run.run_id}
+                            onStop={() => void handleStopBenchmarkRun(run)}
+                            onDelete={() => void handleDeleteBenchmark(run.run_id)}
+                          />
+                        )}
                         onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
                       />
                     ))}
@@ -1111,6 +1230,13 @@ export function Benchmarks() {
                       <CatalogRunRow
                         key={entry.artifact_id}
                         entry={entry}
+                        actions={(
+                          <BenchmarkActionsMenu
+                            canDelete
+                            isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === entry.artifact_id}
+                            onDelete={() => void handleDeleteBenchmark(entry.artifact_id)}
+                          />
+                        )}
                         onOpen={() => navigate(`/benchmarks/${entry.artifact_id}`)}
                       />
                     ))}
@@ -1131,6 +1257,13 @@ export function Benchmarks() {
                       <FailedRunRow
                         key={run.run_id}
                         run={run}
+                        actions={(
+                          <BenchmarkActionsMenu
+                            canDelete
+                            isDeleting={deleteBenchmarkMutation.isPending && deleteBenchmarkMutation.variables === run.run_id}
+                            onDelete={() => void handleDeleteBenchmark(run.run_id)}
+                          />
+                        )}
                         onOpen={() => navigate(`/benchmarks/${run.run_id}`)}
                       />
                     ))}
@@ -1149,7 +1282,7 @@ export function Benchmarks() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_refresh_clicked'); const handler = () => void benchmarkCatalogQuery.refetch(); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => void benchmarkCatalogQuery.refetch()}
                 title="Refresh"
                 style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "2px", display: "flex", alignItems: "center" }}
               >
@@ -1158,7 +1291,7 @@ export function Benchmarks() {
               <FilterButton value={globalSortMode} onChange={setGlobalSortMode} />
               <button
                 type="button"
-                onClick={(e: any) => { posthog?.capture('benchmarks_view_all_clicked'); const handler = () => navigate("/benchmarks/all"); if (typeof handler === 'function') (handler as any)(e); }}
+                onClick={() => navigate("/benchmarks/all")}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "5px",
                   fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1200,6 +1333,14 @@ export function Benchmarks() {
 
         </div>
       </div>
+
+      <Flyout
+        show={deleteFlyout !== null}
+        variant="success"
+        title={deleteFlyout?.title ?? ""}
+        body={deleteFlyout?.body}
+        onDismiss={() => setDeleteFlyout(null)}
+      />
 
       {/* ── Wizard ────────────────────────────────────────────────────────── */}
       {wizardOpen ? (
@@ -1247,7 +1388,6 @@ const MODE_LABELS: Record<BenchmarkOverviewMode, string> = {
 };
 
 function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onChange: (v: BenchmarkOverviewMode) => void }) {
-    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1268,7 +1408,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
+        onClick={() => setOpen((v) => !v)}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1297,7 +1437,7 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
             <button
               key={option}
               type="button"
-              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
+              onClick={() => { onChange(option); setOpen(false); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",
@@ -1320,7 +1460,6 @@ function ModeDropdown({ value, onChange }: { value: BenchmarkOverviewMode; onCha
 }
 
 function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (value: CatalogSortMode) => void }) {
-    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -1337,7 +1476,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => setOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
+        onClick={() => setOpen((v) => !v)}
         style={{
           display: "inline-flex", alignItems: "center", gap: "6px",
           fontFamily: CHART_FONT, fontSize: "10px", letterSpacing: "0.05em",
@@ -1367,7 +1506,7 @@ function FilterButton({ value, onChange }: { value: CatalogSortMode; onChange: (
             <button
               key={option}
               type="button"
-              onClick={(e: any) => { posthog?.capture('benchmarks_action_clicked'); const handler = () => { onChange(option); setOpen(false); }; if (typeof handler === 'function') (handler as any)(e); }}
+              onClick={() => { onChange(option); setOpen(false); }}
               style={{
                 display: "block", width: "100%", textAlign: "left",
                 padding: "9px 13px",

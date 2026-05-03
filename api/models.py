@@ -447,6 +447,8 @@ class BenchmarkCatalogResponse(BaseModel):
 
     global_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
     global_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
+    global_tests_recent: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
+    global_tests_frequency: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
     user_recent: list[BenchmarkCatalogEntry] = Field(default_factory=list)
     user_frequency: list[BenchmarkCatalogEntry] = Field(default_factory=list)
     user_tests_recent: list[BenchmarkRunStatusResponse] = Field(default_factory=list)
@@ -560,6 +562,17 @@ class BenchmarkDetailResponse(BaseModel):
     failure_counts_by_category: dict[str, int] = Field(default_factory=dict)
     failure_counts_by_reason: dict[str, int] = Field(default_factory=dict)
     failure_counts_by_stage: dict[str, int] = Field(default_factory=dict)
+
+
+class BenchmarkDeleteResponse(BaseModel):
+    """Deletion payload for a user-owned benchmark tombstone operation."""
+
+    benchmark_id: str
+    run_id: str | None = None
+    artifact_id: str | None = None
+    scope: BenchmarkScopeName
+    deleted_at: datetime
+    stopped_before_delete: bool = False
 
 
 class BenchmarkPromptTemplate(BaseModel):

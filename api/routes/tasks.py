@@ -15,13 +15,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
+from agora.runtime.model_policy import normalize_tier_model_overrides, resolve_reasoning_presets
+from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.runtime.task_execution import (
     build_pinned_selection,
     execute_task_like_run,
     resolve_task_like_selection,
 )
-from agora.runtime.model_policy import normalize_tier_model_overrides, resolve_reasoning_presets
-from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.selector.features import extract_features
 from agora.types import (
     SUPPORTED_MECHANISMS,
@@ -41,6 +41,7 @@ from api.coordination import (
     get_coordination_backend,
     reset_coordination_state_for_tests,
 )
+from api.live_journal import BufferedEventJournal
 from api.models import (
     BenchmarkCostEstimateResponse,
     ChainOperationRecord,
@@ -53,11 +54,16 @@ from api.models import (
     TaskEvent,
     TaskStatusResponse,
 )
-from api.live_journal import BufferedEventJournal
 from api.solana_bridge import LAMPORTS_PER_SOL, bridge
 from api.store import TaskStore, get_store
 from api.store_local import LocalTaskStore
 from api.streaming import DeliberationStream, get_stream_manager
+from api.telemetry import (
+    add_span_event,
+    mark_span_error,
+    set_current_span_attributes,
+    start_observation_span,
+)
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -84,6 +90,16 @@ _BUFFERED_TASK_EVENT_TYPES = {
     "cross_examination_delta",
 }
 _TERMINAL_TASK_EVENT_TYPES = {"complete", "error"}
+_TASK_SPAN_MILESTONE_EVENTS = {
+    "mechanism_selected",
+    "mechanism_switch",
+    "task_recovered",
+    "quorum_reached",
+    "receipt_committed",
+    "payment_released",
+    "complete",
+    "error",
+}
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -538,9 +554,7 @@ def _result_to_response(
             metric.model_dump(mode="json") for metric in result.convergence_history
         ],
         locked_claims=[claim.model_dump(mode="json") for claim in result.locked_claims],
-        mechanism_trace=[
-            segment.model_dump(mode="json") for segment in result.mechanism_trace
-        ],
+        mechanism_trace=[segment.model_dump(mode="json") for segment in result.mechanism_trace],
         execution_mode=result.execution_mode,
         selector_source=result.selector_source,
         selector_fallback_path=list(result.mechanism_selection.selector_fallback_path),
@@ -700,7 +714,8 @@ async def _attempt_chain_operation(
     call: Callable[[], Awaitable[dict[str, Any]]],
     strict_failure_detail: str,
     on_success: Callable[[dict[str, Any]], None] | None = None,
-    reconcile: Callable[[ChainOperationRecord | None], Awaitable[dict[str, Any] | None]] | None = None,
+    reconcile: Callable[[ChainOperationRecord | None], Awaitable[dict[str, Any] | None]]
+    | None = None,
 ) -> dict[str, Any] | None:
     """Run one Solana side effect with a persisted write-ahead operation record."""
 
@@ -708,82 +723,118 @@ async def _attempt_chain_operation(
     if current is not None and current.status == "succeeded":
         return None
 
-    if (
-        reconcile is not None
-        and current is not None
-        and (current.attempts > 0 or current.status == "failed")
-    ):
-        try:
-            reconciled = await reconcile(current)
-        except Exception as exc:
-            logger.warning(
-                "task_chain_reconciliation_failed",
-                task_id=task_id,
-                operation=operation_key,
-                error=str(exc),
-            )
-            reconciled = None
-        if reconciled is not None:
-            _mark_chain_operation_succeeded(task, operation_key, reconciled)
-            if on_success is not None:
-                on_success(reconciled)
-            await _save_task_status(
-                store=store,
-                workspace_id=workspace_id,
-                task_id=task_id,
-                task=task,
-            )
-            logger.info(
-                "task_chain_operation_reconciled",
-                task_id=task_id,
-                operation=operation_key,
-            )
-            return reconciled
-
-    _mark_chain_operation_pending(task, operation_key)
-    await _save_task_status(
-        store=store,
-        workspace_id=workspace_id,
-        task_id=task_id,
-        task=task,
+    tool_name = (
+        "solana.record_mechanism_switch"
+        if operation_key.startswith("record_switch:")
+        else f"solana.{operation_key}"
     )
 
-    try:
-        result = await call()
-    except Exception as exc:
-        _mark_chain_operation_failed(task, operation_key, exc)
+    with start_observation_span(
+        f"execute_tool {tool_name}",
+        attributes={
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": tool_name,
+            "agora.chain.operation": operation_key,
+            "agora.task.id": task_id,
+        },
+    ):
+        if (
+            reconcile is not None
+            and current is not None
+            and (current.attempts > 0 or current.status == "failed")
+        ):
+            try:
+                reconciled = await reconcile(current)
+            except Exception as exc:
+                logger.warning(
+                    "task_chain_reconciliation_failed",
+                    task_id=task_id,
+                    operation=operation_key,
+                    error=str(exc),
+                )
+                reconciled = None
+            if reconciled is not None:
+                _mark_chain_operation_succeeded(task, operation_key, reconciled)
+                if on_success is not None:
+                    on_success(reconciled)
+                await _save_task_status(
+                    store=store,
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    task=task,
+                )
+                set_current_span_attributes(
+                    {
+                        "agora.chain.status": "reconciled",
+                        "agora.tx.hash": reconciled.get("tx_hash"),
+                        "agora.explorer_url": reconciled.get("explorer_url"),
+                    }
+                )
+                logger.info(
+                    "task_chain_operation_reconciled",
+                    task_id=task_id,
+                    operation=operation_key,
+                )
+                return reconciled
+
+        _mark_chain_operation_pending(task, operation_key)
         await _save_task_status(
             store=store,
             workspace_id=workspace_id,
             task_id=task_id,
             task=task,
         )
-        logger.error(
-            "task_chain_operation_failed",
-            task_id=task_id,
-            operation=operation_key,
-            error=str(exc),
-        )
-        if settings.strict_chain_writes:
-            raise HTTPException(status_code=502, detail=strict_failure_detail) from exc
-        logger.warning(
-            "task_chain_operation_soft_failed",
-            task_id=task_id,
-            operation=operation_key,
-            error=str(exc),
-        )
-        return None
 
-    _mark_chain_operation_succeeded(task, operation_key, result)
-    if on_success is not None:
-        on_success(result)
-    await _save_task_status(
-        store=store,
-        workspace_id=workspace_id,
-        task_id=task_id,
-        task=task,
-    )
-    return result
+        try:
+            result = await call()
+        except Exception as exc:
+            _mark_chain_operation_failed(task, operation_key, exc)
+            await _save_task_status(
+                store=store,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                task=task,
+            )
+            logger.error(
+                "task_chain_operation_failed",
+                task_id=task_id,
+                operation=operation_key,
+                error=str(exc),
+            )
+            mark_span_error(
+                exc,
+                attributes={
+                    "agora.chain.status": "failed",
+                    "agora.error.type": exc.__class__.__name__,
+                },
+            )
+            if settings.strict_chain_writes:
+                raise HTTPException(status_code=502, detail=strict_failure_detail) from exc
+            logger.warning(
+                "task_chain_operation_soft_failed",
+                task_id=task_id,
+                operation=operation_key,
+                error=str(exc),
+            )
+            return None
+
+        _mark_chain_operation_succeeded(task, operation_key, result)
+        if on_success is not None:
+            on_success(result)
+        await _save_task_status(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            task=task,
+        )
+        set_current_span_attributes(
+            {
+                "agora.chain.status": "succeeded",
+                "agora.tx.hash": result.get("tx_hash"),
+                "agora.explorer_url": result.get("explorer_url"),
+            }
+        )
+        return result
 
 
 def _has_chain_setup_operations(task: TaskStatusResponse) -> bool:
@@ -961,6 +1012,7 @@ async def _finalize_result_chain_operations(
             continue
 
         data = switch_event.data
+
         async def reconcile_switch(
             current: ChainOperationRecord | None,
             *,
@@ -1003,6 +1055,7 @@ async def _finalize_result_chain_operations(
     if ensure_missing:
         _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
     if _SUBMIT_RECEIPT_OPERATION in task.chain_operations:
+
         async def reconcile_receipt(
             current: ChainOperationRecord | None,
         ) -> dict[str, Any] | None:
@@ -1129,9 +1182,7 @@ def _append_task_event_snapshot(
 ) -> None:
     """Keep the in-memory task event snapshot aligned with persisted event writes."""
 
-    task.events.append(
-        TaskEvent.model_validate(_event_payload(event_type, event_data))
-    )
+    task.events.append(TaskEvent.model_validate(_event_payload(event_type, event_data)))
 
 
 def _to_sse_message(event: dict[str, Any]) -> dict[str, Any]:
@@ -1139,10 +1190,12 @@ def _to_sse_message(event: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "event": str(event.get("event", "update")),
-        "data": json.dumps({
-            "payload": event.get("data", {}),
-            "timestamp": event.get("timestamp"),
-        }),
+        "data": json.dumps(
+            {
+                "payload": event.get("data", {}),
+                "timestamp": event.get("timestamp"),
+            }
+        ),
     }
 
 
@@ -1298,6 +1351,8 @@ async def persist_and_emit(
     """Persist an event and emit it to live SSE listeners."""
 
     payload = _event_payload(event_type, event_data)
+    if event_type in _TASK_SPAN_MILESTONE_EVENTS:
+        add_span_event(event_type, event_data)
     if journal is not None:
         await journal.publish(
             payload,
@@ -1340,6 +1395,7 @@ async def _mark_task_failed(
         event_type=error_event.event,
         event_data=error_event.data,
     )
+    mark_span_error(RuntimeError(message), attributes={"agora.execution.status": "failed"})
     await stream.close(_stream_key(workspace_id, task_id))
 
 
@@ -1389,6 +1445,19 @@ async def create_task(
     await _enforce_task_create_rate_limit(user.workspace_id)
     store = get_task_store()
     task_id = _build_task_id(request.task)
+    set_current_span_attributes(
+        {
+            "agora.route.operation": "tasks.create",
+            "agora.execution.kind": "task",
+            "agora.task.id": task_id,
+            "agora.task.text_sha256": _hash_text(request.task),
+            "agora.payment.amount": request.stakes,
+            "agora.allow_mechanism_switch": request.allow_mechanism_switch,
+            "agora.allow_offline_fallback": request.allow_offline_fallback,
+            "agora.quorum.threshold": request.quorum_threshold,
+        },
+        bind=True,
+    )
 
     requested_override = _request_mechanism_override(request)
     forced_override = _forced_mechanism()
@@ -1408,22 +1477,37 @@ async def create_task(
         tier_model_overrides=tier_model_overrides,
     )
     await _load_selector_state(store, orchestrator)
-    selection, selector_source, selector_fallback_path, mechanism_override_source = (
-        await resolve_task_like_selection(
-            orchestrator=orchestrator,
-            task_text=request.task,
-            agent_count=request.agent_count,
-            stakes=request.stakes,
-            forced_override=forced_override,
-            requested_override=requested_override,
-        )
+    (
+        selection,
+        selector_source,
+        selector_fallback_path,
+        mechanism_override_source,
+    ) = await resolve_task_like_selection(
+        orchestrator=orchestrator,
+        task_text=request.task,
+        agent_count=request.agent_count,
+        stakes=request.stakes,
+        forced_override=forced_override,
+        requested_override=requested_override,
     )
     _require_supported_mechanism(
         selection.mechanism,
         status_code=500,
         source="selector",
     )
-    if selector_source in {"heuristic_fallback", "bandit_fallback"} and not request.allow_offline_fallback:
+    set_current_span_attributes(
+        {
+            "agora.mechanism.requested": (
+                effective_override.value if effective_override is not None else "selector"
+            ),
+            "agora.mechanism.selected": selection.mechanism.value,
+            "agora.selector.source": selector_source,
+        }
+    )
+    if (
+        selector_source in {"heuristic_fallback", "bandit_fallback"}
+        and not request.allow_offline_fallback
+    ):
         raise HTTPException(
             status_code=503,
             detail="Selector provider fallback occurred but allow_offline_fallback=false",
@@ -1531,6 +1615,23 @@ async def _execute_task_run(
     raw_task = await _load_task_for_user(store, workspace_id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
+    set_current_span_attributes(
+        {
+            "agora.route.operation": "tasks.run",
+            "agora.execution.kind": "task",
+            "agora.task.id": task_id,
+            "agora.task.text_sha256": _hash_text(task.task_text),
+            "agora.mechanism.requested": task.mechanism_override or task.mechanism,
+            "agora.mechanism.selected": task.mechanism,
+            "agora.selector.source": task.selector_source,
+            "agora.execution.mode": "hosted",
+            "agora.allow_mechanism_switch": task.allow_mechanism_switch,
+            "agora.allow_offline_fallback": task.allow_offline_fallback,
+            "agora.quorum.threshold": task.quorum_threshold,
+            "agora.payment.amount": task.payment_amount,
+        },
+        bind=True,
+    )
     run_key = _task_run_key(workspace_id, task_id)
     recovering_stale_in_progress = False
     if task.status in {"completed", "paid"} and task.result is not None:
@@ -1568,7 +1669,9 @@ async def _execute_task_run(
         return task.result
     if task.status != "pending":
         if task.status != "in_progress":
-            raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
+            raise HTTPException(
+                status_code=409, detail=f"Task cannot run from status={task.status}"
+            )
 
     lease: RunLockLease | None
     if task.status == "in_progress":
@@ -1784,9 +1887,7 @@ async def _execute_task_run(
         allow_offline_fallback=task.allow_offline_fallback,
         reasoning_presets=task.reasoning_presets,
         tier_model_overrides=(
-            task.tier_model_overrides.present()
-            if task.tier_model_overrides is not None
-            else None
+            task.tier_model_overrides.present() if task.tier_model_overrides is not None else None
         ),
     )
     await _load_selector_state(store, orchestrator)
@@ -1851,7 +1952,9 @@ async def _execute_task_run(
             selection=selection,
             selector_source=cast(Any, task.selector_source),
             selector_fallback_path=list(task.selector_fallback_path),
-            mechanism_override_source=cast(Any, "env_pin" if forced_mechanism is not None else task.mechanism_override_source),
+            mechanism_override_source=cast(
+                Any, "env_pin" if forced_mechanism is not None else task.mechanism_override_source
+            ),
             event_sink=runtime_event_sink,
             allow_switch=task.allow_mechanism_switch if effective_override is None else False,
         )
@@ -1907,8 +2010,7 @@ async def _execute_task_run(
     task.transcript_hashes = result_response.transcript_hashes
     task.result = result_response
     task.events = [
-        TaskEvent.model_validate(event)
-        for event in await store.get_events(workspace_id, task_id)
+        TaskEvent.model_validate(event) for event in await store.get_events(workspace_id, task_id)
     ]
     switch_events = [event for event in task.events if event.event == "mechanism_switch"]
     if bridge.is_configured():
@@ -2161,6 +2263,14 @@ async def release_payment(
     """Release escrow payment for a completed task."""
 
     require_scope(user, "tasks:write")
+    set_current_span_attributes(
+        {
+            "agora.route.operation": "tasks.release_payment",
+            "agora.execution.kind": "task_payment",
+            "agora.task.id": task_id,
+        },
+        bind=True,
+    )
     store = get_task_store()
     stream = get_stream_manager()
     payment_key = _task_payment_key(user.workspace_id, task_id)
@@ -2192,8 +2302,7 @@ async def release_payment(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Payment can only be released after quorum is reached."
-                    f"{confidence_detail}"
+                    f"Payment can only be released after quorum is reached.{confidence_detail}"
                 ),
             )
         if not bridge.is_configured():

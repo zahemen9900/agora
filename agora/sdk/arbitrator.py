@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +23,13 @@ from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.sdk.config import CANONICAL_HOSTED_API_URL, resolve_hosted_api_url
 from agora.selector.features import extract_features
+from agora.telemetry import (
+    initialize_telemetry_from_env,
+    mark_span_error,
+    observation_context,
+    set_current_span_attributes,
+    start_observation_span,
+)
 from agora.types import (
     ConvergenceMetrics,
     CostEstimate,
@@ -48,6 +56,9 @@ BenchmarkPromptSourceName = Literal["template", "custom"]
 ProviderTierName = Literal["pro", "flash", "openrouter", "claude"]
 DEFAULT_PROGRAM_ID = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
+_SDK_SERVICE_NAME = "agora-sdk"
+_SDK_SERVICE_VERSION = "0.1.0"
+_SDK_API_KEY_PREFIXES = ("agora_live_", "agora_test_")
 
 
 @dataclass(frozen=True)
@@ -480,13 +491,19 @@ class AgoraArbitrator:
         program_id: str = DEFAULT_PROGRAM_ID,
         http_timeout_seconds: float = DEFAULT_HTTP_TIMEOUT_SECONDS,
     ) -> None:
+        initialize_telemetry_from_env(
+            service_name=_SDK_SERVICE_NAME,
+            service_version=_SDK_SERVICE_VERSION,
+        )
         if auth_token is not None and local_models is not None:
             raise ValueError("auth_token cannot be combined with explicit local_models execution")
         normalized_agent_count = agent_count
         if local_models is not None and agent_count == 4 and len(local_models) != 4:
             normalized_agent_count = len(local_models)
         if local_models is not None and normalized_agent_count != len(local_models):
-            raise ValueError("agent_count must match len(local_models) for explicit local roster execution")
+            raise ValueError(
+                "agent_count must match len(local_models) for explicit local roster execution"
+            )
 
         resolved_api_url = resolve_hosted_api_url(api_url)
         self.config = ArbitratorConfig(
@@ -530,6 +547,207 @@ class AgoraArbitrator:
         """Most recent hosted task id created or fetched by this client."""
 
         return self._latest_task_id
+
+    @staticmethod
+    def _api_key_public_id(auth_token: str | None) -> str | None:
+        token = str(auth_token or "").strip()
+        if not token or "." not in token:
+            return None
+        public_token, _secret = token.split(".", 1)
+        for prefix in _SDK_API_KEY_PREFIXES:
+            if public_token.startswith(prefix):
+                public_id = public_token.removeprefix(prefix).strip()
+                return public_id or None
+        return None
+
+    def _sdk_identity_attributes(self) -> dict[str, Any]:
+        workspace_id = (
+            os.getenv("AGORA_SDK_WORKSPACE_ID")
+            or os.getenv("AGORA_WORKSPACE_ID")
+            or ""
+        ).strip()
+        actor_id = (
+            os.getenv("AGORA_SDK_ACTOR_ID")
+            or os.getenv("AGORA_ACTOR_ID")
+            or ""
+        ).strip()
+        actor_type = (
+            os.getenv("AGORA_SDK_ACTOR_TYPE")
+            or os.getenv("AGORA_ACTOR_TYPE")
+            or ""
+        ).strip()
+        application = (
+            os.getenv("AGORA_SDK_APPLICATION")
+            or os.getenv("AGORA_APPLICATION")
+            or ""
+        ).strip()
+
+        attributes: dict[str, Any] = {}
+        if workspace_id:
+            attributes["agora.workspace.id"] = workspace_id
+        if application:
+            attributes["agora.sdk.application"] = application
+
+        public_id = self._api_key_public_id(self.config.auth_token)
+        if public_id:
+            attributes.setdefault("agora.actor.type", "api_key")
+            attributes.setdefault("agora.actor.id", f"api_key:{public_id}")
+            attributes.setdefault("agora.auth.method", "api_key")
+            attributes["agora.api_key.public_id"] = public_id
+            return attributes
+
+        if actor_id:
+            attributes["agora.actor.id"] = actor_id
+            attributes["agora.actor.type"] = actor_type or "user"
+            attributes["agora.auth.method"] = actor_type or "sdk"
+            return attributes
+
+        if actor_type:
+            attributes["agora.actor.type"] = actor_type
+            attributes["agora.auth.method"] = actor_type
+        return attributes
+
+    @staticmethod
+    def _task_text_hash(task: str) -> str:
+        return hashlib.sha256(task.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _result_span_attributes(result: DeliberationResult) -> dict[str, Any]:
+        attributes: dict[str, Any] = {
+            "agora.mechanism.selected": result.mechanism_used.value,
+            "agora.quorum.reached": result.quorum_reached,
+            "agora.round.count": result.round_count,
+            "agora.fallback.count": result.fallback_count,
+            "agora.usage.total_tokens": result.total_tokens_used,
+            "agora.usage.input_tokens": result.input_tokens_used,
+            "agora.usage.output_tokens": result.output_tokens_used,
+            "agora.usage.thinking_tokens": result.thinking_tokens_used,
+            "agora.latency_ms": result.total_latency_ms,
+        }
+        if result.cost is not None:
+            attributes["agora.cost.estimated_usd"] = result.cost.estimated_cost_usd
+        if result.merkle_root:
+            attributes["agora.receipt.merkle_root"] = result.merkle_root
+        return attributes
+
+    @staticmethod
+    def _benchmark_status_attributes(status: HostedBenchmarkRunStatus) -> dict[str, Any]:
+        attributes: dict[str, Any] = {
+            "agora.benchmark.run_id": status.run_id,
+            "agora.benchmark.status": status.status,
+            "agora.usage.total_tokens": status.total_tokens,
+            "agora.usage.thinking_tokens": status.thinking_tokens,
+            "agora.latency_ms": status.total_latency_ms,
+            "agora.benchmark.completed_item_count": status.completed_item_count,
+            "agora.benchmark.failed_item_count": status.failed_item_count,
+            "agora.benchmark.degraded_item_count": status.degraded_item_count,
+        }
+        if status.cost is not None:
+            attributes["agora.cost.estimated_usd"] = status.cost.estimated_cost_usd
+        if status.artifact_id:
+            attributes["agora.benchmark.artifact_id"] = status.artifact_id
+        return attributes
+
+    def _sdk_span_attributes(
+        self,
+        *,
+        operation: str,
+        mode: Literal["hosted", "local"],
+        task_id: str | None = None,
+        benchmark_id: str | None = None,
+        path: str | None = None,
+        method: str | None = None,
+    ) -> dict[str, Any]:
+        attributes: dict[str, Any] = {
+            "agora.sdk.mode": mode,
+            "agora.sdk.operation": operation,
+            **self._sdk_identity_attributes(),
+        }
+        if task_id:
+            attributes["agora.task.id"] = task_id
+        if benchmark_id:
+            attributes["agora.benchmark.id"] = benchmark_id
+        if path:
+            attributes["url.path"] = path
+        if method:
+            attributes["http.request.method"] = method
+        return attributes
+
+    async def _post_json(
+        self,
+        path: str,
+        *,
+        operation: str,
+        payload: dict[str, Any] | None = None,
+        task_id: str | None = None,
+        benchmark_id: str | None = None,
+        response_attributes: Callable[[httpx.Response], dict[str, Any]] | None = None,
+    ) -> httpx.Response:
+        with start_observation_span(
+            f"sdk.{operation}",
+            attributes=self._sdk_span_attributes(
+                operation=operation,
+                mode="hosted",
+                task_id=task_id,
+                benchmark_id=benchmark_id,
+                path=path,
+                method="POST",
+            ),
+        ):
+            try:
+                response = await self._client.post(
+                    path,
+                    json=payload,
+                    headers=self._headers(),
+                )
+                set_current_span_attributes(
+                    {"http.response.status_code": getattr(response, "status_code", None)}
+                )
+                response.raise_for_status()
+                if response_attributes is not None:
+                    set_current_span_attributes(response_attributes(response))
+                return response
+            except Exception as exc:
+                mark_span_error(exc)
+                raise
+
+    async def _get_json(
+        self,
+        path: str,
+        *,
+        operation: str,
+        params: dict[str, Any] | None = None,
+        task_id: str | None = None,
+        benchmark_id: str | None = None,
+        response_attributes: Callable[[httpx.Response], dict[str, Any]] | None = None,
+    ) -> httpx.Response:
+        with start_observation_span(
+            f"sdk.{operation}",
+            attributes=self._sdk_span_attributes(
+                operation=operation,
+                mode="hosted",
+                task_id=task_id,
+                benchmark_id=benchmark_id,
+                path=path,
+                method="GET",
+            ),
+        ):
+            try:
+                response = await self._client.get(
+                    path,
+                    params=params,
+                    headers=self._headers(),
+                )
+                set_current_span_attributes(
+                    {"http.response.status_code": getattr(response, "status_code", None)}
+                )
+                response.raise_for_status()
+                if response_attributes is not None:
+                    set_current_span_attributes(response_attributes(response))
+                return response
+            except Exception as exc:
+                mark_span_error(exc)
+                raise
 
     async def create_task(
         self,
@@ -582,37 +800,82 @@ class AgoraArbitrator:
                 else effective_tier_model_overrides
             )
 
-        response = await self._client.post(
-            "/tasks/",
-            json=payload,
-            headers=self._headers(),
-        )
-        response.raise_for_status()
-        parsed = HostedTaskCreateResponse.model_validate(response.json())
-        self._latest_task_id = parsed.task_id
-        return parsed
+        with observation_context(
+            **{
+                "agora.sdk.mode": "hosted",
+                "agora.task.text_sha256": self._task_text_hash(task),
+            }
+        ):
+            response = await self._post_json(
+                "/tasks/",
+                operation="create_task",
+                payload=payload,
+                response_attributes=lambda response: {
+                    "agora.task.id": response.json().get("task_id"),
+                    "agora.mechanism.selected": response.json().get("mechanism"),
+                    "agora.selector.source": response.json().get("selector_source"),
+                },
+            )
+            parsed = HostedTaskCreateResponse.model_validate(response.json())
+            self._latest_task_id = parsed.task_id
+            set_current_span_attributes(
+                {
+                    "agora.task.id": parsed.task_id,
+                    "agora.mechanism.selected": parsed.mechanism,
+                    "agora.selector.source": parsed.selector_source,
+                }
+            )
+            return parsed
 
     async def run_task(self, task_id: str) -> HostedDeliberationResult:
         """Execute a previously created hosted task."""
 
-        response = await self._client.post(
+        response = await self._post_json(
             f"/tasks/{task_id}/run",
-            headers=self._headers(),
+            operation="run_task",
+            task_id=task_id,
+            response_attributes=lambda response: {
+                "agora.task.id": task_id,
+                "agora.mechanism.selected": response.json().get("mechanism"),
+                "agora.quorum.reached": response.json().get("quorum_reached"),
+                "agora.usage.total_tokens": response.json().get("total_tokens_used"),
+                "agora.latency_ms": response.json().get("latency_ms"),
+            },
         )
-        response.raise_for_status()
         self._latest_task_id = task_id
-        return HostedDeliberationResult.model_validate(response.json())
+        result = HostedDeliberationResult.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.task.id": task_id,
+                "agora.mechanism.selected": result.mechanism,
+                "agora.quorum.reached": result.quorum_reached,
+                "agora.usage.total_tokens": result.total_tokens_used,
+                "agora.latency_ms": result.latency_ms,
+            }
+        )
+        return result
 
     async def start_task_run(self, task_id: str) -> HostedTaskStatus:
         """Start a hosted task in the background and return the current status."""
 
-        response = await self._client.post(
+        response = await self._post_json(
             f"/tasks/{task_id}/run-async",
-            headers=self._headers(),
+            operation="start_task_run",
+            task_id=task_id,
+            response_attributes=lambda response: {
+                "agora.task.id": task_id,
+                "agora.task.status": response.json().get("status"),
+            },
         )
-        response.raise_for_status()
         self._latest_task_id = task_id
-        return HostedTaskStatus.model_validate(response.json())
+        status = HostedTaskStatus.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.task.id": task_id,
+                "agora.task.status": status.status,
+            }
+        )
+        return status
 
     async def get_task_status(
         self,
@@ -622,23 +885,48 @@ class AgoraArbitrator:
     ) -> HostedTaskStatus:
         """Fetch a hosted task status payload."""
 
-        response = await self._client.get(
+        response = await self._get_json(
             f"/tasks/{task_id}",
+            operation="get_task_status",
             params={"detailed": str(detailed).lower()},
-            headers=self._headers(),
+            task_id=task_id,
+            response_attributes=lambda response: {
+                "agora.task.id": task_id,
+                "agora.task.status": response.json().get("status"),
+            },
         )
-        response.raise_for_status()
         self._latest_task_id = task_id
-        return HostedTaskStatus.model_validate(response.json())
+        status = HostedTaskStatus.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.task.id": task_id,
+                "agora.task.status": status.status,
+            }
+        )
+        return status
 
     async def get_task_result(self, task_id: str) -> DeliberationResult:
         """Fetch and convert a hosted task into the core deliberation result type."""
 
-        status = await self.get_task_status(task_id, detailed=True)
-        self._raise_for_non_successful_result_status(status)
-        result = await self._status_to_result(status)
-        self._result_task_ids[result.merkle_root] = task_id
-        return result
+        with observation_context(**{"agora.sdk.mode": "hosted", "agora.task.id": task_id}):
+            with start_observation_span(
+                "sdk.get_task_result",
+                attributes=self._sdk_span_attributes(
+                    operation="get_task_result",
+                    mode="hosted",
+                    task_id=task_id,
+                ),
+            ):
+                try:
+                    status = await self.get_task_status(task_id, detailed=True)
+                    self._raise_for_non_successful_result_status(status)
+                    result = await self._status_to_result(status)
+                    self._result_task_ids[result.merkle_root] = task_id
+                    set_current_span_attributes(self._result_span_attributes(result))
+                    return result
+                except Exception as exc:
+                    mark_span_error(exc)
+                    raise
 
     async def wait_for_task_result(
         self,
@@ -652,20 +940,34 @@ class AgoraArbitrator:
         deadline = None if timeout_seconds is None else monotonic() + max(0.0, timeout_seconds)
         interval = max(0.05, poll_interval_seconds)
 
-        while True:
-            status = await self.get_task_status(task_id, detailed=True)
-            if status.status in {"completed", "paid"}:
-                result = await self._status_to_result(status)
-                self._result_task_ids[result.merkle_root] = task_id
-                return result
-            if status.status == "failed":
-                raise self._execution_error_from_status(status)
-            if deadline is not None and monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Timed out waiting for hosted task {task_id} to complete "
-                    f"(last status={status.status})"
-                )
-            await asyncio.sleep(interval)
+        with observation_context(**{"agora.sdk.mode": "hosted", "agora.task.id": task_id}):
+            with start_observation_span(
+                "sdk.wait_for_task_result",
+                attributes=self._sdk_span_attributes(
+                    operation="wait_for_task_result",
+                    mode="hosted",
+                    task_id=task_id,
+                ),
+            ):
+                try:
+                    while True:
+                        status = await self.get_task_status(task_id, detailed=True)
+                        if status.status in {"completed", "paid"}:
+                            result = await self._status_to_result(status)
+                            self._result_task_ids[result.merkle_root] = task_id
+                            set_current_span_attributes(self._result_span_attributes(result))
+                            return result
+                        if status.status == "failed":
+                            raise self._execution_error_from_status(status)
+                        if deadline is not None and monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"Timed out waiting for hosted task {task_id} to complete "
+                                f"(last status={status.status})"
+                            )
+                        await asyncio.sleep(interval)
+                except Exception as exc:
+                    mark_span_error(exc)
+                    raise
 
     async def run_benchmark(
         self,
@@ -682,23 +984,41 @@ class AgoraArbitrator:
             else HostedBenchmarkRunRequest.model_validate(payload or {})
         )
 
-        response = await self._client.post(
+        response = await self._post_json(
             "/benchmarks/run",
-            json=request_payload.model_dump(mode="json", by_alias=True),
-            headers=self._headers(),
+            operation="run_benchmark",
+            payload=request_payload.model_dump(mode="json", by_alias=True),
+            response_attributes=lambda response: {
+                "agora.benchmark.run_id": response.json().get("run_id"),
+                "agora.benchmark.status": response.json().get("status"),
+            },
         )
-        response.raise_for_status()
-        return HostedBenchmarkRunResponse.model_validate(response.json())
+        started = HostedBenchmarkRunResponse.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.benchmark.run_id": started.run_id,
+                "agora.benchmark.status": started.status,
+            }
+        )
+        return started
 
     async def get_benchmark_run_status(self, run_id: str) -> HostedBenchmarkRunStatus:
         """Fetch a hosted benchmark run status."""
 
-        response = await self._client.get(
+        response = await self._get_json(
             f"/benchmarks/runs/{run_id}",
-            headers=self._headers(),
+            operation="get_benchmark_run_status",
+            benchmark_id=run_id,
+            response_attributes=lambda response: {
+                "agora.benchmark.run_id": run_id,
+                "agora.benchmark.status": response.json().get("status"),
+                "agora.benchmark.artifact_id": response.json().get("artifact_id"),
+                "agora.usage.total_tokens": response.json().get("total_tokens"),
+            },
         )
-        response.raise_for_status()
-        return HostedBenchmarkRunStatus.model_validate(response.json())
+        status = HostedBenchmarkRunStatus.model_validate(response.json())
+        set_current_span_attributes(self._benchmark_status_attributes(status))
+        return status
 
     async def wait_for_benchmark_run(
         self,
@@ -712,33 +1032,62 @@ class AgoraArbitrator:
         deadline = None if timeout_seconds is None else monotonic() + max(0.0, timeout_seconds)
         interval = max(0.05, poll_interval_seconds)
 
-        while True:
-            status = await self.get_benchmark_run_status(run_id)
-            if status.status == "completed":
-                return status
-            if status.status == "failed":
-                raise HostedBenchmarkRunExecutionError(
-                    status.error or f"Hosted benchmark run {run_id} failed",
-                    run_id=run_id,
-                    status=status.status,
-                    error=status.error,
-                )
-            if deadline is not None and monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Timed out waiting for hosted benchmark run {run_id} to complete "
-                    f"(last status={status.status})"
-                )
-            await asyncio.sleep(interval)
+        with observation_context(**{"agora.sdk.mode": "hosted", "agora.benchmark.id": run_id}):
+            with start_observation_span(
+                "sdk.wait_for_benchmark_run",
+                attributes=self._sdk_span_attributes(
+                    operation="wait_for_benchmark_run",
+                    mode="hosted",
+                    benchmark_id=run_id,
+                ),
+            ):
+                try:
+                    while True:
+                        status = await self.get_benchmark_run_status(run_id)
+                        if status.status == "completed":
+                            set_current_span_attributes(self._benchmark_status_attributes(status))
+                            return status
+                        if status.status == "failed":
+                            raise HostedBenchmarkRunExecutionError(
+                                status.error or f"Hosted benchmark run {run_id} failed",
+                                run_id=run_id,
+                                status=status.status,
+                                error=status.error,
+                            )
+                        if deadline is not None and monotonic() >= deadline:
+                            raise TimeoutError(
+                                f"Timed out waiting for hosted benchmark run {run_id} to complete "
+                                f"(last status={status.status})"
+                            )
+                        await asyncio.sleep(interval)
+                except Exception as exc:
+                    mark_span_error(exc)
+                    raise
 
     async def get_benchmark_detail(self, benchmark_id: str) -> HostedBenchmarkDetail:
         """Fetch a hosted benchmark detail payload by run_id or artifact_id."""
 
-        response = await self._client.get(
+        response = await self._get_json(
             f"/benchmarks/{benchmark_id}",
-            headers=self._headers(),
+            operation="get_benchmark_detail",
+            benchmark_id=benchmark_id,
+            response_attributes=lambda response: {
+                "agora.benchmark.id": benchmark_id,
+                "agora.benchmark.status": response.json().get("status"),
+                "agora.usage.total_tokens": response.json().get("total_tokens"),
+                "agora.latency_ms": response.json().get("total_latency_ms"),
+            },
         )
-        response.raise_for_status()
-        return HostedBenchmarkDetail.model_validate(response.json())
+        detail = HostedBenchmarkDetail.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.benchmark.id": benchmark_id,
+                "agora.benchmark.status": detail.status,
+                "agora.usage.total_tokens": detail.total_tokens,
+                "agora.latency_ms": detail.total_latency_ms,
+            }
+        )
+        return detail
 
     async def get_benchmark_item(
         self,
@@ -747,12 +1096,25 @@ class AgoraArbitrator:
     ) -> HostedBenchmarkItem:
         """Fetch one item-scoped benchmark payload."""
 
-        response = await self._client.get(
+        response = await self._get_json(
             f"/benchmarks/{benchmark_id}/items/{item_id}",
-            headers=self._headers(),
+            operation="get_benchmark_item",
+            benchmark_id=benchmark_id,
+            response_attributes=lambda response: {
+                "agora.benchmark.id": benchmark_id,
+                "agora.benchmark.item_id": item_id,
+                "agora.task.status": response.json().get("status"),
+            },
         )
-        response.raise_for_status()
-        return HostedBenchmarkItem.model_validate(response.json())
+        item = HostedBenchmarkItem.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.benchmark.id": benchmark_id,
+                "agora.benchmark.item_id": item_id,
+                "agora.task.status": item.status,
+            }
+        )
+        return item
 
     async def get_benchmark_item_events(
         self,
@@ -761,12 +1123,25 @@ class AgoraArbitrator:
     ) -> HostedBenchmarkItemEvents:
         """Fetch replayable events for one benchmark item."""
 
-        response = await self._client.get(
+        response = await self._get_json(
             f"/benchmarks/{benchmark_id}/items/{item_id}/events",
-            headers=self._headers(),
+            operation="get_benchmark_item_events",
+            benchmark_id=benchmark_id,
+            response_attributes=lambda response: {
+                "agora.benchmark.id": benchmark_id,
+                "agora.benchmark.item_id": item_id,
+                "agora.stream.event_count": len(response.json().get("events", [])),
+            },
         )
-        response.raise_for_status()
-        return HostedBenchmarkItemEvents.model_validate(response.json())
+        events = HostedBenchmarkItemEvents.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.benchmark.id": benchmark_id,
+                "agora.benchmark.item_id": item_id,
+                "agora.stream.event_count": len(events.events),
+            }
+        )
+        return events
 
     async def stream_benchmark_run_events(
         self,
@@ -774,11 +1149,28 @@ class AgoraArbitrator:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream benchmark run SSE events with replay from the hosted API."""
 
-        async for event in self._stream_hosted_events(
-            ticket_path=f"/benchmarks/runs/{run_id}/stream-ticket",
-            stream_path=f"/benchmarks/runs/{run_id}/stream",
-        ):
-            yield event
+        with observation_context(**{"agora.sdk.mode": "hosted", "agora.benchmark.id": run_id}):
+            with start_observation_span(
+                "sdk.stream_benchmark_run_events",
+                attributes=self._sdk_span_attributes(
+                    operation="stream_benchmark_run_events",
+                    mode="hosted",
+                    benchmark_id=run_id,
+                ),
+            ):
+                event_count = 0
+                try:
+                    async for event in self._stream_hosted_events(
+                        ticket_path=f"/benchmarks/runs/{run_id}/stream-ticket",
+                        stream_path=f"/benchmarks/runs/{run_id}/stream",
+                    ):
+                        event_count += 1
+                        yield event
+                except Exception as exc:
+                    mark_span_error(exc)
+                    raise
+                finally:
+                    set_current_span_attributes({"agora.stream.event_count": event_count})
 
     async def stream_task_events(
         self,
@@ -787,22 +1179,52 @@ class AgoraArbitrator:
         """Stream hosted task SSE events with replay from the hosted API."""
 
         self._latest_task_id = task_id
-        async for event in self._stream_hosted_events(
-            ticket_path=f"/tasks/{task_id}/stream-ticket",
-            stream_path=f"/tasks/{task_id}/stream",
-        ):
-            yield event
+        with observation_context(**{"agora.sdk.mode": "hosted", "agora.task.id": task_id}):
+            with start_observation_span(
+                "sdk.stream_task_events",
+                attributes=self._sdk_span_attributes(
+                    operation="stream_task_events",
+                    mode="hosted",
+                    task_id=task_id,
+                ),
+            ):
+                event_count = 0
+                try:
+                    async for event in self._stream_hosted_events(
+                        ticket_path=f"/tasks/{task_id}/stream-ticket",
+                        stream_path=f"/tasks/{task_id}/stream",
+                    ):
+                        event_count += 1
+                        yield event
+                except Exception as exc:
+                    mark_span_error(exc)
+                    raise
+                finally:
+                    set_current_span_attributes({"agora.stream.event_count": event_count})
 
     async def release_payment(self, task_id: str) -> HostedPaymentReleaseResponse:
         """Release payment for a completed hosted task."""
 
-        response = await self._client.post(
+        response = await self._post_json(
             f"/tasks/{task_id}/pay",
-            headers=self._headers(),
+            operation="release_payment",
+            task_id=task_id,
+            response_attributes=lambda response: {
+                "agora.task.id": task_id,
+                "agora.payment.released": response.json().get("released"),
+                "agora.tx_hash": response.json().get("tx_hash"),
+            },
         )
-        response.raise_for_status()
         self._latest_task_id = task_id
-        return HostedPaymentReleaseResponse.model_validate(response.json())
+        payment = HostedPaymentReleaseResponse.model_validate(response.json())
+        set_current_span_attributes(
+            {
+                "agora.task.id": task_id,
+                "agora.payment.released": payment.released,
+                "agora.tx_hash": payment.tx_hash,
+            }
+        )
+        return payment
 
     def task_id_for_result(self, result: DeliberationResult) -> str | None:
         """Return the hosted task id associated with a deliberation result when known."""
@@ -823,85 +1245,115 @@ class AgoraArbitrator:
         if agents is not None and self.config.local_models is not None:
             raise ValueError("agents cannot be combined with explicit local_models execution")
 
-        if agents is not None or self.config.local_models is not None:
-            local_agent_count = len(agents) if agents else self.config.agent_count
-            orchestrator = AgoraOrchestrator(
-                agent_count=local_agent_count,
-                allow_offline_fallback=(
-                    self.config.allow_offline_fallback
-                    if allow_offline_fallback is None
-                    else allow_offline_fallback
+        local_mode = agents is not None or self.config.local_models is not None
+        sdk_mode: Literal["hosted", "local"] = "local" if local_mode else "hosted"
+        with observation_context(
+            **{
+                "agora.sdk.mode": sdk_mode,
+                "agora.task.text_sha256": self._task_text_hash(task),
+            }
+        ):
+            with start_observation_span(
+                "sdk.arbitrate",
+                attributes=self._sdk_span_attributes(
+                    operation="arbitrate",
+                    mode=sdk_mode,
                 ),
-                reasoning_presets=self.config.reasoning_presets,
-                local_models=self.config.local_models,
-                local_provider_keys=self.config.local_provider_keys,
-                local_debate_config=self.config.local_debate_config,
-            )
-            orchestrator.vote_engine = orchestrator.build_vote_engine(
-                quorum_threshold=(
-                    self.config.quorum_threshold if quorum_threshold is None else quorum_threshold
-                )
-            )
-            orchestrator.delphi_engine = orchestrator.build_delphi_engine(
-                quorum_threshold=(
-                    self.config.quorum_threshold if quorum_threshold is None else quorum_threshold
-                )
-            )
-            effective_allow_switch = (
-                self.config.allow_mechanism_switch
-                if allow_mechanism_switch is None
-                else allow_mechanism_switch
-            )
-            if self.config.mechanism is None and not effective_allow_switch:
-                selection = await orchestrator._select_mechanism(
-                    task=task,
-                    normalized_stakes=max(0.0, stakes),
-                    mechanism_override=None,
-                )
-                result = await orchestrator.execute_selection(
-                    task=task,
-                    selection=selection,
-                    agents=agents,
-                    allow_switch=False,
-                )
-            else:
-                result = await orchestrator.run(
-                    task=task,
-                    stakes=stakes,
-                    mechanism_override=self.config.mechanism,
-                    agents=agents,
-                )
-            if (
-                result.fallback_count > 0
-                and not (
-                    self.config.allow_offline_fallback
-                    if allow_offline_fallback is None
-                    else allow_offline_fallback
-                )
             ):
-                raise RuntimeError("Local fallback occurred but allow_offline_fallback=false")
-            return result.model_copy(
-                update={
-                    "selector_source": (
-                        "forced_override"
-                        if self.config.mechanism is not None
-                        else result.selector_source
-                    ),
-                    "mechanism_override_source": (
-                        "sdk" if self.config.mechanism is not None else None
-                    ),
-                }
-            )
+                try:
+                    if local_mode:
+                        local_agent_count = len(agents) if agents else self.config.agent_count
+                        orchestrator = AgoraOrchestrator(
+                            agent_count=local_agent_count,
+                            allow_offline_fallback=(
+                                self.config.allow_offline_fallback
+                                if allow_offline_fallback is None
+                                else allow_offline_fallback
+                            ),
+                            reasoning_presets=self.config.reasoning_presets,
+                            local_models=self.config.local_models,
+                            local_provider_keys=self.config.local_provider_keys,
+                            local_debate_config=self.config.local_debate_config,
+                        )
+                        orchestrator.vote_engine = orchestrator.build_vote_engine(
+                            quorum_threshold=(
+                                self.config.quorum_threshold
+                                if quorum_threshold is None
+                                else quorum_threshold
+                            )
+                        )
+                        orchestrator.delphi_engine = orchestrator.build_delphi_engine(
+                            quorum_threshold=(
+                                self.config.quorum_threshold
+                                if quorum_threshold is None
+                                else quorum_threshold
+                            )
+                        )
+                        effective_allow_switch = (
+                            self.config.allow_mechanism_switch
+                            if allow_mechanism_switch is None
+                            else allow_mechanism_switch
+                        )
+                        if self.config.mechanism is None and not effective_allow_switch:
+                            selection = await orchestrator._select_mechanism(
+                                task=task,
+                                normalized_stakes=max(0.0, stakes),
+                                mechanism_override=None,
+                            )
+                            result = await orchestrator.execute_selection(
+                                task=task,
+                                selection=selection,
+                                agents=agents,
+                                allow_switch=False,
+                            )
+                        else:
+                            result = await orchestrator.run(
+                                task=task,
+                                stakes=stakes,
+                                mechanism_override=self.config.mechanism,
+                                agents=agents,
+                            )
+                        if (
+                            result.fallback_count > 0
+                            and not (
+                                self.config.allow_offline_fallback
+                                if allow_offline_fallback is None
+                                else allow_offline_fallback
+                            )
+                        ):
+                            raise RuntimeError(
+                                "Local fallback occurred but allow_offline_fallback=false"
+                            )
+                        finalized = result.model_copy(
+                            update={
+                                "selector_source": (
+                                    "forced_override"
+                                    if self.config.mechanism is not None
+                                    else result.selector_source
+                                ),
+                                "mechanism_override_source": (
+                                    "sdk" if self.config.mechanism is not None else None
+                                ),
+                            }
+                        )
+                        set_current_span_attributes(self._result_span_attributes(finalized))
+                        return finalized
 
-        created = await self.create_task(
-            task,
-            stakes=stakes,
-            allow_mechanism_switch=allow_mechanism_switch,
-            allow_offline_fallback=allow_offline_fallback,
-            quorum_threshold=quorum_threshold,
-        )
-        await self.start_task_run(created.task_id)
-        return await self.wait_for_task_result(created.task_id)
+                    created = await self.create_task(
+                        task,
+                        stakes=stakes,
+                        allow_mechanism_switch=allow_mechanism_switch,
+                        allow_offline_fallback=allow_offline_fallback,
+                        quorum_threshold=quorum_threshold,
+                    )
+                    set_current_span_attributes({"agora.task.id": created.task_id})
+                    await self.start_task_run(created.task_id)
+                    result = await self.wait_for_task_result(created.task_id)
+                    set_current_span_attributes(self._result_span_attributes(result))
+                    return result
+                except Exception as exc:
+                    mark_span_error(exc)
+                    raise
 
     async def verify_receipt(
         self,
@@ -979,37 +1431,58 @@ class AgoraArbitrator:
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream normalized SSE events from a hosted API endpoint."""
 
-        ticket_response = await self._client.post(ticket_path, headers=self._headers())
-        ticket_response.raise_for_status()
+        ticket_response = await self._post_json(
+            ticket_path,
+            operation="open_event_stream_ticket",
+        )
         ticket_payload = ticket_response.json()
         ticket = str(ticket_payload["ticket"])
 
-        async with self._client.stream(
-            "GET",
-            stream_path,
-            params={"ticket": ticket},
-            headers=self._headers(),
-        ) as response:
-            response.raise_for_status()
-            event_type = "message"
-            data_lines: list[str] = []
-
-            async for line in response.aiter_lines():
-                if line.startswith("event:"):
-                    event_type = line[6:].strip()
-                    continue
-                if line.startswith("data:"):
-                    data_lines.append(line[5:].strip())
-                    continue
-                if line:
-                    continue
-                if not data_lines:
+        with start_observation_span(
+            "sdk.consume_event_stream",
+            attributes=self._sdk_span_attributes(
+                operation="consume_event_stream",
+                mode="hosted",
+                path=stream_path,
+                method="GET",
+            ),
+        ):
+            try:
+                async with self._client.stream(
+                    "GET",
+                    stream_path,
+                    params={"ticket": ticket},
+                    headers=self._headers(),
+                ) as response:
+                    set_current_span_attributes(
+                        {"http.response.status_code": getattr(response, "status_code", None)}
+                    )
+                    response.raise_for_status()
                     event_type = "message"
-                    continue
-                raw_data = "\n".join(data_lines)
-                data_lines = []
-                yield self._normalize_sse_event(event_type=event_type, raw_data=raw_data)
-                event_type = "message"
+                    data_lines: list[str] = []
+
+                    async for line in response.aiter_lines():
+                        if line.startswith("event:"):
+                            event_type = line[6:].strip()
+                            continue
+                        if line.startswith("data:"):
+                            data_lines.append(line[5:].strip())
+                            continue
+                        if line:
+                            continue
+                        if not data_lines:
+                            event_type = "message"
+                            continue
+                        raw_data = "\n".join(data_lines)
+                        data_lines = []
+                        yield self._normalize_sse_event(
+                            event_type=event_type,
+                            raw_data=raw_data,
+                        )
+                        event_type = "message"
+            except Exception as exc:
+                mark_span_error(exc)
+                raise
 
     @staticmethod
     def _normalize_sse_event(event_type: str, raw_data: str) -> dict[str, Any]:

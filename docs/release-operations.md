@@ -9,7 +9,13 @@
 
 ## SDK Release Runbook (Trusted Publishing, Current Cycle)
 
-Target package: `agora-arbitrator-sdk==0.1.0a14`
+Target package: `agora-arbitrator-sdk==0.1.0a16`
+
+Version discipline:
+
+- `agora/version.py` is the canonical backend/SDK runtime version source.
+- Repo-root `pyproject.toml` and `sdk/pyproject.toml` must be bumped in the same change.
+- Do not cut an `sdk-v*` tag unless the built wheel passes an isolated install/import smoke.
 
 ### Prerequisites
 
@@ -35,8 +41,8 @@ and install checks do not need a manual hosted API URL.
 ### Publish (Preferred)
 
 ```bash
-git tag sdk-v0.1.0a14
-git push origin sdk-v0.1.0a14
+git tag sdk-v0.1.0a16
+git push origin sdk-v0.1.0a16
 ```
 
 Trusted publishing is wired for the repository in `.github/workflows/deploy-sdk.yml`
@@ -50,7 +56,7 @@ is still available as fallback. Local `twine upload` is fallback-only for emerge
 python -m venv /tmp/agora-arbitrator-sdk-verify
 source /tmp/agora-arbitrator-sdk-verify/bin/activate
 python -m pip install --upgrade pip
-python -m pip install agora-arbitrator-sdk==0.1.0a14
+python -m pip install agora-arbitrator-sdk==0.1.0a16
 python - <<'PY'
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 print("sdk-import-ok")

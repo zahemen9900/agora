@@ -43,6 +43,31 @@ _SUPPORTED_MECHANISMS_TEXT = ", ".join(
 EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
+class _LazyReasoningCaller:
+    """Delay selector caller initialization until reasoning is actually invoked."""
+
+    def __init__(
+        self,
+        *,
+        thinking_level: str,
+        model: str | None,
+        gemini_api_key: str | None,
+    ) -> None:
+        self._thinking_level = thinking_level
+        self._model = model
+        self._gemini_api_key = gemini_api_key
+        self._caller = None
+
+    async def call(self, *args: Any, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
+        if self._caller is None:
+            self._caller = pro_caller(
+                thinking_level=self._thinking_level,
+                model=self._model,
+                gemini_api_key=self._gemini_api_key,
+            )
+        return await self._caller.call(*args, **kwargs)
+
+
 class AgoraOrchestrator:
     """Top-level orchestrator tying selection, engines, and post-run learning."""
 
@@ -85,9 +110,14 @@ class AgoraOrchestrator:
 
         self.selector = AgoraSelector(
             bandit_state_path=bandit_state_path,
-            reasoning_caller=pro_caller(
+            reasoning_caller=_LazyReasoningCaller(
                 thinking_level=self.reasoning_presets.gemini_pro,
                 model=self.tier_model_overrides.get("pro"),
+                gemini_api_key=(
+                    None
+                    if self.local_provider_keys is None
+                    else self.local_provider_keys.gemini_api_key
+                ),
             ),
         )
         self.hasher = TranscriptHasher()
@@ -115,6 +145,11 @@ class AgoraOrchestrator:
                 None
                 if self.local_debate_config is None
                 else self.local_debate_config.devils_advocate_model
+            ),
+            devils_advocate_fallback_models=(
+                None
+                if self.local_debate_config is None
+                else self.local_debate_config.devils_advocate_fallback_models
             ),
             **engine_kwargs,
         )

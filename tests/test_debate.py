@@ -17,7 +17,13 @@ from agora.engines.debate import (
     _RebuttalResponse,
     _SynthesisResponse,
 )
-from agora.types import DebateState, LocalModelSpec, LocalProviderKeys, MechanismType
+from agora.types import (
+    DebateState,
+    FallbackEvent,
+    LocalModelSpec,
+    LocalProviderKeys,
+    MechanismType,
+)
 from tests.helpers import make_agent_output, make_selection
 
 _PAID_INTEGRATION_ENABLED = os.getenv("RUN_PAID_PROVIDER_TESTS", "").lower() in {
@@ -119,6 +125,58 @@ class _RawTextDebateCaller:
     async def call(self, **kwargs):
         self.calls.append(kwargs)
         return self.response, {"input_tokens": 5, "output_tokens": 7, "latency_ms": 11.0}
+
+
+def test_debate_default_tier_callers_use_local_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def fake_flash_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["flash"] = dict(kwargs)
+        return _FakeDebateCaller("flash-model", _InitialAnswerResponse(answer="A", confidence=0.5))
+
+    def fake_pro_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["pro"] = dict(kwargs)
+        return _FakeDebateCaller(
+            "pro-model",
+            _SynthesisResponse(final_answer="A", confidence=0.5, summary=""),
+        )
+
+    def fake_claude_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["claude"] = dict(kwargs)
+        return _FakeDebateCaller(
+            "claude-model",
+            _OpeningResponse(claim="A", evidence="B", confidence=0.5),
+        )
+
+    def fake_openrouter_caller(**kwargs: object) -> _FakeDebateCaller:
+        captured["openrouter"] = dict(kwargs)
+        return _FakeDebateCaller("openrouter-model", _CrossExamResponse())
+
+    monkeypatch.setattr("agora.engines.debate.flash_caller", fake_flash_caller)
+    monkeypatch.setattr("agora.engines.debate.pro_caller", fake_pro_caller)
+    monkeypatch.setattr("agora.engines.debate.claude_caller", fake_claude_caller)
+    monkeypatch.setattr("agora.engines.debate.openrouter_caller", fake_openrouter_caller)
+
+    engine = DebateEngine(
+        agent_count=3,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-byok-key",
+            anthropic_api_key="anth-byok-key",
+            openrouter_api_key="or-byok-key",
+        ),
+    )
+
+    engine._get_caller("flash")
+    engine._get_caller("pro")
+    engine._get_caller("claude")
+    engine._get_caller("openrouter")
+
+    assert captured["flash"]["gemini_api_key"] == "gem-byok-key"
+    assert captured["pro"]["gemini_api_key"] == "gem-byok-key"
+    assert captured["claude"]["anthropic_api_key"] == "anth-byok-key"
+    assert captured["openrouter"]["openrouter_api_key"] == "or-byok-key"
 
 
 def test_assign_factions_creates_two_sides_and_da_candidate() -> None:
@@ -486,6 +544,229 @@ async def test_explicit_local_debate_devils_advocate_uses_configured_model(
     assert output.agent_model == "moonshotai/kimi-k2-thinking"
     assert output.role == "devil_advocate"
     assert usage["model"] == "moonshotai/kimi-k2-thinking"
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_debate_devils_advocate_uses_configured_live_fallback_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    participant_specs = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+    devils_advocate_spec = LocalModelSpec(
+        provider="openrouter",
+        model="qwen/qwen3.5-flash-02-23",
+    )
+    fallback_spec = LocalModelSpec(
+        provider="anthropic",
+        model="claude-sonnet-4-6",
+    )
+
+    claude_response = (
+        '[{"faction":"opp","weakest_claim":"claim B","flaw":"underspecified",'
+        '"attack_axis":"scope","counterexample":"A simpler architecture meets the need.",'
+        '"failure_mode":"The rebuttal assumes future scale without evidence.",'
+        '"question":"What present constraint rules out the simpler option?"}]'
+    )
+
+    def fake_build_local_model_caller(*, spec: LocalModelSpec, provider_keys: LocalProviderKeys | None):
+        assert provider_keys is not None
+        if spec.model == "qwen/qwen3.5-flash-02-23":
+            return _FailingCaller(spec.model)
+        if spec.model == "claude-sonnet-4-6":
+            return _FakeDebateCaller(spec.model, claude_response)
+        return _SchemaAwareDebateCaller(spec.model)
+
+    monkeypatch.setattr("agora.engines.debate.build_local_model_caller", fake_build_local_model_caller)
+    engine = DebateEngine(
+        agent_count=3,
+        participant_models=participant_specs,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            anthropic_api_key="anth-key",
+            openrouter_api_key="or-key",
+        ),
+        devils_advocate_model=devils_advocate_spec,
+        devils_advocate_fallback_models=[fallback_spec],
+        allow_offline_fallback=False,
+    )
+
+    output, usage = await engine._cross_examination(
+        task="Which architecture is more robust?",
+        round_number=1,
+        devil_advocate_id="debate-devils-advocate",
+        pro_outputs=[make_agent_output("agent-1", "Answer A", role="pro_opening")],
+        opp_outputs=[make_agent_output("agent-2", "Answer B", role="opp_opening")],
+    )
+
+    assert output.agent_model == "claude-sonnet-4-6"
+    assert usage["model"] == "claude-sonnet-4-6"
+    assert usage["provider"] == "anthropic"
+    assert [event.fallback_type for event in usage["fallback_events"]] == [
+        "alternate_live_model"
+    ]
+    assert usage["fallback_events"][0].original_model == "qwen/qwen3.5-flash-02-23"
+    assert usage["fallback_events"][0].fallback_model == "claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_debate_devils_advocate_infers_live_fallback_from_roster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    participant_specs = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+    devils_advocate_spec = LocalModelSpec(
+        provider="openrouter",
+        model="qwen/qwen3.5-flash-02-23",
+    )
+
+    claude_response = (
+        '[{"faction":"pro","weakest_claim":"claim A","flaw":"unsupported",'
+        '"attack_axis":"evidence_gap","counterexample":"A direct measurement contradicts this.",'
+        '"failure_mode":"The argument asserts a benefit but never measures it.",'
+        '"question":"What current evidence supports this choice?"}]'
+    )
+
+    def fake_build_local_model_caller(*, spec: LocalModelSpec, provider_keys: LocalProviderKeys | None):
+        assert provider_keys is not None
+        if spec.model == "qwen/qwen3.5-flash-02-23":
+            return _FailingCaller(spec.model)
+        if spec.model == "claude-sonnet-4-6":
+            return _FakeDebateCaller(spec.model, claude_response)
+        return _SchemaAwareDebateCaller(spec.model)
+
+    monkeypatch.setattr("agora.engines.debate.build_local_model_caller", fake_build_local_model_caller)
+    engine = DebateEngine(
+        agent_count=3,
+        participant_models=participant_specs,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            anthropic_api_key="anth-key",
+            openrouter_api_key="or-key",
+        ),
+        devils_advocate_model=devils_advocate_spec,
+        allow_offline_fallback=False,
+    )
+
+    output, usage = await engine._cross_examination(
+        task="Which architecture is more robust?",
+        round_number=1,
+        devil_advocate_id="debate-devils-advocate",
+        pro_outputs=[make_agent_output("agent-1", "Answer A", role="pro_opening")],
+        opp_outputs=[make_agent_output("agent-2", "Answer B", role="opp_opening")],
+    )
+
+    assert output.agent_model == "claude-sonnet-4-6"
+    assert usage["fallback_events"][0].fallback_model == "claude-sonnet-4-6"
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_debate_devils_advocate_strict_mode_exhausts_live_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    participant_specs = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+    devils_advocate_spec = LocalModelSpec(
+        provider="openrouter",
+        model="qwen/qwen3.5-flash-02-23",
+    )
+
+    def fake_build_local_model_caller(*, spec: LocalModelSpec, provider_keys: LocalProviderKeys | None):
+        assert provider_keys is not None
+        return _FailingCaller(spec.model)
+
+    monkeypatch.setattr("agora.engines.debate.build_local_model_caller", fake_build_local_model_caller)
+    engine = DebateEngine(
+        agent_count=3,
+        participant_models=participant_specs,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            anthropic_api_key="anth-key",
+            openrouter_api_key="or-key",
+        ),
+        devils_advocate_model=devils_advocate_spec,
+        allow_offline_fallback=False,
+    )
+
+    with pytest.raises(AgentCallError, match="live_fallback_exhausted"):
+        await engine._cross_examination(
+            task="Which architecture is more robust?",
+            round_number=1,
+            devil_advocate_id="debate-devils-advocate",
+            pro_outputs=[make_agent_output("agent-1", "Answer A", role="pro_opening")],
+            opp_outputs=[make_agent_output("agent-2", "Answer B", role="opp_opening")],
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_local_debate_devils_advocate_offline_fallback_after_live_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    participant_specs = [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+    devils_advocate_spec = LocalModelSpec(
+        provider="openrouter",
+        model="qwen/qwen3.5-flash-02-23",
+    )
+
+    def fake_build_local_model_caller(*, spec: LocalModelSpec, provider_keys: LocalProviderKeys | None):
+        assert provider_keys is not None
+        return _FailingCaller(spec.model)
+
+    monkeypatch.setattr("agora.engines.debate.build_local_model_caller", fake_build_local_model_caller)
+    engine = DebateEngine(
+        agent_count=3,
+        participant_models=participant_specs,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-key",
+            anthropic_api_key="anth-key",
+            openrouter_api_key="or-key",
+        ),
+        devils_advocate_model=devils_advocate_spec,
+        allow_offline_fallback=True,
+    )
+
+    output, usage = await engine._cross_examination(
+        task="Which architecture is more robust?",
+        round_number=1,
+        devil_advocate_id="debate-devils-advocate",
+        pro_outputs=[make_agent_output("agent-1", "Answer A", role="pro_opening")],
+        opp_outputs=[make_agent_output("agent-2", "Answer B", role="opp_opening")],
+    )
+
+    assert output.agent_model == "qwen/qwen3.5-flash-02-23"
+    assert [event.fallback_type for event in usage["fallback_events"]] == [
+        "alternate_live_model",
+        "alternate_live_model",
+        "alternate_live_model",
+        "deterministic",
+    ]
+
+
+def test_debate_execution_mode_treats_alternate_live_fallback_as_live() -> None:
+    fallback_events = [
+        FallbackEvent(
+            component="debate.cross_examination",
+            reason="provider_openrouter_unavailable_or_invalid",
+            fallback_type="alternate_live_model",
+            original_model="qwen/qwen3.5-flash-02-23",
+            fallback_model="claude-sonnet-4-6",
+            provider="anthropic",
+        )
+    ]
+
+    assert DebateEngine._execution_mode(fallback_events, total_tokens=123) == "live"
 
 
 @pytest.mark.asyncio

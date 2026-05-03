@@ -22,8 +22,11 @@ import {
 import {
   benchmarkQueryKeys,
   patchBenchmarkDetailCache,
+  removeDeletedBenchmarkFromCaches,
   setBenchmarkDetailCache,
+  useDeleteBenchmarkMutation,
   useBenchmarkDetailQuery,
+  useStopBenchmarkMutation,
 } from "../lib/benchmarkQueries";
 import {
   buildDetailCategoryRows,
@@ -46,6 +49,7 @@ import { RunNarrative } from "../components/benchmark/detail/RunNarrative";
 import { useAuth } from "../lib/useAuth";
 import { BenchmarkLiveCanvas } from "../components/benchmark/BenchmarkLiveCanvas";
 import { Flyout } from "../components/Flyout";
+import { BenchmarkActionsMenu } from "../components/benchmark/BenchmarkActionsMenu";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import {
   deriveBenchmarkItemTimelineEvents,
@@ -99,6 +103,8 @@ export function BenchmarkDetail() {
   const { getAccessToken } = useAuth();
   const queryClient = useQueryClient();
   const detailQuery = useBenchmarkDetailQuery(benchmarkId);
+  const stopBenchmarkMutation = useStopBenchmarkMutation();
+  const deleteBenchmarkMutation = useDeleteBenchmarkMutation();
   const detail = detailQuery.data ?? null;
   const loadError = !benchmarkId
     ? "Benchmark id is required."
@@ -115,12 +121,76 @@ export function BenchmarkDetail() {
   const [hydratedItemEvents, setHydratedItemEvents] = useState<Record<string, TaskEvent[]>>({});
   const [hydratingItemId, setHydratingItemId] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
+  const [stopError, setStopError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [phaseFilter, setPhaseFilter] = useState<string>("all");
   const timelineContainerRef = useRef<HTMLDivElement | null>(null);
   const latestTimelineEntryRef = useRef<HTMLDivElement | null>(null);
   const followTimelineRef = useRef(true);
   const copyTimeoutRef = useRef<number | null>(null);
+
+  const handleStopBenchmark = useCallback(() => {
+    if (!detail?.run_id || stopBenchmarkMutation.isPending) {
+      return;
+    }
+    setStopError(null);
+    stopBenchmarkMutation.mutate(detail.run_id, {
+      onSuccess: async (status) => {
+        patchBenchmarkDetailCache(queryClient, detail.run_id!, (current) => (
+          current
+            ? {
+              ...current,
+              status: status.status,
+              updated_at: status.updated_at,
+              cost: status.cost ?? current.cost,
+              total_tokens: status.total_tokens ?? current.total_tokens,
+              thinking_tokens: status.thinking_tokens ?? current.thinking_tokens,
+              total_latency_ms: status.total_latency_ms ?? current.total_latency_ms,
+            }
+            : current
+        ));
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(detail.run_id!) }),
+          queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+          queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        ]);
+      },
+      onError: (error) => {
+        setStopError(error instanceof Error ? error.message : "Failed to stop benchmark run.");
+      },
+    });
+  }, [detail?.run_id, queryClient, stopBenchmarkMutation]);
+  const handleDeleteBenchmark = useCallback(async () => {
+    const deleteTarget = detail?.scope === "user"
+      ? (detail.run_id ?? detail.artifact_id ?? benchmarkId ?? null)
+      : null;
+    if (!deleteTarget || deleteBenchmarkMutation.isPending) {
+      return;
+    }
+
+    setStopError(null);
+    try {
+      const deleted = await deleteBenchmarkMutation.mutateAsync(deleteTarget);
+      removeDeletedBenchmarkFromCaches(queryClient, deleted);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(deleteTarget) }),
+      ]);
+      navigate("/benchmarks/all", {
+        state: {
+          deletedBenchmarkFlyout: {
+            title: deleted.stopped_before_delete ? "Benchmark stopped and deleted" : "Benchmark deleted",
+            body: deleted.stopped_before_delete
+              ? "The live benchmark was stopped and removed from your personal catalog."
+              : "The benchmark was removed from your personal benchmark catalog.",
+          },
+        },
+      });
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : "Failed to delete benchmark.");
+    }
+  }, [benchmarkId, deleteBenchmarkMutation, detail?.artifact_id, detail?.run_id, detail?.scope, navigate, queryClient]);
   const streamedEventKeysRef = useRef<Set<string>>(new Set());
   const historyRepairAttemptedRef = useRef<string | null>(null);
   const itemHydrationAttemptedRef = useRef<Set<string>>(new Set());
@@ -664,8 +734,21 @@ export function BenchmarkDetail() {
           Refresh
         </button>
 
-        {/* Tab switcher – pushed to the right */}
-        <div style={{ marginLeft: "auto", display: "flex", gap: "4px", padding: "4px", background: "var(--bg-elevated)", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "10px" }}>
+          {detail?.scope === "user" && (detail.run_id || detail.artifact_id || benchmarkId) ? (
+            <BenchmarkActionsMenu
+              canStop={detail.status === "queued" || detail.status === "running"}
+              canDelete
+              isRunning={detail.status === "queued" || detail.status === "running"}
+              isStopping={stopBenchmarkMutation.isPending}
+              isDeleting={deleteBenchmarkMutation.isPending}
+              onStop={handleStopBenchmark}
+              onDelete={() => void handleDeleteBenchmark()}
+            />
+          ) : null}
+
+          {/* Tab switcher – pushed to the right */}
+          <div style={{ display: "flex", gap: "4px", padding: "4px", background: "var(--bg-elevated)", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
           {(["canvas", "logs", "metrics"] as const).map((tab) => (
             <button
               key={tab}
@@ -696,6 +779,7 @@ export function BenchmarkDetail() {
               </span>
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -725,6 +809,9 @@ export function BenchmarkDetail() {
             <div>Cost {formatUsd(detail.cost?.estimated_cost_usd ?? null)}</div>
             <div>{selectedItem ? `Active item ${selectedItem.item_index + 1}` : "No active item"}</div>
           </div>
+          {stopError ? (
+            <div className="mono text-xs text-red-400 mt-3">{stopError}</div>
+          ) : null}
         </div>
       ) : null}
 

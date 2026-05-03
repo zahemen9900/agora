@@ -14,6 +14,8 @@ from api.config import settings
 from api.coordination import validate_coordination_configuration
 from api.routes import api_keys, auth_session, benchmarks, health, tasks, webhooks
 from api.streaming import validate_streaming_configuration
+from api.telemetry import initialize_telemetry, shutdown_telemetry
+from agora.version import __version__ as AGORA_VERSION
 
 _CORS_ALLOWED_ORIGINS = [
     "https://agora-bay-seven.vercel.app",
@@ -31,6 +33,7 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     validate_coordination_configuration()
     validate_streaming_configuration()
+    initialize_telemetry(settings_like=settings, app=app, service_version=AGORA_VERSION)
     recovery_task = None
     if settings.background_recovery_enabled:
         recovery_task = asyncio.create_task(background_recovery_loop())
@@ -38,11 +41,12 @@ async def app_lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await shutdown_background_task(recovery_task)
+        shutdown_telemetry()
 
 app = FastAPI(
     title="Agora Protocol API",
     description="On-chain multi-agent orchestration primitive",
-    version="0.1.0",
+    version=AGORA_VERSION,
     lifespan=app_lifespan,
 )
 

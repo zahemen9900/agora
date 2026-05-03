@@ -224,8 +224,6 @@ support/
 .claude/**/*.pem
 .claude/**/*.key
 .claude/settings.json
-.claude/AGENTS.md
-.codex/AGENTS.md
 .codex/**/SKILL.md
 .codex/**/SKILL-*.md
 .codex/**/*.pem

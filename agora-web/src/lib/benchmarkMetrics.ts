@@ -71,15 +71,32 @@ export interface BenchmarkParetoPoint {
   frontier: boolean;
 }
 
+export interface BenchmarkLearningCurvePoint {
+  index: number;
+  cumAccuracy: number;
+  phase: "pre" | "learning" | "post";
+}
+
 export interface BenchmarkLearningCurveState {
   available: boolean;
   data: Array<{ phase: "Pre" | "Post"; accuracy: number }>;
+  runPoints: BenchmarkLearningCurvePoint[];
   reason: string | null;
   preAccuracy: number | null;
   postAccuracy: number | null;
   preScoredRunCount: number;
   postScoredRunCount: number;
   delta: number | null;
+  saturated: boolean;
+  preEndIndex: number | null;
+  learningEndIndex: number | null;
+}
+
+export interface BenchmarkCategoryLearningShiftPoint {
+  category: string;
+  pre: number;
+  post: number;
+  delta: number;
   saturated: boolean;
 }
 
@@ -274,14 +291,48 @@ export function buildOverviewHeatmapRows(summary: NormalizedSummary): BenchmarkH
   });
 }
 
+function buildRunPoints(
+  record: Record<string, any>,
+): { points: BenchmarkLearningCurvePoint[]; preEndIndex: number | null; learningEndIndex: number | null } {
+  const phases: Array<{ key: string; phase: BenchmarkLearningCurvePoint["phase"] }> = [
+    { key: "pre_learning", phase: "pre" },
+    { key: "learning_updates", phase: "learning" },
+    { key: "post_learning", phase: "post" },
+  ];
+  const points: BenchmarkLearningCurvePoint[] = [];
+  let correct = 0;
+  let scored = 0;
+  let index = 0;
+  let preEndIndex: number | null = null;
+  let learningEndIndex: number | null = null;
+
+  for (const { key, phase } of phases) {
+    const section = record[key];
+    const runs: Array<Record<string, any>> = Array.isArray(section?.runs) ? section.runs.filter(isRecord) : [];
+    for (const run of runs) {
+      if (!Boolean(run.scored)) continue;
+      index++;
+      if (Boolean(run.correct)) correct++;
+      scored++;
+      points.push({ index, cumAccuracy: scored > 0 ? (correct / scored) * 100 : 0, phase });
+    }
+    if (phase === "pre" && points.length > 0) preEndIndex = points[points.length - 1].index;
+    if (phase === "learning" && points.length > 0) learningEndIndex = points[points.length - 1].index;
+  }
+
+  return { points, preEndIndex, learningEndIndex };
+}
+
 export function buildOverviewLearningCurve(
   payload: BenchmarkPayload | Record<string, unknown> | null | undefined,
 ): BenchmarkLearningCurveState {
   const artifactKind = detectBenchmarkArtifactKind(payload);
+  const emptyRunPoints = { runPoints: [], preEndIndex: null, learningEndIndex: null };
   if (artifactKind !== "validation" || !isRecord(payload)) {
     return {
       available: false,
       data: [],
+      ...emptyRunPoints,
       reason: artifactKind === "comparison"
         ? "This comparison artifact does not include pre/post learning stages, so a learning curve would be misleading."
         : "Learning curve data is not available for this artifact.",
@@ -305,6 +356,7 @@ export function buildOverviewLearningCurve(
     return {
       available: false,
       data: [],
+      ...emptyRunPoints,
       reason: "This validation artifact does not have scored selector coverage for the learning curve yet.",
       preAccuracy: Number.isFinite(pre) ? pre : null,
       postAccuracy: Number.isFinite(post) ? post : null,
@@ -317,6 +369,7 @@ export function buildOverviewLearningCurve(
 
   const delta = Number((post - pre).toFixed(1));
   const saturated = pre >= 99.9 && post >= 99.9;
+  const { points, preEndIndex, learningEndIndex } = buildRunPoints(record);
 
   return {
     available: true,
@@ -324,6 +377,7 @@ export function buildOverviewLearningCurve(
       { phase: "Pre", accuracy: pre },
       { phase: "Post", accuracy: post },
     ],
+    runPoints: points,
     reason: null,
     preAccuracy: pre,
     postAccuracy: post,
@@ -331,6 +385,8 @@ export function buildOverviewLearningCurve(
     postScoredRunCount: postScored,
     delta,
     saturated,
+    preEndIndex,
+    learningEndIndex,
   };
 }
 

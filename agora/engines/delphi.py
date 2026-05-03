@@ -568,6 +568,11 @@ class DelphiEngine:
             self._flash_agent = flash_caller(
                 thinking_level=self.reasoning_presets.gemini_flash,
                 model=self._tier_model_overrides.get("flash"),
+                gemini_api_key=(
+                    None
+                    if self._local_provider_keys is None
+                    else self._local_provider_keys.gemini_api_key
+                ),
             )
         return self._flash_agent
 

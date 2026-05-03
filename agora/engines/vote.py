@@ -1099,6 +1099,11 @@ class VoteEngine:
                 self._pro_agent = pro_caller(
                     thinking_level=self.reasoning_presets.gemini_pro,
                     model=self._tier_model_overrides.get("pro"),
+                    gemini_api_key=(
+                        None
+                        if self._local_provider_keys is None
+                        else self._local_provider_keys.gemini_api_key
+                    ),
                 )
             return self._pro_agent
 
@@ -1107,6 +1112,11 @@ class VoteEngine:
                 self._claude_agent = claude_caller(
                     effort=self.reasoning_presets.claude,
                     model=self._tier_model_overrides.get("claude"),
+                    anthropic_api_key=(
+                        None
+                        if self._local_provider_keys is None
+                        else self._local_provider_keys.anthropic_api_key
+                    ),
                 )
             return self._claude_agent
 
@@ -1118,6 +1128,11 @@ class VoteEngine:
                 self._openrouter_agent = openrouter_caller(
                     effort=self.reasoning_presets.openrouter,
                     model=self._tier_model_overrides.get("openrouter"),
+                    openrouter_api_key=(
+                        None
+                        if self._local_provider_keys is None
+                        else self._local_provider_keys.openrouter_api_key
+                    ),
                 )
             return self._openrouter_agent
 
@@ -1125,6 +1140,11 @@ class VoteEngine:
             self._flash_agent = flash_caller(
                 thinking_level=self.reasoning_presets.gemini_flash,
                 model=self._tier_model_overrides.get("flash"),
+                gemini_api_key=(
+                    None
+                    if self._local_provider_keys is None
+                    else self._local_provider_keys.gemini_api_key
+                ),
             )
         return self._flash_agent
 

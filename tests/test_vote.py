@@ -88,6 +88,52 @@ class _RawTextCaller:
         return self.response, {"input_tokens": 6, "output_tokens": 4, "latency_ms": 15.0}
 
 
+def test_vote_default_tier_callers_use_local_provider_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, dict[str, object]] = {}
+
+    def fake_flash_caller(**kwargs: object) -> _SuccessfulVoteCaller:
+        captured["flash"] = dict(kwargs)
+        return _SuccessfulVoteCaller("flash-model")
+
+    def fake_pro_caller(**kwargs: object) -> _SuccessfulVoteCaller:
+        captured["pro"] = dict(kwargs)
+        return _SuccessfulVoteCaller("pro-model")
+
+    def fake_claude_caller(**kwargs: object) -> _SuccessfulVoteCaller:
+        captured["claude"] = dict(kwargs)
+        return _SuccessfulVoteCaller("claude-model")
+
+    def fake_openrouter_caller(**kwargs: object) -> _SuccessfulVoteCaller:
+        captured["openrouter"] = dict(kwargs)
+        return _SuccessfulVoteCaller("openrouter-model")
+
+    monkeypatch.setattr("agora.engines.vote.flash_caller", fake_flash_caller)
+    monkeypatch.setattr("agora.engines.vote.pro_caller", fake_pro_caller)
+    monkeypatch.setattr("agora.engines.vote.claude_caller", fake_claude_caller)
+    monkeypatch.setattr("agora.engines.vote.openrouter_caller", fake_openrouter_caller)
+
+    engine = VoteEngine(
+        agent_count=3,
+        provider_keys=LocalProviderKeys(
+            gemini_api_key="gem-byok-key",
+            anthropic_api_key="anth-byok-key",
+            openrouter_api_key="or-byok-key",
+        ),
+    )
+
+    engine._get_caller("flash")
+    engine._get_caller("pro")
+    engine._get_caller("claude")
+    engine._get_caller("openrouter")
+
+    assert captured["flash"]["gemini_api_key"] == "gem-byok-key"
+    assert captured["pro"]["gemini_api_key"] == "gem-byok-key"
+    assert captured["claude"]["anthropic_api_key"] == "anth-byok-key"
+    assert captured["openrouter"]["openrouter_api_key"] == "or-byok-key"
+
+
 def test_isp_aggregation_all_agents_agree() -> None:
     """When all agents agree, the single answer should dominate normalized weight."""
 

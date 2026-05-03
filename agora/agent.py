@@ -18,6 +18,12 @@ from pydantic import BaseModel, ValidationError
 
 from agora.config import get_config
 from agora.runtime.model_catalog import is_openrouter_model_id, resolve_model_catalog_entry
+from agora.telemetry import (
+    current_capture_content_mode,
+    mark_span_error,
+    set_current_span_attributes,
+    start_observation_span,
+)
 
 try:
     from anthropic import APIConnectionError as AnthropicAPIConnectionError
@@ -58,6 +64,12 @@ logger = structlog.get_logger(__name__)
 
 _STREAM_EVENT_PREFIX = "\u001eAGORA_STREAM_EVENT\u001e"
 _STREAM_EVENT_SEPARATOR = "\u001f"
+
+_GEN_AI_SYSTEM_BY_PROVIDER = {
+    "gemini": "google",
+    "claude": "anthropic",
+    "openrouter": "openrouter",
+}
 
 
 def _emit_stream_event(
@@ -338,54 +350,119 @@ class AgentCaller:
         Raises:
             AgentCallError: If all retry attempts fail.
         """
-        try:
-            if self.provider == "claude":
-                return await asyncio.wait_for(
-                    self._call_claude(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        response_format=response_format,
-                        temperature=temperature,
-                        stream=stream,
-                        stream_callback=stream_callback,
-                    ),
-                    timeout=self.model_call_timeout_seconds,
-                )
+        span_attributes = {
+            "gen_ai.operation.name": "chat",
+            "gen_ai.system": _GEN_AI_SYSTEM_BY_PROVIDER.get(self.provider, self.provider),
+            "gen_ai.request.model": self.model,
+            "agora.model.provider": self.provider,
+            "agora.model.stream": stream,
+        }
+        if response_format is not None:
+            span_attributes["agora.response.format"] = response_format.__name__
 
-            if self.provider == "openrouter":
-                return await asyncio.wait_for(
-                    self._call_openrouter(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        response_format=response_format,
-                        temperature=temperature,
-                        stream=stream,
-                        stream_callback=stream_callback,
-                    ),
-                    timeout=self.model_call_timeout_seconds,
+        with start_observation_span(
+            f"chat {self.model}",
+            attributes=span_attributes,
+        ):
+            if current_capture_content_mode() == "full":
+                set_current_span_attributes(
+                    {
+                        "gen_ai.input.messages": [
+                            f"system:{system_prompt}",
+                            f"user:{user_prompt}",
+                        ]
+                    }
                 )
+            try:
+                if self.provider == "claude":
+                    response_content, usage = await asyncio.wait_for(
+                        self._call_claude(
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                            temperature=temperature,
+                            stream=stream,
+                            stream_callback=stream_callback,
+                        ),
+                        timeout=self.model_call_timeout_seconds,
+                    )
+                elif self.provider == "openrouter":
+                    response_content, usage = await asyncio.wait_for(
+                        self._call_openrouter(
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                            temperature=temperature,
+                            stream=stream,
+                            stream_callback=stream_callback,
+                        ),
+                        timeout=self.model_call_timeout_seconds,
+                    )
+                else:
+                    response_content, usage = await asyncio.wait_for(
+                        self._call_gemini(
+                            system_prompt=system_prompt,
+                            user_prompt=user_prompt,
+                            response_format=response_format,
+                            temperature=temperature,
+                            stream=stream,
+                            stream_callback=stream_callback,
+                        ),
+                        timeout=self.model_call_timeout_seconds,
+                    )
+            except TimeoutError as exc:
+                logger.warning(
+                    "agent_call_timeout",
+                    model=self.model,
+                    provider=self.provider,
+                    timeout_seconds=self.model_call_timeout_seconds,
+                )
+                mark_span_error(
+                    exc,
+                    attributes={
+                        "agora.error.type": "TimeoutError",
+                        "agora.error.phase": "agent_call",
+                    },
+                )
+                raise AgentCallError(
+                    "Model call timed out after "
+                    f"{self.model_call_timeout_seconds}s for model {self.model}."
+                ) from exc
+            except Exception as exc:
+                mark_span_error(
+                    exc,
+                    attributes={
+                        "agora.error.type": exc.__class__.__name__,
+                        "agora.error.phase": "agent_call",
+                    },
+                )
+                raise
 
-            return await asyncio.wait_for(
-                self._call_gemini(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    response_format=response_format,
-                    temperature=temperature,
-                    stream=stream,
-                    stream_callback=stream_callback,
-                ),
-                timeout=self.model_call_timeout_seconds,
+            set_current_span_attributes(
+                {
+                    "gen_ai.usage.input_tokens": usage.get("input_tokens"),
+                    "gen_ai.usage.output_tokens": usage.get("output_tokens"),
+                    "agora.usage.thinking_tokens": (
+                        usage.get("thinking_tokens") or usage.get("reasoning_tokens")
+                    ),
+                    "agora.usage.total_tokens": usage.get("total_tokens"),
+                    "agora.response.id": usage.get("response_id"),
+                    "agora.response.finish_reason": usage.get("finish_reason"),
+                    "agora.response.latency_ms": usage.get("latency_ms"),
+                    "agora.response.streamed": stream,
+                }
             )
-        except TimeoutError as exc:
-            logger.warning(
-                "agent_call_timeout",
-                model=self.model,
-                provider=self.provider,
-                timeout_seconds=self.model_call_timeout_seconds,
-            )
-            raise AgentCallError(
-                f"Model call timed out after {self.model_call_timeout_seconds}s for model {self.model}."
-            ) from exc
+            if current_capture_content_mode() == "full":
+                set_current_span_attributes(
+                    {
+                        "gen_ai.output.messages": [
+                            response_content
+                            if isinstance(response_content, str)
+                            else response_content.model_dump_json()
+                        ]
+                    }
+                )
+            return response_content, usage
 
     async def _call_gemini(
         self,
@@ -1497,7 +1574,11 @@ class AgentCaller:
         """Return adaptive thinking settings for Claude 4.6 models."""
 
         entry = resolve_model_catalog_entry(self.model)
-        if entry is not None and entry.provider_family == "anthropic" and not entry.supports_reasoning:
+        if (
+            entry is not None
+            and entry.provider_family == "anthropic"
+            and not entry.supports_reasoning
+        ):
             return None
         return {
             "type": "adaptive",
@@ -1534,9 +1615,13 @@ class AgentCaller:
         kwargs = {key: value for key, value in kwargs.items() if value is not None}
         entry = resolve_model_catalog_entry(self.model)
         can_attach_output_config = not (
-            entry is not None and entry.provider_family == "anthropic" and not entry.supports_reasoning
+            entry is not None
+            and entry.provider_family == "anthropic"
+            and not entry.supports_reasoning
         )
-        if can_attach_output_config and self._supports_callable_argument(callable_obj, "output_config"):
+        if can_attach_output_config and self._supports_callable_argument(
+            callable_obj, "output_config"
+        ):
             kwargs["output_config"] = self._build_claude_output_config()
         return kwargs
 
@@ -1917,13 +2002,30 @@ class AgentCaller:
             )
             return _sum_ints(base_input, cache_creation_tokens, cache_read_tokens)
 
+        def _pick_string(source: Any, *names: str) -> str | None:
+            for name in names:
+                if isinstance(source, dict):
+                    if name not in source:
+                        continue
+                    value = source.get(name)
+                else:
+                    if not _field_present(source, name):
+                        continue
+                    value = getattr(source, name, None)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+
         input_tokens: int | None = None
         output_tokens: int | None = None
         thinking_tokens: int | None = None
         reasoning_tokens: int | None = None
         total_tokens: int | None = None
+        response_id: str | None = None
+        finish_reason: str | None = None
 
         if raw_message is not None:
+            response_id = _pick_string(raw_message, "id", "response_id")
             usage_metadata = getattr(raw_message, "usage_metadata", None)
             if usage_metadata is not None:
                 input_tokens = _coalesce_int(input_tokens, _extract_prompt_tokens(usage_metadata))
@@ -2107,6 +2209,7 @@ class AgentCaller:
             choices = getattr(raw_message, "choices", None)
             if isinstance(choices, list):
                 for choice in choices:
+                    finish_reason = finish_reason or _pick_string(choice, "finish_reason")
                     message = getattr(choice, "message", None)
                     if message is None and isinstance(choice, dict):
                         message = choice.get("message")
@@ -2130,18 +2233,26 @@ class AgentCaller:
             "model": self.model,
             "latency_ms": latency_ms,
             "provider": self.provider,
+            "response_id": response_id,
+            "finish_reason": finish_reason,
             "thinking_trace_present": thinking_trace_present,
             "thinking_trace_chars": thinking_trace_chars,
         }
 
 
-def flash_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
+def flash_caller(
+    *,
+    thinking_level: str | None = None,
+    model: str | None = None,
+    gemini_api_key: str | None = None,
+) -> AgentCaller:
     """Return cost-efficient generation caller for openings, voting, and rebuttals."""
 
     config = get_config()
     return AgentCaller(
         model=model or config.flash_model,
         temperature=0.7,
+        gemini_api_key=gemini_api_key,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=True,
         thinking_budget=None,
@@ -2149,13 +2260,19 @@ def flash_caller(*, thinking_level: str | None = None, model: str | None = None)
     )
 
 
-def pro_caller(*, thinking_level: str | None = None, model: str | None = None) -> AgentCaller:
+def pro_caller(
+    *,
+    thinking_level: str | None = None,
+    model: str | None = None,
+    gemini_api_key: str | None = None,
+) -> AgentCaller:
     """Return higher-quality reasoning caller for selection and synthesis."""
 
     config = get_config()
     return AgentCaller(
         model=model or config.pro_model,
         temperature=0.5,
+        gemini_api_key=gemini_api_key,
         enable_streaming=config.gemini_enable_streaming,
         enable_thinking=config.gemini_enable_thinking,
         thinking_budget=None,
@@ -2163,13 +2280,19 @@ def pro_caller(*, thinking_level: str | None = None, model: str | None = None) -
     )
 
 
-def claude_caller(*, effort: str | None = None, model: str | None = None) -> AgentCaller:
+def claude_caller(
+    *,
+    effort: str | None = None,
+    model: str | None = None,
+    anthropic_api_key: str | None = None,
+) -> AgentCaller:
     """Return direct Anthropic Claude caller for diversity or fallback routing."""
 
     config = get_config()
     return AgentCaller(
         model=model or config.claude_model,
         temperature=1.0,
+        anthropic_api_key=anthropic_api_key,
         claude_effort=effort or config.claude_effort,
     )
 
@@ -2179,6 +2302,7 @@ def openrouter_caller(
     effort: str | None = None,
     exclude: bool | None = None,
     model: str | None = None,
+    openrouter_api_key: str | None = None,
 ) -> AgentCaller:
     """Return OpenRouter-compatible caller for challenger or fallback routing."""
 
@@ -2186,6 +2310,7 @@ def openrouter_caller(
     return AgentCaller(
         model=model or config.openrouter_model,
         temperature=0.5,
+        openrouter_api_key=openrouter_api_key,
         openrouter_reasoning_effort=effort or config.openrouter_reasoning_effort,
         openrouter_reasoning_exclude=(
             config.openrouter_reasoning_exclude if exclude is None else exclude
@@ -2198,7 +2323,13 @@ def kimi_caller(
     effort: str | None = None,
     exclude: bool | None = None,
     model: str | None = None,
+    openrouter_api_key: str | None = None,
 ) -> AgentCaller:
     """Backward-compatible alias for the legacy Kimi-specific helper."""
 
-    return openrouter_caller(effort=effort, exclude=exclude, model=model)
+    return openrouter_caller(
+        effort=effort,
+        exclude=exclude,
+        model=model,
+        openrouter_api_key=openrouter_api_key,
+    )
