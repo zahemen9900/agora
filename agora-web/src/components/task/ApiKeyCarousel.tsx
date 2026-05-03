@@ -10,6 +10,7 @@ import {
   X,
 } from 'lucide-react';
 import type { ApiKeyMetadataResponse } from '../../lib/api';
+import { usePostHog } from "@posthog/react";
 
 // ─── Keyframe injection (same guard as RecentDeliberationsCarousel) ───────────
 const STYLE_ID = 'carousel-skeleton-keyframes';
@@ -91,6 +92,7 @@ interface ApiKeyCardProps {
 }
 
 function ApiKeyCard({ apiKey, onClick }: ApiKeyCardProps) {
+    const posthog = usePostHog();
   const revoked = isRevoked(apiKey);
   const statusColor = revoked ? 'var(--accent-rose)' : 'var(--accent-emerald)';
   const statusBg   = revoked ? 'var(--accent-rose-soft)' : 'var(--accent-emerald-soft)';
@@ -98,7 +100,7 @@ function ApiKeyCard({ apiKey, onClick }: ApiKeyCardProps) {
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={(e: any) => { posthog?.capture('apikeycarousel_action_clicked'); const handler = onClick; if (typeof handler === 'function') (handler as any)(e); }}
       style={{
         flexShrink: 0, width: '220px', padding: '16px',
         background: 'var(--bg-elevated)', border: '1px solid var(--border-default)',
@@ -180,6 +182,7 @@ interface KeyDetailBodyProps {
 }
 
 function KeyDetailBody({ apiKey, onRevoke, onAfterRevoke }: KeyDetailBodyProps) {
+    const posthog = usePostHog();
   const [copyState, setCopyState] = useState<'idle' | 'copied'>('idle');
   const [confirmRevoke, setConfirmRevoke] = useState(false);
   const [revoking, setRevoking] = useState(false);
@@ -233,7 +236,7 @@ function KeyDetailBody({ apiKey, onRevoke, onAfterRevoke }: KeyDetailBodyProps) 
           </span>
           <button
             type="button"
-            onClick={copyId}
+            onClick={(e: any) => { posthog?.capture('apikeycarousel_copy_public_id_clicked'); const handler = copyId; if (typeof handler === 'function') (handler as any)(e); }}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: copyState === 'copied' ? 'var(--accent-emerald)' : 'var(--text-tertiary)', display: 'flex', padding: '2px', transition: 'color 0.15s ease', flexShrink: 0 }}
             aria-label="Copy public ID"
           >
@@ -290,7 +293,7 @@ function KeyDetailBody({ apiKey, onRevoke, onAfterRevoke }: KeyDetailBodyProps) 
             <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
               <button
                 type="button"
-                onClick={() => setConfirmRevoke(false)}
+                onClick={(e: any) => { posthog?.capture('apikeycarousel_cancel_clicked'); const handler = () => setConfirmRevoke(false); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   fontSize: '12px', fontFamily: "'Commit Mono', monospace", padding: '6px 14px',
                   background: 'none', border: '1px solid var(--border-strong)', borderRadius: '8px',
@@ -303,7 +306,7 @@ function KeyDetailBody({ apiKey, onRevoke, onAfterRevoke }: KeyDetailBodyProps) 
               </button>
               <button
                 type="button"
-                onClick={() => void handleRevoke()}
+                onClick={(e: any) => { posthog?.capture('apikeycarousel_action_clicked'); const handler = () => void handleRevoke(); if (typeof handler === 'function') (handler as any)(e); }}
                 disabled={revoking}
                 style={{
                   fontSize: '12px', fontFamily: "'Commit Mono', monospace", padding: '6px 14px',
@@ -321,7 +324,7 @@ function KeyDetailBody({ apiKey, onRevoke, onAfterRevoke }: KeyDetailBodyProps) 
         ) : (
           <button
             type="button"
-            onClick={() => setConfirmRevoke(true)}
+            onClick={(e: any) => { posthog?.capture('apikeycarousel_revoke_key_clicked'); const handler = () => setConfirmRevoke(true); if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               alignSelf: 'flex-start', fontSize: '12px', fontFamily: "'Commit Mono', monospace",
               padding: '7px 16px', background: 'none',
@@ -356,6 +359,7 @@ interface ApiKeyDetailModalProps {
 }
 
 function ApiKeyDetailModal({ apiKey, onClose, onRevoke }: ApiKeyDetailModalProps) {
+    const posthog = usePostHog();
   const revoked = isRevoked(apiKey);
   const statusColor = revoked ? 'var(--accent-rose)' : 'var(--accent-emerald)';
   const statusBg   = revoked ? 'var(--accent-rose-soft)' : 'var(--accent-emerald-soft)';
@@ -418,7 +422,7 @@ function ApiKeyDetailModal({ apiKey, onClose, onRevoke }: ApiKeyDetailModalProps
               </span>
             </div>
             <button
-              onClick={onClose}
+              onClick={(e: any) => { posthog?.capture('apikeycarousel_close_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }}
               style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: '4px', flexShrink: 0 }}
               aria-label="Close"
             >
@@ -448,6 +452,7 @@ interface AllKeysModalProps {
 }
 
 function AllKeysModal({ keys, onClose, onRevoke }: AllKeysModalProps) {
+    const posthog = usePostHog();
   const [query, setQuery] = useState('');
   const [detailKey, setDetailKey] = useState<ApiKeyMetadataResponse | null>(null);
 
@@ -508,7 +513,7 @@ function AllKeysModal({ keys, onClose, onRevoke }: AllKeysModalProps) {
                   </p>
                 </div>
                 <button
-                  onClick={onClose}
+                  onClick={(e: any) => { posthog?.capture('apikeycarousel_close_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: '4px', flexShrink: 0 }}
                   aria-label="Close"
                 >
@@ -534,7 +539,7 @@ function AllKeysModal({ keys, onClose, onRevoke }: AllKeysModalProps) {
                 {query && (
                   <button
                     type="button"
-                    onClick={() => setQuery('')}
+                    onClick={(e: any) => { posthog?.capture('apikeycarousel_clear_clicked'); const handler = () => setQuery(''); if (typeof handler === 'function') (handler as any)(e); }}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: 0, flexShrink: 0 }}
                     aria-label="Clear"
                   >
@@ -563,7 +568,7 @@ function AllKeysModal({ keys, onClose, onRevoke }: AllKeysModalProps) {
                   <button
                     key={key.key_id}
                     type="button"
-                    onClick={() => setDetailKey(key)}
+                    onClick={(e: any) => { posthog?.capture('apikeycarousel_action_clicked'); const handler = () => setDetailKey(key); if (typeof handler === 'function') (handler as any)(e); }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: '14px',
                       width: '100%', padding: '14px 28px',
@@ -613,7 +618,7 @@ function AllKeysModal({ keys, onClose, onRevoke }: AllKeysModalProps) {
                   {/* Back button */}
                   <button
                     type="button"
-                    onClick={() => setDetailKey(null)}
+                    onClick={(e: any) => { posthog?.capture('apikeycarousel_back_clicked'); const handler = () => setDetailKey(null); if (typeof handler === 'function') (handler as any)(e); }}
                     style={{
                       background: 'none', border: '1px solid var(--border-default)',
                       borderRadius: '8px', cursor: 'pointer', color: 'var(--text-secondary)',
@@ -654,7 +659,7 @@ function AllKeysModal({ keys, onClose, onRevoke }: AllKeysModalProps) {
                 </div>
 
                 <button
-                  onClick={onClose}
+                  onClick={(e: any) => { posthog?.capture('apikeycarousel_close_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }}
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: '4px', flexShrink: 0 }}
                   aria-label="Close"
                 >
@@ -685,6 +690,7 @@ export interface ApiKeyCarouselProps {
 }
 
 export function ApiKeyCarousel({ keys, loading, onRevoke }: ApiKeyCarouselProps) {
+    const posthog = usePostHog();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [selectedKey, setSelectedKey] = useState<ApiKeyMetadataResponse | null>(null);
   const [showAll, setShowAll] = useState(false);
@@ -706,7 +712,7 @@ export function ApiKeyCarousel({ keys, loading, onRevoke }: ApiKeyCarouselProps)
         {!loading && keys.length > 0 && (
           <button
             type="button"
-            onClick={() => setShowAll(true)}
+            onClick={(e: any) => { posthog?.capture('apikeycarousel_view_all_clicked'); const handler = () => setShowAll(true); if (typeof handler === 'function') (handler as any)(e); }}
             style={{
               display: 'flex', alignItems: 'center', gap: '4px',
               background: 'none', border: 'none', cursor: 'pointer',

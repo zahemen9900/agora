@@ -23,6 +23,7 @@ import {
   useTaskDetailQuery,
 } from "../lib/taskQueries";
 import { deriveReceiptPaymentState } from "../lib/paymentRelease";
+import { usePostHog } from "@posthog/react";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 const SKELETON_STYLE_ID = "receipt-skeleton-kf";
@@ -113,6 +114,7 @@ function SkeletonVerifCard() {
 }
 
 function CopyHash({ hash }: { hash: string | null | undefined }) {
+    const posthog = usePostHog();
   const [copied, setCopied] = useState(false);
   const val = hash ?? "Unavailable";
   const display = val !== "Unavailable" ? `${val.slice(0, 14)}…${val.slice(-6)}` : "Unavailable";
@@ -136,7 +138,7 @@ function CopyHash({ hash }: { hash: string | null | undefined }) {
       {val !== "Unavailable" && (
         <button
           type="button"
-          onClick={copy}
+          onClick={(e: any) => { posthog?.capture('onchainreceipt_copy_clicked'); const handler = copy; if (typeof handler === 'function') (handler as any)(e); }}
           title="Copy"
           style={{
             flexShrink: 0,
@@ -193,6 +195,7 @@ function StatCard({ label, value, accent }: StatCardProps) {
 }
 
 export function OnChainReceipt() {
+    const posthog = usePostHog();
   const { taskId } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -310,7 +313,7 @@ export function OnChainReceipt() {
       <div style={{ position: 'relative', zIndex: 1, marginBottom: '32px' }}>
         <button
           type="button"
-          onClick={() => navigate(`/task/${taskId ?? ''}`)}
+          onClick={(e: any) => { posthog?.capture('onchainreceipt_back_to_task_clicked'); const handler = () => navigate(`/task/${taskId ?? ''}`); if (typeof handler === 'function') (handler as any)(e); }}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -710,7 +713,7 @@ export function OnChainReceipt() {
       }}>
         <button
           type="button"
-          onClick={handleVerify}
+          onClick={(e: any) => { posthog?.capture('onchainreceipt_action_clicked'); const handler = handleVerify; if (typeof handler === 'function') (handler as any)(e); }}
           disabled={isVerifying || isVerified === true || !result}
           style={{
             display: 'inline-flex',
@@ -744,7 +747,7 @@ export function OnChainReceipt() {
         {task && showReleaseButton && (
           <button
             type="button"
-            onClick={handleReleasePayment}
+            onClick={(e: any) => { posthog?.capture('onchainreceipt_action_clicked'); const handler = handleReleasePayment; if (typeof handler === 'function') (handler as any)(e); }}
             disabled={isPaying || !releaseEnabled}
             style={{
               display: 'inline-flex',

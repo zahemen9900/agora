@@ -1,0 +1,425 @@
+
+=== src\components\benchmark\BenchmarkLiveCanvas.tsx ===
+404: <button
+405: type="button"
+406: className="btn-secondary inline-flex items-center gap-2"
+426: <button
+427: type="button"
+428: className="btn-secondary inline-flex items-center gap-2"
+514: <button type="button" onClick={fitToContent} title="Fit to content" style={iconBtn}>
+515: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+516: <circle cx="7" cy="7" r="2.5" /><line x1="7" y1="0.5" x2="7" y2="3.5" /><line x1="7" y1="10.5" x2="7" y2="13.5" /><line x1="0.5" y1="7" x2="3.5" y2="7" /><line x1="10.5" y1="7" x2="13.5" y2="7" />
+519: <button type="button" onClick={toggleFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
+520: {isFullscreen
+521: ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M1 4V1h3M8 1h3v3M11 8v3H8M4 11H1V8" /></svg>
+620: <button
+621: key={node.id}
+622: type="button"
+
+=== src\components\benchmark\BenchmarkRunRow.tsx ===
+142: <button
+143: type="button" onClick={onOpen}
+144: onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+
+=== src\components\benchmark\BenchmarkWizard.tsx ===
+154: <button
+155: type="button"
+156: onMouseEnter={() => setOpen(true)}
+192: <button
+193: type="button" onClick={onClick}
+194: onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+255: <button
+256: key={domain}
+257: type="button"
+303: <button
+304: type="button" onClick={onClick}
+305: onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
+456: <button
+457: type="button"
+458: onClick={() => setOpen((v) => !v)}
+538: <button
+539: type="button"
+540: onClick={() => onDomainUpdate(activeDomain, (cur) => ({
+552: <button
+553: type="button"
+554: onClick={() => onDomainUpdate(activeDomain, (cur) => {
+634: <button
+635: type="button" disabled={activeDomainIndex === 0}
+636: onClick={() => onDomainChange(BENCHMARK_DOMAINS[activeDomainIndex - 1]!)}
+645: <button
+646: type="button" disabled={activeDomainIndex === domainCount - 1}
+647: onClick={() => onDomainChange(BENCHMARK_DOMAINS[activeDomainIndex + 1]!)}
+782: <button
+783: type="button" onClick={onClose}
+784: aria-label="Close benchmark wizard"
+847: <button
+848: type="button"
+849: onClick={() => setStep((s) => Math.max(0, s - 1) as 0 | 1 | 2)}
+865: <button
+866: type="button"
+867: onClick={() => setStep((s) => Math.min(2, s + 1) as 0 | 1 | 2)}
+883: <button
+884: type="button"
+885: onClick={onSubmit}
+
+=== src\components\benchmark\ChartCard.tsx ===
+44: <button
+45: type="button"
+46: onMouseEnter={() => setVisible(true)}
+
+=== src\components\benchmark\detail\ConvergenceEntropyRiver.tsx ===
+40: <button
+41: key={i}
+42: onClick={() => setActiveIdx(i)}
+
+=== src\components\Flyout.tsx ===
+178: <button
+179: type="button"
+180: onClick={handleDismiss}
+
+=== src\components\HashDisplay.tsx ===
+16: <button
+17: onClick={handleCopy}
+18: className={`p-1 flex items-center justify-center rounded transition-colors ${copied ? 'text-accent' : 'text-text-muted hover:bg-border-subtle'}`}
+
+=== src\components\landing\HeroReel.tsx ===
+678: <Button
+679: variant="primary"
+680: size="md"
+689: <Button
+690: variant="secondary"
+691: size="md"
+
+=== src\components\landing\InteractiveCodeBlock.tsx ===
+182: <button
+183: onClick={handleReset}
+184: className="text-text-muted hover:text-text-secondary transition-colors"
+189: <button
+190: onClick={handleCopy}
+191: className="text-text-muted hover:text-text-secondary transition-colors"
+
+=== src\components\landing\LiveDeliberationPreview.tsx ===
+537: <button
+538: onClick={startReplay}
+539: className="btn-secondary"
+
+=== src\components\landing\MechanismSelector.tsx ===
+46: <button
+47: key={task}
+48: onClick={() => setActive(task)}
+
+=== src\components\landing\OnChainReceiptPreview.tsx ===
+236: <button onClick={onAction} style={{ fontSize: '10px', color: 'var(--accent-emerald)', fontFamily: "'Commit Mono', monospace", cursor: 'pointer' }}>
+237: {copied ? 'Copied!' : '[copy]'}
+238: </button>
+276: <button
+277: onClick={runVerify}
+278: disabled={status === 'running'}
+
+=== src\components\NavBar.tsx ===
+83: <button
+84: onClick={signOut}
+85: className="hidden sm:flex items-center text-text-muted hover:text-text-primary transition-colors p-1"
+93: <button
+94: onClick={() => setMenuState(({ isOpen }) => ({ isOpen: !isOpen, pathname: location.pathname }))}
+95: className="md:hidden flex items-center text-text-secondary hover:text-text-primary transition-colors p-1"
+145: <button
+146: onClick={signOut}
+147: className="flex items-center gap-1.5 text-text-muted hover:text-text-primary transition-colors text-sm py-1 px-2"
+
+=== src\components\ReasoningPresetControls.tsx ===
+36: <button
+37: type="button"
+38: onClick={() => setOpen((v) => !v)}
+69: <button
+70: key={opt.value}
+71: type="button"
+
+=== src\components\task\ApiKeyCarousel.tsx ===
+99: <button
+100: type="button"
+101: onClick={onClick}
+234: <button
+235: type="button"
+236: onClick={copyId}
+291: <button
+292: type="button"
+293: onClick={() => setConfirmRevoke(false)}
+304: <button
+305: type="button"
+306: onClick={() => void handleRevoke()}
+322: <button
+323: type="button"
+324: onClick={() => setConfirmRevoke(true)}
+420: <button
+421: onClick={onClose}
+422: style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: '4px', flexShrink: 0 }}
+510: <button
+511: onClick={onClose}
+512: style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: '4px', flexShrink: 0 }}
+535: <button
+536: type="button"
+537: onClick={() => setQuery('')}
+563: <button
+564: key={key.key_id}
+565: type="button"
+614: <button
+615: type="button"
+616: onClick={() => setDetailKey(null)}
+656: <button
+657: onClick={onClose}
+658: style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex', padding: '4px', flexShrink: 0 }}
+707: <button
+708: type="button"
+709: onClick={() => setShowAll(true)}
+
+=== src\components\task\canvas\CanvasView.tsx ===
+76: <button
+77: type="button"
+78: data-no-drag
+185: <button
+186: onClick={(e) => { e.stopPropagation(); onClose(); }}
+187: style={{
+346: <button onClick={onReset} title="Fit to content" style={iconBtn}>
+347: <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+348: <circle cx="7" cy="7" r="2.5" />
+355: <button onClick={onFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
+356: {isFullscreen
+357: ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M1 4V1h3M8 1h3v3M11 8v3H8M4 11H1V8" /></svg>
+
+=== src\components\task\canvas\GraphNodeCard.tsx ===
+172: <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "14px", lineHeight: 1 }}>×</button>
+173: </div>
+174: {node.reason && (
+212: <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "14px", lineHeight: 1 }}>×</button>
+213: </div>
+214: <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-primary)", wordBreak: "break-all" }}>{value}</div>
+245: <button
+246: onClick={(e) => { e.stopPropagation(); onClick(); }}
+247: style={{
+386: <button
+387: onClick={() => setThinkingOpen((v) => !v)}
+388: style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px", padding: 0, color: "var(--text-muted)", fontFamily: "'Commit Mono', monospace", fontSize: "10px" }}
+
+=== src\components\task\canvas\QuorumOverlay.tsx ===
+87: <button
+88: onClick={goToReceipt}
+89: data-no-drag
+
+=== src\components\task\ConfigModal.tsx ===
+28: <button
+29: type="button"
+30: onMouseEnter={() => setOpen(true)}
+222: <button
+223: onClick={onClose}
+224: aria-label="Close"
+240: <button
+241: key={tab}
+242: onClick={() => setActiveTab(tab)}
+289: <button
+290: key={option.value}
+291: type="button"
+335: <button
+336: key={val}
+337: type="button"
+445: <button
+446: key={opt.value}
+447: type="button"
+519: <button
+520: key={n}
+521: type="button"
+642: <button
+643: type="button"
+644: onClick={stakesOverLimit ? undefined : onClose}
+
+=== src\components\task\DecisionPopup.tsx ===
+176: <button
+177: type="button"
+178: onClick={onNavigate}
+
+=== src\components\task\RecentDeliberationsCarousel.tsx ===
+134: <button
+135: type="button"
+136: onClick={handleClick}
+336: <button
+337: onClick={onClose}
+338: style={{
+385: <button
+386: type="button"
+387: onClick={() => setQuery('')}
+435: <button
+436: key={task.task_id}
+437: type="button"
+555: <button
+556: type="button"
+557: onClick={onRefresh}
+576: <button
+577: type="button"
+578: onClick={() => setShowAll(true)}
+
+=== src\components\TierModelSelectorGrid.tsx ===
+51: <button
+52: type="button"
+53: onClick={() => setOpen((v) => !v)}
+87: <button
+88: key={opt.model_id}
+89: type="button"
+
+=== src\components\ui\Button.tsx ===
+82: <button
+83: ref={ref}
+84: className={`${baseClasses} ${sizeClasses[size]} ${className}`}
+
+=== src\components\ui\ThemeToggle.tsx ===
+8: <button
+9: onClick={toggleTheme}
+10: className="flex items-center justify-center w-8 h-8 rounded-full bg-elevated border border-border-subtle text-text-secondary hover:text-text-primary hover:border-border-muted transition-colors"
+
+=== src\pages\ApiKeys.tsx ===
+127: <button
+128: type="button"
+129: onClick={handleCopy}
+146: <button
+147: type="button"
+148: onClick={onDismiss}
+385: <button
+386: type="button"
+387: disabled={submitting || !name.trim()}
+
+=== src\pages\BenchmarkDetail.tsx ===
+584: <button type="button" className="btn-secondary mb-6 inline-flex items-center gap-2" onClick={() => navigate("/benchmarks") }>
+585: <ArrowLeft size={14} /> Back to overview
+586: </button>
+639: <button
+640: type="button"
+641: onClick={() => navigate("/benchmarks")}
+647: <button
+648: type="button"
+649: onClick={() => navigate("/benchmarks/all")}
+655: <button
+656: type="button"
+657: onClick={() => void detailQuery.refetch()}
+667: <button
+668: key={tab}
+669: type="button"
+877: <button
+878: key={item.item_id}
+879: type="button"
+919: <button
+920: type="button"
+921: className="btn-secondary inline-flex items-center gap-2"
+939: <button
+940: key={phase}
+941: type="button"
+1034: <button
+1035: key={view}
+1036: type="button"
+1412: <button
+1413: type="button"
+1414: onClick={handleCopy}
+
+=== src\pages\Benchmarks.tsx ===
+985: <button type="button" className="btn-primary" onClick={openWizard}>
+986: Configure and Run
+987: </button>
+1026: <button
+1027: type="button"
+1028: onClick={() => void benchmarkCatalogQuery.refetch()}
+1035: <button
+1036: type="button"
+1037: onClick={() => navigate("/benchmarks/all")}
+1126: <button
+1127: type="button"
+1128: onClick={() => void benchmarkCatalogQuery.refetch()}
+1135: <button
+1136: type="button"
+1137: onClick={() => navigate("/benchmarks/all")}
+1244: <button
+1245: type="button"
+1246: onClick={() => setOpen((v) => !v)}
+1272: <button
+1273: key={option}
+1274: type="button"
+1312: <button
+1313: type="button"
+1314: onClick={() => setOpen((v) => !v)}
+1341: <button
+1342: key={option}
+1343: type="button"
+
+=== src\pages\BenchmarksAll.tsx ===
+129: <button
+130: type="button"
+131: onClick={onOpen}
+220: <button
+221: type="button"
+222: onClick={() => setOpen((v) => !v)}
+245: <button
+246: key={option}
+247: type="button"
+385: <button
+386: type="button"
+387: onClick={() => navigate("/benchmarks")}
+431: <button
+432: type="button"
+433: onClick={() => setQuery("")}
+443: <button
+444: type="button"
+445: onClick={() => void catalogQuery.refetch()}
+
+=== src\pages\Callback.tsx ===
+32: <button className="btn-primary" onClick={() => navigate("/login", { replace: true })}>
+33: Try sign in again
+34: </button>
+35: <button className="btn-secondary" onClick={() => navigate("/auth", { replace: true })}>
+36: Back to auth
+37: </button>
+
+=== src\pages\LiveDeliberation.tsx ===
+1099: <button
+1100: onClick={() => navigate("/tasks")}
+1101: style={{ display: "flex", alignItems: "center", gap: "6px", padding: "6px 14px", borderRadius: "8px", background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", cursor: "pointer", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-muted)", transition: "all 0.15s ease" }}
+1110: <button
+1111: key={tab}
+1112: onClick={() => setActiveTab(tab)}
+1224: <button
+1225: className="btn-primary flex items-center justify-center gap-2"
+1226: onClick={() => navigate(`/task/${taskId}/receipt`)}
+
+=== src\pages\Login.tsx ===
+136: <button
+137: onClick={() => navigate('/tasks')}
+138: className="btn-primary"
+144: <button
+145: onClick={() => signIn()}
+146: disabled={isLoading}
+
+=== src\pages\OnChainReceipt.tsx ===
+137: <button
+138: type="button"
+139: onClick={copy}
+311: <button
+312: type="button"
+313: onClick={() => navigate(`/task/${taskId ?? ''}`)}
+711: <button
+712: type="button"
+713: onClick={handleVerify}
+745: <button
+746: type="button"
+747: onClick={handleReleasePayment}
+
+=== src\pages\SessionRecovery.tsx ===
+46: <button type="button" className="btn-primary inline-flex items-center gap-2" onClick={() => signIn()}>
+47: Sign in again <ArrowRight size={16} />
+48: </button>
+
+=== src\pages\TaskSubmit.tsx ===
+352: <button
+353: type="button"
+354: onClick={() => setConfigOpen(true)}
+397: <button
+398: type="button"
+399: id="submit-task"
+515: <button
+516: key={p.label}
+517: type="button"

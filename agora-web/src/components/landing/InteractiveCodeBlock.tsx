@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Copy, RotateCcw, Check } from 'lucide-react';
+import { usePostHog } from "@posthog/react";
 
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -39,6 +40,7 @@ type Stage =
 
 
 export function InteractiveCodeBlock() {
+    const posthog = usePostHog();
   const containerRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState<Stage>({ type: 'idle' });
   const [copied, setCopied] = useState(false);
@@ -180,14 +182,14 @@ export function InteractiveCodeBlock() {
           </span>
           <div className="flex gap-3 items-center">
             <button
-              onClick={handleReset}
+              onClick={(e: any) => { posthog?.capture('interactivecodeblock_reset_clicked'); const handler = handleReset; if (typeof handler === 'function') (handler as any)(e); }}
               className="text-text-muted hover:text-text-secondary transition-colors"
               title="Reset"
             >
               <RotateCcw size={13} />
             </button>
             <button
-              onClick={handleCopy}
+              onClick={(e: any) => { posthog?.capture('interactivecodeblock_copy_code_clicked'); const handler = handleCopy; if (typeof handler === 'function') (handler as any)(e); }}
               className="text-text-muted hover:text-text-secondary transition-colors"
               title="Copy code"
             >

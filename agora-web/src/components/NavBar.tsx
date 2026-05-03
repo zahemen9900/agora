@@ -3,8 +3,10 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../lib/useAuth';
 import { LogOut, Menu, User as UserIcon, X } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
+import { usePostHog } from "@posthog/react";
 
 export function NavBar() {
+    const posthog = usePostHog();
   const { user, signOut, featureFlags } = useAuth();
   const location = useLocation();
   const [menuState, setMenuState] = useState({ isOpen: false, pathname: location.pathname });
@@ -81,7 +83,7 @@ export function NavBar() {
           </div>
 
           <button
-            onClick={signOut}
+            onClick={(e: any) => { posthog?.capture('navbar_sign_out_clicked'); const handler = signOut; if (typeof handler === 'function') (handler as any)(e); }}
             className="hidden sm:flex items-center text-text-muted hover:text-text-primary transition-colors p-1"
             title="Sign Out"
           >
@@ -91,7 +93,7 @@ export function NavBar() {
           <ThemeToggle />
 
           <button
-            onClick={() => setMenuState(({ isOpen }) => ({ isOpen: !isOpen, pathname: location.pathname }))}
+            onClick={(e: any) => { posthog?.capture('navbar_action_clicked'); const handler = () => setMenuState(({ isOpen }) => ({ isOpen: !isOpen, pathname: location.pathname })); if (typeof handler === 'function') (handler as any)(e); }}
             className="md:hidden flex items-center text-text-secondary hover:text-text-primary transition-colors p-1"
             aria-label={menuOpen ? 'Close menu' : 'Open menu'}
           >
@@ -143,7 +145,7 @@ export function NavBar() {
               </span>
             </div>
             <button
-              onClick={signOut}
+              onClick={(e: any) => { posthog?.capture('navbar_sign_out_clicked'); const handler = signOut; if (typeof handler === 'function') (handler as any)(e); }}
               className="flex items-center gap-1.5 text-text-muted hover:text-text-primary transition-colors text-sm py-1 px-2"
             >
               <LogOut size={14} />

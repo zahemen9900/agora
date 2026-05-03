@@ -11,6 +11,7 @@ import {
   type ReasoningPresetState,
   type TierModelOverrideState,
 } from '../../lib/deliberationConfig';
+import { usePostHog } from "@posthog/react";
 
 function ProviderLogo({ provider, size = 20 }: { provider: string; size?: number }) {
   return (
@@ -22,6 +23,7 @@ function ProviderLogo({ provider, size = 20 }: { provider: string; size?: number
 
 // ─── Stakes tooltip ───────────────────────────────────────────────────────────
 function StakesTooltip() {
+    const posthog = usePostHog();
   const [open, setOpen] = useState(false);
   return (
     <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
@@ -36,7 +38,7 @@ function StakesTooltip() {
           background: 'none', border: 'none', cursor: 'pointer',
           padding: '2px', color: 'var(--text-tertiary)',
           display: 'flex', alignItems: 'center',
-        }}
+        }} onClick={() => posthog?.capture('configmodal_stakes_help_clicked')}
       >
         <HelpCircle size={13} />
       </button>
@@ -165,6 +167,7 @@ export function ConfigModal({
   tierModelOverrides,
   onTierModelOverridesChange,
 }: ConfigModalProps) {
+    const posthog = usePostHog();
   const [activeTab, setActiveTab] = useState<TabId>('Effort & Stakes');
   const reasoningDefinitions = buildReasoningControlDefinitions(runtimeConfig, tierModelOverrides);
 
@@ -220,7 +223,7 @@ export function ConfigModal({
             Configure
           </div>
           <button
-            onClick={onClose}
+            onClick={(e: any) => { posthog?.capture('configmodal_close_clicked'); const handler = onClose; if (typeof handler === 'function') (handler as any)(e); }}
             aria-label="Close"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: '4px', display: 'flex', alignItems: 'center' }}
           >
@@ -239,7 +242,7 @@ export function ConfigModal({
           {TABS.map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => setActiveTab(tab); if (typeof handler === 'function') (handler as any)(e); }}
               style={{
                 background: 'none',
                 border: 'none',
@@ -289,7 +292,7 @@ export function ConfigModal({
                       <button
                         key={option.value}
                         type="button"
-                        onClick={() => onMechanismOverrideChange(option.value as MechanismName | "auto")}
+                        onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onMechanismOverrideChange(option.value as MechanismName | "auto"); if (typeof handler === 'function') (handler as any)(e); }}
                         style={{
                           padding: '10px 0',
                           borderRadius: '10px',
@@ -335,7 +338,7 @@ export function ConfigModal({
                     <button
                       key={val}
                       type="button"
-                      onClick={() => onStakesChange(val)}
+                      onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onStakesChange(val); if (typeof handler === 'function') (handler as any)(e); }}
                       style={{
                         padding: '6px 14px',
                         borderRadius: '100px',
@@ -445,7 +448,7 @@ export function ConfigModal({
                             <button
                               key={opt.value}
                               type="button"
-                              onClick={() => onPresetsChange({ ...reasoningPresets, [def.id]: opt.value } as ReasoningPresetState)}
+                              onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onPresetsChange({ ...reasoningPresets, [def.id]: opt.value } as ReasoningPresetState); if (typeof handler === 'function') (handler as any)(e); }}
                               style={{
                                 flex: 1,
                                 padding: '5px 0',
@@ -519,7 +522,7 @@ export function ConfigModal({
                     <button
                       key={n}
                       type="button"
-                      onClick={() => onAgentCountChange(n)}
+                      onClick={(e: any) => { posthog?.capture('configmodal_action_clicked'); const handler = () => onAgentCountChange(n); if (typeof handler === 'function') (handler as any)(e); }}
                       style={{
                         flex: 1,
                         padding: '12px 0',
@@ -641,7 +644,7 @@ export function ConfigModal({
           )}
           <button
             type="button"
-            onClick={stakesOverLimit ? undefined : onClose}
+            onClick={(e: any) => { posthog?.capture('configmodal_done_clicked'); const handler = stakesOverLimit ? undefined : onClose; if (typeof handler === 'function') (handler as any)(e); }}
             disabled={stakesOverLimit}
             style={{
               padding: '9px 22px',

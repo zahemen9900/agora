@@ -100,6 +100,14 @@ export interface BenchmarkCategoryLearningShiftPoint {
   saturated: boolean;
 }
 
+export interface BenchmarkCategoryLearningShiftPoint {
+  category: string;
+  pre: number;
+  post: number;
+  delta: number;
+  saturated: boolean;
+}
+
 export type BenchmarkArtifactKind = "validation" | "comparison" | "unknown";
 
 export const BENCHMARK_DOMAIN_KEYS = [

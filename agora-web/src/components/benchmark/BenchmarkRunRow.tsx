@@ -3,6 +3,7 @@ import { ChevronRight } from "lucide-react";
 import type { BenchmarkCatalogEntry, BenchmarkRunStatusPayload } from "../../lib/api";
 import { ProviderGlyph } from "../ProviderGlyph";
 import { providerFromModel } from "../../lib/modelProviders";
+import { usePostHog } from "@posthog/react";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 const ROW_KF_ID = "bm-row-kf";
@@ -137,18 +138,12 @@ function RunShell({
   onOpen: () => void;
   accentHex?: string;
 }) {
+    const posthog = usePostHog();
   const [hovered, setHovered] = useState(false);
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onOpen();
-        }
-      }}
+    <button
+      type="button"
+      onClick={() => { posthog?.capture('benchmarkrunrow_action_clicked'); onOpen(); }}
       onMouseEnter={() => setHovered(true)} onMouseLeave={() => setHovered(false)}
       style={{
         width: "100%", textAlign: "left", display: "block",
@@ -164,7 +159,7 @@ function RunShell({
         cursor: "pointer",
         transition: "border-color 0.15s ease, background 0.15s ease",
       }}
-    >{children}</div>
+    >{children}</button>
   );
 }
 

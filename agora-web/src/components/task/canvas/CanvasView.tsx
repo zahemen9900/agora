@@ -12,6 +12,7 @@ import { GraphNodeCard, CanvasStreamText, NODE_WIDTH, NODE_HEIGHT, NODE_GAP_H, N
 import { QuorumOverlay } from "./QuorumOverlay";
 import { useGraphLayout } from "./useGraphLayout";
 import type { GraphNode, NodeKind } from "./canvasTypes";
+import { usePostHog } from "@posthog/react";
 
 interface TimelineEventLike {
   key: string; type: string; title: string; summary: string;
@@ -71,6 +72,7 @@ function SplitTransitionPill({
   pill: TransitionPill;
   onOpen: (nodeId: string) => void;
 }) {
+    const posthog = usePostHog();
   const color = stageColor(pill.node.kind, pill.node.stage);
   return (
     <button
@@ -79,10 +81,10 @@ function SplitTransitionPill({
       title={pill.description}
       aria-label={`${pill.label}: ${pill.description}`}
       onPointerDown={(event) => event.stopPropagation()}
-      onClick={(event) => {
-        event.stopPropagation();
-        onOpen(pill.node.id);
-      }}
+      onClick={(e: any) => { posthog?.capture('canvasview_action_clicked'); const handler = (event: any) => {
+                        event.stopPropagation();
+                        onOpen(pill.node.id);
+                      }; if (typeof handler === 'function') (handler as any)(e); }}
       style={{
         position: "absolute",
         left: pill.x,
@@ -144,6 +146,7 @@ function injectModalKeyframes() {
 }
 
 function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => void }) {
+    const posthog = usePostHog();
   const color = stageColor(node.kind, node.stage);
   const t = node.telemetry;
   const [showTelemetry, setShowTelemetry] = useState(false);
@@ -183,7 +186,7 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
         )}
         <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", fontWeight: 600, color, textTransform: "uppercase", letterSpacing: "0.08em", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.agentModel ?? node.title}</span>
         <button
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
+          onClick={(e: any) => { posthog?.capture('canvasview_clicked'); const handler = (e: any) => { e.stopPropagation(); onClose(); }; if (typeof handler === 'function') (handler as any)(e); }}
           style={{ 
             background: "var(--bg-base)", 
             border: "1px solid var(--border-default)", 
@@ -332,6 +335,7 @@ function StatusBar({ mechanism, roundCount, eventCount, entropy, nodeCount, isFu
   mechanism: string; roundCount: number; eventCount: number; entropy?: number; nodeCount: number;
   isFullscreen: boolean; onFullscreen: () => void; onReset: () => void;
 }) {
+    const posthog = usePostHog();
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "14px", padding: "8px 14px", background: "var(--bg-elevated)", borderBottom: "1px solid var(--border-subtle)", flexShrink: 0, flexWrap: "wrap", rowGap: "5px" }}>
       <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", padding: "3px 10px", borderRadius: "100px", background: "rgba(34,211,238,0.10)", color: "#22d3ee", border: "1px solid rgba(34,211,238,0.3)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -343,7 +347,7 @@ function StatusBar({ mechanism, roundCount, eventCount, entropy, nodeCount, isFu
       {entropy !== undefined && <><Dot /><Stat label="Entropy" value={entropy.toFixed(2)} /></>}
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
         <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)" }}>Drag · Scroll to zoom</span>
-        <button onClick={onReset} title="Fit to content" style={iconBtn}>
+        <button onClick={(e: any) => { posthog?.capture('canvasview_fit_to_content_clicked'); const handler = onReset; if (typeof handler === 'function') (handler as any)(e); }} title="Fit to content" style={iconBtn}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
             <circle cx="7" cy="7" r="2.5" />
             <line x1="7" y1="0.5" x2="7" y2="3.5" />
@@ -352,7 +356,7 @@ function StatusBar({ mechanism, roundCount, eventCount, entropy, nodeCount, isFu
             <line x1="10.5" y1="7" x2="13.5" y2="7" />
           </svg>
         </button>
-        <button onClick={onFullscreen} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
+        <button onClick={(e: any) => { posthog?.capture('canvasview_action_clicked'); const handler = onFullscreen; if (typeof handler === 'function') (handler as any)(e); }} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
           {isFullscreen
             ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M1 4V1h3M8 1h3v3M11 8v3H8M4 11H1V8" /></svg>
             : <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M4 1H1v3M8 1h3v3M1 8v3h3M8 11h3V8" /></svg>

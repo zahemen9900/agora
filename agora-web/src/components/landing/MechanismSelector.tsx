@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { usePostHog } from "@posthog/react";
 
 const TASKS = ['Code review', 'Factual Q&A', 'Creative syn.', 'Values judgment'] as const;
 type Task = typeof TASKS[number];
@@ -20,6 +21,7 @@ const MECH_COLORS: Record<Mechanism, string> = {
 };
 
 export function MechanismSelector() {
+    const posthog = usePostHog();
   const [active, setActive] = useState<Task>('Code review');
   const values = DATA[active];
 
@@ -45,7 +47,7 @@ export function MechanismSelector() {
             {TASKS.map(task => (
               <button
                 key={task}
-                onClick={() => setActive(task)}
+                onClick={(e: any) => { posthog?.capture('mechanismselector_action_clicked'); const handler = () => setActive(task); if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   padding: '8px 18px',
                   borderRadius: '9999px',
