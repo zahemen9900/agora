@@ -7,12 +7,20 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from agora.types import ProviderTierName, ReasoningPresetOverrides, ReasoningPresets
+from agora.types import (
+    LocalDebateConfig,
+    LocalModelSpec,
+    LocalProviderKeys,
+    ProviderTierName,
+    ReasoningPresetOverrides,
+    ReasoningPresets,
+)
 
 MechanismName = Literal["debate", "vote", "delphi"]
 TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"]
 PaymentStatusName = Literal["locked", "released", "none"]
 ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
+TaskExecutionSourceName = Literal["hosted", "local_byok"]
 AuthMethodName = Literal["jwt", "api_key"]
 ApiKeyScopeName = Literal[
     "tasks:read",
@@ -50,6 +58,14 @@ class TaskCreateResponse(BaseModel):
     selector_source: str = "llm_reasoning"
     selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
+
+
+class TaskRunRequest(BaseModel):
+    """Optional local-execution payload for starting a stored task."""
+
+    local_models: list[LocalModelSpec] | None = None
+    local_provider_keys: LocalProviderKeys | None = None
+    local_debate_config: LocalDebateConfig | None = None
 
 
 class TaskEvent(BaseModel):
@@ -122,6 +138,8 @@ class TaskStatusResponse(BaseModel):
     allow_mechanism_switch: bool = True
     allow_offline_fallback: bool = True
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    execution_source: TaskExecutionSourceName = "hosted"
+    background_recovery_allowed: bool = True
     selector_source: str = "llm_reasoning"
     selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
@@ -144,6 +162,7 @@ class TaskStatusResponse(BaseModel):
     payment_status: PaymentStatusName = "none"
     chain_operations: dict[str, ChainOperationRecord] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
     failure_reason: str | None = None
     latest_error_event: TaskEvent | None = None

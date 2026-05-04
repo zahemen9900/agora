@@ -22,7 +22,13 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import ValidationError
 
 from agora.runtime.hasher import TranscriptHasher
-from agora.types import DeliberationResult, MechanismSelection, MechanismType
+from agora.types import (
+    DeliberationResult,
+    LocalModelSpec,
+    LocalProviderKeys,
+    MechanismSelection,
+    MechanismType,
+)
 from api import auth
 from api.auth import AuthenticatedUser
 from api.auth_keys import DEFAULT_API_KEY_SCOPES, build_api_key_token, hash_api_key_secret
@@ -32,7 +38,12 @@ from api.coordination import (
     reset_coordination_backend_cache_for_tests,
 )
 from api.main import app
-from api.models import ApiKeyCreateRequest, BenchmarkRunRequest, TaskCreateRequest
+from api.models import (
+    ApiKeyCreateRequest,
+    BenchmarkRunRequest,
+    TaskCreateRequest,
+    TaskRunRequest,
+)
 from api.routes import api_keys as api_key_routes
 from api.routes import auth_session
 from api.routes import benchmarks as benchmark_routes
@@ -1161,6 +1172,7 @@ async def test_run_recovers_stale_in_progress_task_without_live_lease(
         assert store is not None
         task = await store.get_task("user-1", create.task_id)
         assert task is not None
+        original_updated_at = task["updated_at"]
         task["status"] = "in_progress"
         await store.save_task("user-1", create.task_id, task)
 
@@ -1175,6 +1187,7 @@ async def test_run_recovers_stale_in_progress_task_without_live_lease(
 
     assert response.final_answer == "Recovered successfully."
     assert recovered["status"] == "completed"
+    assert recovered["updated_at"] != original_updated_at
     assert any(event["event"] == "task_recovered" for event in recovered_events)
 
 
@@ -1196,7 +1209,13 @@ async def test_run_async_schedules_background_execution(
         started = asyncio.Event()
         captured: dict[str, str] = {}
 
-        async def fake_execute_task_run(*, task_id: str, workspace_id: str):
+        async def fake_execute_task_run(
+            *,
+            task_id: str,
+            workspace_id: str,
+            run_request: TaskRunRequest | None = None,
+        ):
+            del run_request
             captured["task_id"] = task_id
             captured["workspace_id"] = workspace_id
             started.set()
@@ -1213,6 +1232,71 @@ async def test_run_async_schedules_background_execution(
         assert captured == {"task_id": create.task_id, "workspace_id": "user-1"}
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_run_async_with_local_execution_persists_only_sanitized_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-async-local-byok"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="background local run", agent_count=2, stakes=0.0),
+            _override_user(),
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_launch_background_task_run(
+            *,
+            task_id: str,
+            workspace_id: str,
+            run_request: TaskRunRequest | None = None,
+        ) -> None:
+            captured["task_id"] = task_id
+            captured["workspace_id"] = workspace_id
+            captured["run_request"] = run_request
+
+        monkeypatch.setattr(task_routes, "_launch_background_task_run", fake_launch_background_task_run)
+
+        run_request = TaskRunRequest(
+            local_models=[
+                LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+                LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+            ],
+            local_provider_keys=LocalProviderKeys(
+                gemini_api_key="gem-secret",
+                anthropic_api_key="anth-secret",
+            ),
+        )
+
+        response = await task_routes.start_task_run(
+            create.task_id,
+            _override_user(),
+            run_request,
+        )
+
+        store = task_routes._store
+        assert store is not None
+        persisted = await store.get_task("user-1", create.task_id)
+        assert persisted is not None
+    finally:
+        task_routes._store = None
+
+    assert response.task_id == create.task_id
+    assert response.status == "pending"
+    assert captured["task_id"] == create.task_id
+    assert captured["workspace_id"] == "user-1"
+    assert captured["run_request"] == run_request
+    assert persisted["execution_source"] == "local_byok"
+    assert persisted["background_recovery_allowed"] is False
+    assert "local_provider_keys" not in persisted
+    assert "gem-secret" not in json.dumps(persisted)
+    assert "anth-secret" not in json.dumps(persisted)
 
 
 @pytest.mark.asyncio
@@ -1258,6 +1342,113 @@ async def test_run_async_returns_in_progress_without_duplicate_launch(
 
 
 @pytest.mark.asyncio
+async def test_run_task_with_local_execution_forwards_local_roster_to_orchestrator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-local-roster"))
+    selection = make_selection(mechanism=MechanismType.DEBATE, topic_category="reasoning")
+    captured: dict[str, object] = {}
+    completed_result = DeliberationResult(
+        task="placeholder",
+        mechanism_used=MechanismType.DEBATE,
+        mechanism_selection=selection,
+        final_answer="Local hosted answer",
+        confidence=0.91,
+        quorum_reached=True,
+        round_count=1,
+        agent_count=2,
+        mechanism_switches=0,
+        merkle_root="local-byok-root",
+        transcript_hashes=["leaf-1", "leaf-2"],
+        agent_models_used=["gemini-3-flash-preview", "claude-sonnet-4-6"],
+        convergence_history=[],
+        locked_claims=[],
+        total_tokens_used=20,
+        total_latency_ms=15.0,
+        timestamp=datetime.now(UTC),
+    )
+
+    class _FakeSelector:
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return selection
+
+    class _FakeRunOrchestrator:
+        def __init__(
+            self,
+            agent_count: int,
+            allow_offline_fallback: bool = False,
+            reasoning_presets=None,
+            local_models=None,
+            local_provider_keys=None,
+            local_debate_config=None,
+            tier_model_overrides=None,
+        ):
+            captured["agent_count"] = agent_count
+            captured["allow_offline_fallback"] = allow_offline_fallback
+            captured["local_models"] = local_models
+            captured["local_provider_keys"] = local_provider_keys
+            captured["local_debate_config"] = local_debate_config
+            captured["tier_model_overrides"] = tier_model_overrides
+            self.selector = _FakeSelector()
+
+        async def execute_selection(
+            self,
+            task: str,
+            selection: MechanismSelection,
+            event_sink=None,
+            agents=None,
+            allow_switch: bool = True,
+        ) -> DeliberationResult:
+            del selection, agents, allow_switch
+            if event_sink is not None:
+                await event_sink(
+                    "complete",
+                    {"task": task, "mechanism": completed_result.mechanism_used.value},
+                )
+            return completed_result.model_copy(update={"task": task})
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeRunOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="run local roster", agent_count=2, stakes=0.0),
+            _override_user(),
+        )
+
+        response = await task_routes.run_task(
+            create.task_id,
+            _override_user(),
+            TaskRunRequest(
+                local_models=[
+                    LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+                    LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+                ],
+                local_provider_keys=LocalProviderKeys(
+                    gemini_api_key="gem-secret",
+                    anthropic_api_key="anth-secret",
+                ),
+            ),
+        )
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert response.final_answer == "Local hosted answer"
+    assert captured["agent_count"] == 2
+    assert captured["local_models"] == [
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+    ]
+    assert captured["local_provider_keys"] == LocalProviderKeys(
+        gemini_api_key="gem-secret",
+        anthropic_api_key="anth-secret",
+    )
+
+
+@pytest.mark.asyncio
 async def test_resume_stale_background_task_runs_relaunches_requested_pending_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1295,6 +1486,89 @@ async def test_resume_stale_background_task_runs_relaunches_requested_pending_ta
         assert launches == [(create.task_id, "user-1")]
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_run_task_rejects_single_provider_local_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-local-invalid"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="bad local roster", agent_count=2, stakes=0.0),
+            _override_user(),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await task_routes.run_task(
+                create.task_id,
+                _override_user(),
+                TaskRunRequest(
+                    local_models=[
+                        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+                        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+                    ],
+                    local_provider_keys=LocalProviderKeys(gemini_api_key="gem-secret"),
+                ),
+            )
+    finally:
+        task_routes._store = None
+
+    assert exc_info.value.status_code == 422
+    assert "at least 2 distinct provider families" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_resume_stale_background_task_runs_fails_unrecoverable_local_byok_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "resume-stale-local-byok"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="recover local byok task", agent_count=2, stakes=0.0),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "in_progress"
+        task["execution_source"] = "local_byok"
+        task["background_recovery_allowed"] = False
+        task["background_run_requested_at"] = "2026-04-29T00:00:00+00:00"
+        task["updated_at"] = "2026-04-29T00:00:00+00:00"
+        await store.save_task("user-1", create.task_id, task)
+
+        launches: list[tuple[str, str]] = []
+
+        def fake_launch_background_task_run(*, task_id: str, workspace_id: str, run_request=None) -> None:
+            del run_request
+            launches.append((task_id, workspace_id))
+
+        monkeypatch.setattr(task_routes, "_launch_background_task_run", fake_launch_background_task_run)
+
+        recovered = await task_routes.resume_stale_background_task_runs(
+            stale_after_seconds=60,
+            limit=50,
+        )
+
+        updated = await store.get_task("user-1", create.task_id)
+        assert updated is not None
+    finally:
+        task_routes._store = None
+
+    assert recovered == 0
+    assert launches == []
+    assert updated["status"] == "failed"
+    assert "cannot be recovered" in updated["failure_reason"].lower()
 
 
 @pytest.mark.asyncio
