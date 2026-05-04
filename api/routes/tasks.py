@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from agora.runtime.costing import build_model_telemetry, estimate_cost_for_models
+from agora.runtime.local_models import validate_local_model_config
 from agora.runtime.model_policy import normalize_tier_model_overrides, resolve_reasoning_presets
 from agora.runtime.orchestrator import AgoraOrchestrator
 from agora.runtime.task_execution import (
@@ -52,6 +53,7 @@ from api.models import (
     TaskCreateRequest,
     TaskCreateResponse,
     TaskEvent,
+    TaskRunRequest,
     TaskStatusResponse,
 )
 from api.solana_bridge import LAMPORTS_PER_SOL, bridge
@@ -210,7 +212,12 @@ def _track_background_task(run_key: str, task: asyncio.Task[None]) -> None:
     task.add_done_callback(_cleanup)
 
 
-def _launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
+def _launch_background_task_run(
+    *,
+    task_id: str,
+    workspace_id: str,
+    run_request: TaskRunRequest | None = None,
+) -> None:
     """Start a task run in the background when one is not already active locally."""
 
     run_key = _task_run_key(workspace_id, task_id)
@@ -220,7 +227,11 @@ def _launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
 
     async def _runner() -> None:
         try:
-            await _execute_task_run(task_id=task_id, workspace_id=workspace_id)
+            await _execute_task_run(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                run_request=run_request,
+            )
         except HTTPException as exc:
             logger.warning(
                 "background_task_run_rejected",
@@ -279,10 +290,28 @@ async def resume_stale_background_task_runs(
         updated_at = _parse_timestamp(raw_task.get("updated_at"))
         is_stale = updated_at is None or updated_at <= stale_before
         background_requested = bool(raw_task.get("background_run_requested_at"))
+        is_unrecoverable_local_byok = (
+            str(raw_task.get("execution_source") or "").strip().lower() == "local_byok"
+            and not bool(raw_task.get("background_recovery_allowed", True))
+        )
         should_resume = (status == "pending" and background_requested) or (
             status == "in_progress" and is_stale
         )
         if not should_resume:
+            continue
+        if is_unrecoverable_local_byok:
+            task = _to_status_response(raw_task, detailed=True)
+            await _mark_task_failed(
+                store=store,
+                stream=get_stream_manager(),
+                workspace_id=workspace_id,
+                task_id=task_id,
+                task=task,
+                message=(
+                    "This BYOK task run cannot be recovered after worker loss because "
+                    "provider keys are ephemeral and were never persisted."
+                ),
+            )
             continue
         logger.info(
             "resume_stale_background_task_run",
@@ -675,6 +704,7 @@ async def _save_task_status(
     task_id: str,
     task: TaskStatusResponse,
 ) -> None:
+    task.updated_at = datetime.now(UTC)
     await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
 
 
@@ -1268,6 +1298,57 @@ def _request_mechanism_override(request: TaskCreateRequest) -> MechanismType | N
     )
 
 
+def _is_local_task_run_request(run_request: TaskRunRequest | None) -> bool:
+    if run_request is None:
+        return False
+    return any(
+        value is not None
+        for value in (
+            run_request.local_models,
+            run_request.local_provider_keys,
+            run_request.local_debate_config,
+        )
+    )
+
+
+def _validate_local_task_run_request(
+    *,
+    task: TaskStatusResponse,
+    run_request: TaskRunRequest,
+) -> TaskRunRequest:
+    if run_request.local_models is None or run_request.local_provider_keys is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Local BYOK task execution requires both local_models and "
+                "local_provider_keys."
+            ),
+        )
+    if len(run_request.local_models) != task.agent_count:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Local BYOK task execution requires agent_count to match "
+                "len(local_models)."
+            ),
+        )
+    provider_families = {spec.provider for spec in run_request.local_models}
+    if len(provider_families) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="Local BYOK task execution requires at least 2 distinct provider families.",
+        )
+    try:
+        validate_local_model_config(
+            local_models=run_request.local_models,
+            provider_keys=run_request.local_provider_keys,
+            debate_config=run_request.local_debate_config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return run_request
+
+
 def _selector_source(
     *,
     selection: MechanismSelection,
@@ -1386,7 +1467,12 @@ async def _mark_task_failed(
         timestamp=datetime.now(UTC),
     )
     task.latest_error_event = error_event
-    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
     await persist_and_emit(
         store=store,
         stream=stream,
@@ -1404,6 +1490,9 @@ def _build_orchestrator(
     agent_count: int,
     allow_offline_fallback: bool,
     reasoning_presets: Any,
+    local_models: Any = None,
+    local_provider_keys: Any = None,
+    local_debate_config: Any = None,
     tier_model_overrides: dict[str, str] | None = None,
 ) -> AgoraOrchestrator:
     """Build orchestrator while tolerating older test doubles without fallback kwargs."""
@@ -1413,19 +1502,42 @@ def _build_orchestrator(
             agent_count=agent_count,
             allow_offline_fallback=allow_offline_fallback,
             reasoning_presets=reasoning_presets,
+            local_models=local_models,
+            local_provider_keys=local_provider_keys,
+            local_debate_config=local_debate_config,
             tier_model_overrides=normalize_tier_model_overrides(tier_model_overrides),
         )
     except TypeError as exc:
-        if "allow_offline_fallback" not in str(exc) and "tier_model_overrides" not in str(exc):
+        if not any(
+            token in str(exc)
+            for token in (
+                "allow_offline_fallback",
+                "tier_model_overrides",
+                "local_models",
+                "local_provider_keys",
+                "local_debate_config",
+            )
+        ):
             raise
         try:
             return AgoraOrchestrator(
                 agent_count=agent_count,
                 reasoning_presets=reasoning_presets,
+                local_models=local_models,
+                local_provider_keys=local_provider_keys,
+                local_debate_config=local_debate_config,
                 tier_model_overrides=normalize_tier_model_overrides(tier_model_overrides),
             )
         except TypeError as nested_exc:
-            if "tier_model_overrides" not in str(nested_exc):
+            if not any(
+                token in str(nested_exc)
+                for token in (
+                    "tier_model_overrides",
+                    "local_models",
+                    "local_provider_keys",
+                    "local_debate_config",
+                )
+            ):
                 raise
             return AgoraOrchestrator(
                 agent_count=agent_count,
@@ -1607,6 +1719,7 @@ async def _execute_task_run(
     *,
     task_id: str,
     workspace_id: str,
+    run_request: TaskRunRequest | None = None,
 ) -> DeliberationResultResponse:
     """Execute the stored mechanism and persist the resulting receipt."""
 
@@ -1615,6 +1728,12 @@ async def _execute_task_run(
     raw_task = await _load_task_for_user(store, workspace_id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
+    local_run_request = (
+        _validate_local_task_run_request(task=task, run_request=run_request)
+        if _is_local_task_run_request(run_request)
+        else None
+    )
+    is_local_execution = local_run_request is not None
     set_current_span_attributes(
         {
             "agora.route.operation": "tasks.run",
@@ -1624,7 +1743,7 @@ async def _execute_task_run(
             "agora.mechanism.requested": task.mechanism_override or task.mechanism,
             "agora.mechanism.selected": task.mechanism,
             "agora.selector.source": task.selector_source,
-            "agora.execution.mode": "hosted",
+            "agora.execution.mode": "local_byok" if is_local_execution else "hosted",
             "agora.allow_mechanism_switch": task.allow_mechanism_switch,
             "agora.allow_offline_fallback": task.allow_offline_fallback,
             "agora.quorum.threshold": task.quorum_threshold,
@@ -1886,6 +2005,15 @@ async def _execute_task_run(
         agent_count=task.agent_count,
         allow_offline_fallback=task.allow_offline_fallback,
         reasoning_presets=task.reasoning_presets,
+        local_models=(
+            None if local_run_request is None else list(local_run_request.local_models or [])
+        ),
+        local_provider_keys=(
+            None if local_run_request is None else local_run_request.local_provider_keys
+        ),
+        local_debate_config=(
+            None if local_run_request is None else local_run_request.local_debate_config
+        ),
         tier_model_overrides=(
             task.tier_model_overrides.present() if task.tier_model_overrides is not None else None
         ),
@@ -1920,8 +2048,15 @@ async def _execute_task_run(
                 event_type="task_recovered",
                 event_data=recovery_event,
             )
+        task.execution_source = "local_byok" if is_local_execution else "hosted"
+        task.background_recovery_allowed = not is_local_execution
         task.status = "in_progress"
-        await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+        await _save_task_status(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            task=task,
+        )
 
         if bridge.is_configured() and _chain_setup_needs_retry(task):
             await _finalize_chain_setup_operations(
@@ -2018,7 +2153,12 @@ async def _execute_task_run(
             _ensure_chain_operation(task, _switch_operation_key(switch_index))
         _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
 
-    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
 
     if bridge.is_configured():
         try:
@@ -2047,7 +2187,12 @@ async def _execute_task_run(
 
     task.status = "completed"
     task.completed_at = datetime.now(UTC)
-    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
 
     await persist_and_emit(
         store=store,
@@ -2104,17 +2249,23 @@ async def _execute_task_run(
 async def run_task(
     task_id: str,
     user: CurrentUser,
+    run_request: TaskRunRequest | None = None,
 ) -> DeliberationResultResponse:
     """Execute the stored mechanism synchronously and return the final receipt."""
 
     require_scope(user, "tasks:write")
-    return await _execute_task_run(task_id=task_id, workspace_id=user.workspace_id)
+    return await _execute_task_run(
+        task_id=task_id,
+        workspace_id=user.workspace_id,
+        run_request=run_request,
+    )
 
 
 @router.post("/{task_id}/run-async", response_model=TaskStatusResponse)
 async def start_task_run(
     task_id: str,
     user: CurrentUser,
+    run_request: TaskRunRequest | None = None,
 ) -> TaskStatusResponse:
     """Start task execution in the background and return the current persisted status."""
 
@@ -2122,6 +2273,11 @@ async def start_task_run(
     store = get_task_store()
     raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
     task = _to_status_response(raw_task, detailed=True)
+    local_run_request = (
+        _validate_local_task_run_request(task=task, run_request=run_request)
+        if _is_local_task_run_request(run_request)
+        else None
+    )
 
     if task.status not in {"pending", "in_progress", "completed", "paid"}:
         raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
@@ -2129,9 +2285,17 @@ async def start_task_run(
         requested_at = datetime.now(UTC).isoformat()
         raw_task["background_run_requested_at"] = requested_at
         raw_task["updated_at"] = requested_at
+        raw_task["execution_source"] = "local_byok" if local_run_request is not None else "hosted"
+        raw_task["background_recovery_allowed"] = local_run_request is None
         await store.save_task(user.workspace_id, task_id, raw_task)
-        _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
+        _launch_background_task_run(
+            task_id=task_id,
+            workspace_id=user.workspace_id,
+            run_request=local_run_request,
+        )
     elif task.status == "in_progress":
+        if local_run_request is not None:
+            raise HTTPException(status_code=409, detail="Task is already in progress")
         _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
 
     refreshed = await _load_task_for_user(store, user.workspace_id, task_id)
