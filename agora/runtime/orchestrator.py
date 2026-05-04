@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 
-from agora.agent import claude_caller, openrouter_caller, pro_caller
+from agora.agent import claude_caller, flash_caller, openrouter_caller, pro_caller
 from agora.engines.debate import DebateEngine
 from agora.engines.delphi import DelphiEngine
 from agora.engines.vote import VoteEngine
@@ -132,6 +132,17 @@ class AgoraOrchestrator:
                             None
                             if self.local_provider_keys is None
                             else self.local_provider_keys.anthropic_api_key
+                        ),
+                    )
+                ),
+                _LazyReasoningCaller(
+                    lambda: flash_caller(
+                        thinking_level=self.reasoning_presets.gemini_flash,
+                        model=self.tier_model_overrides.get("flash"),
+                        gemini_api_key=(
+                            None
+                            if self.local_provider_keys is None
+                            else self.local_provider_keys.gemini_api_key
                         ),
                     )
                 ),

@@ -172,6 +172,62 @@ async def test_delphi_uses_openrouter_live_fallback_for_hard_gemini_failure(
 
 
 @pytest.mark.asyncio
+async def test_delphi_uses_multi_hop_live_fallback_chain_before_offline_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _GeminiFailureCaller:
+        model = "gemini-pro-model"
+
+        async def call(self, **kwargs: object) -> tuple[object, dict[str, object]]:
+            del kwargs
+            error = AgentCallError("Gemini API returned status 403 for model gemini-pro-model.")
+            error.__cause__ = _StatusError(403, "billing permission missing")
+            raise error
+
+    class _OpenRouterFailureCaller:
+        model = "openrouter-model"
+
+        async def call(self, **kwargs: object) -> tuple[object, dict[str, object]]:
+            del kwargs
+            raise AgentCallError("OpenRouter structured response was not valid JSON.")
+
+    class _ClaudeSuccessCaller:
+        model = "claude-model"
+
+        async def call(self, **kwargs: object) -> tuple[object, dict[str, object]]:
+            response_format = kwargs["response_format"]
+            response = response_format(
+                answer="Claude fallback answer",
+                confidence=0.77,
+                reasoning="Claude preserved live Delphi execution after multiple failures.",
+            )
+            return response, {"tokens": 23, "latency_ms": 13.0}
+
+    monkeypatch.setattr("agora.engines.delphi.pro_caller", lambda **_: _GeminiFailureCaller())
+    monkeypatch.setattr(
+        "agora.engines.delphi.openrouter_caller",
+        lambda **_: _OpenRouterFailureCaller(),
+    )
+    monkeypatch.setattr("agora.engines.delphi.claude_caller", lambda **_: _ClaudeSuccessCaller())
+
+    engine = DelphiEngine(
+        agent_count=1,
+        quorum_threshold=0.6,
+        allow_offline_fallback=False,
+    )
+
+    result = await engine.run(
+        task="Should we use a monolith or microservices?",
+        selection=make_selection(mechanism=MechanismType.DELPHI, topic_category="reasoning"),
+    )
+
+    assert result.final_answer == "Claude fallback answer"
+    assert result.agent_models_used == ["claude-model"]
+    assert result.fallback_count >= 2
+    assert all(event.fallback_type == "alternate_live_model" for event in result.fallback_events)
+
+
+@pytest.mark.asyncio
 async def test_delphi_does_not_cross_fallback_for_retryable_high_demand_gemini_403(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

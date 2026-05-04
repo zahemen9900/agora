@@ -83,6 +83,31 @@ async def test_selector_uses_heuristic_before_bandit_when_reasoning_fails() -> N
 
 
 @pytest.mark.asyncio
+async def test_reasoning_selector_uses_multi_hop_live_fallback_chain() -> None:
+    primary_error = AgentCallError("Gemini API returned status 403 for model gemini-pro.")
+    primary_error.__cause__ = _StatusError(403, "API key missing billing permission")
+    secondary_error = AgentCallError("OpenRouter structured response was not valid JSON.")
+    fallback = _FallbackReasoningCaller()
+    selector = ReasoningSelector(
+        caller=_ErroringReasoningCaller(primary_error),
+        fallback_callers=[
+            _ErroringReasoningCaller(secondary_error),
+            fallback,
+        ],
+    )
+
+    selection = await selector.select(
+        task_text="Choose between a monolith and microservices for a narrow CRUD admin tool.",
+        features=make_features("math"),
+        bandit_recommendation=(MechanismType.DEBATE, 0.52),
+        historical_performance=None,
+    )
+
+    assert selection.mechanism == MechanismType.VOTE
+    assert fallback.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_selector_uses_bandit_only_after_heuristic_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

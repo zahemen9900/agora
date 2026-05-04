@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 import agora.runtime.orchestrator as orchestrator_module
+from agora.agent import AgentCallError
 from agora.engines.debate import DebateEngineOutcome
 from agora.engines.vote import VoteEngineOutcome
 from agora.runtime.orchestrator import AgoraOrchestrator
@@ -93,6 +94,72 @@ async def test_orchestrator_passes_local_provider_keys_to_selector_reasoning_cal
     )
 
     assert captured["gemini_api_key"] == "gem-byok-key"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_selector_uses_flash_as_last_live_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _ErroringReasoningCaller:
+        def __init__(self, message: str, status_code: int | None = None) -> None:
+            self.message = message
+            self.status_code = status_code
+
+        async def call(self, **_kwargs: object) -> tuple[object, dict[str, object]]:
+            error = AgentCallError(self.message)
+            if self.status_code is not None:
+                class _StatusError(RuntimeError):
+                    def __init__(self, status_code: int, message: str) -> None:
+                        super().__init__(message)
+                        self.status_code = status_code
+
+                error.__cause__ = _StatusError(self.status_code, "hard provider failure")
+            raise error
+
+    class _FlashSuccessCaller:
+        async def call(self, **_kwargs: object) -> tuple[object, dict[str, object]]:
+            from agora.selector.reasoning import _ReasoningResponse
+
+            return (
+                _ReasoningResponse(
+                    mechanism="vote",
+                    confidence=0.71,
+                    reasoning="Flash fallback still selected an objective aggregation lane.",
+                ),
+                {},
+            )
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "pro_caller",
+        lambda **_kwargs: _ErroringReasoningCaller(
+            "Gemini API returned status 403 for model gemini-3-flash-preview.",
+            status_code=403,
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator_module,
+        "openrouter_caller",
+        lambda **_kwargs: _ErroringReasoningCaller("OpenRouter structured response was empty."),
+    )
+    monkeypatch.setattr(
+        orchestrator_module,
+        "claude_caller",
+        lambda **_kwargs: _ErroringReasoningCaller("Claude structured response was not valid JSON."),
+    )
+    monkeypatch.setattr(orchestrator_module, "flash_caller", lambda **_kwargs: _FlashSuccessCaller())
+
+    orchestrator = AgoraOrchestrator(agent_count=3)
+
+    selection = await orchestrator.selector.reasoning.select(
+        task_text="What is 17 * 19?",
+        features=make_features("factual"),
+        bandit_recommendation=(MechanismType.VOTE, 0.8),
+        historical_performance={},
+    )
+
+    assert selection.mechanism == MechanismType.VOTE
+    assert selection.selector_source == "llm_reasoning"
 
 
 @pytest.mark.asyncio
