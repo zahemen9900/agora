@@ -1,0 +1,122 @@
+\documentclass[a4paper,9pt]{extarticle}
+
+% Packages
+\usepackage{geometry}
+\geometry{a4paper, margin=0.6in, top=0.5in, bottom=0.5in}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{changepage}
+\usepackage{fontspec}
+\usepackage{xcolor}
+
+% Typography - Using Inter for that high-end tech aesthetic
+\setmainfont{Inter}
+
+% Color Definition
+\definecolor{primary}{RGB}{30, 30, 30}
+
+% Formatting
+\setlist{noitemsep, topsep=1pt, leftmargin=1.2em}
+\titleformat{\section}{\large\bfseries\uppercase}{}{0pt}{}[\titlerule]
+\titlespacing*{\section}{0pt}{12pt}{6pt}
+
+% Indentation environment for structured details
+\newenvironment{subs}
+  {\begin{adjustwidth}{1.2em}{0pt}}
+  {\end{adjustwidth}}
+
+% Custom command for Job/Project headers - Optimized for ATS
+\newcommand{\entryheader}[4]{
+    \noindent\textbf{#1} \hfill #2 \\
+    \textit{#3} \hfill \small #4
+}
+
+\begin{document}
+
+\pagestyle{empty}
+\color{primary}
+
+% Header
+\begin{center}
+    \textbf{\huge DAVID ZAHEMEN YEBOAH}\\[6pt]
+    \small AI Engineer \& Software Developer\\[4pt]
+    \small Kumasi, Ghana | \href{mailto:davidzahemenyeboah@gmail.com}{davidzahemenyeboah@gmail.com} | \href{https://david-z-yeboah.vercel.app}{Portfolio} | \href{https://github.com/zahemen9900}{GitHub} | +233598020802
+\end{center}
+
+%------------------------
+\section*{Professional Summary}
+\begin{subs}
+AI/ML Engineer focused on productionizing deep learning systems, from model training and evaluation to low-latency API deployment on AWS/GCP. Strong in LLM adaptation (\textbf{PEFT/QLoRA}), ONNX optimization, and full-stack delivery of end-to-end AI products.
+\end{subs}
+
+%------------------------
+\section*{Core Competencies}
+\begin{subs}
+    \textbf{Modeling \& Architecture:} Transformers, Supervised Contrastive Learning (SupCon), RAG, Agentic Multi-step Reasoning, Time-Series Forecasting.\\
+    \textbf{MLOps \& Infrastructure:} PyTorch, TensorFlow, Hugging Face (PEFT/LoRA), ONNX Runtime, SageMaker, Vertex AI, Docker, CI/CD, ETL Design.\\
+    \textbf{Development \& Deployment:} FastAPI, Next.js, React, TypeScript, Flutter, Supabase, Firebase, Git.
+\end{subs}
+
+%------------------------
+\section*{Employment History}
+
+\begin{subs}
+    \entryheader{ML Engineer}{February 2025 -- Present}{Asaphic Ltd.}{Remote}
+    \begin{itemize}
+        \item \textbf{Audio Signal Processing:} Trained and deployed deep learning transformer models for real-time audio source separation with distributed training techniques (DDP), achieving high-fidelity signal enhancement and outperforming SOTA source separation models like Demucs-v4 and Spleeter by 30\%.
+        \item \textbf{Infrastructure:} Engineered automated MLOps pipelines on AWS (SageMaker, Lambda, S3) for scalable, low-latency inference cycles.
+        \item \textbf{Optimization:} Implemented adaptive tuning, ONNX compression and model pruning to reduce cloud inference costs by \textbf{35\%} while maintaining model precision.
+        \item \textbf{Deployment:} Co-implemented an intelligent FastAPI backend service handling and re-routing large-volume AI requests over several models via API Gateway.
+    \end{itemize}
+
+    \vspace{6pt}
+
+    \entryheader{Data Science Intern}{November 2024 -- December 2024}{Boston Consulting Group (BCGX)}{Remote}
+    \begin{itemize}
+        \item \textbf{Distributed Training:} Developed multi-GPU training pipelines for 3B-parameter models, reducing wall-clock training time by \textbf{65\%} via Distributed Data Parallel (DDP).
+        \item \textbf{Data Engineering:} Orchestrated high-throughput extraction pipelines, processing 250M+ tokens from complex financial reports using context-aware chunking.
+        \item \textbf{Memory Management:} Applied 4/8-bit quantization and PEFT/LoRA, reducing peak VRAM utilization by \textbf{70\%} during domain-specific fine-tuning.
+    \end{itemize}
+\end{subs}
+
+%------------------------
+\section*{Project Portfolio}
+
+\begin{subs}
+    \textbf{SignifyAI | Real‑Time Sign Language API Platform}
+    \begin{itemize}
+        \item Led end-to-end development of a bidirectional Ghanaian Sign Language stack: \textbf{Sign2Text} (MediaPipe pose sequences to text) and \textbf{Text2Sign} (text-conditioned GAN-NAT generation of 540-dim pose motion).
+        \item Built VM-based model pipelines on GCP covering canonicalized landmark preprocessing, motion/visibility quality gating, global-stat normalization, text-variation augmentation, and deployment-aligned training/evaluation (closed-set, unseen holdout, open-set abstention).
+        \item Deployed and operated a \textbf{FastAPI} backend on Google Cloud Run with versioned GCS artifact loading, startup/readiness orchestration for both model services, and observability for inference quality and reliability.
+        \item Added production-facing inference interfaces for static and near real-time use: Sign2Text low-latency APIs plus Text2Sign chunked/streamed generation endpoints with deterministic seeded outputs.
+    \end{itemize}
+
+    \vspace{4pt}
+
+    \textbf{Agora | On-Chain Multi-Agent Arbitration Platform}
+    \begin{itemize}
+        \item Shipped a full-stack polyglot platform end-to-end: \textbf{FastAPI} backend on Google Cloud Run, \textbf{React 19} + TypeScript web app on Vercel, Anchor/\textbf{Solana} smart contracts, and published \texttt{agora-arbitrator-sdk} to \textbf{PyPI} (17 alpha releases; 3 execution modes: hosted API, local callable, BYOK multi-provider).
+        \item Engineered three \textbf{LangGraph}-compiled deliberation engines --- Debate (devil's advocate cross-examination \& claim locking), ISP-weighted Confidence Vote, and Delphi --- routed by a \textbf{Thompson Sampling contextual bandit} that selects the optimal mechanism per task category for a 4-agent ensemble spanning Gemini, Claude, and OpenRouter.
+        \item Designed real-time convergence monitoring with \textbf{Shannon entropy} and \textbf{Jensen-Shannon divergence}, enabling adaptive early termination and mid-run mechanism switching; implemented buffered SSE event streaming with replay for live deliberation visualization.
+        \item Generated deterministic \textbf{Merkle transcript receipts} (SHA-256 hashed agent outputs committed to Solana devnet) with OpenTelemetry tracing for per-model token-level cost accounting, providing tamper-evident auditability of AI deliberation outcomes.
+    \end{itemize}
+\end{subs}
+
+%------------------------
+\section*{Awards}
+\begin{subs}
+\textbf{NASA Space Apps Challenge 2025 -- Galactic Impact Award Winner (BioQuery)}
+\end{subs}
+
+%------------------------
+\section*{Education \& Leadership}
+\begin{subs}
+    \entryheader{BSc. Computer Science}{September 2025}{Kwame Nkrumah Univ. of Science and Technology}{Ghana}
+    \begin{itemize}
+        \item \textbf{Academic Standing:} First Class Honors with 75.0\% CWA (approx. 3.7/4 GPA equivalent).
+        \item \textbf{Leadership:} Committee Lead for AI research, KNUST AI \& Data Science Club; active contributor to GDSC and KNUST Robotics Club.
+    \end{itemize}
+\end{subs}
+
+\end{document}
