@@ -1,4 +1,4 @@
-import { providerFromModel, type ProviderName } from "./modelProviders";
+import { providerFromModel, type ProviderName } from "./modelProviders.ts";
 
 export type ProviderTier = "pro" | "flash" | "openrouter" | "claude";
 export type GeminiProPreset = "low" | "high";
@@ -492,6 +492,26 @@ export function buildTierModelOptions(
       allowed_tiers: [tier],
     },
   ];
+}
+
+export function buildProviderFamilyModelOptions(
+  providerFamily: ModelProviderFamily,
+  runtimeConfig?: DeliberationRuntimeConfigLike | null,
+): RuntimeModelOptionLike[] {
+  const catalogEntries = flattenRuntimeCatalog(runtimeConfig).filter(
+    (entry): entry is RuntimeModelOptionLike => (
+      Boolean(entry?.model_id)
+      && entry.provider_family === providerFamily
+    ),
+  );
+  return catalogEntries;
+}
+
+export function resolveModelOption(
+  modelId: string,
+  runtimeConfig?: DeliberationRuntimeConfigLike | null,
+): RuntimeModelOptionLike | null {
+  return resolveCatalogModel(modelId, runtimeConfig);
 }
 
 function providerNameFromFamily(

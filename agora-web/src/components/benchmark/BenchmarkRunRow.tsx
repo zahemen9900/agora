@@ -300,6 +300,7 @@ export function LiveRunRow({
         </span>
         <StatusBadge status={run.status} />
         {run.latest_mechanism && <TagBadge label={titleCase(run.latest_mechanism)} />}
+        {run.execution_source === "local_byok" && <TagBadge label="BYOK" />}
         {isRunning && (
           <span style={{ fontFamily: FONT, fontSize: "9px", color: "var(--accent-emerald)", display: "inline-flex", alignItems: "center", gap: "4px" }}>
             <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: "var(--accent-emerald)", display: "inline-block", animation: "bm-live-pulse 1.8s ease-in-out infinite" }} />
@@ -346,6 +347,7 @@ export function FailedRunRow({
         </span>
         <StatusBadge status="failed" />
         {run.latest_mechanism && <TagBadge label={titleCase(run.latest_mechanism)} />}
+        {run.execution_source === "local_byok" && <TagBadge label="BYOK" />}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
           {actions}
           <ModelCluster models={models} />

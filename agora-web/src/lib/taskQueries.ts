@@ -5,10 +5,13 @@ import {
 } from "@tanstack/react-query";
 
 import {
+  deleteTask,
   getTask,
   listTasks,
   releaseTaskPayment,
+  stopTask,
   submitTask,
+  type TaskDeletePayload,
   type MechanismName,
   type TaskCreateResponse,
   type TaskEvent,
@@ -156,6 +159,17 @@ export function syncTaskListCache(
   );
 }
 
+export function removeDeletedTaskFromCaches(
+  queryClient: QueryClient,
+  deleted: TaskDeletePayload,
+): void {
+  queryClient.removeQueries({ queryKey: taskQueryKeys.detail(deleted.task_id), exact: true });
+  queryClient.setQueryData<TaskStatusResponse[] | undefined>(
+    taskQueryKeys.list(),
+    (current) => current?.filter((entry) => entry.task_id !== deleted.task_id),
+  );
+}
+
 export function useTaskListQuery() {
   const { authStatus, getAccessToken } = useAuth();
 
@@ -221,6 +235,28 @@ export function useReleaseTaskPaymentMutation(taskId: string | undefined) {
       }
       const token = await getAccessToken();
       return releaseTaskPayment(taskId, token);
+    },
+  });
+}
+
+export function useStopTaskMutation() {
+  const { getAccessToken } = useAuth();
+
+  return useMutation<TaskStatusResponse, Error, string>({
+    mutationFn: async (taskId) => {
+      const token = await getAccessToken();
+      return stopTask(taskId, token);
+    },
+  });
+}
+
+export function useDeleteTaskMutation() {
+  const { getAccessToken } = useAuth();
+
+  return useMutation<TaskDeletePayload, Error, string>({
+    mutationFn: async (taskId) => {
+      const token = await getAccessToken();
+      return deleteTask(taskId, token);
     },
   });
 }

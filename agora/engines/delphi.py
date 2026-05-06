@@ -539,9 +539,7 @@ class DelphiEngine:
 
         tier = self._tier_for_agent(agent_idx)
         live_fallback_events: list[FallbackEvent] = []
-        caller_tiers = [tier]
-        if tier != "openrouter":
-            caller_tiers.append("openrouter")
+        caller_tiers = self._live_fallback_tiers_for(tier)
 
         for index, caller_tier in enumerate(caller_tiers):
             caller = self._get_caller(caller_tier)
@@ -695,6 +693,28 @@ class DelphiEngine:
             return self._openrouter_agent
 
         return self._get_flash_caller()
+
+    def _live_fallback_tiers_for(self, primary_tier: ProviderTierName) -> list[ProviderTierName]:
+        """Return the ordered live-provider fallback chain for one hosted participant.
+
+        Priority is:
+        1. Keep the participant's assigned tier first.
+        2. Prefer alternate providers before another Gemini lane.
+        3. Keep one final Gemini fallback available before going fully offline.
+        """
+
+        ordered_candidates: list[ProviderTierName] = [
+            primary_tier,
+            "openrouter",
+            "claude",
+            "flash",
+            "pro",
+        ]
+        deduped: list[ProviderTierName] = []
+        for candidate in ordered_candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
 
     def _tier_for_agent(self, agent_idx: int) -> ProviderTierName:
         """Return the canonical hosted provider tier for one Delphi participant."""
