@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { ProviderGlyph } from "../../ProviderGlyph";
 import type { ProviderName } from "../../../lib/modelProviders";
 import type { GraphNode, NodeKind } from "./canvasTypes";
@@ -8,6 +10,91 @@ export const NODE_WIDTH = 240;
 export const NODE_HEIGHT = 170;
 export const NODE_GAP_H = 20;
 export const NODE_GAP_V = 160;
+
+const CANVAS_MARKDOWN_COMPONENTS = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p style={{ margin: "0 0 8px" }}>{children}</p>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul style={{ margin: "0 0 8px", paddingLeft: "18px", listStyleType: "disc" }}>{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol style={{ margin: "0 0 8px", paddingLeft: "18px", listStyleType: "decimal" }}>{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li style={{ marginBottom: "3px" }}>{children}</li>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong style={{ fontWeight: 700, color: "var(--text-primary)" }}>{children}</strong>
+  ),
+  em: ({ children }: { children?: React.ReactNode }) => (
+    <em style={{ fontStyle: "italic", color: "inherit" }}>{children}</em>
+  ),
+  code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
+    const isBlock = className?.includes("language-");
+    return isBlock
+      ? (
+        <code
+          style={{
+            display: "block",
+            fontFamily: "'Commit Mono', monospace",
+            fontSize: "11px",
+            background: "var(--bg-base)",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "8px",
+            padding: "10px 12px",
+            overflowX: "auto",
+            whiteSpace: "pre",
+            color: "var(--text-secondary)",
+            margin: "0 0 8px",
+          }}
+        >
+          {children}
+        </code>
+      )
+      : (
+        <code
+          style={{
+            fontFamily: "'Commit Mono', monospace",
+            fontSize: "11px",
+            background: "var(--bg-base)",
+            borderRadius: "4px",
+            padding: "1px 5px",
+            color: "var(--text-primary)",
+          }}
+        >
+          {children}
+        </code>
+      );
+  },
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre style={{ margin: "0 0 8px", overflow: "hidden" }}>{children}</pre>
+  ),
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote
+      style={{
+        borderLeft: "2px solid var(--accent-emerald)",
+        paddingLeft: "10px",
+        margin: "0 0 8px",
+        color: "var(--text-secondary)",
+        fontStyle: "italic",
+      }}
+    >
+      {children}
+    </blockquote>
+  ),
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      style={{ color: "var(--accent-emerald)", textDecoration: "underline", textUnderlineOffset: "2px" }}
+    >
+      {children}
+    </a>
+  ),
+  hr: () => <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "10px 0" }} />,
+};
 
 // ─── Keyframe injection ───────────────────────────────────────────────────────
 const CANVAS_STYLE_ID = "canvas-node-kf";
@@ -84,11 +171,13 @@ export function CanvasStreamText({
   isActive,
   fontSize = "12px",
   color = "var(--text-secondary)",
+  fontStyle = "normal",
 }: {
   text: string;
   isActive: boolean;
   fontSize?: string;
   color?: string;
+  fontStyle?: "normal" | "italic";
 }) {
   const seenLenRef = useRef(0);
   const [chunks, setChunks] = useState<Array<{ id: number; text: string }>>([]);
@@ -115,7 +204,7 @@ export function CanvasStreamText({
   const stableText = text.slice(0, Math.max(0, text.length - keptLen));
 
   return (
-    <span style={{ fontSize, color, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+    <span style={{ fontSize, color, lineHeight: 1.55, whiteSpace: "pre-wrap", fontStyle }}>
       {stableText}
       {chunks.map((chunk) => (
         <span
@@ -126,6 +215,35 @@ export function CanvasStreamText({
         </span>
       ))}
     </span>
+  );
+}
+
+export function CanvasMarkdownText({
+  text,
+  fontSize = "12px",
+  color = "var(--text-secondary)",
+  italic = false,
+}: {
+  text: string;
+  fontSize?: string;
+  color?: string;
+  italic?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        fontSize,
+        color,
+        lineHeight: 1.55,
+        whiteSpace: "normal",
+        fontStyle: italic ? "italic" : "normal",
+        overflowWrap: "anywhere",
+      }}
+    >
+      <Markdown remarkPlugins={[remarkGfm]} components={CANVAS_MARKDOWN_COMPONENTS}>
+        {text}
+      </Markdown>
+    </div>
   );
 }
 
@@ -273,6 +391,11 @@ interface GraphNodeCardProps { node: GraphNode; onShowMore?: () => void; }
 
 const PREVIEW_LIMIT = 160;
 
+function looksLikeJson(text: string): boolean {
+  const t = text.trimStart();
+  return t.startsWith("{") || t.startsWith("[");
+}
+
 export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
     const posthog = usePostHog();
   const [thinkingOpen,  setThinkingOpen]  = useState(false);
@@ -289,17 +412,22 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
 
   const isReceipt  = node.kind === "receipt";
   const isTask     = node.kind === "task";
-  const rawContent = node.content || "—";
+  const hasThinking  = typeof node.thinkingContent === "string" && node.thinkingContent.length > 0;
+  const inlineThinking = (!node.content || !node.content.trim()) && hasThinking
+    ? node.thinkingContent ?? ""
+    : "";
+  const rawContent = node.content || inlineThinking || "—";
+  const rawSupport = node.supportContent?.trim() || "";
 
   // Always cap the card preview at PREVIEW_LIMIT chars —
   // during streaming AND after completion.
-  const exceedsLimit = !isReceipt && rawContent.length > PREVIEW_LIMIT;
+  const previewSource = rawSupport ? `${rawContent}\n${rawSupport}` : rawContent;
+  const exceedsLimit = !isReceipt && previewSource.length > PREVIEW_LIMIT;
   const previewText  = exceedsLimit
-    ? rawContent.slice(0, PREVIEW_LIMIT)
-    : (isReceipt && rawContent.length > 24 ? rawContent.slice(0, 24) + "…" : rawContent);
+    ? previewSource.slice(0, PREVIEW_LIMIT)
+    : (isReceipt && previewSource.length > 24 ? previewSource.slice(0, 24) + "…" : previewSource);
 
   const hasTelemetry = !!node.telemetry || node.confidence !== undefined;
-  const hasThinking  = typeof node.thinkingContent === "string" && node.thinkingContent.length > 0;
 
   const infoLabel   = isTask ? "TASK ID"   : "FULL HASH";
   const infoValue   = isTask ? (node.taskId ?? "—") : rawContent;
@@ -353,13 +481,71 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
         transition: "min-height 0.38s ease-out",
       }}>
         {isStreaming ? (
+          inlineThinking ? (
+            <>
+              <CanvasMarkdownText
+                text={previewText}
+                fontSize="12px"
+                color="var(--text-muted)"
+                italic
+              />
+              {exceedsLimit && (
+                <span
+                  data-no-drag
+                  onClick={(e) => { e.stopPropagation(); onShowMore?.(); }}
+                  style={{ color: "var(--text-muted)", marginLeft: "4px", fontSize: "11px", cursor: "pointer" }}
+                >… show more</span>
+              )}
+            </>
+          ) : (
+            <>
+              <CanvasStreamText
+                text={previewText}
+                isActive={!exceedsLimit}
+                fontSize={isThinking ? "11px" : "12px"}
+                color={isThinking ? "var(--text-muted)" : "var(--text-secondary)"}
+                fontStyle={isThinking ? "italic" : "normal"}
+              />
+              {exceedsLimit && (
+                <span
+                  data-no-drag
+                  onClick={(e) => { e.stopPropagation(); onShowMore?.(); }}
+                  style={{ color: "var(--text-muted)", marginLeft: "4px", fontSize: "11px", cursor: "pointer" }}
+                >… show more</span>
+              )}
+            </>
+          )
+        ) : (
           <>
-            <CanvasStreamText
-              text={previewText}
-              isActive={!exceedsLimit}
-              fontSize="12px"
-              color="var(--text-secondary)"
-            />
+            {inlineThinking ? (
+              <CanvasMarkdownText
+                text={previewText}
+                fontSize="12px"
+                color="var(--text-muted)"
+                italic
+              />
+            ) : looksLikeJson(rawContent) ? (
+              <span
+                style={{
+                  display: "block",
+                  fontFamily: "'Commit Mono', monospace",
+                  fontSize: "10px",
+                  color: "var(--text-secondary)",
+                  lineHeight: 1.55,
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-all",
+                }}
+              >
+                {previewText}
+              </span>
+            ) : (
+              <CanvasMarkdownText
+                text={previewText}
+                fontSize="12px"
+                color="var(--text-secondary)"
+              />
+            )}
             {exceedsLimit && (
               <span
                 data-no-drag
@@ -368,17 +554,6 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
               >… show more</span>
             )}
           </>
-        ) : (
-          <span style={{ fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.55 }}>
-            {previewText}
-            {exceedsLimit && (
-              <span
-                data-no-drag
-                onClick={(e) => { e.stopPropagation(); onShowMore?.(); }}
-                style={{ color: "var(--text-muted)", marginLeft: "4px", fontSize: "11px", cursor: "pointer" }}
-              >… show more</span>
-            )}
-          </span>
         )}
         {infoOpen && (
           <InfoPopover label={infoLabel} value={infoValue} onClose={() => setInfoOpen(false)} />
@@ -390,7 +565,7 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
         <div>
           <button
             onClick={(e: any) => { posthog?.capture('graphnodecard_thinking_chars_clicked'); const handler = () => setThinkingOpen((v) => !v); if (typeof handler === 'function') (handler as any)(e); }}
-            style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px", padding: 0, color: "var(--text-muted)", fontFamily: "'Commit Mono', monospace", fontSize: "10px" }}
+            style={{ background: "none", border: "none", cursor: "pointer", display: "flex", alignItems: "center", gap: "5px", padding: 0, color: "var(--text-muted)", opacity: 0.65, fontFamily: "'Commit Mono', monospace", fontSize: "9px" }}
           >
             <span style={{ transform: thinkingOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s ease", display: "inline-block" }}>▶</span>
             thinking ({node.thinkingContent!.length} chars)
@@ -406,11 +581,15 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
               color: "var(--text-muted)",
               maxHeight: "120px",
               overflowY: "auto",
-              whiteSpace: "pre-wrap",
               wordBreak: "break-word",
               animation: "canvas-card-in 0.2s cubic-bezier(0.22,1,0.36,1) both",
             }}>
-              {node.thinkingContent}
+              <CanvasMarkdownText
+                text={node.thinkingContent ?? ""}
+                fontSize="10px"
+                color="var(--text-muted)"
+                italic
+              />
             </div>
           )}
         </div>

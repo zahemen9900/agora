@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { X, HelpCircle, ChevronDown } from 'lucide-react';
 import { ProviderGlyph } from '../ProviderGlyph';
 import { TierModelSelectorGrid } from '../TierModelSelectorGrid';
+import { TaskByokConfigPanel } from './TaskByokConfigPanel';
 import type { MechanismName } from '../../lib/api';
 import type { ProviderName } from '../../lib/modelProviders';
 import {
@@ -11,6 +12,7 @@ import {
   type ReasoningPresetState,
   type TierModelOverrideState,
 } from '../../lib/deliberationConfig';
+import type { TaskByokConfig } from '../../lib/taskByok';
 import { usePostHog } from "@posthog/react";
 
 function ProviderLogo({ provider, size = 20 }: { provider: string; size?: number }) {
@@ -82,7 +84,7 @@ function StakesTooltip() {
 }
 
 // ─── Tab system ───────────────────────────────────────────────────────────────
-const TABS = ['Effort & Stakes', 'Swarm Config'] as const;
+const TABS = ['Effort & Stakes', 'Swarm Config', 'Bring Your Own Keys'] as const;
 type TabId = typeof TABS[number];
 
 // ─── Swarm layer diagram ─────────────────────────────────────────────────────
@@ -149,6 +151,8 @@ interface ConfigModalProps {
   runtimeConfig?: DeliberationRuntimeConfigLike | null;
   tierModelOverrides: TierModelOverrideState;
   onTierModelOverridesChange: (next: TierModelOverrideState) => void;
+  byokConfig: TaskByokConfig;
+  onByokConfigChange: (next: TaskByokConfig) => void;
 }
 
 export function ConfigModal({
@@ -166,6 +170,8 @@ export function ConfigModal({
   runtimeConfig,
   tierModelOverrides,
   onTierModelOverridesChange,
+  byokConfig,
+  onByokConfigChange,
 }: ConfigModalProps) {
     const posthog = usePostHog();
   const [activeTab, setActiveTab] = useState<TabId>('Effort & Stakes');
@@ -619,6 +625,15 @@ export function ConfigModal({
                 </div>
               </div>
             </div>
+          )}
+
+          {activeTab === 'Bring Your Own Keys' && (
+            <TaskByokConfigPanel
+              value={byokConfig}
+              onChange={onByokConfigChange}
+              runtimeConfig={runtimeConfig}
+              tierModelOverrides={tierModelOverrides}
+            />
           )}
         </div>
 

@@ -108,6 +108,8 @@ gcloud run deploy "${SERVICE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
   --platform managed \
+  --memory 1Gi \
+  --concurrency 16 \
   --service-account "${RUNTIME_SA}" \
   --network default \
   --subnet default \
@@ -123,6 +125,11 @@ gcloud run deploy "${SERVICE}" \
 ```bash
 curl -sS "https://<cloud-run-url>/benchmarks" | head
 ```
+
+Current service baseline:
+
+- Memory: `1Gi`
+- Container concurrency: `16`
 
 ## Container Registry Policy
 

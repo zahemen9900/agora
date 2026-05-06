@@ -222,3 +222,39 @@ test("buildGraphLayout annotates split source nodes with transition labels", () 
   assert.equal(openingNode.transitionLabel, "Opening R1");
   assert.match(openingNode.transitionDescription ?? "", /debate segment/i);
 });
+
+test("buildGraphLayout keeps normalized content when later telemetry and thinking updates arrive", () => {
+  const timeline = [
+    {
+      key: "agent:0:agent-1:opening:1",
+      type: "agent_output_delta",
+      title: "agent-1 · opening",
+      summary: "Major central banks should proceed carefully.",
+      agentId: "agent-1",
+      stage: "opening",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "opening",
+      isDraft: true,
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+        content_so_far: "{\"claim\":\"Major central banks should proceed carefully.\"",
+        thinking_so_far: "Start by comparing implementation risk.",
+        total_tokens: 2055,
+        latency_ms: 12519,
+      },
+    },
+  ];
+
+  const { nodes } = buildGraphLayout(timeline);
+  const openingNode = nodes.find((node) => node.agentId === "agent-1");
+
+  assert.ok(openingNode);
+  assert.equal(openingNode.content, "Major central banks should proceed carefully.");
+  assert.equal(openingNode.thinkingContent, "Start by comparing implementation risk.");
+  assert.equal(openingNode.telemetry?.totalTokens, 2055);
+  assert.equal(openingNode.telemetry?.latencyMs, 12519);
+});

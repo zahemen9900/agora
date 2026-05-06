@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, Link } from "react-router-dom";
+import { useLocation, useNavigate, Link } from "react-router-dom";
 import {
   CartesianGrid,
   Line,
@@ -22,6 +22,7 @@ import { BenchmarkWizard, type DomainPromptSelection } from "../components/bench
 import { CatalogRunRow, FailedRunRow, LiveRunRow, SkeletonRunRow } from "../components/benchmark/BenchmarkRunRow";
 import { ChartCard, injectChartKeyframes, SkeletonChartBlock, ShimBlock, CHART_FONT } from "../components/benchmark/ChartCard";
 import {
+  type BenchmarkDomainPromptPayload,
   type BenchmarkDomainName,
   type BenchmarkPromptTemplatesPayload,
   type BenchmarkRunRequestPayload,
@@ -62,10 +63,30 @@ import {
   type ReasoningPresetState,
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
+import {
+  buildBenchmarkByokRunRequest,
+  createDefaultBenchmarkByokConfig,
+  ensureBenchmarkByokRosterLength,
+  getBenchmarkByokValidation,
+  type BenchmarkByokConfig,
+} from "../lib/benchmarkByok";
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
 
 type CatalogSortMode = "recent" | "frequency";
 type ParetoPoint = ReturnType<typeof buildOverviewParetoData>[number];
+
+interface BenchmarkWizardPrefillState {
+  benchmarkWizardPrefill?: {
+    sourceRunId?: string | null;
+    byokEnabled: boolean;
+    agentCount: number;
+    trainingPerCategory: number;
+    holdoutPerCategory: number;
+    reasoningPresets?: Partial<ReasoningPresetState> | null;
+    tierModelOverrides?: TierModelOverrideState | null;
+    domainPrompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>> | null;
+  };
+}
 
 function normalizeText(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
@@ -421,6 +442,7 @@ function SectionHeader({ label, count, countColor }: { label: string; count: num
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 export function Benchmarks() {
+  const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("latest");
@@ -455,6 +477,10 @@ export function Benchmarks() {
   const [reasoningPresetOverrides, setReasoningPresetOverrides] = useState<ReasoningPresetState | null>(null);
   const reasoningPresets = reasoningPresetOverrides ?? defaultReasoningPresets;
   const [tierModelOverrides, setTierModelOverrides] = useState<TierModelOverrideState>({});
+  const [benchmarkByokConfig, setBenchmarkByokConfig] = useState<BenchmarkByokConfig>(() => (
+    createDefaultBenchmarkByokConfig(4)
+  ));
+  const [runtimeDefaultsHydrated, setRuntimeDefaultsHydrated] = useState(false);
   const [domainPromptSelection, setDomainPromptSelection] = useState<
     Partial<Record<BenchmarkDomainName, DomainPromptSelection>>
   >({});
@@ -464,6 +490,105 @@ export function Benchmarks() {
     const frame = window.requestAnimationFrame(() => setChartsReady(true));
     return () => window.cancelAnimationFrame(frame);
   }, []);
+
+  useEffect(() => {
+    if (!runtimeConfig || runtimeDefaultsHydrated) {
+      return;
+    }
+    setRuntimeDefaultsHydrated(true);
+    setReasoningPresetOverrides(resolveDefaultReasoningPresets(runtimeConfig));
+    setBenchmarkByokConfig((current) => ({
+      ...createDefaultBenchmarkByokConfig(
+        current.agentCount,
+        runtimeConfig,
+        tierModelOverrides,
+      ),
+      enabled: current.enabled,
+      providerKeys: current.providerKeys,
+      roster: ensureBenchmarkByokRosterLength(
+        current.roster,
+        current.agentCount,
+        runtimeConfig,
+        tierModelOverrides,
+      ),
+    }));
+  }, [runtimeConfig, runtimeDefaultsHydrated, tierModelOverrides]);
+
+  useEffect(() => {
+    if (!runtimeConfig || benchmarkByokConfig.enabled) {
+      return;
+    }
+    setBenchmarkByokConfig((current) => ({
+      ...current,
+      agentCount: benchmarkAgentCount,
+      roster: ensureBenchmarkByokRosterLength(
+        current.roster,
+        benchmarkAgentCount,
+        runtimeConfig,
+        tierModelOverrides,
+      ),
+    }));
+  }, [benchmarkAgentCount, benchmarkByokConfig.enabled, runtimeConfig, tierModelOverrides]);
+
+  useEffect(() => {
+    const state = location.state as BenchmarkWizardPrefillState | null;
+    const prefill = state?.benchmarkWizardPrefill;
+    if (!prefill) {
+      return;
+    }
+
+    const nextAgentCount = Math.max(2, Math.min(12, Math.trunc(prefill.agentCount || 4)));
+    const nextTraining = Math.max(1, Math.min(20, Math.trunc(prefill.trainingPerCategory || 1)));
+    const nextHoldout = Math.max(1, Math.min(10, Math.trunc(prefill.holdoutPerCategory || 1)));
+    const nextTierOverrides = prefill.tierModelOverrides ?? {};
+    const seededByokConfig = {
+      ...createDefaultBenchmarkByokConfig(nextAgentCount, runtimeConfig, nextTierOverrides),
+      enabled: prefill.byokEnabled,
+      providerKeys: {
+        gemini_api_key: "",
+        anthropic_api_key: "",
+        openrouter_api_key: "",
+      },
+    };
+
+    setBenchmarkAgentCount(nextAgentCount);
+    setTrainingPerCategory(nextTraining);
+    setHoldoutPerCategory(nextHoldout);
+    setTierModelOverrides(nextTierOverrides);
+    setReasoningPresetOverrides((current) => ({
+      ...(current ?? defaultReasoningPresets),
+      ...(prefill.reasoningPresets ?? {}),
+    }));
+    setBenchmarkByokConfig(seededByokConfig);
+    setDomainPromptSelection(() => {
+      const nextState: Partial<Record<BenchmarkDomainName, DomainPromptSelection>> = {};
+      for (const domain of BENCHMARK_DOMAINS) {
+        const template = templates.domains[domain]?.[0] ?? null;
+        const prompt = prefill.domainPrompts?.[domain];
+        const question = normalizeText(prompt?.question) || normalizeText(template?.question);
+        const useCustomPrompt = prompt?.source === "custom";
+        nextState[domain] = {
+          templateId: prompt?.template_id ?? template?.id ?? null,
+          templateTitle: template?.title ?? null,
+          question,
+          useCustomPrompt,
+          customQuestion: useCustomPrompt ? question : "",
+        };
+      }
+      return nextState;
+    });
+    setWizardDomain("math");
+    setRunError(null);
+    setWizardOpen(true);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [
+    defaultReasoningPresets,
+    location.pathname,
+    location.state,
+    navigate,
+    runtimeConfig,
+    templates,
+  ]);
 
   const finalizeDomainSelection = useCallback(
     (
@@ -627,6 +752,14 @@ export function Benchmarks() {
     return (globalSortMode === "recent" ? catalog.global_recent : catalog.global_frequency).slice(0, 3);
   }, [catalog, globalSortMode]);
 
+  const benchmarkByokValidation = useMemo(
+    () => getBenchmarkByokValidation(benchmarkByokConfig),
+    [benchmarkByokConfig],
+  );
+  const effectiveBenchmarkAgentCount = benchmarkByokConfig.enabled
+    ? benchmarkByokConfig.agentCount
+    : benchmarkAgentCount;
+
   const runPayloadPreview = useMemo(() => {
     const domainPrompts: NonNullable<BenchmarkRunRequestPayload["domain_prompts"]> = {};
     for (const domain of BENCHMARK_DOMAINS) {
@@ -648,17 +781,20 @@ export function Benchmarks() {
     const payload: BenchmarkRunRequestPayload = {
       training_per_category: trainingPerCategory,
       holdout_per_category: holdoutPerCategory,
-      agent_count: benchmarkAgentCount,
+      agent_count: effectiveBenchmarkAgentCount,
       live_agents: true,
       domain_prompts: domainPrompts,
       reasoning_presets: reasoningPresets,
       tier_model_overrides: buildTierModelOverridesPayload(tierModelOverrides, runtimeConfig),
+      ...(benchmarkByokConfig.enabled ? buildBenchmarkByokRunRequest(benchmarkByokConfig) : {}),
     };
 
     return payload;
   }, [
     benchmarkAgentCount,
+    benchmarkByokConfig,
     domainPromptSelection,
+    effectiveBenchmarkAgentCount,
     holdoutPerCategory,
     reasoningPresets,
     runtimeConfig,
@@ -667,20 +803,20 @@ export function Benchmarks() {
   ]);
 
   const benchmarkVoteRoster = useMemo(
-    () => buildVoteRoster(benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
-    [benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
+    () => buildVoteRoster(effectiveBenchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
+    [effectiveBenchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
   );
   const benchmarkDebateRoster = useMemo(
-    () => buildDebateRoster(benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
-    [benchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
+    () => buildDebateRoster(effectiveBenchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides),
+    [effectiveBenchmarkAgentCount, reasoningPresets, runtimeConfig, tierModelOverrides],
   );
   const benchmarkCountBadges = useMemo(
-    () => buildProviderCountBadges(benchmarkAgentCount, runtimeConfig, tierModelOverrides),
-    [benchmarkAgentCount, runtimeConfig, tierModelOverrides],
+    () => buildProviderCountBadges(effectiveBenchmarkAgentCount, runtimeConfig, tierModelOverrides),
+    [effectiveBenchmarkAgentCount, runtimeConfig, tierModelOverrides],
   );
   const benchmarkEnsembleLabel = useMemo(
-    () => getBalancedEnsembleLabel(benchmarkAgentCount, runtimeConfig),
-    [benchmarkAgentCount, runtimeConfig],
+    () => getBalancedEnsembleLabel(effectiveBenchmarkAgentCount, runtimeConfig),
+    [effectiveBenchmarkAgentCount, runtimeConfig],
   );
   const benchmarkDebateFooter = useMemo(
     () => getDebateSpecialistSummary(runtimeConfig, tierModelOverrides),
@@ -699,6 +835,10 @@ export function Benchmarks() {
   };
 
   const handleTriggerBenchmark = useCallback(async () => {
+    if (benchmarkByokConfig.enabled && !benchmarkByokValidation.canSubmit) {
+      setRunError(benchmarkByokValidation.issues[0] ?? "Benchmark BYOK configuration is incomplete.");
+      return;
+    }
     try {
       setRunError(null);
       const run = await triggerBenchmarkMutation.mutateAsync(runPayloadPreview);
@@ -710,7 +850,15 @@ export function Benchmarks() {
     } catch (error) {
       setRunError(error instanceof Error ? error.message : "Unable to start benchmark run right now.");
     }
-  }, [navigate, queryClient, runPayloadPreview, triggerBenchmarkMutation]);
+  }, [
+    benchmarkByokConfig.enabled,
+    benchmarkByokValidation.canSubmit,
+    benchmarkByokValidation.issues,
+    navigate,
+    queryClient,
+    runPayloadPreview,
+    triggerBenchmarkMutation,
+  ]);
 
   const handleStopBenchmarkRun = useCallback(async (run: BenchmarkRunStatusPayload) => {
     try {
@@ -1358,6 +1506,9 @@ export function Benchmarks() {
           runtimeConfig={runtimeConfig}
           tierModelOverrides={tierModelOverrides}
           onTierModelOverridesChange={setTierModelOverrides}
+          byokConfig={benchmarkByokConfig}
+          onByokConfigChange={setBenchmarkByokConfig}
+          byokValidation={benchmarkByokValidation}
           voteRoster={benchmarkVoteRoster}
           debateRoster={benchmarkDebateRoster}
           countBadges={benchmarkCountBadges}
@@ -1373,6 +1524,7 @@ export function Benchmarks() {
           isSubmitting={triggerBenchmarkMutation.isPending}
           onSubmit={() => { void handleTriggerBenchmark(); }}
           submitError={runError}
+          canSubmit={!benchmarkByokConfig.enabled || benchmarkByokValidation.canSubmit}
         />
       ) : null}
     </>

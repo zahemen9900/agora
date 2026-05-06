@@ -15,6 +15,7 @@ import {
 import {
   getBenchmarkItemEvents,
   streamBenchmarkRun,
+  type BenchmarkDomainPromptPayload,
   type BenchmarkDetailPayload,
   type BenchmarkItemPayload,
   type TaskEvent,
@@ -59,6 +60,7 @@ import {
 import { providerFromModel } from "../lib/modelProviders";
 import { usePostHog } from "@posthog/react";
 import { Button } from "../components/ui/Button";
+import type { ReasoningPresetState, TierModelOverrideState } from "../lib/deliberationConfig";
 
 interface BenchmarkTimelineDescriptor {
   label: string;
@@ -79,6 +81,35 @@ interface BenchmarkReliabilitySummary {
   terminalErrorCount: number;
   retryByProvider: Array<[string, number]>;
   phaseCounts: Array<[string, number]>;
+}
+
+interface BenchmarkWizardPrefillState {
+  benchmarkWizardPrefill: {
+    sourceRunId?: string | null;
+    byokEnabled: boolean;
+    agentCount: number;
+    trainingPerCategory: number;
+    holdoutPerCategory: number;
+    reasoningPresets?: Partial<ReasoningPresetState> | null;
+    tierModelOverrides?: TierModelOverrideState | null;
+    domainPrompts?: Partial<Record<"math" | "factual" | "reasoning" | "code" | "creative" | "demo", BenchmarkDomainPromptPayload>> | null;
+  };
+}
+
+function normalizeTierOverridesForWizard(
+  overrides: Record<string, unknown> | null | undefined,
+): TierModelOverrideState | null {
+  if (!overrides || typeof overrides !== "object") {
+    return null;
+  }
+
+  const normalized: TierModelOverrideState = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      normalized[key as keyof TierModelOverrideState] = value;
+    }
+  }
+  return normalized;
 }
 
 const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
@@ -191,6 +222,31 @@ export function BenchmarkDetail() {
       setStopError(error instanceof Error ? error.message : "Failed to delete benchmark.");
     }
   }, [benchmarkId, deleteBenchmarkMutation, detail?.artifact_id, detail?.run_id, detail?.scope, navigate, queryClient]);
+  const handleRelaunchByokInWizard = useCallback(() => {
+    if (!detail) {
+      return;
+    }
+    navigate("/benchmarks", {
+      state: {
+        benchmarkWizardPrefill: {
+          sourceRunId: detail.run_id ?? detail.benchmark_id,
+          byokEnabled: detail.execution_source === "local_byok",
+          agentCount: detail.request?.agent_count ?? detail.agent_count ?? 4,
+          trainingPerCategory: detail.request?.training_per_category ?? 1,
+          holdoutPerCategory: detail.request?.holdout_per_category ?? 1,
+          reasoningPresets: detail.reasoning_presets ? structuredClone(detail.reasoning_presets) : null,
+          tierModelOverrides: normalizeTierOverridesForWizard(
+            detail.tier_model_overrides
+              ? (structuredClone(detail.tier_model_overrides) as unknown as Record<string, unknown>)
+              : null,
+          ),
+          domainPrompts: detail.request?.domain_prompts
+            ? structuredClone(detail.request.domain_prompts as NonNullable<BenchmarkWizardPrefillState["benchmarkWizardPrefill"]["domainPrompts"]>)
+            : null,
+        },
+      } satisfies BenchmarkWizardPrefillState,
+    });
+  }, [detail, navigate]);
   const streamedEventKeysRef = useRef<Set<string>>(new Set());
   const historyRepairAttemptedRef = useRef<string | null>(null);
   const itemHydrationAttemptedRef = useRef<Set<string>>(new Set());
@@ -519,6 +575,7 @@ export function BenchmarkDetail() {
     };
   }, [benchmarkItems, reliabilityCards, summary]);
   const frontierHighlights = useMemo(() => buildFrontierHighlights(stageRows), [stageRows]);
+  const isLocalByokBenchmark = detail?.execution_source === "local_byok";
 
   useEffect(() => {
     if (!detail || failedFlyoutShownRef.current) return;
@@ -824,6 +881,38 @@ export function BenchmarkDetail() {
               <div className="text-sm text-text-primary">
                 The run stopped before completion. Refreshing the detail page should keep the
                 persisted artifact visible, but the underlying provider error needs another pass.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isLocalByokBenchmark ? (
+        <div className="card p-4 sm:p-6 mb-8 border border-emerald-400/30 bg-emerald-400/5">
+          <div className="flex flex-col gap-3">
+            <div className="mono text-xs text-text-muted">LOCAL BYOK EXECUTION</div>
+            <div className="text-sm text-text-primary">
+              This benchmark ran with ephemeral user-supplied provider keys. Keys were not stored in
+              benchmark records, events, recovery metadata, or artifacts.
+            </div>
+            <div className="mono text-xs text-text-secondary">
+              {detail.background_recovery_allowed === false
+                ? "Recovery after worker loss is disabled by design for this run."
+                : "Recovery policy not reported for this run."}
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                className="inline-flex items-center gap-2"
+                onClick={handleRelaunchByokInWizard}
+                trackingEvent="benchmarkdetail_relaunch_byok_in_wizard_clicked"
+              >
+                <RefreshCcw size={14} />
+                Relaunch In Wizard
+              </Button>
+              <div className="mono text-[11px] text-text-muted">
+                Rerun preserves prompts and non-secret settings only. Provider keys must be entered again.
               </div>
             </div>
           </div>

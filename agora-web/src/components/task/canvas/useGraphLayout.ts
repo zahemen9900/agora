@@ -17,6 +17,10 @@ interface TimelineEventLike {
   canonicalStage?: string;
   isDraft?: boolean;
   details?: Record<string, unknown>;
+  displayPrimary?: string;
+  displaySupport?: string;
+  displayThinking?: string;
+  rawText?: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -345,9 +349,11 @@ export function buildGraphLayout(
     const existing = nodeMap.get(nodeId);
 
     let thinkingContent = existing?.thinkingContent;
-    if (event.type === "thinking_delta") {
-      const tf = event.details?.thinking_so_far ?? event.details?.thinking_delta;
-      if (typeof tf === "string") thinkingContent = tf;
+    const thinkingDelta = event.displayThinking
+      ?? event.details?.thinking_so_far
+      ?? event.details?.thinking_delta;
+    if (typeof thinkingDelta === "string" && thinkingDelta.trim()) {
+      thinkingContent = thinkingDelta;
     }
 
     const reasonRaw = event.details?.reason ?? event.details?.reasoning;
@@ -365,8 +371,10 @@ export function buildGraphLayout(
         ? providerFromModel(event.agentModel)
         : existing?.provider,
       title: event.title,
-      content: event.summary,
+      content: event.displayPrimary ?? event.summary,
+      supportContent: event.displaySupport ?? existing?.supportContent,
       thinkingContent,
+      rawContent: event.rawText ?? existing?.rawContent,
       isLive: event.isDraft ?? false,
       confidence: event.confidence ?? existing?.confidence,
       telemetry: telemetryOf(event.details) ?? existing?.telemetry,
