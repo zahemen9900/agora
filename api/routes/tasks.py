@@ -42,6 +42,7 @@ from api.coordination import (
     reset_coordination_state_for_tests,
 )
 from api.live_journal import BufferedEventJournal
+from api.local_execution import is_local_execution_request, validate_local_execution_request
 from api.models import (
     BenchmarkCostEstimateResponse,
     ChainOperationRecord,
@@ -49,9 +50,11 @@ from api.models import (
     MechanismName,
     ModelTelemetryResponse,
     PaymentStatusName,
+    TaskDeleteResponse,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskEvent,
+    TaskRunRequest,
     TaskStatusResponse,
 )
 from api.solana_bridge import LAMPORTS_PER_SOL, bridge
@@ -89,7 +92,7 @@ _BUFFERED_TASK_EVENT_TYPES = {
     "usage_delta",
     "cross_examination_delta",
 }
-_TERMINAL_TASK_EVENT_TYPES = {"complete", "error"}
+_TERMINAL_TASK_EVENT_TYPES = {"complete", "error", "task_stopped"}
 _TASK_SPAN_MILESTONE_EVENTS = {
     "mechanism_selected",
     "mechanism_switch",
@@ -99,7 +102,9 @@ _TASK_SPAN_MILESTONE_EVENTS = {
     "payment_released",
     "complete",
     "error",
+    "task_stopped",
 }
+_TASK_STOP_ACTOR = "user"
 
 
 def get_task_store() -> TaskStore | LocalTaskStore:
@@ -176,7 +181,72 @@ async def _load_task_for_user(
     if raw_task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     _assert_task_owner(raw_task, workspace_id)
+    if _is_deleted_task_record(raw_task):
+        raise HTTPException(status_code=404, detail="Task not found")
     return raw_task
+
+
+def _task_stop_message(actor_label: str) -> str:
+    return f"Task stopped by {actor_label}."
+
+
+def _merge_task_control_fields(
+    snapshot: dict[str, Any],
+    persisted_record: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Preserve stop/delete control markers across concurrent task state writes."""
+
+    if not isinstance(persisted_record, dict):
+        return snapshot
+
+    merged = dict(snapshot)
+    for field in (
+        "stop_requested_at",
+        "stop_requested_by",
+        "delete_requested_at",
+        "delete_requested_by",
+        "deleted_at",
+    ):
+        value = persisted_record.get(field)
+        if value:
+            merged[field] = value
+
+    if persisted_record.get("stop_requested_at") and persisted_record.get("failure_reason"):
+        merged["failure_reason"] = persisted_record["failure_reason"]
+    if persisted_record.get("stop_requested_at") and persisted_record.get("latest_error_event"):
+        merged["latest_error_event"] = persisted_record["latest_error_event"]
+
+    return merged
+
+
+def _is_deleted_task_record(record: dict[str, Any] | None) -> bool:
+    return isinstance(record, dict) and bool(str(record.get("deleted_at") or "").strip())
+
+
+def _is_live_task_status(status: Any) -> bool:
+    normalized = str(status or "").strip().lower()
+    return normalized in {"pending", "in_progress"}
+
+
+def _stop_requested(record: dict[str, Any] | TaskStatusResponse) -> bool:
+    if isinstance(record, TaskStatusResponse):
+        return record.stop_requested_at is not None
+    if not isinstance(record, dict):
+        return False
+    return bool(str(record.get("stop_requested_at") or "").strip())
+
+
+async def _save_raw_task_record(
+    *,
+    store: TaskStore | LocalTaskStore,
+    workspace_id: str,
+    task_id: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    persisted_record = await store.get_task(workspace_id, task_id)
+    merged_snapshot = _merge_task_control_fields(snapshot, persisted_record)
+    await store.save_task(workspace_id, task_id, merged_snapshot)
+    return merged_snapshot
 
 
 async def _issue_stream_ticket(workspace_id: str, task_id: str) -> dict[str, str]:
@@ -210,7 +280,12 @@ def _track_background_task(run_key: str, task: asyncio.Task[None]) -> None:
     task.add_done_callback(_cleanup)
 
 
-def _launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
+def _launch_background_task_run(
+    *,
+    task_id: str,
+    workspace_id: str,
+    run_request: TaskRunRequest | None = None,
+) -> None:
     """Start a task run in the background when one is not already active locally."""
 
     run_key = _task_run_key(workspace_id, task_id)
@@ -220,7 +295,11 @@ def _launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
 
     async def _runner() -> None:
         try:
-            await _execute_task_run(task_id=task_id, workspace_id=workspace_id)
+            await _execute_task_run(
+                task_id=task_id,
+                workspace_id=workspace_id,
+                run_request=run_request,
+            )
         except HTTPException as exc:
             logger.warning(
                 "background_task_run_rejected",
@@ -271,6 +350,8 @@ async def resume_stale_background_task_runs(
     for raw_task in records:
         if not isinstance(raw_task, dict):
             continue
+        if _is_deleted_task_record(raw_task) or _stop_requested(raw_task):
+            continue
         workspace_id = str(raw_task.get("workspace_id") or "").strip()
         task_id = str(raw_task.get("task_id") or "").strip()
         if not workspace_id or not task_id:
@@ -279,10 +360,28 @@ async def resume_stale_background_task_runs(
         updated_at = _parse_timestamp(raw_task.get("updated_at"))
         is_stale = updated_at is None or updated_at <= stale_before
         background_requested = bool(raw_task.get("background_run_requested_at"))
+        is_unrecoverable_local_byok = (
+            str(raw_task.get("execution_source") or "").strip().lower() == "local_byok"
+            and not bool(raw_task.get("background_recovery_allowed", True))
+        )
         should_resume = (status == "pending" and background_requested) or (
             status == "in_progress" and is_stale
         )
         if not should_resume:
+            continue
+        if is_unrecoverable_local_byok:
+            task = _to_status_response(raw_task, detailed=True)
+            await _mark_task_failed(
+                store=store,
+                stream=get_stream_manager(),
+                workspace_id=workspace_id,
+                task_id=task_id,
+                task=task,
+                message=(
+                    "This BYOK task run cannot be recovered after worker loss because "
+                    "provider keys are ephemeral and were never persisted."
+                ),
+            )
             continue
         logger.info(
             "resume_stale_background_task_run",
@@ -675,7 +774,128 @@ async def _save_task_status(
     task_id: str,
     task: TaskStatusResponse,
 ) -> None:
-    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+    task.updated_at = datetime.now(UTC)
+    await _save_raw_task_record(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        snapshot=task.model_dump(mode="json"),
+    )
+
+
+async def _persist_stopped_task(
+    *,
+    store: TaskStore | LocalTaskStore,
+    stream: DeliberationStream,
+    workspace_id: str,
+    task_id: str,
+    actor_label: str,
+    terminal: bool = False,
+) -> dict[str, Any] | None:
+    """Persist a user stop request, optionally finalizing the task immediately."""
+
+    record = await store.get_task(workspace_id, task_id)
+    if not isinstance(record, dict) or _is_deleted_task_record(record):
+        return None
+
+    status = str(record.get("status") or "").strip().lower()
+    if status in {"completed", "paid"}:
+        return record
+
+    stopped_at = str(record.get("stop_requested_at") or datetime.now(UTC).isoformat())
+    message = _task_stop_message(actor_label)
+    updated_record = dict(record)
+    updated_record["stop_requested_at"] = stopped_at
+    updated_record["stop_requested_by"] = actor_label
+    updated_record["updated_at"] = datetime.now(UTC).isoformat()
+
+    if not terminal:
+        return await _save_raw_task_record(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            snapshot=updated_record,
+        )
+
+    stop_event = TaskEvent(
+        event="task_stopped",
+        data={
+            "task_id": task_id,
+            "message": message,
+            "status": "failed",
+            "stopped": True,
+        },
+        timestamp=datetime.now(UTC),
+    ).model_dump(mode="json")
+    updated_record["status"] = "failed"
+    updated_record["failure_reason"] = message
+    updated_record["latest_error_event"] = stop_event
+
+    merged = await _save_raw_task_record(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        snapshot=updated_record,
+    )
+    await persist_and_emit(
+        store=store,
+        stream=stream,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        event_type="task_stopped",
+        event_data=cast(dict[str, Any], stop_event["data"]),
+    )
+    mark_span_error(RuntimeError(message), attributes={"agora.execution.status": "stopped"})
+    await stream.close(_stream_key(workspace_id, task_id))
+    return merged
+
+
+async def _tombstone_task(
+    *,
+    store: TaskStore | LocalTaskStore,
+    workspace_id: str,
+    task_id: str,
+    actor_label: str,
+) -> TaskDeleteResponse | None:
+    record = await store.get_task(workspace_id, task_id)
+    if not isinstance(record, dict) or _is_deleted_task_record(record):
+        return None
+
+    deleted_at = datetime.now(UTC)
+    deleted_at_iso = deleted_at.isoformat()
+    stopped_before_delete = _is_live_task_status(record.get("status"))
+
+    updated_record = dict(record)
+    updated_record.update(
+        {
+            "delete_requested_at": deleted_at_iso,
+            "delete_requested_by": actor_label,
+            "deleted_at": deleted_at_iso,
+            "updated_at": deleted_at_iso,
+        }
+    )
+    if stopped_before_delete:
+        updated_record["stop_requested_at"] = (
+            str(updated_record.get("stop_requested_at") or deleted_at_iso)
+        )
+        updated_record["stop_requested_by"] = str(
+            updated_record.get("stop_requested_by") or actor_label
+        )
+        updated_record["failure_reason"] = str(
+            updated_record.get("failure_reason") or _task_stop_message(actor_label)
+        )
+
+    await _save_raw_task_record(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        snapshot=updated_record,
+    )
+    return TaskDeleteResponse(
+        task_id=task_id,
+        deleted_at=deleted_at,
+        stopped_before_delete=stopped_before_delete,
+    )
 
 
 async def _load_selector_state(
@@ -1268,6 +1488,34 @@ def _request_mechanism_override(request: TaskCreateRequest) -> MechanismType | N
     )
 
 
+def _is_local_task_run_request(run_request: TaskRunRequest | None) -> bool:
+    if run_request is None:
+        return False
+    return is_local_execution_request(
+        local_models=run_request.local_models,
+        local_provider_keys=run_request.local_provider_keys,
+        local_debate_config=run_request.local_debate_config,
+    )
+
+
+def _validate_local_task_run_request(
+    *,
+    task: TaskStatusResponse,
+    run_request: TaskRunRequest,
+) -> TaskRunRequest:
+    try:
+        validate_local_execution_request(
+            local_models=run_request.local_models,
+            local_provider_keys=run_request.local_provider_keys,
+            local_debate_config=run_request.local_debate_config,
+            expected_agent_count=task.agent_count,
+            execution_label="Local BYOK task execution",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return run_request
+
+
 def _selector_source(
     *,
     selection: MechanismSelection,
@@ -1386,7 +1634,12 @@ async def _mark_task_failed(
         timestamp=datetime.now(UTC),
     )
     task.latest_error_event = error_event
-    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
     await persist_and_emit(
         store=store,
         stream=stream,
@@ -1404,6 +1657,9 @@ def _build_orchestrator(
     agent_count: int,
     allow_offline_fallback: bool,
     reasoning_presets: Any,
+    local_models: Any = None,
+    local_provider_keys: Any = None,
+    local_debate_config: Any = None,
     tier_model_overrides: dict[str, str] | None = None,
 ) -> AgoraOrchestrator:
     """Build orchestrator while tolerating older test doubles without fallback kwargs."""
@@ -1413,19 +1669,42 @@ def _build_orchestrator(
             agent_count=agent_count,
             allow_offline_fallback=allow_offline_fallback,
             reasoning_presets=reasoning_presets,
+            local_models=local_models,
+            local_provider_keys=local_provider_keys,
+            local_debate_config=local_debate_config,
             tier_model_overrides=normalize_tier_model_overrides(tier_model_overrides),
         )
     except TypeError as exc:
-        if "allow_offline_fallback" not in str(exc) and "tier_model_overrides" not in str(exc):
+        if not any(
+            token in str(exc)
+            for token in (
+                "allow_offline_fallback",
+                "tier_model_overrides",
+                "local_models",
+                "local_provider_keys",
+                "local_debate_config",
+            )
+        ):
             raise
         try:
             return AgoraOrchestrator(
                 agent_count=agent_count,
                 reasoning_presets=reasoning_presets,
+                local_models=local_models,
+                local_provider_keys=local_provider_keys,
+                local_debate_config=local_debate_config,
                 tier_model_overrides=normalize_tier_model_overrides(tier_model_overrides),
             )
         except TypeError as nested_exc:
-            if "tier_model_overrides" not in str(nested_exc):
+            if not any(
+                token in str(nested_exc)
+                for token in (
+                    "tier_model_overrides",
+                    "local_models",
+                    "local_provider_keys",
+                    "local_debate_config",
+                )
+            ):
                 raise
             return AgoraOrchestrator(
                 agent_count=agent_count,
@@ -1607,6 +1886,7 @@ async def _execute_task_run(
     *,
     task_id: str,
     workspace_id: str,
+    run_request: TaskRunRequest | None = None,
 ) -> DeliberationResultResponse:
     """Execute the stored mechanism and persist the resulting receipt."""
 
@@ -1615,6 +1895,22 @@ async def _execute_task_run(
     raw_task = await _load_task_for_user(store, workspace_id, task_id)
 
     task = _to_status_response(raw_task, detailed=True)
+    local_run_request = (
+        _validate_local_task_run_request(task=task, run_request=run_request)
+        if _is_local_task_run_request(run_request)
+        else None
+    )
+    is_local_execution = local_run_request is not None
+    if _stop_requested(task) and task.status in {"pending", "in_progress"}:
+        await _persist_stopped_task(
+            store=store,
+            stream=stream,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            actor_label=str(raw_task.get("stop_requested_by") or _TASK_STOP_ACTOR),
+            terminal=True,
+        )
+        raise HTTPException(status_code=409, detail=_task_stop_message(_TASK_STOP_ACTOR))
     set_current_span_attributes(
         {
             "agora.route.operation": "tasks.run",
@@ -1624,7 +1920,7 @@ async def _execute_task_run(
             "agora.mechanism.requested": task.mechanism_override or task.mechanism,
             "agora.mechanism.selected": task.mechanism,
             "agora.selector.source": task.selector_source,
-            "agora.execution.mode": "hosted",
+            "agora.execution.mode": "local_byok" if is_local_execution else "hosted",
             "agora.allow_mechanism_switch": task.allow_mechanism_switch,
             "agora.allow_offline_fallback": task.allow_offline_fallback,
             "agora.quorum.threshold": task.quorum_threshold,
@@ -1886,6 +2182,15 @@ async def _execute_task_run(
         agent_count=task.agent_count,
         allow_offline_fallback=task.allow_offline_fallback,
         reasoning_presets=task.reasoning_presets,
+        local_models=(
+            None if local_run_request is None else list(local_run_request.local_models or [])
+        ),
+        local_provider_keys=(
+            None if local_run_request is None else local_run_request.local_provider_keys
+        ),
+        local_debate_config=(
+            None if local_run_request is None else local_run_request.local_debate_config
+        ),
         tier_model_overrides=(
             task.tier_model_overrides.present() if task.tier_model_overrides is not None else None
         ),
@@ -1920,8 +2225,15 @@ async def _execute_task_run(
                 event_type="task_recovered",
                 event_data=recovery_event,
             )
+        task.execution_source = "local_byok" if is_local_execution else "hosted"
+        task.background_recovery_allowed = not is_local_execution
         task.status = "in_progress"
-        await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+        await _save_task_status(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            task=task,
+        )
 
         if bridge.is_configured() and _chain_setup_needs_retry(task):
             await _finalize_chain_setup_operations(
@@ -1963,6 +2275,21 @@ async def _execute_task_run(
         if execution.status != "completed" or execution.result is None:
             raise RuntimeError(execution.failure_reason or "Task execution failed")
         result = execution.result
+    except asyncio.CancelledError:
+        try:
+            await journal.close()
+            await _persist_stopped_task(
+                store=store,
+                stream=stream,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                actor_label=str(raw_task.get("stop_requested_by") or _TASK_STOP_ACTOR),
+                terminal=True,
+            )
+        finally:
+            logger.info("task_execution_cancelled", task_id=task_id)
+            await _release_run_lock_once()
+        raise
     except HTTPException as exc:
         try:
             await journal.close()
@@ -2018,7 +2345,12 @@ async def _execute_task_run(
             _ensure_chain_operation(task, _switch_operation_key(switch_index))
         _ensure_chain_operation(task, _SUBMIT_RECEIPT_OPERATION)
 
-    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
 
     if bridge.is_configured():
         try:
@@ -2047,7 +2379,12 @@ async def _execute_task_run(
 
     task.status = "completed"
     task.completed_at = datetime.now(UTC)
-    await store.save_task(workspace_id, task_id, task.model_dump(mode="json"))
+    await _save_task_status(
+        store=store,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        task=task,
+    )
 
     await persist_and_emit(
         store=store,
@@ -2104,17 +2441,23 @@ async def _execute_task_run(
 async def run_task(
     task_id: str,
     user: CurrentUser,
+    run_request: TaskRunRequest | None = None,
 ) -> DeliberationResultResponse:
     """Execute the stored mechanism synchronously and return the final receipt."""
 
     require_scope(user, "tasks:write")
-    return await _execute_task_run(task_id=task_id, workspace_id=user.workspace_id)
+    return await _execute_task_run(
+        task_id=task_id,
+        workspace_id=user.workspace_id,
+        run_request=run_request,
+    )
 
 
 @router.post("/{task_id}/run-async", response_model=TaskStatusResponse)
 async def start_task_run(
     task_id: str,
     user: CurrentUser,
+    run_request: TaskRunRequest | None = None,
 ) -> TaskStatusResponse:
     """Start task execution in the background and return the current persisted status."""
 
@@ -2122,6 +2465,11 @@ async def start_task_run(
     store = get_task_store()
     raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
     task = _to_status_response(raw_task, detailed=True)
+    local_run_request = (
+        _validate_local_task_run_request(task=task, run_request=run_request)
+        if _is_local_task_run_request(run_request)
+        else None
+    )
 
     if task.status not in {"pending", "in_progress", "completed", "paid"}:
         raise HTTPException(status_code=409, detail=f"Task cannot run from status={task.status}")
@@ -2129,13 +2477,84 @@ async def start_task_run(
         requested_at = datetime.now(UTC).isoformat()
         raw_task["background_run_requested_at"] = requested_at
         raw_task["updated_at"] = requested_at
+        raw_task["execution_source"] = "local_byok" if local_run_request is not None else "hosted"
+        raw_task["background_recovery_allowed"] = local_run_request is None
         await store.save_task(user.workspace_id, task_id, raw_task)
-        _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
+        _launch_background_task_run(
+            task_id=task_id,
+            workspace_id=user.workspace_id,
+            run_request=local_run_request,
+        )
     elif task.status == "in_progress":
+        if local_run_request is not None:
+            raise HTTPException(status_code=409, detail="Task is already in progress")
         _launch_background_task_run(task_id=task_id, workspace_id=user.workspace_id)
 
     refreshed = await _load_task_for_user(store, user.workspace_id, task_id)
     return _to_status_response(refreshed, detailed=True)
+
+
+@router.post("/{task_id}/stop", response_model=TaskStatusResponse)
+async def stop_task(
+    task_id: str,
+    user: CurrentUser,
+) -> TaskStatusResponse:
+    """Request that a pending or running task stop, finalizing when possible."""
+
+    require_scope(user, "tasks:write")
+    store = get_task_store()
+    stream = get_stream_manager()
+    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
+    current_status = str(raw_task.get("status") or "").strip().lower()
+
+    if current_status not in {"pending", "in_progress", "failed"}:
+        raise HTTPException(status_code=409, detail=f"Task cannot stop from status={current_status}")
+
+    terminal = current_status == "pending"
+    stopped = await _persist_stopped_task(
+        store=store,
+        stream=stream,
+        workspace_id=user.workspace_id,
+        task_id=task_id,
+        actor_label=_TASK_STOP_ACTOR,
+        terminal=terminal,
+    )
+    if stopped is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    local_task = _background_task_runs.get(_task_run_key(user.workspace_id, task_id))
+    if local_task is not None and not local_task.done():
+        local_task.cancel()
+
+    refreshed = await _load_task_for_user(store, user.workspace_id, task_id)
+    return _to_status_response(refreshed, detailed=True)
+
+
+@router.delete("/{task_id}", response_model=TaskDeleteResponse)
+async def delete_task(
+    task_id: str,
+    user: CurrentUser,
+) -> TaskDeleteResponse:
+    """Tombstone a user-owned task and hide it from task views."""
+
+    require_scope(user, "tasks:write")
+    store = get_task_store()
+    raw_task = await _load_task_for_user(store, user.workspace_id, task_id)
+    deleted = await _tombstone_task(
+        store=store,
+        workspace_id=user.workspace_id,
+        task_id=task_id,
+        actor_label=_TASK_STOP_ACTOR,
+    )
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if _is_live_task_status(raw_task.get("status")):
+        local_task = _background_task_runs.get(_task_run_key(user.workspace_id, task_id))
+        if local_task is not None and not local_task.done():
+            local_task.cancel()
+
+    return deleted
 
 
 @router.get("", response_model=list[TaskStatusResponse])
@@ -2151,6 +2570,8 @@ async def list_tasks(
     visible_rows: list[TaskStatusResponse] = []
     for row in rows:
         try:
+            if _is_deleted_task_record(row):
+                continue
             _assert_task_owner(row, user.workspace_id)
             visible_rows.append(_to_status_response(row, detailed=False))
         except HTTPException:

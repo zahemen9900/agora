@@ -128,6 +128,8 @@ function toBenchmarkRunStatusSnapshot(
     failure_counts_by_category: detail.failure_counts_by_category,
     failure_counts_by_reason: detail.failure_counts_by_reason,
     failure_counts_by_stage: detail.failure_counts_by_stage,
+    execution_source: detail.execution_source,
+    background_recovery_allowed: detail.background_recovery_allowed,
   };
 }
 

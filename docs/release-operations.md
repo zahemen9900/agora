@@ -9,7 +9,7 @@
 
 ## SDK Release Runbook (Trusted Publishing, Current Cycle)
 
-Target package: `agora-arbitrator-sdk==0.1.0a16`
+Target package: `agora-arbitrator-sdk==0.1.0a17`
 
 Version discipline:
 
@@ -41,8 +41,8 @@ and install checks do not need a manual hosted API URL.
 ### Publish (Preferred)
 
 ```bash
-git tag sdk-v0.1.0a16
-git push origin sdk-v0.1.0a16
+git tag sdk-v0.1.0a17
+git push origin sdk-v0.1.0a17
 ```
 
 Trusted publishing is wired for the repository in `.github/workflows/deploy-sdk.yml`
@@ -56,7 +56,7 @@ is still available as fallback. Local `twine upload` is fallback-only for emerge
 python -m venv /tmp/agora-arbitrator-sdk-verify
 source /tmp/agora-arbitrator-sdk-verify/bin/activate
 python -m pip install --upgrade pip
-python -m pip install agora-arbitrator-sdk==0.1.0a16
+python -m pip install agora-arbitrator-sdk==0.1.0a17
 python - <<'PY'
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 print("sdk-import-ok")
@@ -108,6 +108,8 @@ gcloud run deploy "${SERVICE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
   --platform managed \
+  --memory 1Gi \
+  --concurrency 16 \
   --service-account "${RUNTIME_SA}" \
   --network default \
   --subnet default \
@@ -123,6 +125,11 @@ gcloud run deploy "${SERVICE}" \
 ```bash
 curl -sS "https://<cloud-run-url>/benchmarks" | head
 ```
+
+Current service baseline:
+
+- Memory: `1Gi`
+- Container concurrency: `16`
 
 ## Container Registry Policy
 

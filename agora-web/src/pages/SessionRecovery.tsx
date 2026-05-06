@@ -1,4 +1,5 @@
 import { ArrowRight, ShieldAlert } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "../lib/useAuth";
 import type { AuthIssue } from "../lib/authContext";
@@ -24,6 +25,7 @@ const ISSUE_COPY: Record<AuthIssue, { eyebrow: string; title: string; body: stri
 
 export function SessionRecoveryPage({ issue }: { issue: AuthIssue }) {
   const { signIn } = useAuth();
+  const navigate = useNavigate();
   const copy = ISSUE_COPY[issue];
 
   return (
@@ -47,9 +49,9 @@ export function SessionRecoveryPage({ issue }: { issue: AuthIssue }) {
             <Button type="button" className="inline-flex items-center gap-2" onClick={() => signIn()} variant="primary">
               Sign in again <ArrowRight size={16} />
             </Button>
-            <a href="/auth" className="btn-secondary inline-flex items-center justify-center gap-2">
-              Go to login
-            </a>
+            <Button onClick={() => navigate('/')} variant="secondary" className="inline-flex items-center justify-center gap-2">
+              Go to sign in
+            </Button>
           </div>
 
           <p className="mono text-xs text-text-muted mt-6">

@@ -36,6 +36,11 @@ from api.auth import AuthenticatedUser, get_current_user, require_scope
 from api.config import settings
 from api.coordination import StreamTicketRecord, get_coordination_backend
 from api.live_journal import BufferedEventJournal, BufferedStateWriter
+from api.local_execution import (
+    is_local_execution_request,
+    sanitize_local_execution_payload,
+    validate_local_execution_request,
+)
 from api.models import (
     BenchmarkCatalogEntry,
     BenchmarkCatalogResponse,
@@ -663,6 +668,35 @@ async def _raise_if_benchmark_stop_requested(
         raise BenchmarkStopRequested(str(record.get("error") or _benchmark_stop_message("user")))
 
 
+def _is_local_benchmark_run_request(request: BenchmarkRunRequest) -> bool:
+    return is_local_execution_request(
+        local_models=request.local_models,
+        local_provider_keys=request.local_provider_keys,
+        local_debate_config=request.local_debate_config,
+    )
+
+
+def _validate_local_benchmark_run_request(request: BenchmarkRunRequest) -> BenchmarkRunRequest:
+    try:
+        validate_local_execution_request(
+            local_models=request.local_models,
+            local_provider_keys=request.local_provider_keys,
+            local_debate_config=request.local_debate_config,
+            expected_agent_count=request.agent_count,
+            execution_label="Local BYOK benchmark execution",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return request
+
+
+def _unrecoverable_local_byok_benchmark_message() -> str:
+    return (
+        "This BYOK benchmark run cannot be recovered after worker loss because "
+        "provider keys are ephemeral and were never persisted."
+    )
+
+
 async def resume_stale_background_benchmark_runs(
     *,
     stale_after_seconds: int,
@@ -690,6 +724,35 @@ async def resume_stale_background_benchmark_runs(
             continue
         if record.get("stop_requested_at"):
             continue
+        is_unrecoverable_local_byok = (
+            str(record.get("execution_source") or "").strip().lower() == "local_byok"
+            and not bool(record.get("background_recovery_allowed", True))
+        )
+        updated_at = _parse_optional_timestamp(record.get("updated_at"))
+        should_resume = status == "queued" or updated_at is None or updated_at <= stale_before
+        if is_unrecoverable_local_byok and should_resume:
+            failed_at = now.isoformat()
+            record.update(
+                {
+                    "status": "failed",
+                    "error": _unrecoverable_local_byok_benchmark_message(),
+                    "updated_at": failed_at,
+                }
+            )
+            await store.save_user_test_result(workspace_id, run_id, record)
+            await _persist_and_emit_benchmark_event(
+                store=store,
+                stream=get_stream_manager(),
+                workspace_id=workspace_id,
+                run_id=run_id,
+                event_type="failed",
+                event_data={
+                    "run_id": run_id,
+                    "status": "failed",
+                    "message": _unrecoverable_local_byok_benchmark_message(),
+                },
+            )
+            continue
         background_requested_at = _parse_optional_timestamp(record.get("background_run_requested_at"))
         if background_requested_at is None:
             await _persist_stopped_benchmark_run(
@@ -708,8 +771,6 @@ async def resume_stale_background_benchmark_runs(
                 terminal=True,
             )
             continue
-        updated_at = _parse_optional_timestamp(record.get("updated_at"))
-        should_resume = status == "queued" or updated_at is None or updated_at <= stale_before
         if not should_resume:
             continue
         request_payload = record.get("request")
@@ -1939,6 +2000,16 @@ def _build_benchmark_detail_response(
             if isinstance(run_record, dict) and run_record.get("run_id")
             else None
         ),
+        execution_source=(
+            str(run_record.get("execution_source")).strip()
+            if isinstance(run_record, dict) and run_record.get("execution_source")
+            else "hosted"
+        ),
+        background_recovery_allowed=(
+            bool(run_record.get("background_recovery_allowed", True))
+            if isinstance(run_record, dict)
+            else True
+        ),
         scope=scope,
         source=source,
         status=status,
@@ -3047,6 +3118,12 @@ def _to_run_status(
         updated_at=_parse_timestamp(record.get("updated_at") or record.get("created_at")),
         error=error_text,
         artifact_id=artifact,
+        execution_source=(
+            str(record.get("execution_source")).strip()
+            if record.get("execution_source")
+            else "hosted"
+        ),
+        background_recovery_allowed=bool(record.get("background_recovery_allowed", True)),
         request=request_record,
         reasoning_presets=(
             request_record.reasoning_presets
@@ -3329,6 +3406,12 @@ async def _execute_benchmark_run(
     store = get_task_store()
     stream = get_stream_manager()
     backend = get_coordination_backend()
+    local_run_request = (
+        _validate_local_benchmark_run_request(request)
+        if _is_local_benchmark_run_request(request)
+        else None
+    )
+    is_local_execution = local_run_request is not None
     set_current_span_attributes(
         {
             "agora.route.operation": "benchmarks.run",
@@ -3337,6 +3420,7 @@ async def _execute_benchmark_run(
             "agora.benchmark.agent_count": request.agent_count,
             "agora.benchmark.training_per_category": request.training_per_category,
             "agora.benchmark.holdout_per_category": request.holdout_per_category,
+            "agora.execution.mode": "local_byok" if is_local_execution else "hosted",
         },
         bind=True,
     )
@@ -3521,6 +3605,13 @@ async def _execute_benchmark_run(
             allow_offline_fallback=True,
             reasoning_presets=reasoning_presets,
             tier_model_overrides=tier_model_overrides,
+            local_models=local_run_request.local_models if local_run_request is not None else None,
+            local_provider_keys=(
+                local_run_request.local_provider_keys if local_run_request is not None else None
+            ),
+            local_debate_config=(
+                local_run_request.local_debate_config if local_run_request is not None else None
+            ),
         )
         selector_state = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
         if selector_state is not None:
@@ -4233,6 +4324,11 @@ async def trigger_benchmark_run(
         bind=True,
     )
     created_at = datetime.now(UTC)
+    local_run_request = (
+        _validate_local_benchmark_run_request(request)
+        if _is_local_benchmark_run_request(request)
+        else None
+    )
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
     resolved_domain_prompts = _resolved_domain_prompts(request)
     try:
@@ -4241,6 +4337,7 @@ async def trigger_benchmark_run(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    persisted_request = sanitize_local_execution_payload(request.model_dump(mode="json"))
 
     await store.save_user_test_result(
         user.workspace_id,
@@ -4254,8 +4351,10 @@ async def trigger_benchmark_run(
             "updated_at": created_at.isoformat(),
             "background_run_requested_at": created_at.isoformat(),
             "background_recovery_deadline_at": _benchmark_recovery_deadline(created_at),
+            "execution_source": "local_byok" if local_run_request is not None else "hosted",
+            "background_recovery_allowed": local_run_request is None,
             "request": {
-                **request.model_dump(mode="json"),
+                **persisted_request,
                 "reasoning_presets": reasoning_presets.model_dump(mode="json"),
                 "resolved_domain_prompts": resolved_domain_prompts,
                 "tier_model_overrides": tier_model_overrides or None,

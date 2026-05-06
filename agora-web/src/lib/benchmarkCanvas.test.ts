@@ -8,6 +8,7 @@ import {
   resolveSelectedBenchmarkItemId,
   shouldFetchBenchmarkItemEvents,
 } from "./benchmarkCanvas";
+import { buildDeliberationTimeline } from "./deliberationTimeline";
 
 function makeItem(overrides: Partial<BenchmarkItemPayload>): BenchmarkItemPayload {
   return {
@@ -145,4 +146,45 @@ test("deriveBenchmarkItemTimelineEvents recovers terminal item graph events from
   assert.equal(events[2].data.confidence, 0.835);
   assert.equal(events[2].data.item_id, "pre_learning:selector_initial:7");
   assert.equal(events[2].data.mechanism_recovered, true);
+});
+
+test("benchmark item timelines normalize structured live output instead of rendering raw JSON", () => {
+  const item = makeItem({
+    item_id: "item-live",
+    status: "running",
+    mechanism: "vote",
+    events: [
+      {
+        event: "agent_output_delta",
+        timestamp: "2026-05-03T00:00:01.000Z",
+        data: {
+          agent_id: "agent-1",
+          agent_model: "claude-sonnet-4-6",
+          stage: "vote",
+          round_number: 1,
+          content_so_far: "{\"answer\":\"Use a modular monolith\",\"reasoning\":\"It keeps early delivery fast",
+        },
+      },
+      {
+        event: "usage_delta",
+        timestamp: "2026-05-03T00:00:02.000Z",
+        data: {
+          agent_id: "agent-1",
+          agent_model: "claude-sonnet-4-6",
+          stage: "vote",
+          round_number: 1,
+          total_tokens: 1089,
+          latency_ms: 40779,
+        },
+      },
+    ],
+  });
+
+  const events = deriveBenchmarkItemTimelineEvents(item, item.events, "vote");
+  const timeline = buildDeliberationTimeline(events, "vote");
+  const agentEvent = timeline.find((entry) => entry.agentId === "agent-1");
+
+  assert.ok(agentEvent);
+  assert.match(agentEvent.summary, /Use a modular monolith/);
+  assert.doesNotMatch(agentEvent.summary, /\{|\}|\"answer\"|1,089 tokens|40779 ms/);
 });

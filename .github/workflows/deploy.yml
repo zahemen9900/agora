@@ -51,6 +51,8 @@ jobs:
             --project "${{ secrets.GCP_PROJECT_ID }}" \
             --region "$REGION" \
             --platform managed \
+            --memory 1Gi \
+            --concurrency 16 \
             --service-account "${{ vars.GCP_RUNTIME_SERVICE_ACCOUNT }}" \
             --network default \
             --subnet default \
