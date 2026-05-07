@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../ui/Button';
 import { useAuth } from '../../lib/useAuth';
@@ -573,6 +573,21 @@ export function HeroReel() {
   const isMobile = useIsMobile();
   const [progress, setProgress] = useState(reducedMotion ? 1 : 0);
 
+  const words = [
+    { text: 'Debate', color: 'var(--accent-emerald)' },
+    { text: 'Vote', color: 'var(--accent-rose)' },
+    { text: 'Delphi', color: 'var(--accent-amber)' },
+  ];
+  const [wordIndex, setWordIndex] = useState(0);
+
+  useEffect(() => {
+    if (reducedMotion) return;
+    const interval = setInterval(() => {
+      setWordIndex((prev) => (prev + 1) % words.length);
+    }, 2400);
+    return () => clearInterval(interval);
+  }, [reducedMotion]);
+
   /* ── Loop the progress value via rAF ─────────────────────────── */
   useEffect(() => {
     if (reducedMotion) {
@@ -650,12 +665,26 @@ export function HeroReel() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
           <motion.h1
             className="display"
-            style={{ maxWidth: '520px' }}
+            style={{ maxWidth: '600px', display: 'flex', flexDirection: 'column', fontSize: 'clamp(72px, 8vw, 88px)' }}
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.7, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
           >
-            Debate.<br />Vote.<br />Delphi.<br />Proved.
+            <div style={{ position: 'relative', height: '1.05em' }}>
+              <AnimatePresence>
+                <motion.span
+                  key={wordIndex}
+                  initial={reducedMotion ? { opacity: 1 } : { opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -20 }}
+                  transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                  style={{ position: 'absolute', left: 0, color: words[wordIndex].color, fontSize: 'clamp(72px, 8vw, 88px)' }}
+                >
+                  {words[wordIndex].text}
+                </motion.span>
+              </AnimatePresence>
+            </div>
+            <span>Proved.</span>
           </motion.h1>
 
           <motion.p
