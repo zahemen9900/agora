@@ -23,6 +23,7 @@ class AgoraSelector:
         self,
         bandit_state_path: str | None = None,
         reasoning_caller: AgentCaller | None = None,
+        reasoning_fallback_callers: list[AgentCaller] | None = None,
     ) -> None:
         """Initialize selector dependencies.
 
@@ -39,7 +40,10 @@ class AgoraSelector:
             ]
         )
         self.heuristic = HeuristicSelector()
-        self.reasoning = ReasoningSelector(caller=reasoning_caller)
+        self.reasoning = ReasoningSelector(
+            caller=reasoning_caller,
+            fallback_callers=reasoning_fallback_callers,
+        )
 
         if bandit_state_path is not None:
             state_path = Path(bandit_state_path)

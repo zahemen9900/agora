@@ -1,4 +1,4 @@
-const API_URL = import.meta.env.VITE_AGORA_API_URL ?? "/api";
+const API_URL = (import.meta as ImportMeta & { env?: Record<string, string> }).env?.VITE_AGORA_API_URL ?? "/api";
 
 import type {
   ApiKeyCreateResponse,
@@ -24,7 +24,7 @@ import type {
   RuntimeTierConfigResponse as GeneratedRuntimeTierConfigResponse,
   TaskCreateResponse,
   TaskEvent,
-  TaskStatusResponse,
+  TaskStatusResponse as GeneratedTaskStatusResponse,
 } from "./api.generated";
 import type {
   ReasoningPresetState,
@@ -44,7 +44,6 @@ export type {
   TaskStatusName,
   TaskCreateResponse,
   TaskEvent,
-  TaskStatusResponse,
   WorkspaceResponse,
   DeliberationResultResponse,
 } from "./api.generated";
@@ -117,14 +116,34 @@ export interface AuthConfigPayload {
 
 export type BenchmarkRunStatusName = "queued" | "running" | "completed" | "failed";
 
-export type BenchmarkRunStatusPayload = GeneratedBenchmarkRunStatusResponse;
+export type BenchmarkRunStatusPayload = GeneratedBenchmarkRunStatusResponse & {
+  execution_source?: "hosted" | "local_byok";
+  background_recovery_allowed?: boolean;
+};
 export type BenchmarkCatalogEntry = GeneratedBenchmarkCatalogEntry;
 export type BenchmarkCatalogPayload = GeneratedBenchmarkCatalogResponse;
+export interface BenchmarkDeletePayload {
+  benchmark_id: string;
+  run_id: string | null;
+  artifact_id: string | null;
+  scope: "global" | "user";
+  deleted_at: string;
+  stopped_before_delete: boolean;
+}
+
+export interface TaskDeletePayload {
+  task_id: string;
+  deleted_at: string;
+  stopped_before_delete: boolean;
+}
 
 export type BenchmarkRunRequestPayload = Partial<GeneratedBenchmarkRunRequest> & {
   domain_prompts?: Partial<Record<BenchmarkDomainName, BenchmarkDomainPromptPayload>>;
   reasoning_presets?: Partial<ReasoningPresetState>;
   tier_model_overrides?: RuntimeTierModelOverridesPayload;
+  local_models?: LocalModelSpecPayload[] | null;
+  local_provider_keys?: LocalProviderKeysPayload | null;
+  local_debate_config?: LocalDebateConfigPayload | null;
 };
 
 export type BenchmarkRunResponsePayload = GeneratedBenchmarkRunResponse;
@@ -132,13 +151,44 @@ export type BenchmarkPromptTemplatePayload = GeneratedBenchmarkPromptTemplate;
 export type BenchmarkPromptTemplatesPayload = GeneratedBenchmarkPromptTemplatesResponse & {
   domains: Record<BenchmarkDomainName, GeneratedBenchmarkPromptTemplate[]>;
 };
-export type BenchmarkDetailPayload = GeneratedBenchmarkDetailResponse;
+export type BenchmarkDetailPayload = GeneratedBenchmarkDetailResponse & {
+  execution_source?: "hosted" | "local_byok";
+  background_recovery_allowed?: boolean;
+};
 export type BenchmarkItemPayload = GeneratedBenchmarkItemResponse;
 export type BenchmarkItemEventsPayload = GeneratedBenchmarkItemEventsResponse;
 
 export interface StreamHandle {
   close: () => void;
 }
+
+export interface LocalModelSpecPayload {
+  provider: "gemini" | "anthropic" | "openrouter";
+  model: string;
+}
+
+export interface LocalProviderKeysPayload {
+  gemini_api_key?: string;
+  anthropic_api_key?: string;
+  openrouter_api_key?: string;
+}
+
+export interface LocalDebateConfigPayload {
+  devils_advocate_model?: LocalModelSpecPayload | null;
+  devils_advocate_fallback_models?: LocalModelSpecPayload[] | null;
+}
+
+export interface TaskRunRequestPayload {
+  local_models?: LocalModelSpecPayload[] | null;
+  local_provider_keys?: LocalProviderKeysPayload | null;
+  local_debate_config?: LocalDebateConfigPayload | null;
+}
+
+export type TaskStatusResponse = GeneratedTaskStatusResponse & {
+  execution_source?: "hosted" | "local_byok";
+  background_recovery_allowed?: boolean;
+  stop_requested_at?: string | null;
+};
 
 export type AccessTokenSupplier = () => Promise<string | null>;
 
@@ -241,16 +291,52 @@ export async function getTask(
   );
 }
 
-export async function runTask(taskId: string, token: string | null): Promise<DeliberationResultResponse> {
+export async function runTask(
+  taskId: string,
+  token: string | null,
+  runRequest?: TaskRunRequestPayload | null,
+): Promise<DeliberationResultResponse> {
   return requestJson<DeliberationResultResponse>(`/tasks/${taskId}/run`, {
+    method: "POST",
+    headers: {
+      ...(runRequest ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders(token),
+    },
+    body: runRequest ? JSON.stringify(runRequest) : undefined,
+  });
+}
+
+export async function startTaskRun(
+  taskId: string,
+  token: string | null,
+  runRequest?: TaskRunRequestPayload | null,
+): Promise<TaskStatusResponse> {
+  return requestJson<TaskStatusResponse>(`/tasks/${taskId}/run-async`, {
+    method: "POST",
+    headers: {
+      ...(runRequest ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders(token),
+    },
+    body: runRequest ? JSON.stringify(runRequest) : undefined,
+  });
+}
+
+export async function stopTask(
+  taskId: string,
+  token: string | null,
+): Promise<TaskStatusResponse> {
+  return requestJson<TaskStatusResponse>(`/tasks/${taskId}/stop`, {
     method: "POST",
     headers: authHeaders(token),
   });
 }
 
-export async function startTaskRun(taskId: string, token: string | null): Promise<TaskStatusResponse> {
-  return requestJson<TaskStatusResponse>(`/tasks/${taskId}/run-async`, {
-    method: "POST",
+export async function deleteTask(
+  taskId: string,
+  token: string | null,
+): Promise<TaskDeletePayload> {
+  return requestJson<TaskDeletePayload>(`/tasks/${taskId}`, {
+    method: "DELETE",
     headers: authHeaders(token),
   });
 }
@@ -418,6 +504,16 @@ export async function stopBenchmarkRun(
 ): Promise<BenchmarkRunStatusPayload> {
   return requestJson<BenchmarkRunStatusPayload>(`/benchmarks/runs/${runId}/stop`, {
     method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
+export async function deleteBenchmark(
+  token: string,
+  benchmarkId: string,
+): Promise<BenchmarkDeletePayload> {
+  return requestJson<BenchmarkDeletePayload>(`/benchmarks/${encodeURIComponent(benchmarkId)}`, {
+    method: "DELETE",
     headers: authHeaders(token),
   });
 }

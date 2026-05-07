@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 
-from agora.agent import pro_caller
+from agora.agent import claude_caller, flash_caller, openrouter_caller, pro_caller
 from agora.engines.debate import DebateEngine
 from agora.engines.delphi import DelphiEngine
 from agora.engines.vote import VoteEngine
@@ -44,27 +44,18 @@ EventSink = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class _LazyReasoningCaller:
-    """Delay selector caller initialization until reasoning is actually invoked."""
+    """Delay one selector caller initialization until reasoning is actually invoked."""
 
     def __init__(
         self,
-        *,
-        thinking_level: str,
-        model: str | None,
-        gemini_api_key: str | None,
+        factory: Callable[[], Any],
     ) -> None:
-        self._thinking_level = thinking_level
-        self._model = model
-        self._gemini_api_key = gemini_api_key
+        self._factory = factory
         self._caller = None
 
     async def call(self, *args: Any, **kwargs: Any) -> tuple[Any, dict[str, Any]]:
         if self._caller is None:
-            self._caller = pro_caller(
-                thinking_level=self._thinking_level,
-                model=self._model,
-                gemini_api_key=self._gemini_api_key,
-            )
+            self._caller = self._factory()
         return await self._caller.call(*args, **kwargs)
 
 
@@ -111,14 +102,51 @@ class AgoraOrchestrator:
         self.selector = AgoraSelector(
             bandit_state_path=bandit_state_path,
             reasoning_caller=_LazyReasoningCaller(
-                thinking_level=self.reasoning_presets.gemini_pro,
-                model=self.tier_model_overrides.get("pro"),
-                gemini_api_key=(
-                    None
-                    if self.local_provider_keys is None
-                    else self.local_provider_keys.gemini_api_key
-                ),
+                lambda: pro_caller(
+                    thinking_level=self.reasoning_presets.gemini_pro,
+                    model=self.tier_model_overrides.get("pro"),
+                    gemini_api_key=(
+                        None
+                        if self.local_provider_keys is None
+                        else self.local_provider_keys.gemini_api_key
+                    ),
+                )
             ),
+            reasoning_fallback_callers=[
+                _LazyReasoningCaller(
+                    lambda: openrouter_caller(
+                        effort=self.reasoning_presets.openrouter,
+                        model=self.tier_model_overrides.get("openrouter"),
+                        openrouter_api_key=(
+                            None
+                            if self.local_provider_keys is None
+                            else self.local_provider_keys.openrouter_api_key
+                        ),
+                    )
+                ),
+                _LazyReasoningCaller(
+                    lambda: claude_caller(
+                        effort=self.reasoning_presets.claude,
+                        model=self.tier_model_overrides.get("claude"),
+                        anthropic_api_key=(
+                            None
+                            if self.local_provider_keys is None
+                            else self.local_provider_keys.anthropic_api_key
+                        ),
+                    )
+                ),
+                _LazyReasoningCaller(
+                    lambda: flash_caller(
+                        thinking_level=self.reasoning_presets.gemini_flash,
+                        model=self.tier_model_overrides.get("flash"),
+                        gemini_api_key=(
+                            None
+                            if self.local_provider_keys is None
+                            else self.local_provider_keys.gemini_api_key
+                        ),
+                    )
+                ),
+            ],
         )
         self.hasher = TranscriptHasher()
         self.monitor = StateMonitor()
@@ -145,6 +173,11 @@ class AgoraOrchestrator:
                 None
                 if self.local_debate_config is None
                 else self.local_debate_config.devils_advocate_model
+            ),
+            devils_advocate_fallback_models=(
+                None
+                if self.local_debate_config is None
+                else self.local_debate_config.devils_advocate_fallback_models
             ),
             **engine_kwargs,
         )

@@ -162,7 +162,17 @@ arbitrator = AgoraArbitrator(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
             model="qwen/qwen3.5-flash-02-23",
-        )
+        ),
+        devils_advocate_fallback_models=[
+            LocalModelSpec(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+            ),
+            LocalModelSpec(
+                provider="gemini",
+                model="gemini-3-flash-preview",
+            ),
+        ],
     ),
     allow_offline_fallback=False,
 )
@@ -178,6 +188,10 @@ Explicit local roster mode runs the exact model list you pass in roster order.
 Do not combine `auth_token=` with `local_models=`. Every provider referenced in
 `local_models` or `devils_advocate_model` must also have a key in
 `LocalProviderKeys`.
+
+With `allow_offline_fallback=False`, deterministic rescue stays disabled, but
+the debate engine may still use alternate **live** cross-examination models
+from `devils_advocate_fallback_models` before failing the run.
 
 ### Local provider keys from environment
 
@@ -253,7 +267,11 @@ arbitrator = AgoraArbitrator(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
             model="openai/gpt-oss-120b",
-        )
+        ),
+        devils_advocate_fallback_models=[
+            LocalModelSpec(provider="anthropic", model="claude-haiku-4-5"),
+            LocalModelSpec(provider="gemini", model="gemini-2.5-flash"),
+        ],
     ),
     allow_offline_fallback=False,
 )
@@ -409,5 +427,5 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
 ## Maintainer Release Notes
 
 - Current release process is documented in `../docs/release-operations.md`.
-- Current package target is `agora-arbitrator-sdk==0.1.0a16`.
+- Current package target is `agora-arbitrator-sdk==0.1.0a17`.
 - Preferred publish path is the trusted GitHub workflow in `.github/workflows/deploy-sdk.yml`.

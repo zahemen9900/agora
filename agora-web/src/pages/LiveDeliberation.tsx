@@ -88,6 +88,7 @@ import remarkGfm from "remark-gfm";
 import { ConvergenceMeter } from "../components/ConvergenceMeter";
 import { Flyout } from "../components/Flyout";
 import { ProviderGlyph } from "../components/ProviderGlyph";
+import { TaskActionsMenu } from "../components/task/TaskActionsMenu";
 import { CanvasView } from "../components/task/canvas/CanvasView";
 import {
   startTaskRun,
@@ -104,10 +105,14 @@ import {
 import {
   appendTaskDetailEventCache,
   patchTaskDetailCache,
+  removeDeletedTaskFromCaches,
   setTaskDetailCache,
   taskQueryKeys,
+  useDeleteTaskMutation,
   useTaskDetailQuery,
+  useStopTaskMutation,
 } from "../lib/taskQueries";
+import { TASK_STOPPED_REASON, canDeleteTask, canStopTask, isTaskActiveStatus, isTaskStopped, isTaskStopping } from "../lib/taskState";
 import {
   createSegmentInferenceState,
   inferSegmentedTaskEvent,
@@ -602,16 +607,18 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
     });
   }
 
-  if (!hasEventType("error") && task.status === "failed") {
+  if (!hasEventType("error") && !hasEventType("task_stopped") && task.status === "failed") {
     if (task.latest_error_event) {
       events.push(task.latest_error_event);
     } else if (task.failure_reason) {
+      const stopped = task.failure_reason === TASK_STOPPED_REASON;
       events.push({
-        event: "error",
+        event: stopped ? "task_stopped" : "error",
         timestamp: task.completed_at ?? task.created_at,
         data: {
           task_id: task.task_id,
           message: task.failure_reason,
+          ...(stopped ? { status: "failed", stopped: true } : {}),
         },
       });
     }
@@ -633,6 +640,7 @@ export function LiveDeliberation() {
   const [switchBanner, setSwitchBanner] = useTaskScopedState<string | null>(taskId, null);
   const [retryNotice, setRetryNotice] = useTaskScopedState<string | null>(taskId, null);
   const [errorMessage, setErrorMessage] = useTaskScopedState<string | null>(taskId, null);
+  const [stopMessage, setStopMessage] = useTaskScopedState<string | null>(taskId, null);
   const [convergence, setConvergence] = useTaskScopedState<ConvergenceState>(taskId, {
     entropy: 1.0,
     prevEntropy: 1.0,
@@ -653,7 +661,11 @@ export function LiveDeliberation() {
   const streamHandleRef = useRef<{ close: () => void } | null>(null);
   const historyRepairAttemptedRef = useRef<string | null>(null);
   const [followLiveUpdates, setFollowLiveUpdates] = useTaskScopedState<boolean>(taskId, true);
+  const [taskActionError, setTaskActionError] = useTaskScopedState<string | null>(taskId, null);
+  const [deleteFlyout, setDeleteFlyout] = useTaskScopedState<{ title: string; body: string } | null>(taskId, null);
   const task = taskQuery.data ?? null;
+  const stopTaskMutation = useStopTaskMutation();
+  const deleteTaskMutation = useDeleteTaskMutation();
 
   useEffect(() => {
     injectLdKeyframes();
@@ -810,6 +822,27 @@ export function LiveDeliberation() {
       return;
     }
 
+    if (segmentedEvent.event === "task_stopped") {
+      if (taskId) {
+        patchTaskDetailCache(queryClient, taskId, (current) => {
+          if (!current) {
+            return current;
+          }
+          return {
+            ...current,
+            status: "failed",
+            failure_reason: safeString(data.message, current.failure_reason ?? TASK_STOPPED_REASON),
+            latest_error_event: segmentedEvent,
+          };
+        });
+        void queryClient.invalidateQueries({ queryKey: taskQueryKeys.detail(taskId) });
+      }
+      setStopMessage(safeString(data.message, TASK_STOPPED_REASON));
+      setErrorMessage(null);
+      setRetryNotice(null);
+      return;
+    }
+
     if (segmentedEvent.event === "complete" && taskId) {
       patchTaskDetailCache(queryClient, taskId, (current) => (
         current ? { ...current, status: "completed" } : current
@@ -865,6 +898,11 @@ export function LiveDeliberation() {
       }
       return nextTimeline;
     });
+
+    if (isTaskStopped(task)) {
+      setStopMessage(task.failure_reason ?? TASK_STOPPED_REASON);
+      setErrorMessage(null);
+    }
 
     if (task.result) {
       setFinalAnswer({
@@ -942,6 +980,14 @@ export function LiveDeliberation() {
         return;
       }
 
+      const isPendingLocalByok = latestTask?.execution_source === "local_byok";
+      if (isPendingLocalByok) {
+        setRetryNotice(
+          "This task is waiting for an ephemeral BYOK start. It will not auto-restart from the task page because your provider keys were never stored.",
+        );
+        return;
+      }
+
       void (async () => {
         const runToken = await getAccessToken();
         const nextStatus = await startTaskRun(resolvedTaskId, runToken);
@@ -975,7 +1021,7 @@ export function LiveDeliberation() {
         streamTaskIdRef.current = null;
       }
     };
-  }, [getAccessToken, handleStreamEvent, queryClient, setErrorMessage, task?.task_id, taskId]);
+  }, [getAccessToken, handleStreamEvent, queryClient, setErrorMessage, setRetryNotice, task?.task_id, taskId]);
 
   const modelUsage = useMemo<ModelUsageSummary[]>(() => {
     const result = task?.result;
@@ -1030,7 +1076,10 @@ export function LiveDeliberation() {
   }, [recoveredTimeline, timeline]);
 
   const taskResult = task?.result ?? null;
-  const resolvedErrorMessage = errorMessage ?? (
+  const resolvedStopMessage = stopMessage ?? (
+    task && isTaskStopped(task) ? (task.failure_reason ?? TASK_STOPPED_REASON) : null
+  );
+  const resolvedErrorMessage = (resolvedStopMessage ? null : errorMessage) ?? (
     taskQuery.error instanceof Error ? taskQuery.error.message : null
   );
   const mechanismTrace = taskResult?.mechanism_trace ?? [];
@@ -1061,11 +1110,62 @@ export function LiveDeliberation() {
   const hotPathModel = dominantModelFromUsage(modelUsage);
 
   const taskStatus = task?.status ?? "pending";
-  const isTaskActive = !task?.result && (taskStatus === "pending" || taskStatus === "in_progress");
-  const taskActivityLabel = taskStatus === "pending" ? "QUEUEING RUN" : "RUNNING LIVE";
-  const taskActivityCopy = taskStatus === "pending"
-    ? "We have the task and the stream is attached. The backend is spinning up the run now."
-    : "The deliberation is still in flight. Fresh events should keep landing in the timeline below.";
+  const isPendingLocalByok = taskStatus === "pending" && task?.execution_source === "local_byok";
+  const taskIsStopping = task ? isTaskStopping(task) : false;
+  const isTaskActive = !task?.result && isTaskActiveStatus(taskStatus);
+  const taskActivityLabel = taskIsStopping
+    ? "STOPPING TASK"
+    : isPendingLocalByok
+    ? "WAITING FOR BYOK START"
+    : taskStatus === "pending"
+      ? "QUEUEING RUN"
+      : "RUNNING LIVE";
+  const taskActivityCopy = taskIsStopping
+    ? "A stop request is in flight. The backend is winding this task down and will finalize it as stopped."
+    : isPendingLocalByok
+    ? "This task was created for an ephemeral BYOK run. The dashboard will not auto-start it here because the provider keys were never persisted."
+    : taskStatus === "pending"
+      ? "We have the task and the stream is attached. The backend is spinning up the run now."
+      : "The deliberation is still in flight. Fresh events should keep landing in the timeline below.";
+
+  const handleStopTask = useCallback(async () => {
+    if (!taskId || !task || stopTaskMutation.isPending) {
+      return;
+    }
+    setTaskActionError(null);
+    try {
+      const stopped = await stopTaskMutation.mutateAsync(taskId);
+      setTaskDetailCache(queryClient, stopped);
+      if (stopped.failure_reason === TASK_STOPPED_REASON) {
+        setStopMessage(TASK_STOPPED_REASON);
+      }
+    } catch (error) {
+      setTaskActionError(error instanceof Error ? error.message : "Failed to stop task.");
+    }
+  }, [queryClient, setStopMessage, setTaskActionError, stopTaskMutation, task, taskId]);
+
+  const handleDeleteTask = useCallback(async () => {
+    if (!taskId || !task || deleteTaskMutation.isPending) {
+      return;
+    }
+    setTaskActionError(null);
+    try {
+      const deleted = await deleteTaskMutation.mutateAsync(taskId);
+      removeDeletedTaskFromCaches(queryClient, deleted);
+      navigate("/tasks", {
+        state: {
+          deletedTaskFlyout: {
+            title: deleted.stopped_before_delete ? "Task stopped and deleted" : "Task deleted",
+            body: deleted.stopped_before_delete
+              ? "The live task was stopped and removed from your deliberation history."
+              : "The task was removed from your deliberation history and receipt views.",
+          },
+        },
+      });
+    } catch (error) {
+      setTaskActionError(error instanceof Error ? error.message : "Failed to delete task.");
+    }
+  }, [deleteTaskMutation, navigate, queryClient, setTaskActionError, task, taskId]);
 
   useEffect(() => {
     if (!followLiveUpdates || displayTimeline.length === 0) {
@@ -1097,6 +1197,13 @@ export function LiveDeliberation() {
         body="The agents have reached consensus. A final answer has been recorded."
         onDismiss={() => setShowQuorumFlyout(false)}
       />
+      <Flyout
+        show={deleteFlyout !== null}
+        variant="success"
+        title={deleteFlyout?.title ?? ""}
+        body={deleteFlyout?.body}
+        onDismiss={() => setDeleteFlyout(null)}
+      />
       {/* ── Top bar: back button + tab switcher ─────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "20px" }}>
         <button
@@ -1124,6 +1231,17 @@ export function LiveDeliberation() {
             </button>
           ))}
         </div>
+        {task ? (
+          <TaskActionsMenu
+            canStop={canStopTask(task)}
+            canDelete={canDeleteTask(task)}
+            isRunning={isTaskActiveStatus(task.status)}
+            isStopping={stopTaskMutation.isPending || isTaskStopping(task)}
+            isDeleting={deleteTaskMutation.isPending}
+            onStop={() => void handleStopTask()}
+            onDelete={() => void handleDeleteTask()}
+          />
+        ) : null}
       </div>
 
       {/* ── Global banners (always visible regardless of tab) ──────────── */}
@@ -1153,11 +1271,20 @@ export function LiveDeliberation() {
         )}
       </AnimatePresence>
 
-      {resolvedErrorMessage && (
+      {resolvedStopMessage && (
+        <div className="p-4 mb-6 border border-amber-300 rounded-lg bg-[rgba(255,214,102,0.08)] text-amber-300">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} />
+            <span>{resolvedStopMessage}</span>
+          </div>
+        </div>
+      )}
+
+      {(resolvedErrorMessage || taskActionError) && (
         <div className="p-4 mb-6 border border-danger rounded-lg bg-[rgba(255,93,93,0.08)] text-danger">
           <div className="flex items-center gap-2">
             <AlertTriangle size={16} />
-            <span>{resolvedErrorMessage}</span>
+            <span>{resolvedErrorMessage ?? taskActionError}</span>
           </div>
         </div>
       )}

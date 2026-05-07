@@ -12,13 +12,22 @@ import structlog
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agora.agent import AgentCallError, AgentCaller, flash_caller
+from agora.agent import (
+    AgentCallError,
+    AgentCaller,
+    claude_caller,
+    flash_caller,
+    openrouter_caller,
+    pro_caller,
+)
+from agora.config import get_config
 from agora.runtime.costing import build_result_costing
 from agora.runtime.custom_agents import CustomAgentCallable, invoke_custom_agent
 from agora.runtime.hasher import TranscriptHasher
 from agora.runtime.local_models import build_local_model_caller
-from agora.runtime.model_policy import resolve_reasoning_presets
+from agora.runtime.model_policy import balanced_participant_tiers, resolve_reasoning_presets
 from agora.runtime.monitor import StateMonitor
+from agora.runtime.provider_errors import provider_error_details, should_try_alternate_live_model
 from agora.runtime.prompt_policy import delphi_independent_prompt, delphi_revision_prompt
 from agora.types import (
     AgentOutput,
@@ -83,7 +92,14 @@ class DelphiEngine:
         self._participant_models = list(participant_models) if participant_models is not None else None
         self._local_provider_keys = provider_keys
         self._tier_model_overrides = dict(tier_model_overrides or {})
+        self._participant_tiers = balanced_participant_tiers(self.agent_count)
         self._participant_callers: dict[int, AgentCaller] = {}
+        self._pro_agent: AgentCaller | None = None
+        self._claude_agent: AgentCaller | None = None
+        self._openrouter_agent: AgentCaller | None = None
+        self._claude_run_semaphore = asyncio.Semaphore(
+            get_config().anthropic_concurrent_requests_per_run
+        )
         if self._participant_models is not None and len(self._participant_models) != self.agent_count:
             raise ValueError("participant_models must contain exactly agent_count items")
         self.graph = self._build_graph()
@@ -358,7 +374,7 @@ class DelphiEngine:
 
         async def one_call(agent_idx: int) -> tuple[AgentOutput, dict[str, Any]]:
             prompt = delphi_independent_prompt(task=task)
-            response, usage = await self._call_participant(
+            response, usage, agent_model = await self._call_participant(
                 agent_idx=agent_idx,
                 system_prompt=prompt.system,
                 user_prompt=prompt.user,
@@ -375,6 +391,7 @@ class DelphiEngine:
                 round_number=1,
                 role="delphi_participant",
                 response=response,
+                agent_model=agent_model,
                 custom_agent=custom_agents[agent_idx] if custom_agents is not None else None,
             )
             await self._emit_event(
@@ -417,7 +434,7 @@ class DelphiEngine:
                 prior_answer=prior_output.content,
                 peer_feedback=feedback.get(agent_id, []),
             )
-            response, usage = await self._call_participant(
+            response, usage, agent_model = await self._call_participant(
                 agent_idx=agent_idx,
                 system_prompt=prompt.system,
                 user_prompt=prompt.user,
@@ -434,6 +451,7 @@ class DelphiEngine:
                 round_number=round_number,
                 role="delphi_reviser",
                 response=response,
+                agent_model=agent_model,
                 custom_agent=custom_agents[agent_idx] if custom_agents is not None else None,
             )
             await self._emit_event(
@@ -465,7 +483,7 @@ class DelphiEngine:
         response_model: type[BaseModel],
         fallback: BaseModel,
         custom_agent: CustomAgentCallable | None,
-    ) -> tuple[_DelphiResponse, dict[str, Any]]:
+    ) -> tuple[_DelphiResponse, dict[str, Any], str]:
         """Call one Delphi participant with provider and fallback handling."""
 
         if custom_agent is not None:
@@ -482,7 +500,7 @@ class DelphiEngine:
                 provider="custom-agent",
                 component="delphi.custom_agent",
             )
-            return _DelphiResponse.model_validate(response), normalized
+            return _DelphiResponse.model_validate(response), normalized, "custom-agent"
 
         explicit_model = self._participant_model(agent_idx)
         if explicit_model is not None:
@@ -501,7 +519,7 @@ class DelphiEngine:
                     provider=explicit_model.provider,
                     component=f"delphi.{response_model.__name__}",
                 )
-                return _DelphiResponse.model_validate(response), normalized
+                return _DelphiResponse.model_validate(response), normalized, explicit_model.model
             except AgentCallError as exc:
                 if not self.allow_offline_fallback:
                     raise
@@ -511,39 +529,95 @@ class DelphiEngine:
                     model=explicit_model.model,
                     provider=explicit_model.provider,
                 )
-                return _DelphiResponse.model_validate(fallback), self._offline_usage(
+                offline_usage = self._offline_usage(
                     component=f"delphi.{response_model.__name__}",
                     reason=f"provider_{explicit_model.provider}_unavailable_or_invalid",
                     model_name=explicit_model.model,
                     provider=explicit_model.provider,
                 )
+                return _DelphiResponse.model_validate(fallback), offline_usage, explicit_model.model
 
-        caller = self._get_flash_caller()
-        try:
-            response, usage = await caller.call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response_format=response_model,
-            )
-            if not isinstance(response, response_model):
-                raise AgentCallError("Flash Delphi participant returned an unexpected payload.")
-            normalized = self._normalize_usage(
-                usage=usage,
-                model_name=caller.model,
-                provider="gemini",
-                component=f"delphi.{response_model.__name__}",
-            )
-            return _DelphiResponse.model_validate(response), normalized
-        except AgentCallError as exc:
-            if not self.allow_offline_fallback:
-                raise
-            logger.warning("delphi_flash_fallback", error=str(exc), model=caller.model)
-            return _DelphiResponse.model_validate(fallback), self._offline_usage(
-                component=f"delphi.{response_model.__name__}",
-                reason="provider_flash_unavailable_or_invalid",
-                model_name=caller.model,
-                provider="gemini",
-            )
+        tier = self._tier_for_agent(agent_idx)
+        live_fallback_events: list[FallbackEvent] = []
+        caller_tiers = self._live_fallback_tiers_for(tier)
+
+        for index, caller_tier in enumerate(caller_tiers):
+            caller = self._get_caller(caller_tier)
+            try:
+                response, usage = await self._call_hosted_participant(
+                    caller_tier=caller_tier,
+                    caller=caller,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_model=response_model,
+                )
+                normalized = self._normalize_usage(
+                    usage=usage,
+                    model_name=caller.model,
+                    provider=self._provider_for_tier(caller_tier),
+                    component=f"delphi.{response_model.__name__}",
+                )
+                if live_fallback_events:
+                    normalized["fallback_events"] = [
+                        *live_fallback_events,
+                        *list(normalized.get("fallback_events", [])),
+                    ]
+                if index > 0:
+                    logger.info(
+                        "delphi_live_fallback_success",
+                        from_tier=tier,
+                        to_tier=caller_tier,
+                        model=caller.model,
+                    )
+                return _DelphiResponse.model_validate(response), normalized, caller.model
+            except AgentCallError as exc:
+                if (
+                    index + 1 < len(caller_tiers)
+                    and should_try_alternate_live_model(exc)
+                ):
+                    next_tier = caller_tiers[index + 1]
+                    next_caller = self._get_caller(next_tier)
+                    live_fallback_events.append(
+                        FallbackEvent(
+                            component=f"delphi.{response_model.__name__}",
+                            reason=f"provider_{caller_tier}_unavailable_or_invalid",
+                            fallback_type="alternate_live_model",
+                            original_model=caller.model,
+                            fallback_model=next_caller.model,
+                            provider=self._provider_for_tier(next_tier),
+                        )
+                    )
+                    logger.warning(
+                        "delphi_live_fallback",
+                        error=str(exc),
+                        from_tier=caller_tier,
+                        to_tier=next_tier,
+                        model=caller.model,
+                        **provider_error_details(exc),
+                    )
+                    continue
+                if not self.allow_offline_fallback:
+                    raise
+                logger.warning(
+                    "delphi_tier_fallback",
+                    error=str(exc),
+                    model=caller.model,
+                    tier=caller_tier,
+                    **provider_error_details(exc),
+                )
+                offline_usage = self._offline_usage(
+                    component=f"delphi.{response_model.__name__}",
+                    reason=f"provider_{caller_tier}_unavailable_or_invalid",
+                    model_name=caller.model,
+                    provider=self._provider_for_tier(caller_tier),
+                )
+                offline_usage["fallback_events"] = [
+                    *live_fallback_events,
+                    *list(offline_usage.get("fallback_events", [])),
+                ]
+                return _DelphiResponse.model_validate(fallback), offline_usage, caller.model
+
+        raise AgentCallError("Delphi participant live fallback chain terminated unexpectedly.")
 
     def _participant_model(self, agent_idx: int) -> LocalModelSpec | None:
         """Return the explicit local model for one participant when configured."""
@@ -576,6 +650,118 @@ class DelphiEngine:
             )
         return self._flash_agent
 
+    def _get_caller(self, tier: str) -> AgentCaller:
+        """Return lazily initialized caller for the participant's assigned tier."""
+
+        if tier == "pro":
+            if self._pro_agent is None:
+                self._pro_agent = pro_caller(
+                    thinking_level=self.reasoning_presets.gemini_pro,
+                    model=self._tier_model_overrides.get("pro"),
+                    gemini_api_key=(
+                        None
+                        if self._local_provider_keys is None
+                        else self._local_provider_keys.gemini_api_key
+                    ),
+                )
+            return self._pro_agent
+
+        if tier == "claude":
+            if self._claude_agent is None:
+                self._claude_agent = claude_caller(
+                    effort=self.reasoning_presets.claude,
+                    model=self._tier_model_overrides.get("claude"),
+                    anthropic_api_key=(
+                        None
+                        if self._local_provider_keys is None
+                        else self._local_provider_keys.anthropic_api_key
+                    ),
+                )
+            return self._claude_agent
+
+        if tier == "openrouter":
+            if self._openrouter_agent is None:
+                self._openrouter_agent = openrouter_caller(
+                    effort=self.reasoning_presets.openrouter,
+                    model=self._tier_model_overrides.get("openrouter"),
+                    openrouter_api_key=(
+                        None
+                        if self._local_provider_keys is None
+                        else self._local_provider_keys.openrouter_api_key
+                    ),
+                )
+            return self._openrouter_agent
+
+        return self._get_flash_caller()
+
+    def _live_fallback_tiers_for(self, primary_tier: ProviderTierName) -> list[ProviderTierName]:
+        """Return the ordered live-provider fallback chain for one hosted participant.
+
+        Priority is:
+        1. Keep the participant's assigned tier first.
+        2. Prefer alternate providers before another Gemini lane.
+        3. Keep one final Gemini fallback available before going fully offline.
+        """
+
+        ordered_candidates: list[ProviderTierName] = [
+            primary_tier,
+            "openrouter",
+            "claude",
+            "flash",
+            "pro",
+        ]
+        deduped: list[ProviderTierName] = []
+        for candidate in ordered_candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
+
+    def _tier_for_agent(self, agent_idx: int) -> ProviderTierName:
+        """Return the canonical hosted provider tier for one Delphi participant."""
+
+        return self._participant_tiers[agent_idx]
+
+    async def _call_hosted_participant(
+        self,
+        *,
+        caller_tier: str,
+        caller: AgentCaller,
+        system_prompt: str,
+        user_prompt: str,
+        response_model: type[BaseModel],
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        """Call one hosted Delphi participant, respecting Claude concurrency."""
+
+        if caller_tier == "claude":
+            async with self._claude_run_semaphore:
+                response, usage = await caller.call(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_format=response_model,
+                )
+        else:
+            response, usage = await caller.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                response_format=response_model,
+            )
+        if not isinstance(response, response_model):
+            raise AgentCallError(
+                f"{caller_tier} Delphi participant returned an unexpected payload."
+            )
+        return response, usage
+
+    @staticmethod
+    def _provider_for_tier(tier: str) -> str:
+        """Resolve provider label for fallback telemetry."""
+
+        return {
+            "flash": "gemini",
+            "pro": "gemini",
+            "claude": "claude",
+            "openrouter": "openrouter",
+        }.get(tier, "unknown")
+
     def _build_output(
         self,
         *,
@@ -583,14 +769,13 @@ class DelphiEngine:
         round_number: int,
         role: str,
         response: _DelphiResponse,
+        agent_model: str,
         custom_agent: CustomAgentCallable | None,
     ) -> AgentOutput:
         """Convert one structured Delphi response into an AgentOutput."""
 
-        agent_model = "custom-agent"
-        explicit_model = self._participant_model(agent_idx)
-        if custom_agent is None:
-            agent_model = explicit_model.model if explicit_model is not None else self._get_flash_caller().model
+        if custom_agent is not None:
+            agent_model = "custom-agent"
         answer = response.answer.strip()
         return AgentOutput(
             agent_id=f"agent-{agent_idx + 1}",

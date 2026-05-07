@@ -36,10 +36,16 @@ from api.auth import AuthenticatedUser, get_current_user, require_scope
 from api.config import settings
 from api.coordination import StreamTicketRecord, get_coordination_backend
 from api.live_journal import BufferedEventJournal, BufferedStateWriter
+from api.local_execution import (
+    is_local_execution_request,
+    sanitize_local_execution_payload,
+    validate_local_execution_request,
+)
 from api.models import (
     BenchmarkCatalogEntry,
     BenchmarkCatalogResponse,
     BenchmarkCostEstimateResponse,
+    BenchmarkDeleteResponse,
     BenchmarkDetailResponse,
     BenchmarkDomainName,
     BenchmarkItemEventsResponse,
@@ -363,7 +369,13 @@ def _merge_benchmark_control_fields(
         return snapshot
 
     merged = dict(snapshot)
-    for field in ("stop_requested_at", "stop_requested_by", "delete_requested_at"):
+    for field in (
+        "stop_requested_at",
+        "stop_requested_by",
+        "delete_requested_at",
+        "delete_requested_by",
+        "deleted_at",
+    ):
         value = persisted_record.get(field)
         if value:
             merged[field] = value
@@ -372,6 +384,19 @@ def _merge_benchmark_control_fields(
         merged["error"] = persisted_record["error"]
 
     return merged
+
+
+def _is_deleted_benchmark_record(record: dict[str, Any] | None) -> bool:
+    return isinstance(record, dict) and bool(str(record.get("deleted_at") or "").strip())
+
+
+def _is_deleted_benchmark_artifact(artifact: dict[str, Any] | None) -> bool:
+    return isinstance(artifact, dict) and bool(str(artifact.get("deleted_at") or "").strip())
+
+
+def _is_live_benchmark_status(status: Any) -> bool:
+    normalized = str(status or "").strip().lower()
+    return normalized in {"queued", "running"}
 
 
 async def _save_benchmark_run_record(
@@ -444,6 +469,76 @@ async def _persist_stopped_benchmark_run(
     )
 
 
+async def _tombstone_user_benchmark(
+    *,
+    workspace_id: str,
+    benchmark_id: str,
+    run_id: str | None,
+    run_record: dict[str, Any] | None,
+    artifact: dict[str, Any] | None,
+    actor_label: str,
+) -> BenchmarkDeleteResponse:
+    store = get_task_store()
+    deleted_at = datetime.now(UTC)
+    deleted_at_iso = deleted_at.isoformat()
+    stopped_before_delete = _is_live_benchmark_status(
+        run_record.get("status") if isinstance(run_record, dict) else None
+    )
+
+    artifact_id: str | None = None
+    if isinstance(artifact, dict):
+        raw_artifact_id = artifact.get("artifact_id") or artifact.get("run_id")
+        if isinstance(raw_artifact_id, str) and raw_artifact_id.strip():
+            artifact_id = raw_artifact_id.strip()
+    if artifact_id is None and isinstance(run_record, dict):
+        raw_artifact_id = run_record.get("artifact_id")
+        if isinstance(raw_artifact_id, str) and raw_artifact_id.strip():
+            artifact_id = raw_artifact_id.strip()
+
+    if isinstance(run_record, dict) and run_id:
+        deleted_record = dict(run_record)
+        deleted_record.update(
+            {
+                "delete_requested_at": deleted_at_iso,
+                "delete_requested_by": actor_label,
+                "deleted_at": deleted_at_iso,
+                "updated_at": deleted_at_iso,
+            }
+        )
+        if stopped_before_delete:
+            deleted_record["error"] = str(
+                deleted_record.get("error") or _benchmark_stop_message(actor_label)
+            )
+            deleted_record["stop_requested_at"] = (
+                deleted_record.get("stop_requested_at") or deleted_at_iso
+            )
+            deleted_record["stop_requested_by"] = (
+                deleted_record.get("stop_requested_by") or actor_label
+            )
+        await store.save_user_test_result(workspace_id, run_id, deleted_record)
+
+    if isinstance(artifact, dict) and artifact_id:
+        deleted_artifact = dict(artifact)
+        deleted_artifact.update(
+            {
+                "delete_requested_at": deleted_at_iso,
+                "delete_requested_by": actor_label,
+                "deleted_at": deleted_at_iso,
+                "updated_at": deleted_at_iso,
+            }
+        )
+        await store.save_user_benchmark_artifact(workspace_id, artifact_id, deleted_artifact)
+
+    return BenchmarkDeleteResponse(
+        benchmark_id=benchmark_id,
+        run_id=run_id,
+        artifact_id=artifact_id,
+        scope="user",
+        deleted_at=deleted_at,
+        stopped_before_delete=stopped_before_delete,
+    )
+
+
 async def _lookup_benchmark_run_record(
     run_id: str,
     *,
@@ -494,6 +589,72 @@ async def _resolve_benchmark_stop_target(
     return benchmark_identifier, None
 
 
+async def _resolve_user_benchmark_artifact(
+    *,
+    workspace_id: str,
+    candidate_ids: list[str],
+) -> dict[str, Any] | None:
+    store = get_task_store()
+    for candidate_id in candidate_ids:
+        artifact = await store.get_user_benchmark_artifact(workspace_id, candidate_id)
+        if artifact is not None and not _is_deleted_benchmark_artifact(artifact):
+            return artifact
+
+    user_artifacts = await store.list_user_benchmark_artifacts(workspace_id, limit=500)
+    active_artifacts = [
+        artifact
+        for artifact in user_artifacts
+        if isinstance(artifact, dict) and not _is_deleted_benchmark_artifact(artifact)
+    ]
+    for candidate_id in candidate_ids:
+        matched = _find_artifact_by_identifier(active_artifacts, candidate_id)
+        if matched is not None:
+            return matched
+    return None
+
+
+async def _resolve_global_benchmark_artifact(candidate_ids: list[str]) -> dict[str, Any] | None:
+    store = get_task_store()
+    for candidate_id in candidate_ids:
+        artifact = await store.get_global_benchmark_artifact(candidate_id)
+        if artifact is not None:
+            return artifact
+
+    global_artifacts = await store.list_global_benchmark_artifacts(limit=500)
+    for candidate_id in candidate_ids:
+        matched = _find_artifact_by_identifier(global_artifacts, candidate_id)
+        if matched is not None:
+            return matched
+    return None
+
+
+async def _resolve_benchmark_delete_target(
+    *,
+    benchmark_identifier: str,
+    workspace_id: str,
+) -> tuple[str | None, dict[str, Any] | None, dict[str, Any] | None]:
+    resolved_run_id, run_record = await _resolve_benchmark_stop_target(
+        benchmark_identifier=benchmark_identifier,
+        workspace_id=workspace_id,
+    )
+    if _is_deleted_benchmark_record(run_record):
+        run_record = None
+
+    candidate_ids: list[str] = [benchmark_identifier]
+    if resolved_run_id and resolved_run_id not in candidate_ids:
+        candidate_ids.append(resolved_run_id)
+    if isinstance(run_record, dict):
+        artifact_id = str(run_record.get("artifact_id") or "").strip()
+        if artifact_id and artifact_id not in candidate_ids:
+            candidate_ids.append(artifact_id)
+
+    user_artifact = await _resolve_user_benchmark_artifact(
+        workspace_id=workspace_id,
+        candidate_ids=candidate_ids,
+    )
+    return resolved_run_id, run_record, user_artifact
+
+
 async def _raise_if_benchmark_stop_requested(
     *,
     workspace_id: str,
@@ -505,6 +666,35 @@ async def _raise_if_benchmark_stop_requested(
         return
     if record.get("stop_requested_at"):
         raise BenchmarkStopRequested(str(record.get("error") or _benchmark_stop_message("user")))
+
+
+def _is_local_benchmark_run_request(request: BenchmarkRunRequest) -> bool:
+    return is_local_execution_request(
+        local_models=request.local_models,
+        local_provider_keys=request.local_provider_keys,
+        local_debate_config=request.local_debate_config,
+    )
+
+
+def _validate_local_benchmark_run_request(request: BenchmarkRunRequest) -> BenchmarkRunRequest:
+    try:
+        validate_local_execution_request(
+            local_models=request.local_models,
+            local_provider_keys=request.local_provider_keys,
+            local_debate_config=request.local_debate_config,
+            expected_agent_count=request.agent_count,
+            execution_label="Local BYOK benchmark execution",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return request
+
+
+def _unrecoverable_local_byok_benchmark_message() -> str:
+    return (
+        "This BYOK benchmark run cannot be recovered after worker loss because "
+        "provider keys are ephemeral and were never persisted."
+    )
 
 
 async def resume_stale_background_benchmark_runs(
@@ -534,6 +724,35 @@ async def resume_stale_background_benchmark_runs(
             continue
         if record.get("stop_requested_at"):
             continue
+        is_unrecoverable_local_byok = (
+            str(record.get("execution_source") or "").strip().lower() == "local_byok"
+            and not bool(record.get("background_recovery_allowed", True))
+        )
+        updated_at = _parse_optional_timestamp(record.get("updated_at"))
+        should_resume = status == "queued" or updated_at is None or updated_at <= stale_before
+        if is_unrecoverable_local_byok and should_resume:
+            failed_at = now.isoformat()
+            record.update(
+                {
+                    "status": "failed",
+                    "error": _unrecoverable_local_byok_benchmark_message(),
+                    "updated_at": failed_at,
+                }
+            )
+            await store.save_user_test_result(workspace_id, run_id, record)
+            await _persist_and_emit_benchmark_event(
+                store=store,
+                stream=get_stream_manager(),
+                workspace_id=workspace_id,
+                run_id=run_id,
+                event_type="failed",
+                event_data={
+                    "run_id": run_id,
+                    "status": "failed",
+                    "message": _unrecoverable_local_byok_benchmark_message(),
+                },
+            )
+            continue
         background_requested_at = _parse_optional_timestamp(record.get("background_run_requested_at"))
         if background_requested_at is None:
             await _persist_stopped_benchmark_run(
@@ -552,8 +771,6 @@ async def resume_stale_background_benchmark_runs(
                 terminal=True,
             )
             continue
-        updated_at = _parse_optional_timestamp(record.get("updated_at"))
-        should_resume = status == "queued" or updated_at is None or updated_at <= stale_before
         if not should_resume:
             continue
         request_payload = record.get("request")
@@ -1783,6 +2000,16 @@ def _build_benchmark_detail_response(
             if isinstance(run_record, dict) and run_record.get("run_id")
             else None
         ),
+        execution_source=(
+            str(run_record.get("execution_source")).strip()
+            if isinstance(run_record, dict) and run_record.get("execution_source")
+            else "hosted"
+        ),
+        background_recovery_allowed=(
+            bool(run_record.get("background_recovery_allowed", True))
+            if isinstance(run_record, dict)
+            else True
+        ),
         scope=scope,
         source=source,
         status=status,
@@ -2736,6 +2963,8 @@ def _is_catalog_runtime_benchmark_payload(payload: dict[str, Any]) -> bool:
 
 
 def _is_catalog_eligible_artifact(artifact: dict[str, Any]) -> bool:
+    if _is_deleted_benchmark_artifact(artifact):
+        return False
     return _is_catalog_runtime_benchmark_payload(_artifact_payload(artifact))
 
 
@@ -2762,6 +2991,8 @@ def _find_artifact_by_identifier(
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             continue
+        if _is_deleted_benchmark_artifact(artifact):
+            continue
         if wanted in _artifact_identifier_candidates(artifact):
             return artifact
     return None
@@ -2772,6 +3003,8 @@ def _to_catalog_entry(
     *,
     default_scope: Literal["global", "user"],
 ) -> BenchmarkCatalogEntry | None:
+    if _is_deleted_benchmark_artifact(artifact):
+        return None
     artifact_id = str(artifact.get("artifact_id") or artifact.get("run_id") or "").strip()
     if not artifact_id:
         return None
@@ -2826,6 +3059,8 @@ def _to_run_status(
     *,
     run_id_fallback: str | None = None,
 ) -> BenchmarkRunStatusResponse | None:
+    if _is_deleted_benchmark_record(record):
+        return None
     run_id = str(record.get("run_id") or run_id_fallback or "").strip()
     if not run_id:
         return None
@@ -2883,6 +3118,12 @@ def _to_run_status(
         updated_at=_parse_timestamp(record.get("updated_at") or record.get("created_at")),
         error=error_text,
         artifact_id=artifact,
+        execution_source=(
+            str(record.get("execution_source")).strip()
+            if record.get("execution_source")
+            else "hosted"
+        ),
+        background_recovery_allowed=bool(record.get("background_recovery_allowed", True)),
         request=request_record,
         reasoning_presets=(
             request_record.reasoning_presets
@@ -2959,6 +3200,8 @@ def _test_frequency_score(record: dict[str, Any]) -> int:
 
 
 def _is_benchmark_test_record(record: dict[str, Any]) -> bool:
+    if _is_deleted_benchmark_record(record):
+        return False
     kind = str(record.get("kind") or "").strip().lower()
     return kind in {"", "benchmark"}
 
@@ -3163,6 +3406,12 @@ async def _execute_benchmark_run(
     store = get_task_store()
     stream = get_stream_manager()
     backend = get_coordination_backend()
+    local_run_request = (
+        _validate_local_benchmark_run_request(request)
+        if _is_local_benchmark_run_request(request)
+        else None
+    )
+    is_local_execution = local_run_request is not None
     set_current_span_attributes(
         {
             "agora.route.operation": "benchmarks.run",
@@ -3171,6 +3420,7 @@ async def _execute_benchmark_run(
             "agora.benchmark.agent_count": request.agent_count,
             "agora.benchmark.training_per_category": request.training_per_category,
             "agora.benchmark.holdout_per_category": request.holdout_per_category,
+            "agora.execution.mode": "local_byok" if is_local_execution else "hosted",
         },
         bind=True,
     )
@@ -3355,6 +3605,13 @@ async def _execute_benchmark_run(
             allow_offline_fallback=True,
             reasoning_presets=reasoning_presets,
             tier_model_overrides=tier_model_overrides,
+            local_models=local_run_request.local_models if local_run_request is not None else None,
+            local_provider_keys=(
+                local_run_request.local_provider_keys if local_run_request is not None else None
+            ),
+            local_debate_config=(
+                local_run_request.local_debate_config if local_run_request is not None else None
+            ),
         )
         selector_state = await store.get_runtime_state(_SELECTOR_BANDIT_STATE_KEY)
         if selector_state is not None:
@@ -3518,6 +3775,11 @@ async def _execute_benchmark_run(
 
         user_artifact_document = dict(artifact_document)
         user_artifact_document["scope"] = "user"
+        if isinstance(persisted_record, dict):
+            for field in ("delete_requested_at", "delete_requested_by", "deleted_at"):
+                value = persisted_record.get(field)
+                if value:
+                    user_artifact_document[field] = value
 
         await store.save_global_benchmark_artifact(run_id, artifact_document)
         await store.save_user_benchmark_artifact(workspace_id, run_id, user_artifact_document)
@@ -3858,6 +4120,8 @@ async def _resolve_benchmark_detail(
     _require_benchmark_scope(user, "read")
 
     run_record = await store.get_user_test_result(user.workspace_id, benchmark_id)
+    if _is_deleted_benchmark_record(run_record):
+        run_record = None
     if run_record is None:
         user_test_records = await store.list_user_test_results(user.workspace_id, limit=500)
         run_record = next(
@@ -3865,6 +4129,7 @@ async def _resolve_benchmark_detail(
                 record
                 for record in user_test_records
                 if isinstance(record, dict)
+                and not _is_deleted_benchmark_record(record)
                 and str(record.get("artifact_id") or "").strip() == benchmark_id
             ),
             None,
@@ -3881,7 +4146,7 @@ async def _resolve_benchmark_detail(
 
     for candidate_id in candidate_ids:
         user_artifact = await store.get_user_benchmark_artifact(user.workspace_id, candidate_id)
-        if user_artifact is not None:
+        if user_artifact is not None and not _is_deleted_benchmark_artifact(user_artifact):
             return _build_benchmark_detail_response(
                 benchmark_id=benchmark_id,
                 scope="user",
@@ -3890,7 +4155,14 @@ async def _resolve_benchmark_detail(
             )
 
     user_artifacts = await store.list_user_benchmark_artifacts(user.workspace_id, limit=500)
-    matched_user_artifact = _find_artifact_by_identifier(user_artifacts, benchmark_id)
+    matched_user_artifact = _find_artifact_by_identifier(
+        [
+            artifact
+            for artifact in user_artifacts
+            if isinstance(artifact, dict) and not _is_deleted_benchmark_artifact(artifact)
+        ],
+        benchmark_id,
+    )
     if matched_user_artifact is None and run_record_artifact_id:
         matched_user_artifact = _find_artifact_by_identifier(user_artifacts, run_record_artifact_id)
     if matched_user_artifact is not None:
@@ -3983,6 +4255,52 @@ async def get_benchmark_detail(
     return await _resolve_benchmark_detail(benchmark_id=benchmark_id, user=user)
 
 
+@router.delete("/benchmarks/{benchmark_id}", response_model=BenchmarkDeleteResponse)
+async def delete_benchmark(
+    benchmark_id: str,
+    user: CurrentUser,
+) -> BenchmarkDeleteResponse:
+    """Tombstone a user-owned benchmark and hide it from user benchmark views."""
+
+    try:
+        validate_storage_id(benchmark_id, field_name="benchmark_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await _maybe_backfill_legacy_benchmarks()
+    _require_benchmark_scope(user, "write")
+
+    resolved_run_id, run_record, user_artifact = await _resolve_benchmark_delete_target(
+        benchmark_identifier=benchmark_id,
+        workspace_id=user.workspace_id,
+    )
+
+    if run_record is None and user_artifact is None:
+        global_artifact = await _resolve_global_benchmark_artifact([benchmark_id])
+        if global_artifact is not None:
+            raise HTTPException(
+                status_code=403,
+                detail="Only user-owned benchmarks can be deleted",
+            )
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+
+    deleted = await _tombstone_user_benchmark(
+        workspace_id=user.workspace_id,
+        benchmark_id=benchmark_id,
+        run_id=resolved_run_id if isinstance(run_record, dict) else None,
+        run_record=run_record,
+        artifact=user_artifact,
+        actor_label="user",
+    )
+
+    if deleted.stopped_before_delete and deleted.run_id:
+        local_task = _background_benchmark_runs.get(deleted.run_id)
+        if local_task is not None and not local_task.done():
+            local_task.cancel()
+
+    return deleted
+
+
 @router.post("/benchmarks/run", response_model=BenchmarkRunResponse)
 async def trigger_benchmark_run(
     request: BenchmarkRunRequest,
@@ -4006,6 +4324,11 @@ async def trigger_benchmark_run(
         bind=True,
     )
     created_at = datetime.now(UTC)
+    local_run_request = (
+        _validate_local_benchmark_run_request(request)
+        if _is_local_benchmark_run_request(request)
+        else None
+    )
     reasoning_presets = resolve_reasoning_presets(request.reasoning_presets)
     resolved_domain_prompts = _resolved_domain_prompts(request)
     try:
@@ -4014,6 +4337,7 @@ async def trigger_benchmark_run(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    persisted_request = sanitize_local_execution_payload(request.model_dump(mode="json"))
 
     await store.save_user_test_result(
         user.workspace_id,
@@ -4027,8 +4351,10 @@ async def trigger_benchmark_run(
             "updated_at": created_at.isoformat(),
             "background_run_requested_at": created_at.isoformat(),
             "background_recovery_deadline_at": _benchmark_recovery_deadline(created_at),
+            "execution_source": "local_byok" if local_run_request is not None else "hosted",
+            "background_recovery_allowed": local_run_request is None,
             "request": {
-                **request.model_dump(mode="json"),
+                **persisted_request,
                 "reasoning_presets": reasoning_presets.model_dump(mode="json"),
                 "resolved_domain_prompts": resolved_domain_prompts,
                 "tier_model_overrides": tier_model_overrides or None,

@@ -33,8 +33,8 @@ export function Callback() {
           <Button onClick={() => navigate("/login", { replace: true })} variant="primary">
             Try sign in again
           </Button>
-          <Button onClick={() => navigate("/auth", { replace: true })} variant="secondary">
-            Back to auth
+          <Button onClick={() => navigate("/", { replace: true })} variant="secondary">
+            Back to sign in
           </Button>
         </div>
       </div>

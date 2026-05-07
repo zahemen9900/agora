@@ -221,6 +221,7 @@ class DebateEngine:
         participant_models: Sequence[LocalModelSpec] | None = None,
         provider_keys: LocalProviderKeys | None = None,
         devils_advocate_model: LocalModelSpec | None = None,
+        devils_advocate_fallback_models: Sequence[LocalModelSpec] | None = None,
         tier_model_overrides: dict[ProviderTierName, str] | None = None,
     ) -> None:
         """Initialize debate engine dependencies.
@@ -250,6 +251,11 @@ class DebateEngine:
         self._participant_models = list(participant_models) if participant_models is not None else None
         self._local_provider_keys = provider_keys
         self._devils_advocate_model = devils_advocate_model
+        self._devils_advocate_fallback_models = (
+            list(devils_advocate_fallback_models)
+            if devils_advocate_fallback_models is not None
+            else None
+        )
         self._tier_model_overrides = dict(tier_model_overrides or {})
         self._participant_tiers = balanced_participant_tiers(self.agent_count)
         if self._participant_models is not None and len(self._participant_models) != self.agent_count:
@@ -676,6 +682,51 @@ class DebateEngine:
             )
         return self._devils_advocate_caller
 
+    def _resolved_devils_advocate_fallback_models(
+        self,
+        primary_model: LocalModelSpec,
+    ) -> list[LocalModelSpec]:
+        """Resolve alternate live models for devil's-advocate cross-examination."""
+
+        if self._devils_advocate_fallback_models is not None:
+            return [
+                spec
+                for spec in self._devils_advocate_fallback_models
+                if not self._same_model_spec(spec, primary_model)
+            ]
+
+        if not self._participant_models:
+            return []
+
+        ranked_specs = sorted(
+            self._participant_models,
+            key=lambda spec: self._devils_advocate_fallback_rank(spec),
+        )
+        return [
+            spec
+            for spec in ranked_specs
+            if not self._same_model_spec(spec, primary_model)
+        ]
+
+    def _devils_advocate_fallback_rank(self, spec: LocalModelSpec) -> tuple[int, int, str]:
+        """Prefer stronger live reasoning lanes before cheaper flash lanes."""
+
+        synthesis_model = self._synthesis_model()
+        if spec.provider == "anthropic":
+            return (0, 0, spec.model)
+        if spec.provider == "gemini":
+            is_synthesis_model = (
+                synthesis_model is not None and self._same_model_spec(spec, synthesis_model)
+            )
+            return (1 if is_synthesis_model else 2, 0, spec.model)
+        return (3, 0, spec.model)
+
+    @staticmethod
+    def _same_model_spec(left: LocalModelSpec, right: LocalModelSpec) -> bool:
+        """Match local model specs by provider/model tuple."""
+
+        return left.provider == right.provider and left.model == right.model
+
     def _display_model_name(
         self,
         *,
@@ -1021,22 +1072,23 @@ class DebateEngine:
 
         custom_agent = self._coordinator_custom_agent(custom_agents)
         explicit_model = self._resolved_devils_advocate_model() if custom_agent is None else None
-        stream_callback = self._make_stream_delta_callback(
-            event_sink,
-            event_type="cross_examination_delta",
-            base_payload={
-                "agent_id": devil_advocate_id,
-                "agent_model": "custom-agent"
-                if custom_agent is not None
-                else (
-                    explicit_model.model
-                    if explicit_model is not None
-                    else self._model_name("openrouter")
-                ),
-                "role": "devil_advocate",
-                "round_number": round_number,
-                "stage": "cross_examination",
-            },
+        def build_stream_callback(model_name: str) -> Callable[[str], None] | None:
+            return self._make_stream_delta_callback(
+                event_sink,
+                event_type="cross_examination_delta",
+                base_payload={
+                    "agent_id": devil_advocate_id,
+                    "agent_model": model_name,
+                    "role": "devil_advocate",
+                    "round_number": round_number,
+                    "stage": "cross_examination",
+                },
+            )
+
+        agent_model_name = (
+            "custom-agent"
+            if custom_agent is not None
+            else (explicit_model.model if explicit_model is not None else self._model_name("openrouter"))
         )
         if custom_agent is not None:
             response, usage = await self._call_structured(
@@ -1048,19 +1100,20 @@ class DebateEngine:
                 temperature=0.2,
                 custom_agent=custom_agent,
                 stream=event_sink is not None,
-                stream_callback=stream_callback,
+                stream_callback=build_stream_callback("custom-agent"),
             )
             assert isinstance(response, _CrossExamResponse)
         elif explicit_model is not None:
-            response, usage = await self._call_cross_exam_explicit_model(
-                model_spec=explicit_model,
+            response, usage, resolved_model = await self._call_cross_exam_explicit_model(
+                primary_model_spec=explicit_model,
                 system_prompt=prompt.system,
                 user_prompt=prompt.user,
                 fallback=fallback,
                 temperature=0.2,
                 stream=event_sink is not None,
-                stream_callback=stream_callback,
+                stream_callback_factory=lambda spec: build_stream_callback(spec.model),
             )
+            agent_model_name = resolved_model.model
         else:
             response, usage = await self._call_cross_exam(
                 system_prompt=prompt.system,
@@ -1068,21 +1121,13 @@ class DebateEngine:
                 fallback=fallback,
                 temperature=0.2,
                 stream=event_sink is not None,
-                stream_callback=stream_callback,
+                stream_callback=build_stream_callback(self._model_name("openrouter")),
             )
         content = json.dumps(response.model_dump(mode="json"), sort_keys=True)
 
         output = AgentOutput(
             agent_id=devil_advocate_id,
-            agent_model=(
-                "custom-agent"
-                if custom_agent is not None
-                else (
-                    explicit_model.model
-                    if explicit_model is not None
-                    else self._model_name("openrouter")
-                )
-            ),
+            agent_model=agent_model_name,
             role="devil_advocate",
             round_number=round_number,
             content=content,
@@ -1527,77 +1572,120 @@ class DebateEngine:
     async def _call_cross_exam_explicit_model(
         self,
         *,
-        model_spec: LocalModelSpec,
+        primary_model_spec: LocalModelSpec,
         system_prompt: str,
         user_prompt: str,
         fallback: _CrossExamResponse,
         temperature: float | None,
         stream: bool = False,
-        stream_callback: Callable[[str], None] | None = None,
-    ) -> tuple[_CrossExamResponse, dict[str, Any]]:
-        """Call one explicit local model for the devil's-advocate step."""
+        stream_callback_factory: Callable[[LocalModelSpec], Callable[[str], None] | None] | None = None,
+    ) -> tuple[_CrossExamResponse, dict[str, Any], LocalModelSpec]:
+        """Call the configured devil's-advocate model, then alternate live fallbacks if needed."""
 
-        caller = self._devils_advocate_caller_for(model_spec)
-        try:
-            response, usage = await caller.call(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response_format=_CrossExamResponse,
-                temperature=temperature,
-                stream=stream,
-                stream_callback=stream_callback,
-            )
-            if isinstance(response, _CrossExamResponse):
-                parsed = response
-            else:
-                parsed, fallback_used = self._coerce_cross_exam_response(str(response), fallback)
-                if fallback_used and not self.allow_offline_fallback:
+        attempted_specs = [
+            primary_model_spec,
+            *self._resolved_devils_advocate_fallback_models(primary_model_spec),
+        ]
+        live_fallback_events: list[FallbackEvent] = []
+        exhausted_path: list[str] = []
+
+        for index, model_spec in enumerate(attempted_specs):
+            exhausted_path.append(f"{model_spec.provider}/{model_spec.model}")
+            caller = self._devils_advocate_caller_for(model_spec)
+            try:
+                response, usage = await caller.call(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    response_format=_CrossExamResponse,
+                    temperature=temperature,
+                    stream=stream,
+                    stream_callback=(
+                        None
+                        if stream_callback_factory is None
+                        else stream_callback_factory(model_spec)
+                    ),
+                )
+                if isinstance(response, _CrossExamResponse):
+                    parsed = response
+                else:
+                    parsed, fallback_used = self._coerce_cross_exam_response(str(response), fallback)
+                    if fallback_used and not self.allow_offline_fallback:
+                        raise AgentCallError(
+                            "Provider fallback disabled for debate.cross_examination: "
+                            "explicit_local_model_empty_response"
+                        )
+                input_tokens = usage.get("input_tokens")
+                output_tokens = usage.get("output_tokens")
+                thinking_tokens = usage.get("thinking_tokens", usage.get("reasoning_tokens"))
+                total_tokens = int(
+                    usage.get("tokens")
+                    or usage.get("total_tokens")
+                    or (int(input_tokens or 0) + int(output_tokens or 0) + int(thinking_tokens or 0))
+                )
+                model_name = model_spec.model
+                normalized_usage = {
+                    "tokens": total_tokens,
+                    "total_tokens": total_tokens,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "thinking_tokens": thinking_tokens,
+                    "reasoning_tokens": usage.get("reasoning_tokens"),
+                    "model_tokens": {model_name: total_tokens},
+                    "model_input_tokens": (
+                        {model_name: int(input_tokens)} if input_tokens is not None else {}
+                    ),
+                    "model_output_tokens": (
+                        {model_name: int(output_tokens)} if output_tokens is not None else {}
+                    ),
+                    "model_thinking_tokens": (
+                        {model_name: int(thinking_tokens)} if thinking_tokens is not None else {}
+                    ),
+                    "latency_ms": float(usage.get("latency_ms", 0.0)),
+                    "model": model_name,
+                    "provider": model_spec.provider,
+                    "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
+                    "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
+                    "fallback_events": live_fallback_events,
+                }
+                return parsed, normalized_usage, model_spec
+            except AgentCallError:
+                if index + 1 < len(attempted_specs):
+                    next_spec = attempted_specs[index + 1]
+                    live_fallback_events.append(
+                        FallbackEvent(
+                            component="debate.cross_examination",
+                            reason=f"provider_{model_spec.provider}_unavailable_or_invalid",
+                            fallback_type="alternate_live_model",
+                            original_model=model_spec.model,
+                            fallback_model=next_spec.model,
+                            provider=next_spec.provider,
+                        )
+                    )
+                    continue
+
+                if not self.allow_offline_fallback:
                     raise AgentCallError(
                         "Provider fallback disabled for debate.cross_examination: "
-                        "explicit_local_model_empty_response"
+                        f"live_fallback_exhausted ({' -> '.join(exhausted_path)})"
                     )
-            input_tokens = usage.get("input_tokens")
-            output_tokens = usage.get("output_tokens")
-            thinking_tokens = usage.get("thinking_tokens", usage.get("reasoning_tokens"))
-            total_tokens = int(
-                usage.get("tokens")
-                or usage.get("total_tokens")
-                or (int(input_tokens or 0) + int(output_tokens or 0) + int(thinking_tokens or 0))
-            )
-            model_name = model_spec.model
-            return parsed, {
-                "tokens": total_tokens,
-                "total_tokens": total_tokens,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "thinking_tokens": thinking_tokens,
-                "reasoning_tokens": usage.get("reasoning_tokens"),
-                "model_tokens": {model_name: total_tokens},
-                "model_input_tokens": (
-                    {model_name: int(input_tokens)} if input_tokens is not None else {}
-                ),
-                "model_output_tokens": (
-                    {model_name: int(output_tokens)} if output_tokens is not None else {}
-                ),
-                "model_thinking_tokens": (
-                    {model_name: int(thinking_tokens)} if thinking_tokens is not None else {}
-                ),
-                "latency_ms": float(usage.get("latency_ms", 0.0)),
-                "model": model_name,
-                "provider": model_spec.provider,
-                "thinking_trace_present": bool(usage.get("thinking_trace_present", False)),
-                "thinking_trace_chars": int(usage.get("thinking_trace_chars", 0) or 0),
-            }
-        except AgentCallError:
-            response, usage = self._offline_structured_fallback(
-                fallback=fallback,
-                component="debate.cross_examination",
-                reason=f"provider_{model_spec.provider}_unavailable_or_invalid",
-                model=model_spec.model,
-                provider=model_spec.provider,
-            )
-            assert isinstance(response, _CrossExamResponse)
-            return response, usage
+
+                response, usage = self._offline_structured_fallback(
+                    fallback=fallback,
+                    component="debate.cross_examination",
+                    reason=f"provider_{model_spec.provider}_unavailable_or_invalid",
+                    model=primary_model_spec.model,
+                    provider=primary_model_spec.provider,
+                )
+                usage["fallback_events"] = [
+                    *live_fallback_events,
+                    *list(usage.get("fallback_events", [])),
+                ]
+                assert isinstance(response, _CrossExamResponse)
+                return response, usage, primary_model_spec
+
+        raise AgentCallError(
+            "Provider fallback disabled for debate.cross_examination: live_fallback_unreachable"
+        )
 
     async def _call_structured(
         self,
@@ -2891,6 +2979,8 @@ class DebateEngine:
         """Classify whether execution was fully live or used runtime fallback."""
 
         if not fallback_events:
+            return "live"
+        if all(event.fallback_type == "alternate_live_model" for event in fallback_events):
             return "live"
         return "fallback" if total_tokens == 0 else "mixed"
 

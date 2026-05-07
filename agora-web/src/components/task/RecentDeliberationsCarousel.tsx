@@ -2,6 +2,8 @@ import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Play, ChevronRight, RotateCcw, X, ArrowRight, Search } from 'lucide-react';
 import type { TaskStatusResponse } from '../../lib/api';
+import { TaskActionsMenu } from './TaskActionsMenu';
+import { canDeleteTask, canStopTask, isTaskActiveStatus, isTaskStopping, taskStatusLabel } from '../../lib/taskState';
 import { usePostHog } from "@posthog/react";
 
 // ─── Keyframes injected once ──────────────────────────────────────────────────
@@ -26,25 +28,15 @@ if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
 }
 
 // ─── Status helpers ───────────────────────────────────────────────────────────
-function isActiveStatus(status: TaskStatusResponse['status']): boolean {
-  return status === 'pending' || status === 'in_progress';
-}
-
 function statusColor(status: TaskStatusResponse['status']): string {
-  if (isActiveStatus(status)) return '#f59e0b';
+  if (isTaskActiveStatus(status)) return '#f59e0b';
   if (status === 'completed' || status === 'paid') return 'var(--accent-emerald)';
   if (status === 'failed') return '#f87171';
   return 'var(--text-tertiary)';
 }
 
-function statusLabel(status: TaskStatusResponse['status']): string {
-  if (status === 'pending') return 'queued';
-  if (status === 'in_progress') return 'running';
-  return status;
-}
-
 function statusRank(status: TaskStatusResponse['status']): number {
-  if (isActiveStatus(status)) return 0;
+  if (isTaskActiveStatus(status)) return 0;
   if (status === 'completed' || status === 'paid') return 1;
   if (status === 'failed') return 2;
   return 3;
@@ -119,13 +111,26 @@ interface CardProps {
   task: TaskStatusResponse;
   isExample?: boolean;
   onExampleClick?: () => void;
+  onStopTask?: (task: TaskStatusResponse) => void;
+  onDeleteTask?: (task: TaskStatusResponse) => void;
+  stoppingTaskId?: string | null;
+  deletingTaskId?: string | null;
 }
 
-function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps) {
+function DeliberationCard({
+  task,
+  isExample = false,
+  onExampleClick,
+  onStopTask,
+  onDeleteTask,
+  stoppingTaskId = null,
+  deletingTaskId = null,
+}: CardProps) {
     const posthog = usePostHog();
   const navigate = useNavigate();
   const color = statusColor(task.status);
-  const isActive = !isExample && isActiveStatus(task.status);
+  const isActive = !isExample && isTaskActiveStatus(task.status);
+  const isStoppingTask = !isExample && (isTaskStopping(task) || stoppingTaskId === task.task_id);
 
   const handleClick = () => {
     if (isExample) onExampleClick?.();
@@ -133,109 +138,129 @@ function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps
   };
 
   return (
-    <button
-      type="button"
-      onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_action_clicked'); const handler = handleClick; if (typeof handler === 'function') (handler as any)(e); }}
+    <div
       style={{
         flexShrink: 0,
         width: '220px',
-        padding: '16px',
-        background: 'var(--bg-elevated)',
-        border: '1px solid var(--border-default)',
-        borderRadius: '12px',
-        textAlign: 'left',
-        cursor: 'pointer',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '10px',
-        transition: 'border-color 0.15s ease, background 0.15s ease',
-        boxShadow: isActive ? '0 0 0 1px rgba(245,158,11,0.16)' : undefined,
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent-emerald)';
-        (e.currentTarget as HTMLButtonElement).style.background =
-          'var(--bg-card-hover, var(--bg-base))';
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-default)';
-        (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-elevated)';
+        position: 'relative',
       }}
     >
-      <div
+      {!isExample ? (
+        <div style={{ position: 'absolute', top: '12px', right: '12px', zIndex: 2 }}>
+          <TaskActionsMenu
+            canStop={canStopTask(task)}
+            canDelete={canDeleteTask(task)}
+            isRunning={isTaskActiveStatus(task.status)}
+            isStopping={stoppingTaskId === task.task_id || isStoppingTask}
+            isDeleting={deletingTaskId === task.task_id}
+            onStop={() => onStopTask?.(task)}
+            onDelete={() => onDeleteTask?.(task)}
+          />
+        </div>
+      ) : null}
+      <button
+        type="button"
+        onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_action_clicked'); const handler = handleClick; if (typeof handler === 'function') (handler as any)(e); }}
         style={{
-          color,
+          width: '100%',
+          padding: '16px',
+          background: 'var(--bg-elevated)',
+          border: '1px solid var(--border-default)',
+          borderRadius: '12px',
+          textAlign: 'left',
+          cursor: 'pointer',
           display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
+          flexDirection: 'column',
+          gap: '10px',
+          transition: 'border-color 0.15s ease, background 0.15s ease',
+          boxShadow: isActive ? '0 0 0 1px rgba(245,158,11,0.16)' : undefined,
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--accent-emerald)';
+          (e.currentTarget as HTMLButtonElement).style.background =
+            'var(--bg-card-hover, var(--bg-base))';
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-default)';
+          (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-elevated)';
         }}
       >
-        <Play size={14} strokeWidth={2} />
-        {isActive && (
+        <div
+          style={{
+            color,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+          }}
+        >
+          <Play size={14} strokeWidth={2} />
+          {isActive && (
+            <span
+              style={{
+                fontSize: '9px',
+                fontFamily: "'Commit Mono', monospace",
+                textTransform: 'uppercase',
+                letterSpacing: '0.08em',
+                color,
+                fontWeight: 700,
+              }}
+            >
+              {isStoppingTask ? 'stopping' : 'live'}
+            </span>
+          )}
+        </div>
+
+        <p
+          style={{
+            margin: 0,
+            fontSize: '13px',
+            fontFamily: "'Commit Mono', monospace",
+            color: 'var(--text-primary)',
+            lineHeight: '1.5',
+            display: '-webkit-box',
+            WebkitLineClamp: 3,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            flex: 1,
+          }}
+        >
+          {task.task_text}
+        </p>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            paddingTop: '8px',
+            borderTop: '1px solid var(--border-default)',
+          }}
+        >
           <span
             style={{
               fontSize: '9px',
               fontFamily: "'Commit Mono', monospace",
+              color: isExample ? 'var(--text-tertiary)' : color,
               textTransform: 'uppercase',
-              letterSpacing: '0.08em',
-              color,
-              fontWeight: 700,
+              letterSpacing: '0.06em',
+              fontWeight: 600,
             }}
           >
-            live
+            {isExample ? 'example' : task.mechanism?.toUpperCase()}
           </span>
-        )}
-      </div>
-
-      <p
-        style={{
-          margin: 0,
-          fontSize: '13px',
-          fontFamily: "'Commit Mono', monospace",
-          color: 'var(--text-primary)',
-          lineHeight: '1.5',
-          display: '-webkit-box',
-          WebkitLineClamp: 3,
-          WebkitBoxOrient: 'vertical',
-          overflow: 'hidden',
-          flex: 1,
-        }}
-      >
-        {task.task_text}
-      </p>
-
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '6px',
-          paddingTop: '8px',
-          borderTop: '1px solid var(--border-default)',
-        }}
-      >
-        <span
-          style={{
-            fontSize: '9px',
-            fontFamily: "'Commit Mono', monospace",
-            color: isExample ? 'var(--text-tertiary)' : color,
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-            fontWeight: 600,
-          }}
-        >
-          {isExample ? 'example' : task.mechanism?.toUpperCase()}
-        </span>
-        <span
-          style={{
-            marginLeft: 'auto',
-            fontSize: '9px',
-            color: 'var(--text-tertiary)',
-            fontFamily: "'Commit Mono', monospace",
-          }}
-        >
-          {isExample ? 'try it' : statusLabel(task.status)}
-        </span>
-      </div>
-    </button>
+          <span
+            style={{
+              marginLeft: 'auto',
+              fontSize: '9px',
+              color: 'var(--text-tertiary)',
+              fontFamily: "'Commit Mono', monospace",
+            }}
+          >
+            {isExample ? 'try it' : taskStatusLabel(task)}
+          </span>
+        </div>
+      </button>
+    </div>
   );
 }
 
@@ -243,9 +268,20 @@ function DeliberationCard({ task, isExample = false, onExampleClick }: CardProps
 interface AllTasksModalProps {
   tasks: TaskStatusResponse[];
   onClose: () => void;
+  onStopTask?: (task: TaskStatusResponse) => void;
+  onDeleteTask?: (task: TaskStatusResponse) => void;
+  stoppingTaskId?: string | null;
+  deletingTaskId?: string | null;
 }
 
-function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
+function AllTasksModal({
+  tasks,
+  onClose,
+  onStopTask,
+  onDeleteTask,
+  stoppingTaskId = null,
+  deletingTaskId = null,
+}: AllTasksModalProps) {
     const posthog = usePostHog();
   const navigate = useNavigate();
   const [query, setQuery] = useState('');
@@ -435,13 +471,8 @@ function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
             </div>
           ) : (
             filtered.map((task) => (
-              <button
+              <div
                 key={task.task_id}
-                type="button"
-                onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_action_clicked'); const handler = () => {
-                                                      onClose();
-                                                      navigate(`/task/${task.task_id}`);
-                                                    }; if (typeof handler === 'function') (handler as any)(e); }}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -456,48 +487,77 @@ function AllTasksModal({ tasks, onClose }: AllTasksModalProps) {
                   transition: 'background 0.12s ease',
                 }}
                 onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-base)';
+                  (e.currentTarget as HTMLDivElement).style.background = 'var(--bg-base)';
                 }}
                 onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.background = 'none';
+                  (e.currentTarget as HTMLDivElement).style.background = 'none';
                 }}
               >
-                <div
+                <button
+                  type="button"
+                  onClick={(e: any) => { posthog?.capture('recentdeliberationscarousel_action_clicked'); const handler = () => {
+                                                        onClose();
+                                                        navigate(`/task/${task.task_id}`);
+                                                      }; if (typeof handler === 'function') (handler as any)(e); }}
                   style={{
-                    width: '8px',
-                    height: '8px',
-                    borderRadius: '50%',
-                    background: statusColor(task.status),
-                    flexShrink: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '14px',
+                    flex: 1,
+                    minWidth: 0,
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    cursor: 'pointer',
+                    textAlign: 'left',
                   }}
+                >
+                  <div
+                    style={{
+                      width: '8px',
+                      height: '8px',
+                      borderRadius: '50%',
+                      background: statusColor(task.status),
+                      flexShrink: 0,
+                    }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: '13px',
+                        fontFamily: "'Commit Mono', monospace",
+                        color: 'var(--text-primary)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {task.task_text}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '10px',
+                        color: 'var(--text-tertiary)',
+                        fontFamily: "'Commit Mono', monospace",
+                        marginTop: '2px',
+                      }}
+                    >
+                      {task.mechanism?.toUpperCase()} · {taskStatusLabel(task)} ·{' '}
+                      {new Date(task.created_at).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <ArrowRight size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                </button>
+                <TaskActionsMenu
+                  canStop={canStopTask(task)}
+                  canDelete={canDeleteTask(task)}
+                  isRunning={isTaskActiveStatus(task.status)}
+                  isStopping={stoppingTaskId === task.task_id || isTaskStopping(task)}
+                  isDeleting={deletingTaskId === task.task_id}
+                  onStop={() => onStopTask?.(task)}
+                  onDelete={() => onDeleteTask?.(task)}
                 />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: '13px',
-                      fontFamily: "'Commit Mono', monospace",
-                      color: 'var(--text-primary)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {task.task_text}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: '10px',
-                      color: 'var(--text-tertiary)',
-                      fontFamily: "'Commit Mono', monospace",
-                      marginTop: '2px',
-                    }}
-                  >
-                    {task.mechanism?.toUpperCase()} · {statusLabel(task.status)} ·{' '}
-                    {new Date(task.created_at).toLocaleDateString()}
-                  </div>
-                </div>
-                <ArrowRight size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
-              </button>
+              </div>
             ))
           )}
         </div>
@@ -514,6 +574,10 @@ interface RecentDeliberationsCarouselProps {
   onExampleSelect: (text: string) => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
+  onStopTask?: (task: TaskStatusResponse) => void;
+  onDeleteTask?: (task: TaskStatusResponse) => void;
+  stoppingTaskId?: string | null;
+  deletingTaskId?: string | null;
 }
 
 export function RecentDeliberationsCarousel({
@@ -523,6 +587,10 @@ export function RecentDeliberationsCarousel({
   onExampleSelect,
   onRefresh,
   isRefreshing = false,
+  onStopTask,
+  onDeleteTask,
+  stoppingTaskId = null,
+  deletingTaskId = null,
 }: RecentDeliberationsCarouselProps) {
     const posthog = usePostHog();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -626,7 +694,14 @@ export function RecentDeliberationsCarousel({
             // ── Real tasks ──
             <>
               {displayTasks.map((task) => (
-                <DeliberationCard key={task.task_id} task={task} />
+                <DeliberationCard
+                  key={task.task_id}
+                  task={task}
+                  onStopTask={onStopTask}
+                  onDeleteTask={onDeleteTask}
+                  stoppingTaskId={stoppingTaskId}
+                  deletingTaskId={deletingTaskId}
+                />
               ))}
             </>
           ) : (
@@ -650,7 +725,14 @@ export function RecentDeliberationsCarousel({
 
       {/* All tasks modal */}
       {showAll && (
-        <AllTasksModal tasks={displayTasks} onClose={() => setShowAll(false)} />
+        <AllTasksModal
+          tasks={displayTasks}
+          onClose={() => setShowAll(false)}
+          onStopTask={onStopTask}
+          onDeleteTask={onDeleteTask}
+          stoppingTaskId={stoppingTaskId}
+          deletingTaskId={deletingTaskId}
+        />
       )}
     </div>
   );

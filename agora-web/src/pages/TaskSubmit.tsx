@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Settings2, ArrowRight, Loader2 } from "lucide-react";
 
+import { Flyout } from "../components/Flyout";
 import { ConfigModal } from "../components/task/ConfigModal";
 import { DecisionPopup } from "../components/task/DecisionPopup";
 import { RecentDeliberationsCarousel } from "../components/task/RecentDeliberationsCarousel";
-import { type MechanismName, type TaskStatusResponse } from "../lib/api";
+import {
+  startTaskRun,
+  type MechanismName,
+  type TaskRunRequestPayload,
+  type TaskStatusResponse,
+} from "../lib/api";
 import {
   buildTierModelOverridesPayload,
   buildProviderSummary,
@@ -16,11 +22,24 @@ import {
   type TierModelOverrideState,
 } from "../lib/deliberationConfig";
 import {
+  removeDeletedTaskFromCaches,
+  setTaskDetailCache,
   taskQueryKeys,
+  useDeleteTaskMutation,
+  useStopTaskMutation,
   useSubmitTaskMutation,
   useTaskListQuery,
 } from "../lib/taskQueries";
+import {
+  buildTaskByokRunRequest,
+  createDefaultTaskByokConfig,
+  ensureTaskByokRosterLength,
+  getTaskByokValidation,
+  type TaskByokConfig,
+} from "../lib/taskByok";
+import { TASK_STOPPED_REASON } from "../lib/taskState";
 import { useDeliberationRuntimeConfigQuery } from "../lib/runtimeConfigQueries";
+import { useAuth } from "../lib/useAuth";
 
 // ── Rotating suggested prompts ────────────────────────────────────────────────
 interface PromptOption { label: string; fullPrompt: string; }
@@ -121,10 +140,14 @@ type MechanismPreference = MechanismName | "auto";
 // ── Main component ────────────────────────────────────────────────────────────
 export function TaskSubmit() {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { getAccessToken } = useAuth();
   const recentTasksQuery = useTaskListQuery();
   const submitTaskMutation = useSubmitTaskMutation();
+  const stopTaskMutation = useStopTaskMutation();
+  const deleteTaskMutation = useDeleteTaskMutation();
   const runtimeConfigQuery = useDeliberationRuntimeConfigQuery();
   const runtimeConfig = runtimeConfigQuery.data;
 
@@ -137,9 +160,24 @@ export function TaskSubmit() {
     DEFAULT_REASONING_PRESETS,
   );
   const [tierModelOverrides, setTierModelOverrides] = useState<TierModelOverrideState>({});
+  const [byokConfig, setByokConfig] = useState<TaskByokConfig>(() => createDefaultTaskByokConfig(4));
   const [runtimeDefaultsHydrated, setRuntimeDefaultsHydrated] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [taskActionError, setTaskActionError] = useState<string | null>(null);
+  const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
+  const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [deleteFlyout, setDeleteFlyout] = useState<{ title: string; body: string } | null>(null);
+  const [pendingByokStart, setPendingByokStart] = useState<{
+    taskId: string;
+    runRequest: TaskRunRequestPayload;
+    reveal: {
+      mechanism: string;
+      confidence: number;
+      reasoning: string;
+      taskId: string;
+    };
+  } | null>(null);
   const [mechanismReveal, setMechanismReveal] = useState<{
     mechanism: string;
     confidence: number;
@@ -168,41 +206,165 @@ export function TaskSubmit() {
     }
   }, [recentTasksQuery.error]);
 
+  useEffect(() => {
+    const state = location.state as { deletedTaskFlyout?: { title: string; body: string } } | null;
+    if (!state?.deletedTaskFlyout) {
+      return;
+    }
+    setDeleteFlyout(state.deletedTaskFlyout);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
+
   if (runtimeConfig && !runtimeDefaultsHydrated) {
     setRuntimeDefaultsHydrated(true);
     setReasoningPresets(resolveDefaultReasoningPresets(runtimeConfig));
+    setByokConfig((current) => ({
+      ...createDefaultTaskByokConfig(current.agentCount, runtimeConfig, tierModelOverrides),
+      enabled: current.enabled,
+      providerKeys: current.providerKeys,
+      roster: ensureTaskByokRosterLength(current.roster, current.agentCount, runtimeConfig, tierModelOverrides),
+    }));
   }
 
   const providerSummary = buildProviderSummary(agentCount, runtimeConfig, tierModelOverrides);
+  const byokValidation = getTaskByokValidation(byokConfig);
+  const effectiveAgentCount = byokConfig.enabled ? byokConfig.agentCount : agentCount;
+
+  const handleStopTask = async (task: TaskStatusResponse) => {
+    if (stopTaskMutation.isPending) {
+      return;
+    }
+    setTaskActionError(null);
+    setStoppingTaskId(task.task_id);
+    try {
+      const stopped = await stopTaskMutation.mutateAsync(task.task_id);
+      setTaskDetailCache(queryClient, stopped);
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list() });
+      if (stopped.failure_reason === TASK_STOPPED_REASON) {
+        setDeleteFlyout({
+          title: "Task stopped",
+          body: "The task was stopped before completion and will stay in your deliberation history unless you delete it.",
+        });
+      }
+    } catch (error) {
+      setTaskActionError(error instanceof Error ? error.message : "Failed to stop task.");
+    } finally {
+      setStoppingTaskId(null);
+    }
+  };
+
+  const handleDeleteTask = async (task: TaskStatusResponse) => {
+    if (deleteTaskMutation.isPending) {
+      return;
+    }
+    setTaskActionError(null);
+    setDeletingTaskId(task.task_id);
+    try {
+      const deleted = await deleteTaskMutation.mutateAsync(task.task_id);
+      removeDeletedTaskFromCaches(queryClient, deleted);
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list() });
+      setDeleteFlyout({
+        title: deleted.stopped_before_delete ? "Task stopped and deleted" : "Task deleted",
+        body: deleted.stopped_before_delete
+          ? "The live task was stopped and removed from your deliberation history."
+          : "The task was removed from your deliberation history and receipt views.",
+      });
+    } catch (error) {
+      setTaskActionError(error instanceof Error ? error.message : "Failed to delete task.");
+    } finally {
+      setDeletingTaskId(null);
+    }
+  };
+
+  async function startByokRun(taskId: string, runRequest: TaskRunRequestPayload) {
+    const token = await getAccessToken();
+    const nextStatus = await startTaskRun(taskId, token, runRequest);
+    setTaskDetailCache(
+      queryClient,
+      nextStatus.status === "pending"
+        ? { ...nextStatus, status: "in_progress" }
+        : nextStatus,
+    );
+    return nextStatus;
+  }
 
   // ── Submit handler (original logic, adds taskId to reveal state) ──
   const handleSubmit = async () => {
     if (!taskText.trim()) return;
+    if (byokConfig.enabled && !byokValidation.canSubmit) {
+      setSubmitError(byokValidation.issues[0] ?? "BYOK configuration is incomplete.");
+      return;
+    }
     setIsSubmitting(true);
     setSubmitError(null);
+    setPendingByokStart(null);
     setMechanismReveal(null);
     try {
       const parsedStake = Number.parseFloat(stakes);
       const normalizedStake = Number.isFinite(parsedStake) && parsedStake >= 0 ? parsedStake : 0.001;
       const response = await submitTaskMutation.mutateAsync({
         taskText,
-        agentCount,
+        agentCount: effectiveAgentCount,
         stakes: normalizedStake,
         mechanismOverride: mechanismOverride === "auto" ? null : mechanismOverride,
         reasoningPresets,
         tierModelOverrides: buildTierModelOverridesPayload(tierModelOverrides, runtimeConfig),
       });
-      setMechanismReveal({
+      const reveal = {
         mechanism: response.mechanism.toUpperCase(),
         confidence: response.confidence,
         reasoning: response.reasoning,
         taskId: response.task_id,
-      });
+      };
+
+      if (byokConfig.enabled) {
+        const runRequest = buildTaskByokRunRequest(byokConfig);
+        try {
+          await startByokRun(response.task_id, runRequest);
+        } catch (error) {
+          setPendingByokStart({
+            taskId: response.task_id,
+            runRequest,
+            reveal,
+          });
+          setSubmitError(
+            error instanceof Error
+              ? `Task created, but the BYOK run did not start: ${error.message}`
+              : "Task created, but the BYOK run did not start.",
+          );
+          setIsSubmitting(false);
+          return;
+        }
+      }
+
+      setMechanismReveal(reveal);
       await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list() });
       // Navigation now happens from the popup's onNavigate callback
     } catch (error) {
       console.error(error);
       setSubmitError(error instanceof Error ? error.message : "Task submission failed.");
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRetryByokStart = async () => {
+    if (!pendingByokStart) {
+      return;
+    }
+    setIsSubmitting(true);
+    setSubmitError(null);
+    try {
+      await startByokRun(pendingByokStart.taskId, pendingByokStart.runRequest);
+      setMechanismReveal(pendingByokStart.reveal);
+      setPendingByokStart(null);
+      await queryClient.invalidateQueries({ queryKey: taskQueryKeys.list() });
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? `Retry failed: ${error.message}`
+          : "Retry failed while starting the BYOK run.",
+      );
+    } finally {
       setIsSubmitting(false);
     }
   };
@@ -381,7 +543,7 @@ export function TaskSubmit() {
               fontSize: '10px',
               color: 'var(--text-tertiary)',
             }}>
-              {agentCount} agents · {stakes} SOL
+              {effectiveAgentCount} agents · {stakes} SOL{byokConfig.enabled ? ' · BYOK' : ''}
             </span>
           </button>
 
@@ -390,7 +552,7 @@ export function TaskSubmit() {
             type="button"
             id="submit-task"
             onClick={handleSubmit}
-            disabled={isSubmitting || !taskText.trim()}
+            disabled={isSubmitting || !taskText.trim() || (byokConfig.enabled && !byokValidation.canSubmit)}
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -398,9 +560,9 @@ export function TaskSubmit() {
               padding: '9px 20px',
               borderRadius: '10px',
               border: 'none',
-              background: taskText.trim() && !isSubmitting ? 'var(--accent-emerald)' : 'var(--border-strong)',
-              color: taskText.trim() && !isSubmitting ? '#000' : 'var(--text-tertiary)',
-              cursor: taskText.trim() && !isSubmitting ? 'pointer' : 'not-allowed',
+              background: taskText.trim() && !isSubmitting && (!byokConfig.enabled || byokValidation.canSubmit) ? 'var(--accent-emerald)' : 'var(--border-strong)',
+              color: taskText.trim() && !isSubmitting && (!byokConfig.enabled || byokValidation.canSubmit) ? '#000' : 'var(--text-tertiary)',
+              cursor: taskText.trim() && !isSubmitting && (!byokConfig.enabled || byokValidation.canSubmit) ? 'pointer' : 'not-allowed',
               fontFamily: FONT,
               fontSize: '13px',
               fontWeight: 700,
@@ -425,7 +587,7 @@ export function TaskSubmit() {
         </div>
       </div>
 
-      {(submitError || recentTasksError) && (
+      {(submitError || recentTasksError || taskActionError) && (
         <div style={{
           marginTop: '16px',
           padding: '12px 14px',
@@ -436,8 +598,33 @@ export function TaskSubmit() {
           fontFamily: FONT,
           fontSize: '12px',
           lineHeight: 1.6,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
         }}>
-          {submitError ?? recentTasksError}
+          <span>{submitError ?? recentTasksError ?? taskActionError}</span>
+          {pendingByokStart && (
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                onClick={() => void handleRetryByokStart()}
+                style={{
+                  padding: '8px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(248,113,113,0.45)',
+                  background: 'rgba(255,255,255,0.04)',
+                  color: '#fecaca',
+                  fontFamily: FONT,
+                  fontSize: '11px',
+                  cursor: 'pointer',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}
+              >
+                Retry BYOK Start
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -457,6 +644,8 @@ export function TaskSubmit() {
         runtimeConfig={runtimeConfig}
         tierModelOverrides={tierModelOverrides}
         onTierModelOverridesChange={setTierModelOverrides}
+        byokConfig={byokConfig}
+        onByokConfigChange={setByokConfig}
       />
 
       {/* ── Decision popup (replaces sliding alert) ───────────────── */}
@@ -558,6 +747,10 @@ export function TaskSubmit() {
         tasks={recentTasks}
         exampleTasks={EXAMPLE_TASK_OBJECTS}
         isLoading={tasksLoading}
+        onStopTask={(task) => void handleStopTask(task)}
+        onDeleteTask={(task) => void handleDeleteTask(task)}
+        stoppingTaskId={stoppingTaskId}
+        deletingTaskId={deletingTaskId}
         onExampleSelect={(text) => {
           setTaskText(text);
           if (textareaRef.current) {
@@ -568,6 +761,14 @@ export function TaskSubmit() {
         }}
         onRefresh={() => void recentTasksQuery.refetch()}
         isRefreshing={recentTasksQuery.isFetching && !recentTasksQuery.isLoading}
+      />
+
+      <Flyout
+        show={deleteFlyout !== null}
+        variant="success"
+        title={deleteFlyout?.title ?? ""}
+        body={deleteFlyout?.body}
+        onDismiss={() => setDeleteFlyout(null)}
       />
 
     </div>

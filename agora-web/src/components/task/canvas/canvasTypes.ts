@@ -35,7 +35,9 @@ export interface GraphNode {
   provider?: ProviderName;
   title: string;
   content: string;
+  supportContent?: string;
   thinkingContent?: string;
+  rawContent?: string;
   isLive: boolean;
   confidence?: number;
   telemetry?: NodeTelemetry;

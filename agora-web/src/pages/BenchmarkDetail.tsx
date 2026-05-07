@@ -15,6 +15,7 @@ import {
 import {
   getBenchmarkItemEvents,
   streamBenchmarkRun,
+  type BenchmarkDomainPromptPayload,
   type BenchmarkDetailPayload,
   type BenchmarkItemPayload,
   type TaskEvent,
@@ -22,7 +23,9 @@ import {
 import {
   benchmarkQueryKeys,
   patchBenchmarkDetailCache,
+  removeDeletedBenchmarkFromCaches,
   setBenchmarkDetailCache,
+  useDeleteBenchmarkMutation,
   useBenchmarkDetailQuery,
   useStopBenchmarkMutation,
 } from "../lib/benchmarkQueries";
@@ -47,6 +50,7 @@ import { RunNarrative } from "../components/benchmark/detail/RunNarrative";
 import { useAuth } from "../lib/useAuth";
 import { BenchmarkLiveCanvas } from "../components/benchmark/BenchmarkLiveCanvas";
 import { Flyout } from "../components/Flyout";
+import { BenchmarkActionsMenu } from "../components/benchmark/BenchmarkActionsMenu";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import {
   deriveBenchmarkItemTimelineEvents,
@@ -56,6 +60,7 @@ import {
 import { providerFromModel } from "../lib/modelProviders";
 import { usePostHog } from "@posthog/react";
 import { Button } from "../components/ui/Button";
+import type { ReasoningPresetState, TierModelOverrideState } from "../lib/deliberationConfig";
 
 interface BenchmarkTimelineDescriptor {
   label: string;
@@ -76,6 +81,35 @@ interface BenchmarkReliabilitySummary {
   terminalErrorCount: number;
   retryByProvider: Array<[string, number]>;
   phaseCounts: Array<[string, number]>;
+}
+
+interface BenchmarkWizardPrefillState {
+  benchmarkWizardPrefill: {
+    sourceRunId?: string | null;
+    byokEnabled: boolean;
+    agentCount: number;
+    trainingPerCategory: number;
+    holdoutPerCategory: number;
+    reasoningPresets?: Partial<ReasoningPresetState> | null;
+    tierModelOverrides?: TierModelOverrideState | null;
+    domainPrompts?: Partial<Record<"math" | "factual" | "reasoning" | "code" | "creative" | "demo", BenchmarkDomainPromptPayload>> | null;
+  };
+}
+
+function normalizeTierOverridesForWizard(
+  overrides: Record<string, unknown> | null | undefined,
+): TierModelOverrideState | null {
+  if (!overrides || typeof overrides !== "object") {
+    return null;
+  }
+
+  const normalized: TierModelOverrideState = {};
+  for (const [key, value] of Object.entries(overrides)) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      normalized[key as keyof TierModelOverrideState] = value;
+    }
+  }
+  return normalized;
 }
 
 const BENCHMARK_COALESCED_EVENT_TYPES = new Set([
@@ -101,6 +135,7 @@ export function BenchmarkDetail() {
   const queryClient = useQueryClient();
   const detailQuery = useBenchmarkDetailQuery(benchmarkId);
   const stopBenchmarkMutation = useStopBenchmarkMutation();
+  const deleteBenchmarkMutation = useDeleteBenchmarkMutation();
   const detail = detailQuery.data ?? null;
   const loadError = !benchmarkId
     ? "Benchmark id is required."
@@ -156,6 +191,62 @@ export function BenchmarkDetail() {
       },
     });
   }, [detail?.run_id, queryClient, stopBenchmarkMutation]);
+  const handleDeleteBenchmark = useCallback(async () => {
+    const deleteTarget = detail?.scope === "user"
+      ? (detail.run_id ?? detail.artifact_id ?? benchmarkId ?? null)
+      : null;
+    if (!deleteTarget || deleteBenchmarkMutation.isPending) {
+      return;
+    }
+
+    setStopError(null);
+    try {
+      const deleted = await deleteBenchmarkMutation.mutateAsync(deleteTarget);
+      removeDeletedBenchmarkFromCaches(queryClient, deleted);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.overviewAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.catalogAll() }),
+        queryClient.invalidateQueries({ queryKey: benchmarkQueryKeys.detail(deleteTarget) }),
+      ]);
+      navigate("/benchmarks/all", {
+        state: {
+          deletedBenchmarkFlyout: {
+            title: deleted.stopped_before_delete ? "Benchmark stopped and deleted" : "Benchmark deleted",
+            body: deleted.stopped_before_delete
+              ? "The live benchmark was stopped and removed from your personal catalog."
+              : "The benchmark was removed from your personal benchmark catalog.",
+          },
+        },
+      });
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : "Failed to delete benchmark.");
+    }
+  }, [benchmarkId, deleteBenchmarkMutation, detail?.artifact_id, detail?.run_id, detail?.scope, navigate, queryClient]);
+  const handleRelaunchByokInWizard = useCallback(() => {
+    if (!detail) {
+      return;
+    }
+    navigate("/benchmarks", {
+      state: {
+        benchmarkWizardPrefill: {
+          sourceRunId: detail.run_id ?? detail.benchmark_id,
+          byokEnabled: detail.execution_source === "local_byok",
+          agentCount: detail.request?.agent_count ?? detail.agent_count ?? 4,
+          trainingPerCategory: detail.request?.training_per_category ?? 1,
+          holdoutPerCategory: detail.request?.holdout_per_category ?? 1,
+          reasoningPresets: detail.reasoning_presets ? structuredClone(detail.reasoning_presets) : null,
+          tierModelOverrides: normalizeTierOverridesForWizard(
+            detail.tier_model_overrides
+              ? (structuredClone(detail.tier_model_overrides) as unknown as Record<string, unknown>)
+              : null,
+          ),
+          domainPrompts: detail.request?.domain_prompts
+            ? structuredClone(detail.request.domain_prompts as NonNullable<BenchmarkWizardPrefillState["benchmarkWizardPrefill"]["domainPrompts"]>)
+            : null,
+        },
+      } satisfies BenchmarkWizardPrefillState,
+    });
+  }, [detail, navigate]);
   const streamedEventKeysRef = useRef<Set<string>>(new Set());
   const historyRepairAttemptedRef = useRef<string | null>(null);
   const itemHydrationAttemptedRef = useRef<Set<string>>(new Set());
@@ -484,6 +575,7 @@ export function BenchmarkDetail() {
     };
   }, [benchmarkItems, reliabilityCards, summary]);
   const frontierHighlights = useMemo(() => buildFrontierHighlights(stageRows), [stageRows]);
+  const isLocalByokBenchmark = detail?.execution_source === "local_byok";
 
   useEffect(() => {
     if (!detail || failedFlyoutShownRef.current) return;
@@ -699,8 +791,21 @@ export function BenchmarkDetail() {
           Refresh
         </button>
 
-        {/* Tab switcher – pushed to the right */}
-        <div style={{ marginLeft: "auto", display: "flex", gap: "4px", padding: "4px", background: "var(--bg-elevated)", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "10px" }}>
+          {detail?.scope === "user" && (detail.run_id || detail.artifact_id || benchmarkId) ? (
+            <BenchmarkActionsMenu
+              canStop={detail.status === "queued" || detail.status === "running"}
+              canDelete
+              isRunning={detail.status === "queued" || detail.status === "running"}
+              isStopping={stopBenchmarkMutation.isPending}
+              isDeleting={deleteBenchmarkMutation.isPending}
+              onStop={handleStopBenchmark}
+              onDelete={() => void handleDeleteBenchmark()}
+            />
+          ) : null}
+
+          {/* Tab switcher – pushed to the right */}
+          <div style={{ display: "flex", gap: "4px", padding: "4px", background: "var(--bg-elevated)", borderRadius: "10px", border: "1px solid var(--border-subtle)" }}>
           {(["canvas", "logs", "metrics"] as const).map((tab) => (
             <button
               key={tab}
@@ -731,6 +836,7 @@ export function BenchmarkDetail() {
               </span>
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -745,45 +851,6 @@ export function BenchmarkDetail() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {detail.run_id ? (
-                <button
-                  type="button"
-                  onClick={handleStopBenchmark}
-                  disabled={stopBenchmarkMutation.isPending}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "6px 14px",
-                    borderRadius: "8px",
-                    background: stopBenchmarkMutation.isPending
-                      ? "rgba(248,113,113,0.12)"
-                      : "rgba(248,113,113,0.10)",
-                    border: "1px solid rgba(248,113,113,0.35)",
-                    cursor: stopBenchmarkMutation.isPending ? "progress" : "pointer",
-                    fontFamily: "'Commit Mono', monospace",
-                    fontSize: "11px",
-                    color: "rgb(248,113,113)",
-                    opacity: stopBenchmarkMutation.isPending ? 0.8 : 1,
-                    transition: "all 0.15s ease",
-                  }}
-                >
-                  {stopBenchmarkMutation.isPending ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <span
-                      style={{
-                        width: "8px",
-                        height: "8px",
-                        borderRadius: "2px",
-                        background: "currentColor",
-                        display: "inline-block",
-                      }}
-                    />
-                  )}
-                  {stopBenchmarkMutation.isPending ? "Stopping…" : "Stop benchmark"}
-                </button>
-              ) : null}
               <div className={`mono text-[11px] px-2 py-1 rounded-full border ${streamState.tone}`}>
                 {streamState.label}
               </div>
@@ -814,6 +881,38 @@ export function BenchmarkDetail() {
               <div className="text-sm text-text-primary">
                 The run stopped before completion. Refreshing the detail page should keep the
                 persisted artifact visible, but the underlying provider error needs another pass.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isLocalByokBenchmark ? (
+        <div className="card p-4 sm:p-6 mb-8 border border-emerald-400/30 bg-emerald-400/5">
+          <div className="flex flex-col gap-3">
+            <div className="mono text-xs text-text-muted">LOCAL BYOK EXECUTION</div>
+            <div className="text-sm text-text-primary">
+              This benchmark ran with ephemeral user-supplied provider keys. Keys were not stored in
+              benchmark records, events, recovery metadata, or artifacts.
+            </div>
+            <div className="mono text-xs text-text-secondary">
+              {detail.background_recovery_allowed === false
+                ? "Recovery after worker loss is disabled by design for this run."
+                : "Recovery policy not reported for this run."}
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                type="button"
+                variant="secondary"
+                className="inline-flex items-center gap-2"
+                onClick={handleRelaunchByokInWizard}
+                trackingEvent="benchmarkdetail_relaunch_byok_in_wizard_clicked"
+              >
+                <RefreshCcw size={14} />
+                Relaunch In Wizard
+              </Button>
+              <div className="mono text-[11px] text-text-muted">
+                Rerun preserves prompts and non-secret settings only. Provider keys must be entered again.
               </div>
             </div>
           </div>

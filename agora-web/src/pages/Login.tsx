@@ -128,7 +128,7 @@ export function LoginPage() {
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: '14px 72px',
+        padding: '14px clamp(16px, 5vw, 72px)',
         background: 'var(--bg-base)',
         borderBottom: '1px solid var(--border-default)',
         backdropFilter: 'blur(12px)',

@@ -11,9 +11,11 @@ import {
   X,
 } from "lucide-react";
 import { EnsemblePlan } from "../EnsemblePlan";
+import { BenchmarkByokConfigPanel } from "./BenchmarkByokConfigPanel";
 import { ReasoningPresetControls } from "../ReasoningPresetControls";
 import { TierModelSelectorGrid } from "../TierModelSelectorGrid";
 import type { BenchmarkDomainName, BenchmarkPromptTemplatesPayload } from "../../lib/api";
+import type { BenchmarkByokConfig, BenchmarkByokValidation } from "../../lib/benchmarkByok";
 import type {
   DeliberationRuntimeConfigLike,
   EnsembleRosterItem,
@@ -69,6 +71,9 @@ export interface BenchmarkWizardProps {
   runtimeConfig?: DeliberationRuntimeConfigLike | null;
   tierModelOverrides: TierModelOverrideState;
   onTierModelOverridesChange: (next: TierModelOverrideState) => void;
+  byokConfig: BenchmarkByokConfig;
+  onByokConfigChange: (next: BenchmarkByokConfig) => void;
+  byokValidation: BenchmarkByokValidation;
   voteRoster: EnsembleRosterItem[];
   debateRoster: EnsembleRosterItem[];
   countBadges: Array<{ key: ProviderTier; provider: ProviderName; label: string; count: number }>;
@@ -86,6 +91,7 @@ export interface BenchmarkWizardProps {
   isSubmitting: boolean;
   onSubmit: () => void;
   submitError: string | null;
+  canSubmit: boolean;
 }
 
 const BENCHMARK_DOMAINS: BenchmarkDomainName[] = ["math", "factual", "reasoning", "code", "creative", "demo"];
@@ -346,21 +352,84 @@ function Step0({
   trainingPerCategory, onTrainingChange,
   holdoutPerCategory, onHoldoutChange,
   reasoningPresets, onPresetsChange,
-  runtimeConfig, tierModelOverrides, onTierModelOverridesChange,
+  runtimeConfig, tierModelOverrides, onTierModelOverridesChange, byokConfig, onByokConfigChange, byokValidation,
   voteRoster, debateRoster, countBadges, ensembleLabel, debateFooter,
 }: Pick<BenchmarkWizardProps,
   "agentCount" | "onAgentCountChange" | "trainingPerCategory" | "onTrainingChange" |
   "holdoutPerCategory" | "onHoldoutChange" | "reasoningPresets" | "onPresetsChange" |
-  "runtimeConfig" | "tierModelOverrides" | "onTierModelOverridesChange" |
+  "runtimeConfig" | "tierModelOverrides" | "onTierModelOverridesChange" | "byokConfig" | "onByokConfigChange" | "byokValidation" |
   "voteRoster" | "debateRoster" | "countBadges" | "ensembleLabel" | "debateFooter"
 >) {
   return (
     <div style={{ animation: "bm-step-fade 0.22s ease-out both" }}>
+      <div style={{ marginBottom: "24px" }}>
+        <div style={{ fontFamily: FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "12px" }}>
+          Execution Mode
+        </div>
+        <div style={{
+          display: "inline-flex",
+          padding: "4px",
+          borderRadius: "12px",
+          background: "var(--bg-base)",
+          border: "1px solid var(--border-default)",
+          gap: "4px",
+        }}>
+          {([
+            { key: "hosted", label: "Hosted", help: "Managed provider execution" },
+            { key: "byok", label: "Bring Your Own Keys", help: "Ephemeral local roster execution" },
+          ] as const).map((option) => {
+            const active = option.key === (byokConfig.enabled ? "byok" : "hosted");
+            return (
+              <button
+                key={option.key}
+                type="button"
+                onClick={() => onByokConfigChange({ ...byokConfig, enabled: option.key === "byok" })}
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "2px",
+                  minWidth: "180px",
+                  padding: "10px 14px",
+                  borderRadius: "9px",
+                  border: "none",
+                  background: active ? "var(--accent-emerald-soft)" : "transparent",
+                  color: active ? "var(--accent-emerald)" : "var(--text-secondary)",
+                  cursor: "pointer",
+                  textAlign: "left",
+                }}
+              >
+                <span style={{ fontFamily: FONT, fontSize: "11px", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  {option.label}
+                </span>
+                <span style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: "11px", color: active ? "var(--text-primary)" : "var(--text-muted)" }}>
+                  {option.help}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Agent count */}
       <div style={{ marginBottom: "24px" }}>
         <div style={{ fontFamily: FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "12px" }}>
-          Agent Count
+          {byokConfig.enabled ? "Hosted Seed Agent Preset" : "Agent Count"}
         </div>
+        {byokConfig.enabled && (
+          <div style={{
+            marginBottom: "12px",
+            padding: "12px 14px",
+            borderRadius: "10px",
+            background: "var(--bg-base)",
+            border: "1px solid var(--border-default)",
+            fontFamily: "'Hanken Grotesk', sans-serif",
+            fontSize: "12px",
+            color: "var(--text-secondary)",
+            lineHeight: 1.55,
+          }}>
+            Hosted presets and tier overrides still seed the model mix below, but the local BYOK roster is the execution truth for this benchmark run.
+          </div>
+        )}
         <div style={{ display: "flex", gap: "10px" }}>
           {AGENT_OPTIONS.map((opt) => (
             <AgentCard key={opt.count} option={opt} selected={agentCount === opt.count} onClick={() => onAgentCountChange(opt.count)} />
@@ -430,7 +499,7 @@ function Step0({
 
       <div style={{ marginBottom: "24px" }}>
         <div style={{ fontFamily: FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "12px" }}>
-          Tier Models
+          {byokConfig.enabled ? "Roster Seed Models" : "Tier Models"}
         </div>
         <TierModelSelectorGrid
           runtimeConfig={runtimeConfig}
@@ -439,14 +508,52 @@ function Step0({
         />
       </div>
 
-      {/* Ensemble plans — collapsible */}
-      <EnsemblePlansAccordion
-        ensembleLabel={ensembleLabel}
-        voteRoster={voteRoster}
-        debateRoster={debateRoster}
-        countBadges={countBadges}
-        debateFooter={debateFooter}
-      />
+      {byokConfig.enabled ? (
+        <div style={{
+          marginBottom: "24px",
+          padding: "16px 18px",
+          background: "var(--bg-base)",
+          borderRadius: "10px",
+          border: "1px solid var(--border-default)",
+          borderLeft: "3px solid var(--accent-emerald)",
+        }}>
+          <div style={{ fontFamily: FONT, fontSize: "9px", letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--text-tertiary)", fontWeight: 600, marginBottom: "12px" }}>
+            Bring Your Own Keys
+          </div>
+          <BenchmarkByokConfigPanel
+            value={byokConfig}
+            onChange={onByokConfigChange}
+            runtimeConfig={runtimeConfig}
+            tierModelOverrides={tierModelOverrides}
+          />
+          {byokConfig.enabled && byokValidation.issues.length > 0 ? (
+            <div style={{
+              marginTop: "12px",
+              padding: "12px 14px",
+              borderRadius: "10px",
+              background: "rgba(248,113,113,0.08)",
+              border: "1px solid rgba(248,113,113,0.25)",
+              fontFamily: FONT,
+              fontSize: "10px",
+              color: "var(--accent-rose)",
+              display: "grid",
+              gap: "4px",
+            }}>
+              {byokValidation.issues.map((issue) => (
+                <div key={issue}>{issue}</div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <EnsemblePlansAccordion
+          ensembleLabel={ensembleLabel}
+          voteRoster={voteRoster}
+          debateRoster={debateRoster}
+          countBadges={countBadges}
+          debateFooter={debateFooter}
+        />
+      )}
     </div>
   );
 }
@@ -669,11 +776,12 @@ function Step1({
 // ── Step 2: Review ─────────────────────────────────────────────────────────────
 
 function Step2({
-  agentCount, trainingPerCategory, holdoutPerCategory, reasoningPresets,
+  agentCount, trainingPerCategory, holdoutPerCategory, reasoningPresets, byokConfig,
   domainPromptSelection,
 }: Pick<BenchmarkWizardProps,
-  "agentCount" | "trainingPerCategory" | "holdoutPerCategory" | "reasoningPresets" | "domainPromptSelection"
+  "agentCount" | "trainingPerCategory" | "holdoutPerCategory" | "reasoningPresets" | "byokConfig" | "domainPromptSelection"
 >) {
+  const effectiveAgentCount = byokConfig.enabled ? byokConfig.agentCount : agentCount;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "12px", animation: "bm-step-fade 0.22s ease-out both" }}>
       {/* Config summary */}
@@ -682,9 +790,18 @@ function Step2({
           Run Configuration
         </div>
         <div style={{ fontFamily: FONT, fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" }}>
-          {agentCount} agents · training {trainingPerCategory}/domain · holdout {holdoutPerCategory}/domain
+          {byokConfig.enabled ? "BYOK" : "Hosted"} · {effectiveAgentCount} agents · training {trainingPerCategory}/domain · holdout {holdoutPerCategory}/domain
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+          <span style={{
+            fontFamily: FONT, fontSize: "9px", letterSpacing: "0.06em", textTransform: "uppercase",
+            padding: "2px 8px", borderRadius: "4px",
+            background: byokConfig.enabled ? "var(--accent-emerald-soft)" : "var(--bg-elevated)",
+            color: byokConfig.enabled ? "var(--accent-emerald)" : "var(--text-secondary)",
+            border: "1px solid var(--border-default)",
+          }}>
+            {byokConfig.enabled ? "Provider keys are ephemeral" : "Hosted provider execution"}
+          </span>
           {Object.entries(reasoningPresets).map(([key, value]) => (
             <span key={key} style={{
               fontFamily: FONT, fontSize: "9px", letterSpacing: "0.06em", textTransform: "uppercase",
@@ -696,6 +813,29 @@ function Step2({
             </span>
           ))}
         </div>
+        {byokConfig.enabled && (
+          <div style={{ marginTop: "12px", display: "grid", gap: "8px" }}>
+            {byokConfig.roster.map((item, index) => (
+              <div key={item.id} style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "10px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border-default)",
+                fontFamily: FONT,
+                fontSize: "10px",
+                color: "var(--text-secondary)",
+              }}>
+                <span>Agent {index + 1}</span>
+                <span style={{ color: "var(--text-tertiary)" }}>{item.provider}</span>
+                <span style={{ color: "var(--text-primary)" }}>{item.model}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Domain questions */}
@@ -745,10 +885,11 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
     agentCount, onAgentCountChange, trainingPerCategory, onTrainingChange,
     holdoutPerCategory, onHoldoutChange, reasoningPresets, onPresetsChange,
     runtimeConfig, tierModelOverrides, onTierModelOverridesChange,
+    byokConfig, onByokConfigChange, byokValidation,
     voteRoster, debateRoster, countBadges, ensembleLabel, debateFooter,
     activeDomain, onDomainChange, templates, domainPromptSelection,
     onDomainUpdate, domainStatus, allDomainsConfigured,
-    isSubmitting, onSubmit, submitError,
+    isSubmitting, onSubmit, submitError, canSubmit,
   } = props;
 
   const [step, setStep] = useState(0);
@@ -820,6 +961,9 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
               runtimeConfig={runtimeConfig}
               tierModelOverrides={tierModelOverrides}
               onTierModelOverridesChange={onTierModelOverridesChange}
+              byokConfig={byokConfig}
+              onByokConfigChange={onByokConfigChange}
+              byokValidation={byokValidation}
               voteRoster={voteRoster} debateRoster={debateRoster}
               countBadges={countBadges} ensembleLabel={ensembleLabel} debateFooter={debateFooter}
             />
@@ -835,6 +979,7 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
             <Step2
               agentCount={agentCount} trainingPerCategory={trainingPerCategory}
               holdoutPerCategory={holdoutPerCategory} reasoningPresets={reasoningPresets}
+              byokConfig={byokConfig}
               domainPromptSelection={domainPromptSelection}
             />
           )}
@@ -891,14 +1036,14 @@ export function BenchmarkWizard(props: BenchmarkWizardProps) {
               <button
                 type="button"
                 onClick={(e: any) => { posthog?.capture('benchmarkwizard_action_clicked'); const handler = onSubmit; if (typeof handler === 'function') (handler as any)(e); }}
-                disabled={isSubmitting}
+                disabled={isSubmitting || !canSubmit}
                 style={{
                   display: "inline-flex", alignItems: "center", gap: "8px",
                   fontFamily: FONT, fontSize: "12px", fontWeight: 700,
                   padding: "9px 24px", borderRadius: "9px",
                   border: "none", background: "var(--accent-emerald)", color: "#000",
-                  cursor: isSubmitting ? "not-allowed" : "pointer",
-                  opacity: isSubmitting ? 0.7 : 1,
+                  cursor: isSubmitting || !canSubmit ? "not-allowed" : "pointer",
+                  opacity: isSubmitting || !canSubmit ? 0.7 : 1,
                   transition: "opacity 0.15s ease",
                 }}
               >

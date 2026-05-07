@@ -26,6 +26,10 @@ def validate_local_model_config(
     if debate_config is not None and debate_config.devils_advocate_model is not None:
         _validate_provider_model_match(debate_config.devils_advocate_model)
         _require_provider_key(debate_config.devils_advocate_model.provider, provider_keys)
+    if debate_config is not None and debate_config.devils_advocate_fallback_models is not None:
+        for spec in debate_config.devils_advocate_fallback_models:
+            _validate_provider_model_match(spec)
+            _require_provider_key(spec.provider, provider_keys)
 
 
 def build_local_model_caller(

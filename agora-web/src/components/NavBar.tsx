@@ -4,12 +4,14 @@ import { useAuth } from '../lib/useAuth';
 import { LogOut, Menu, User as UserIcon, X } from 'lucide-react';
 import { ThemeToggle } from './ui/ThemeToggle';
 import { usePostHog } from "@posthog/react";
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 export function NavBar() {
     const posthog = usePostHog();
   const { user, signOut, featureFlags } = useAuth();
   const location = useLocation();
   const [menuState, setMenuState] = useState({ isOpen: false, pathname: location.pathname });
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const menuOpen = menuState.isOpen && menuState.pathname === location.pathname;
   const canViewBenchmarks = featureFlags?.benchmarks_visible ?? true;
   const canViewApiKeys = featureFlags?.api_keys_visible ?? true;
@@ -83,7 +85,7 @@ export function NavBar() {
           </div>
 
           <button
-            onClick={(e: any) => { posthog?.capture('navbar_sign_out_clicked'); const handler = signOut; if (typeof handler === 'function') (handler as any)(e); }}
+            onClick={() => { posthog?.capture('navbar_sign_out_clicked'); setShowSignOutConfirm(true); }}
             className="hidden sm:flex items-center text-text-muted hover:text-text-primary transition-colors p-1"
             title="Sign Out"
           >
@@ -145,7 +147,7 @@ export function NavBar() {
               </span>
             </div>
             <button
-              onClick={(e: any) => { posthog?.capture('navbar_sign_out_clicked'); const handler = signOut; if (typeof handler === 'function') (handler as any)(e); }}
+              onClick={() => { posthog?.capture('navbar_sign_out_clicked'); setShowSignOutConfirm(true); }}
               className="flex items-center gap-1.5 text-text-muted hover:text-text-primary transition-colors text-sm py-1 px-2"
             >
               <LogOut size={14} />
@@ -154,6 +156,18 @@ export function NavBar() {
           </div>
         </div>
       )}
+
+      <ConfirmActionModal
+        open={showSignOutConfirm}
+        eyebrow="Account"
+        title="Sign out?"
+        body="You'll be returned to the landing page and will need to sign back in to access your tasks and benchmarks."
+        confirmLabel="Sign out"
+        cancelLabel="Stay signed in"
+        tone="warning"
+        onCancel={() => setShowSignOutConfirm(false)}
+        onConfirm={() => { setShowSignOutConfirm(false); signOut(); }}
+      />
     </nav>
   );
 }

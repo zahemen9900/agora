@@ -8,7 +8,7 @@ import type { ProviderName } from "../../../lib/modelProviders";
 // re-renders caused by streaming (position/content updates) don't re-trigger it.
 const _animatedNodeIds = new Set<string>();
 import { GraphEdges } from "./GraphEdges";
-import { GraphNodeCard, CanvasStreamText, NODE_WIDTH, NODE_HEIGHT, NODE_GAP_H, NODE_GAP_V } from "./GraphNodeCard";
+import { GraphNodeCard, CanvasMarkdownText, CanvasStreamText, NODE_WIDTH, NODE_HEIGHT, NODE_GAP_H, NODE_GAP_V } from "./GraphNodeCard";
 import { QuorumOverlay } from "./QuorumOverlay";
 import { useGraphLayout } from "./useGraphLayout";
 import type { GraphNode, NodeKind } from "./canvasTypes";
@@ -39,6 +39,11 @@ interface TransitionPill {
   y: number;
   label: string;
   description: string;
+}
+
+function looksLikeJson(text: string): boolean {
+  const t = text.trimStart();
+  return t.startsWith("{") || t.startsWith("[");
 }
 
 // ─── Stage colors (shared) ────────────────────────────────────────────────────
@@ -221,12 +226,47 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
 
         <div style={{ marginBottom: "20px" }}>
           {node.status === "active" ? (
-            <CanvasStreamText
-              text={node.content || "—"}
-              isActive
-              fontSize="13px"
-              color="var(--text-primary)"
-            />
+            node.content ? (
+              <CanvasStreamText
+                text={node.supportContent ? `${node.content}\n${node.supportContent}` : node.content}
+                isActive
+                fontSize="13px"
+                color="var(--text-primary)"
+              />
+            ) : (
+              <CanvasMarkdownText
+                text={node.thinkingContent || "—"}
+                fontSize="13px"
+                color="var(--text-muted)"
+                italic
+              />
+            )
+          ) : looksLikeJson(node.content || "") ? (
+            <pre style={{
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: "11px",
+              color: "var(--text-secondary)",
+              lineHeight: 1.65,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              wordBreak: "break-all",
+              background: "var(--bg-base)",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: "10px",
+              padding: "12px 14px",
+              margin: 0,
+            }}>
+              {(() => {
+                try {
+                  const raw = node.supportContent
+                    ? `${node.content}\n\n${node.supportContent}`
+                    : node.content || "";
+                  return JSON.stringify(JSON.parse(raw), null, 2);
+                } catch {
+                  return node.content || "—";
+                }
+              })()}
+            </pre>
           ) : (
             <div style={{ fontSize: "13px", lineHeight: 1.65, color: "var(--text-primary)" }}>
               <Markdown
@@ -254,7 +294,9 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
                   hr: () => <hr style={{ border: "none", borderTop: "1px solid var(--border-subtle)", margin: "12px 0" }} />,
                 }}
               >
-                {node.content || "—"}
+                {node.content
+                  ? (node.supportContent ? `${node.content}\n\n${node.supportContent}` : node.content)
+                  : (node.thinkingContent || "—")}
               </Markdown>
             </div>
           )}
@@ -266,8 +308,13 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
             <summary style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", cursor: "pointer", userSelect: "none", letterSpacing: "0.06em", display: "flex", alignItems: "center", gap: "6px" }}>
               <span style={{ fontSize: "8px" }}>▼</span> THINKING ({node.thinkingContent.length} chars)
             </summary>
-            <div style={{ marginTop: "10px", padding: "12px", background: "var(--bg-base)", borderRadius: "12px", border: "1px solid var(--border-subtle)", fontSize: "11px", fontFamily: "'Commit Mono', monospace", color: "var(--text-muted)", whiteSpace: "pre-wrap", lineHeight: 1.55 }}>
-              {node.thinkingContent}
+            <div style={{ marginTop: "10px", padding: "12px", background: "var(--bg-base)", borderRadius: "12px", border: "1px solid var(--border-subtle)" }}>
+              <CanvasMarkdownText
+                text={node.thinkingContent}
+                fontSize="11px"
+                color="var(--text-muted)"
+                italic
+              />
             </div>
           </details>
         )}
