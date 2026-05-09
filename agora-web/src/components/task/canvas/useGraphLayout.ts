@@ -265,9 +265,43 @@ function kindOf(event: TimelineEventLike): NodeKind {
 }
 
 function shouldInlineToolEvent(event: TimelineEventLike): boolean {
-  return event.streamChannel === "tool"
+  return (
+    event.streamChannel === "tool"
     && typeof event.agentId === "string"
-    && event.agentId.trim().length > 0;
+    && event.agentId.trim().length > 0
+  );
+}
+
+function preferredToolSummary(
+  previousSummary: string | undefined,
+  event: TimelineEventLike,
+): string {
+  const resultPreview = typeof event.details?.result_preview === "string" ? event.details.result_preview.trim() : "";
+  const stdoutPreview = typeof event.details?.stdout_preview === "string" ? event.details.stdout_preview.trim() : "";
+  const stderrPreview = typeof event.details?.stderr_preview === "string" ? event.details.stderr_preview.trim() : "";
+  const summary = event.summary.trim();
+  const toolName = (event.toolName ?? "tool").trim().toLowerCase();
+  const genericCompletions = new Set([
+    `${toolName} completed`,
+    "tool completed",
+    "sandbox execution completed",
+  ]);
+  const genericRunning = new Set([
+    `starting ${toolName}`,
+    "tool streaming output",
+    "starting sandbox execution",
+  ]);
+
+  if (resultPreview) return resultPreview;
+  if (stdoutPreview) return stdoutPreview;
+  if (stderrPreview) return stderrPreview;
+  if (!summary) return previousSummary ?? summary;
+
+  const normalizedSummary = summary.toLowerCase();
+  if (genericCompletions.has(normalizedSummary) || genericRunning.has(normalizedSummary)) {
+    return previousSummary ?? summary;
+  }
+  return summary;
 }
 
 function mergeToolActivities(
@@ -298,7 +332,7 @@ function mergeToolActivities(
       ? {
           ...activity,
           ...nextActivity,
-          summary: nextActivity.summary || activity.summary,
+          summary: preferredToolSummary(activity.summary, event) || activity.summary,
           details: nextActivity.details ?? activity.details,
         }
       : activity
@@ -437,7 +471,11 @@ export function buildGraphLayout(
       title: isInlineTool ? (existing?.title ?? event.agentId ?? event.title) : event.title,
       content: isInlineTool
         ? (existing?.content ?? "")
-        : (event.displayPrimary ?? event.summary),
+        : (
+            event.streamChannel === "tool"
+              ? preferredToolSummary(existing?.content, event)
+              : (event.displayPrimary ?? event.summary)
+          ),
       supportContent: isInlineTool
         ? existing?.supportContent
         : (

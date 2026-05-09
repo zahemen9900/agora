@@ -1,4 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type SetStateAction } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
@@ -42,6 +53,7 @@ function injectLdKeyframes() {
       0% { transform: translateX(0); }
       100% { transform: translateX(-50%); }
     }
+    .logs-marquee-strip:hover { animation-play-state: paused !important; }
   `;
   document.head.appendChild(s);
 }
@@ -134,17 +146,40 @@ import {
   type SegmentInferenceState,
 } from "../lib/segmentTimeline";
 import {
-  buildDeliberationTimeline,
   mapTaskEvent,
-  upsertTimelineEvent,
   type FinalAnswerState,
   type TimelineEvent,
 } from "../lib/deliberationTimeline";
+import {
+  buildTimelineStore,
+  EMPTY_TIMELINE_STORE,
+  materializeTimeline,
+  mergeTimelineStore,
+  type TimelineStore,
+  upsertTimelineStore,
+} from "../lib/liveTimelineStore";
+import { computeVirtualWindow } from "../lib/liveTimelineVirtualWindow";
 import { usePostHog } from "@posthog/react";
 import { Button } from "../components/ui/Button";
 import { openTaskSource } from "../lib/sourceAccess";
 
-const EMPTY_TIMELINE: TimelineEvent[] = [];
+const LIVE_TAIL_EVENT_COUNT = 12;
+const LOGS_VIRTUALIZATION_THRESHOLD = 40;
+const LOGS_OVERSCAN_PX = 900;
+const PERF_EVENT_THRESHOLD_MS = 42;
+
+function measureDevWork<T>(_label: string, work: () => T): { result: T; durationMs: number } {
+  if (typeof performance === "undefined") {
+    return { result: work(), durationMs: 0 };
+  }
+
+  const start = performance.now();
+  const result = work();
+  return {
+    result,
+    durationMs: performance.now() - start,
+  };
+}
 
 function useTaskScopedState<T>(
   taskId: string | undefined,
@@ -541,10 +576,16 @@ function ToolTimelineCard({
   entry,
   isActiveStream,
   usageLine,
+  expanded,
+  detailJson,
+  onExpandedChange,
 }: {
   entry: TimelineEvent;
   isActiveStream: boolean;
   usageLine: string | null;
+  expanded: boolean;
+  detailJson: string | null;
+  onExpandedChange: (expanded: boolean) => void;
 }) {
   const statusLabel = toolStatusLabel(entry.toolStatus);
   const tone = toolStatusTone(entry.toolStatus);
@@ -590,7 +631,13 @@ function ToolTimelineCard({
       </div>
 
       <details className="overflow-hidden rounded-2xl border border-border-subtle bg-void/80">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
+        <summary
+          className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5"
+          onClick={(event) => {
+            event.preventDefault();
+            onExpandedChange(!expanded);
+          }}
+        >
           <div className="flex min-w-0 items-center gap-2">
             <span className="mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
               {toolDetailTitle(entry)}
@@ -599,35 +646,91 @@ function ToolTimelineCard({
               <span className="mono truncate text-[10px] text-text-muted">{usageLine}</span>
             ) : null}
           </div>
-          <ChevronDown size={14} className="text-text-muted" />
+          <ChevronDown
+            size={14}
+            className="text-text-muted transition-transform duration-150"
+            style={{ transform: expanded ? "rotate(180deg)" : undefined }}
+          />
         </summary>
-        <div className="border-t border-border-subtle px-3 py-3">
-          <div className="mb-3 overflow-hidden rounded-xl border border-border-subtle bg-surface/60">
-            <div className="whitespace-nowrap px-3 py-2 [mask-image:linear-gradient(to_right,black_80%,transparent)]">
-              <div
-                className="mono inline-flex gap-8 text-[10px] uppercase tracking-[0.18em] text-text-muted"
-                style={{ animation: "marquee 18s linear infinite", minWidth: "max-content" }}
-              >
-                <span>{toolLabel}</span>
-                <span>{statusLabel}</span>
-                <span>{entry.toolCallId ?? "ephemeral-call"}</span>
-                <span>{entry.timestamp ? formatTimestamp(entry.timestamp) : "timestamp n/a"}</span>
-                <span>{toolLabel}</span>
-                <span>{statusLabel}</span>
+        {expanded ? (
+          <div className="border-t border-border-subtle px-3 py-3">
+            <div className="mb-3 overflow-hidden rounded-xl border border-border-subtle bg-surface/60">
+              <div className="whitespace-nowrap px-3 py-2 [mask-image:linear-gradient(to_right,black_80%,transparent)]">
+                <div
+                  className="logs-marquee-strip mono inline-flex gap-8 text-[10px] uppercase tracking-[0.18em] text-text-muted"
+                  style={{ animation: "marquee 18s linear infinite", minWidth: "max-content" }}
+                >
+                  <span>{toolLabel}</span>
+                  <span>{statusLabel}</span>
+                  <span>{entry.toolCallId ?? "ephemeral-call"}</span>
+                  <span>{entry.timestamp ? formatTimestamp(entry.timestamp) : "timestamp n/a"}</span>
+                  <span>{toolLabel}</span>
+                  <span>{statusLabel}</span>
+                </div>
               </div>
             </div>
+            {detailJson ? (
+              <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-border-subtle bg-void p-3 mono text-[10px] text-text-secondary">
+                {detailJson}
+              </pre>
+            ) : (
+              <div className="text-sm text-text-secondary">No structured payload was persisted for this operation.</div>
+            )}
           </div>
-          {entry.details ? (
-            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-border-subtle bg-void p-3 mono text-[10px] text-text-secondary">
-              {JSON.stringify(entry.details, null, 2)}
-            </pre>
-          ) : (
-            <div className="text-sm text-text-secondary">No structured payload was persisted for this operation.</div>
-          )}
-        </div>
+        ) : null}
       </details>
     </div>
   );
+}
+
+function LazyEventDetails({
+  entry,
+  expanded,
+  detailJson,
+  onExpandedChange,
+}: {
+  entry: TimelineEvent;
+  expanded: boolean;
+  detailJson: string | null;
+  onExpandedChange: (expanded: boolean) => void;
+}) {
+  return (
+    <details className="rounded-md border border-border-subtle bg-void p-2">
+      <summary
+        className="mono text-[11px] text-text-muted cursor-pointer select-none"
+        onClick={(event) => {
+          event.preventDefault();
+          onExpandedChange(!expanded);
+        }}
+      >
+        ▸ {detailLabelForEvent(entry)}
+      </summary>
+      {expanded ? (
+        detailJson ? (
+          <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap break-words mt-2">
+            {detailJson}
+          </pre>
+        ) : (
+          <div className="mt-2 text-xs text-text-secondary">No structured payload was persisted for this event.</div>
+        )
+      ) : null}
+    </details>
+  );
+}
+
+function combineRefs<T>(...refs: Array<((value: T | null) => void) | React.MutableRefObject<T | null> | undefined>) {
+  return (value: T | null) => {
+    for (const ref of refs) {
+      if (!ref) {
+        continue;
+      }
+      if (typeof ref === "function") {
+        ref(value);
+      } else {
+        ref.current = value;
+      }
+    }
+  };
 }
 
 function buildEventKey(event: TaskEvent): string {
@@ -806,6 +909,302 @@ function deriveTaskEvents(task: TaskStatusResponse): TaskEvent[] {
   return sortTaskEvents(events);
 }
 
+interface LiveTimelineListProps {
+  timeline: TimelineEvent[];
+  followLiveUpdates: boolean;
+  latestTimelineEntryRef: React.RefObject<HTMLDivElement | null>;
+}
+
+const LiveTimelineList = memo(function LiveTimelineList({
+  timeline,
+  followLiveUpdates,
+  latestTimelineEntryRef,
+}: LiveTimelineListProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const rowHeightsRef = useRef<Map<string, number>>(new Map());
+  const expandedKeysRef = useRef<Set<string>>(new Set());
+  const detailJsonCacheRef = useRef<Map<string, string>>(new Map());
+  const severeLagReportedRef = useRef<Set<string>>(new Set());
+  const [layoutVersion, setLayoutVersion] = useState(0);
+  const [viewportState, setViewportState] = useState(() => ({
+    scrollY: typeof window === "undefined" ? 0 : window.scrollY,
+    innerHeight: typeof window === "undefined" ? 0 : window.innerHeight,
+  }));
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    const updateViewportState = () => {
+      setViewportState({
+        scrollY: window.scrollY,
+        innerHeight: window.innerHeight,
+      });
+    };
+
+    let frame = 0;
+    const handleViewportChange = () => {
+      if (frame !== 0) {
+        return;
+      }
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        updateViewportState();
+      });
+    };
+
+    updateViewportState();
+    window.addEventListener("scroll", handleViewportChange, { passive: true });
+    window.addEventListener("resize", handleViewportChange);
+    return () => {
+      window.removeEventListener("scroll", handleViewportChange);
+      window.removeEventListener("resize", handleViewportChange);
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+      }
+    };
+  }, []);
+
+  const setExpandedForKey = useCallback((key: string, expanded: boolean, details?: Record<string, unknown>) => {
+    const { result, durationMs } = measureDevWork("timeline-detail-expand", () => {
+      setExpandedKeys((current) => {
+        const next = new Set(current);
+        if (expanded) {
+          next.add(key);
+        } else {
+          next.delete(key);
+        }
+        expandedKeysRef.current = next;
+        return next;
+      });
+
+      if (expanded && details && !detailJsonCacheRef.current.has(key)) {
+        detailJsonCacheRef.current.set(key, JSON.stringify(details, null, 2));
+      }
+    });
+
+    void result;
+    if (
+      import.meta.env.DEV
+      && durationMs > PERF_EVENT_THRESHOLD_MS
+      && !severeLagReportedRef.current.has(`details:${key}`)
+    ) {
+      severeLagReportedRef.current.add(`details:${key}`);
+      console.debug("[live-deliberation-perf] slow detail expansion", { key, durationMs });
+    }
+    setLayoutVersion((version) => version + 1);
+  }, []);
+
+  const registerRow = useCallback((key: string) => {
+    return (node: HTMLDivElement | null) => {
+      if (!node) {
+        return;
+      }
+
+      const measuredHeight = Math.ceil(node.getBoundingClientRect().height);
+      const previousHeight = rowHeightsRef.current.get(key);
+      if (previousHeight !== measuredHeight) {
+        rowHeightsRef.current.set(key, measuredHeight);
+        setLayoutVersion((version) => version + 1);
+      }
+    };
+  }, []);
+
+  const virtualRange = useMemo(() => {
+    if (timeline.length <= LOGS_VIRTUALIZATION_THRESHOLD || !containerRef.current) {
+      return {
+        startIndex: 0,
+        endIndex: timeline.length - 1,
+        topPadding: 0,
+        bottomPadding: 0,
+      };
+    }
+
+    const container = containerRef.current;
+    const containerTop = (window.scrollY ?? 0) + container.getBoundingClientRect().top;
+    const viewportTop = Math.max(0, viewportState.scrollY - containerTop);
+    const baseRange = computeVirtualWindow(timeline, {
+      viewportTop,
+      viewportHeight: viewportState.innerHeight,
+      overscanPx: LOGS_OVERSCAN_PX,
+      measuredHeights: rowHeightsRef.current,
+      expandedKeys,
+    });
+
+    if (!followLiveUpdates || timeline.length === 0) {
+      return baseRange;
+    }
+
+    const tailStart = Math.max(0, timeline.length - LIVE_TAIL_EVENT_COUNT);
+    const adjustedStartIndex = Math.min(baseRange.startIndex, tailStart);
+    const adjustedEndIndex = Math.max(baseRange.endIndex, timeline.length - 1);
+    let topPadding = 0;
+    for (let index = 0; index < adjustedStartIndex; index += 1) {
+      const event = timeline[index];
+      topPadding += rowHeightsRef.current.get(event.key) ?? 188;
+    }
+
+    let bottomPadding = 0;
+    for (let index = adjustedEndIndex + 1; index < timeline.length; index += 1) {
+      const event = timeline[index];
+      bottomPadding += rowHeightsRef.current.get(event.key) ?? 188;
+    }
+
+    return {
+      startIndex: adjustedStartIndex,
+      endIndex: adjustedEndIndex,
+      topPadding,
+      bottomPadding,
+    };
+  }, [expandedKeys, followLiveUpdates, layoutVersion, timeline, viewportState]);
+
+  const visibleTimeline = useMemo(() => {
+    if (virtualRange.endIndex < virtualRange.startIndex) {
+      return [] as Array<{ entry: TimelineEvent; absoluteIndex: number }>;
+    }
+    return timeline
+      .slice(virtualRange.startIndex, virtualRange.endIndex + 1)
+      .map((entry, index) => ({
+        entry,
+        absoluteIndex: virtualRange.startIndex + index,
+      }));
+  }, [timeline, virtualRange.endIndex, virtualRange.startIndex]);
+
+  return (
+    <div ref={containerRef} className="space-y-3">
+      {virtualRange.topPadding > 0 ? <div style={{ height: virtualRange.topPadding }} /> : null}
+      {visibleTimeline.map(({ entry, absoluteIndex }) => {
+        const isLatestEntry = absoluteIndex === timeline.length - 1;
+        const isActiveStream = Boolean(entry.isDraft && isLatestEntry);
+        const provider = providerFromModel(entry.agentModel ?? "");
+        const usageLine = formatUsageLine(entry.details);
+        const isTailAnimated = absoluteIndex >= Math.max(0, timeline.length - LIVE_TAIL_EVENT_COUNT);
+        const detailJson = detailJsonCacheRef.current.get(entry.key) ?? null;
+        const expanded = expandedKeys.has(entry.key);
+        const rowRef = combineRefs<HTMLDivElement>(
+          registerRow(entry.key),
+          isLatestEntry ? latestTimelineEntryRef : undefined,
+        );
+        const rowClassName = `card p-4 border-l-4 ${eventCardTone(entry.type)}`;
+        const rowStyle = isTailAnimated
+          ? { willChange: "transform, opacity" }
+          : { contentVisibility: "auto" as const, containIntrinsicSize: "240px" };
+
+        const body = (
+          <>
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
+              <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                {entry.type === "cross_examination" ? <Zap size={14} /> : null}
+                {entry.type === "mechanism_switch" ? <ArrowRightLeft size={14} /> : null}
+                {entry.type === "receipt_committed" ? <FileText size={14} /> : null}
+                {isToolTimelineEvent(entry) ? (
+                  entry.toolStatus === "failed" ? <AlertTriangle size={14} /> :
+                  entry.toolStatus === "retrying" ? <RotateCcw size={14} /> :
+                  entry.toolName?.includes("search") ? <Search size={14} /> :
+                  entry.toolName?.includes("python") ? <TerminalSquare size={14} /> :
+                  <Wrench size={14} />
+                ) : null}
+                <span className="mono text-xs text-text-muted uppercase tracking-wide">
+                  {entry.title}
+                </span>
+                {entry.isDraft ? (
+                  <span
+                    className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 mono text-[10px] text-accent"
+                    style={{
+                      animation: isActiveStream ? "ld-cursor-blink 1.4s ease-in-out infinite" : "none",
+                    }}
+                  >
+                    LIVE
+                  </span>
+                ) : null}
+                {entry.agentModel ? (
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${providerTone(provider)}`}
+                  >
+                    <ProviderGlyph provider={provider} size={13} />
+                    <span className="mono text-[10px]">{entry.agentModel}</span>
+                  </span>
+                ) : null}
+              </div>
+              <span className="mono text-[10px] text-text-muted flex-shrink-0">
+                {formatTimestamp(entry.timestamp)}
+              </span>
+            </div>
+
+            {isToolTimelineEvent(entry) ? (
+              <ToolTimelineCard
+                entry={entry}
+                isActiveStream={isActiveStream}
+                usageLine={usageLine}
+                expanded={expanded}
+                detailJson={detailJson}
+                onExpandedChange={(nextExpanded) => setExpandedForKey(entry.key, nextExpanded, entry.details)}
+              />
+            ) : (
+              <>
+                <div className="text-text-primary mb-2 break-words">
+                  {entry.isDraft && isTailAnimated ? (
+                    <StreamingText text={entry.summary} isActive={isActiveStream} />
+                  ) : (
+                    <MarkdownSummary>{entry.summary}</MarkdownSummary>
+                  )}
+                </div>
+
+                {usageLine ? (
+                  <div className="mono text-[11px] text-text-muted mb-2">
+                    {usageLine}
+                  </div>
+                ) : null}
+
+                {typeof entry.confidence === "number" ? (
+                  <div className="mono text-[11px] text-text-muted mb-2">
+                    confidence {(entry.confidence * 100).toFixed(1)}%
+                  </div>
+                ) : null}
+
+                {entry.details ? (
+                  <LazyEventDetails
+                    entry={entry}
+                    expanded={expanded}
+                    detailJson={detailJson}
+                    onExpandedChange={(nextExpanded) => setExpandedForKey(entry.key, nextExpanded, entry.details)}
+                  />
+                ) : null}
+              </>
+            )}
+          </>
+        );
+
+        if (!isTailAnimated) {
+          return (
+            <div
+              key={entry.key}
+              ref={rowRef}
+              className={rowClassName}
+              style={rowStyle}
+            >
+              {body}
+            </div>
+          );
+        }
+
+        return (
+          <motion.div
+            key={entry.key}
+            ref={rowRef}
+            initial={{ opacity: 0, y: 10, scale: 0.995 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className={rowClassName}
+            style={rowStyle}
+          >
+            {body}
+          </motion.div>
+        );
+      })}
+      {virtualRange.bottomPadding > 0 ? <div style={{ height: virtualRange.bottomPadding }} /> : null}
+    </div>
+  );
+});
+
 export function LiveDeliberation() {
     const posthog = usePostHog();
   const { taskId } = useParams();
@@ -815,7 +1214,7 @@ export function LiveDeliberation() {
   const taskQuery = useTaskDetailQuery(taskId);
 
   const [activeTab, setActiveTab] = useState<"logs" | "canvas">("canvas");
-  const [timeline, setTimeline] = useTaskScopedState<TimelineEvent[]>(taskId, EMPTY_TIMELINE);
+  const [timelineStore, setTimelineStore] = useTaskScopedState<TimelineStore>(taskId, EMPTY_TIMELINE_STORE);
   const [switchBanner, setSwitchBanner] = useTaskScopedState<string | null>(taskId, null);
   const [retryNotice, setRetryNotice] = useTaskScopedState<string | null>(taskId, null);
   const [errorMessage, setErrorMessage] = useTaskScopedState<string | null>(taskId, null);
@@ -889,7 +1288,18 @@ export function LiveDeliberation() {
     }
 
     const mappedEvent = mapTaskEvent(segmentedEvent);
-    setTimeline((current) => upsertTimelineEvent(current, mappedEvent));
+    const { durationMs } = measureDevWork("timeline-store-update", () => {
+      startTransition(() => {
+        setTimelineStore((current) => upsertTimelineStore(current, mappedEvent));
+      });
+    });
+    if (import.meta.env.DEV && durationMs > PERF_EVENT_THRESHOLD_MS) {
+      console.debug("[live-deliberation-perf] slow stream update", {
+        eventType: segmentedEvent.event,
+        durationMs,
+        taskId,
+      });
+    }
 
     const data = asRecord(segmentedEvent.data) ?? {};
 
@@ -1036,7 +1446,6 @@ export function LiveDeliberation() {
     setShowQuorumFlyout,
     setRetryNotice,
     setSwitchBanner,
-    setTimeline,
     taskId,
   ]);
 
@@ -1065,17 +1474,17 @@ export function LiveDeliberation() {
     taskMechanismRef.current = task.mechanism;
     streamSegmentStateRef.current = segmentedTaskEvents.state;
 
-    setTimeline((current) => {
-      let nextTimeline = current;
-      for (const persistedEvent of segmentedTaskEvents.events) {
-        const eventKey = buildEventKey(persistedEvent);
-        if (seenEventKeysRef.current.has(eventKey)) {
-          continue;
-        }
-        seenEventKeysRef.current.add(eventKey);
-        nextTimeline = upsertTimelineEvent(nextTimeline, mapTaskEvent(persistedEvent));
-      }
-      return nextTimeline;
+    const mappedEvents = segmentedTaskEvents.events.map(mapTaskEvent);
+    for (const persistedEvent of segmentedTaskEvents.events) {
+      seenEventKeysRef.current.add(buildEventKey(persistedEvent));
+    }
+
+    setTimelineStore((current) => {
+      const hydratedStore = buildTimelineStore(mappedEvents);
+      const liveEvents = materializeTimeline(current);
+      return liveEvents.length > 0
+        ? mergeTimelineStore(hydratedStore, liveEvents)
+        : hydratedStore;
     });
 
     if (isTaskStopped(task)) {
@@ -1110,7 +1519,7 @@ export function LiveDeliberation() {
         });
       }
     }
-  }, [setConvergence, setFinalAnswer, setTimeline, task]);
+  }, [setConvergence, setFinalAnswer, setTimelineStore, task]);
 
   useEffect(() => {
     if (!taskId || !task) return;
@@ -1241,18 +1650,52 @@ export function LiveDeliberation() {
     });
   }, [task]);
 
-  const recoveredTimeline = useMemo<TimelineEvent[]>(() => {
-    if (!task) {
-      return [];
-    }
-    return buildDeliberationTimeline(deriveTaskEvents(task), task.mechanism);
-  }, [task]);
-
   const displayTimeline = useMemo<TimelineEvent[]>(() => {
-    return timeline.reduce<TimelineEvent[]>((current, event) => (
-      upsertTimelineEvent(current, event)
-    ), recoveredTimeline);
-  }, [recoveredTimeline, timeline]);
+    return materializeTimeline(timelineStore);
+  }, [timelineStore]);
+  const canvasTimeline = useMemo(() => (
+    displayTimeline.filter((entry) => (
+      entry.type === "mechanism_selected"
+      || entry.type === "mechanism_switch"
+      || entry.type === "agent_output"
+      || entry.type === "agent_output_delta"
+      || entry.type === "cross_examination"
+      || entry.type === "cross_examination_delta"
+      || entry.type === "thinking_delta"
+      || entry.type === "tool_call_started"
+      || entry.type === "tool_call_retrying"
+      || entry.type === "tool_call_delta"
+      || entry.type === "tool_call_completed"
+      || entry.type === "tool_call_failed"
+      || entry.type === "search_retrying"
+      || entry.type === "search_key_rotated"
+      || entry.type === "sandbox_execution_started"
+      || entry.type === "sandbox_execution_delta"
+      || entry.type === "sandbox_execution_completed"
+      || entry.type === "convergence_update"
+      || entry.type === "quorum_reached"
+      || entry.type === "delphi_feedback"
+      || entry.type === "delphi_finalize"
+      || entry.type === "error"
+      || entry.type === "task_stopped"
+      || entry.type === "receipt_committed"
+      || entry.type === "payment_released"
+      || entry.type === "complete"
+    ))
+  ), [displayTimeline]);
+  const deferredCanvasTimeline = useDeferredValue(canvasTimeline);
+  const { streamErrorCount, retryCount } = useMemo(() => {
+    let errors = 0;
+    let retries = 0;
+    for (const entry of displayTimeline) {
+      if (entry.type === "error") {
+        errors += 1;
+      } else if (entry.type === "provider_retrying") {
+        retries += 1;
+      }
+    }
+    return { streamErrorCount: errors, retryCount: retries };
+  }, [displayTimeline]);
 
   const taskResult = task?.result ?? null;
   const attachedTaskSources = taskResult?.sources?.length
@@ -1576,13 +2019,13 @@ export function LiveDeliberation() {
       {activeTab === "canvas" && (
         <div style={{ border: "1px solid var(--border-subtle)", borderRadius: "14px", overflow: "hidden", minHeight: "600px", marginBottom: "32px", position: "relative" }}>
           <CanvasView
-            timeline={displayTimeline}
+            timeline={deferredCanvasTimeline}
             finalAnswer={finalAnswer}
             taskId={taskId}
             taskText={task?.task_text ?? ""}
             mechanism={task?.mechanism ?? finalAnswer?.mechanism ?? "debate"}
             roundCount={task?.round_count || Math.max(1, convergence.lockedClaims.length)}
-            eventCount={displayTimeline.length}
+            eventCount={deferredCanvasTimeline.length}
             entropy={convergence.entropy}
           />
         </div>
@@ -1629,212 +2072,211 @@ export function LiveDeliberation() {
           </AnimatePresence>
 
           {taskResult && (
-            <div className="card p-5 mb-8 border border-border-subtle">
-          <div className="mono text-xs text-text-muted mb-3">RUN SUMMARY</div>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3 mb-4">
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">TOTAL TOKENS</div>
-              <div className="mono text-sm text-text-primary">{taskResult.total_tokens_used}</div>
-            </div>
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">INPUT TOKENS</div>
-              <div className="mono text-sm text-text-primary">{formatMaybeInt(taskResult.input_tokens_used)}</div>
-            </div>
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">OUTPUT TOKENS</div>
-              <div className="mono text-sm text-text-primary">{formatMaybeInt(taskResult.output_tokens_used)}</div>
-            </div>
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">THINKING TOKENS</div>
-              <div className="mono text-sm text-text-primary">{formatMaybeInt(taskResult.thinking_tokens_used)}</div>
-            </div>
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">LATENCY</div>
-              <div className="mono text-sm text-text-primary">{taskResult.latency_ms.toFixed(0)} ms</div>
-            </div>
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">SWITCHES</div>
-              <div className="mono text-sm text-text-primary">{taskResult.mechanism_switches}</div>
-            </div>
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">USD COST</div>
-              <div className="mono text-sm text-text-primary">
-                {typeof taskResult.cost?.estimated_cost_usd === "number"
-                  ? `$${taskResult.cost.estimated_cost_usd.toFixed(6)}`
-                  : "n/a"}
-              </div>
-            </div>
-            <div className="rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">PAYOUT (SOL)</div>
-              <div className="mono text-sm text-text-primary">{taskResult.payment_amount.toFixed(3)}</div>
-            </div>
-          </div>
-
-          {taskResult.reasoning_presets ? (
-            <div className="mb-4">
-              <div className="mono text-[11px] text-text-muted mb-2">REASONING PRESETS</div>
-              <div className="flex flex-wrap gap-2">
-                {reasoningPresetEntries.map(([providerKey, preset]) => (
-                  <span
-                    key={providerKey}
-                    className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary"
-                  >
-                    {providerKey.replace(/_/g, " ")}: {preset}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {taskResult.tool_usage_summary ? (
-            <div className="mb-4">
-              <div className="mono text-[11px] text-text-muted mb-2">TOOL USAGE</div>
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary">
-                  {taskResult.tool_usage_summary.total_tool_calls} calls
-                </span>
-                <span className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-accent">
-                  {taskResult.tool_usage_summary.successful_tool_calls} successful
-                </span>
-                <span className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary">
-                  {taskResult.tool_usage_summary.failed_tool_calls} failed
-                </span>
-                {Object.entries(taskResult.tool_usage_summary.tool_counts).map(([toolName, count]) => (
-                  <span
-                    key={toolName}
-                    className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary"
-                  >
-                    {toolName}: {count}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {attachedTaskSources.length > 0 ? (
-            <div className="mb-4">
-              <div className="mono text-[11px] text-text-muted mb-2">ATTACHED SOURCES</div>
-              <div className="grid gap-2">
-                {attachedTaskSources.map((source) => (
-                  <div
-                    key={source.source_id}
-                    className="rounded-md border border-border-subtle bg-void p-3"
-                  >
-                    <div className="flex items-center gap-2 mono text-xs text-text-primary mb-1">
-                      <FileText size={12} />
-                      <span>{source.display_name}</span>
+            <>
+              {/* ── Run Summary ──────────────────────────────────────────── */}
+              <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
+                <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "14px" }}>RUN SUMMARY</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "10px" }}>
+                  {([
+                    { label: "TOTAL TOKENS",    value: String(taskResult.total_tokens_used) },
+                    { label: "INPUT TOKENS",    value: formatMaybeInt(taskResult.input_tokens_used) },
+                    { label: "OUTPUT TOKENS",   value: formatMaybeInt(taskResult.output_tokens_used) },
+                    { label: "THINKING TOKENS", value: formatMaybeInt(taskResult.thinking_tokens_used) },
+                    { label: "LATENCY",         value: `${taskResult.latency_ms.toFixed(0)} ms` },
+                    { label: "SWITCHES",        value: String(taskResult.mechanism_switches) },
+                    { label: "USD COST",        value: typeof taskResult.cost?.estimated_cost_usd === "number" ? `$${taskResult.cost.estimated_cost_usd.toFixed(6)}` : "n/a" },
+                    { label: "PAYOUT (SOL)",    value: taskResult.payment_amount.toFixed(3) },
+                  ] as const).map(({ label, value }) => (
+                    <div key={label} style={{ borderRadius: "10px", border: "1px solid var(--border-default)", padding: "12px 14px", background: "var(--bg-base)" }}>
+                      <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)", letterSpacing: "0.08em", marginBottom: "6px" }}>{label}</div>
+                      <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "13px", color: "var(--text-primary)", fontWeight: 600 }}>{value}</div>
                     </div>
-                    <div className="text-xs text-text-secondary">
-                      {source.kind} · {source.mime_type} · {source.size_bytes.toLocaleString()} bytes
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenSource(source)}
-                      className="mono text-[11px] text-accent inline-flex items-center gap-1 mt-2"
-                    >
-                      Open source <ExternalLink size={11} />
-                    </button>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          ) : null}
 
-          {taskResult.evidence_items.length > 0 ? (
-            <div className="mb-4">
-              <div className="mono text-[11px] text-text-muted mb-2">EVIDENCE TRAIL</div>
-              <div className="grid gap-2">
-                {taskResult.evidence_items.map((item) => (
-                  <div
-                    key={item.evidence_id}
-                    className="rounded-md border border-border-subtle bg-void p-3"
-                  >
-                    <div className="mono text-[11px] text-accent mb-1">
-                      {item.tool_name} · {item.agent_id} · round {item.round_index}
-                    </div>
-                    <div className="text-sm text-text-primary leading-6">{item.summary}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {taskResult.citation_items.length > 0 ? (
-            <div className="mb-4">
-              <div className="mono text-[11px] text-text-muted mb-2">CITATIONS</div>
-              <div className="grid gap-2">
-                {taskResult.citation_items.map((item, index) => (
-                  <div
-                    key={`${item.title}-${index}`}
-                    className="rounded-md border border-border-subtle bg-void p-3"
-                  >
-                    <div className="mono text-xs text-text-primary mb-1">{item.title}</div>
-                    <div className="text-xs text-text-secondary">
-                      {item.domain ?? item.source_kind ?? "source"}
-                      {typeof item.rank === "number" ? ` · rank ${item.rank}` : ""}
-                    </div>
-                    {item.url ? (
-                      <a
-                        href={item.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mono text-[11px] text-accent inline-block mt-2"
-                      >
-                        Visit citation
-                      </a>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {modelUsage.length > 0 && (
-            <div>
-              <div className="mono text-[11px] text-text-muted mb-2">
-                MODEL TELEMETRY
-              </div>
-              <div className="space-y-2">
-                {modelUsage.map((entry) => (
-                  <div
-                    key={entry.model}
-                    className={`rounded-md border p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ${providerTone(entry.provider)}`}
-                  >
-                    <div className="flex items-center gap-2 min-w-0">
-                      <ProviderGlyph provider={entry.provider} size={14} />
-                      <span className="mono text-xs truncate">{entry.model}</span>
-                    </div>
-                    <div className="mono text-[11px] text-text-muted flex flex-wrap items-center gap-3">
-                      <span>{entry.tokens !== null ? `${entry.tokens.toLocaleString()} tokens` : "n/a"}</span>
-                      <span>
-                        {entry.inputTokens !== null ? entry.inputTokens.toLocaleString() : "n/a"}
-                        /
-                        {entry.outputTokens !== null ? entry.outputTokens.toLocaleString() : "n/a"}
-                        in/out
+              {/* ── Reasoning Presets ────────────────────────────────────── */}
+              {taskResult.reasoning_presets ? (
+                <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
+                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "12px" }}>REASONING PRESETS</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    {reasoningPresetEntries.map(([providerKey, preset]) => (
+                      <span key={providerKey} style={{ borderRadius: "999px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "4px 12px", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-secondary)" }}>
+                        {providerKey.replace(/_/g, " ")}: {preset}
                       </span>
-                      <span>{entry.thinkingTokens !== null ? `${entry.thinkingTokens.toLocaleString()} thinking` : "n/a thinking"}</span>
-                      <span>{entry.latencyMs !== null ? `${Math.round(entry.latencyMs)} ms` : "n/a"}</span>
-                      <span>${entry.usdCost !== null ? entry.usdCost.toFixed(6) : "n/a"}</span>
-                      <span className="flex items-center gap-1">
-                        <Coins size={12} />
-                        {entry.solPayout.toFixed(4)} SOL
-                      </span>
-                      <span>{entry.estimationMode ?? "unavailable"}</span>
-                    </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            </div>
+                </div>
+              ) : null}
+
+              {/* ── Tool Usage ───────────────────────────────────────────── */}
+              {taskResult.tool_usage_summary ? (
+                <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
+                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "12px" }}>TOOL USAGE</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+                    <span style={{ borderRadius: "999px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "4px 12px", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-secondary)" }}>
+                      {taskResult.tool_usage_summary.total_tool_calls} calls
+                    </span>
+                    <span style={{ borderRadius: "999px", border: "1px solid rgba(52,211,153,0.35)", background: "rgba(52,211,153,0.08)", padding: "4px 12px", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--accent-emerald)" }}>
+                      {taskResult.tool_usage_summary.successful_tool_calls} successful
+                    </span>
+                    {taskResult.tool_usage_summary.failed_tool_calls > 0 && (
+                      <span style={{ borderRadius: "999px", border: "1px solid rgba(251,113,133,0.35)", background: "rgba(251,113,133,0.08)", padding: "4px 12px", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "#fb7185" }}>
+                        {taskResult.tool_usage_summary.failed_tool_calls} failed
+                      </span>
+                    )}
+                    {Object.entries(taskResult.tool_usage_summary.tool_counts).map(([toolName, count]) => (
+                      <span key={toolName} style={{ borderRadius: "999px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "4px 12px", fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-secondary)" }}>
+                        {toolName}: {count}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* ── Attached Sources ─────────────────────────────────────── */}
+              {attachedTaskSources.length > 0 ? (
+                <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
+                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "12px" }}>ATTACHED SOURCES</div>
+                  <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+                    {attachedTaskSources.map((source) => {
+                      const isUrl   = source.kind === "url";
+                      const isPdf   = source.kind === "pdf" || source.mime_type?.includes("pdf");
+                      const isImage = source.kind === "image" || source.mime_type?.startsWith("image/");
+                      const isCode  = source.kind === "code_file";
+                      const SrcIcon = isUrl ? Globe : isPdf ? FileText : isImage ? ImageIcon : isCode ? Code2 : FileText;
+                      const iconColor = isPdf ? "var(--accent-rose)" : isUrl ? "var(--text-muted)" : "var(--accent-emerald)";
+                      const badge   = isPdf ? "PDF" : isUrl ? "URL" : isImage ? "IMG" : isCode ? "CODE" : source.kind.replace("_", " ").toUpperCase().slice(0, 4);
+                      return (
+                        <div key={source.source_id} style={{ flex: "0 0 auto", borderRadius: "8px", border: "1px solid var(--border-default)", background: "var(--bg-base)", position: "relative", display: "flex", alignItems: "center", gap: "7px", padding: "6px 32px 6px 8px", maxWidth: "200px" }}>
+                          <SrcIcon size={14} style={{ color: iconColor, flexShrink: 0 }} />
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{source.display_name}</div>
+                            <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: iconColor, letterSpacing: "0.06em" }}>{badge}</div>
+                          </div>
+                          <button type="button" onClick={() => void handleOpenSource(source)} title={isUrl ? "Open URL" : "Download"} style={{ position: "absolute", top: 0, right: 0, bottom: 0, width: "28px", borderRadius: "0 8px 8px 0", background: "transparent", border: "none", borderLeft: "1px solid var(--border-default)", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--text-muted)" }}>
+                            <Download size={11} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* ── Evidence Trail ───────────────────────────────────────── */}
+              {taskResult.evidence_items.length > 0 && (() => {
+                const evItems = taskResult.evidence_items;
+                const useMarquee = evItems.length >= 4;
+                const EvidenceCard = ({ item, idx }: { item: typeof evItems[0]; idx: number }) => (
+                  <div key={`${item.evidence_id}-${idx}`} style={{ width: "224px", flexShrink: 0, borderRadius: "10px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "12px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
+                      <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--accent-emerald)", background: "rgba(52,211,153,0.1)", borderRadius: "4px", padding: "1px 5px", letterSpacing: "0.06em" }}>{item.tool_name}</span>
+                      <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)" }}>R{item.round_index}</span>
+                    </div>
+                    <p style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-secondary)", lineHeight: 1.6, margin: 0, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.summary}</p>
+                  </div>
+                );
+                return (
+                  <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 0", marginBottom: "16px", overflow: "hidden" }}>
+                    <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "14px", paddingLeft: "24px" }}>EVIDENCE TRAIL</div>
+                    {useMarquee ? (
+                      <div style={{ position: "relative", overflow: "hidden" }}>
+                        <div aria-hidden style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: "48px", background: "linear-gradient(to right, var(--bg-elevated), transparent)", zIndex: 2, pointerEvents: "none" }} />
+                        <div aria-hidden style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: "48px", background: "linear-gradient(to left, var(--bg-elevated), transparent)", zIndex: 2, pointerEvents: "none" }} />
+                        <div
+                          className="logs-marquee-strip"
+                          style={{ display: "flex", gap: "12px", width: "max-content", padding: "4px 24px", animation: `marquee ${Math.max(14, evItems.length * 7)}s linear infinite` }}
+                        >
+                          {[...evItems, ...evItems].map((item, i) => (
+                            <EvidenceCard key={`${item.evidence_id}-${i}`} item={item} idx={i} />
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", gap: "12px", overflowX: "auto", padding: "4px 24px", scrollbarWidth: "none" }}>
+                        {evItems.map((item, i) => (
+                          <EvidenceCard key={`${item.evidence_id}-${i}`} item={item} idx={i} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* ── Citations ────────────────────────────────────────────── */}
+              {taskResult.citation_items.length > 0 ? (
+                <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
+                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "12px" }}>CITATIONS</div>
+                  <div style={{ display: "grid", gap: "8px" }}>
+                    {taskResult.citation_items.map((item, index) => (
+                      <div key={`${item.title}-${index}`} style={{ borderRadius: "10px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "12px 14px", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-primary)", marginBottom: "4px", lineHeight: 1.5 }}>{item.title}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                            <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)", background: "var(--bg-elevated)", border: "1px solid var(--border-default)", borderRadius: "4px", padding: "1px 6px" }}>
+                              {item.domain ?? item.source_kind ?? "source"}
+                            </span>
+                            {typeof item.rank === "number" && (
+                              <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)" }}>rank {item.rank}</span>
+                            )}
+                          </div>
+                        </div>
+                        {item.url ? (
+                          <a href={item.url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: "4px", fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--accent-emerald)", flexShrink: 0, textDecoration: "none" }}>
+                            <ExternalLink size={11} />
+                          </a>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {/* ── Model Telemetry ──────────────────────────────────────── */}
+              {modelUsage.length > 0 && (
+                <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
+                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "12px" }}>MODEL TELEMETRY</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                    {modelUsage.map((entry) => (
+                      <div key={entry.model} className={`rounded-xl border p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 ${providerTone(entry.provider)}`}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
+                          <ProviderGlyph provider={entry.provider} size={14} />
+                          <span className="mono text-xs truncate">{entry.model}</span>
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px", fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)" }}>
+                          <span>{entry.tokens !== null ? `${entry.tokens.toLocaleString()} tok` : "n/a"}</span>
+                          <span style={{ opacity: 0.3 }}>·</span>
+                          <span>{entry.inputTokens !== null ? entry.inputTokens.toLocaleString() : "n/a"}/{entry.outputTokens !== null ? entry.outputTokens.toLocaleString() : "n/a"} in/out</span>
+                          <span style={{ opacity: 0.3 }}>·</span>
+                          <span>{entry.thinkingTokens !== null ? `${entry.thinkingTokens.toLocaleString()} thinking` : "—"}</span>
+                          <span style={{ opacity: 0.3 }}>·</span>
+                          <span>{entry.latencyMs !== null ? `${Math.round(entry.latencyMs)} ms` : "n/a"}</span>
+                          <span style={{ opacity: 0.3 }}>·</span>
+                          <span>${entry.usdCost !== null ? entry.usdCost.toFixed(6) : "n/a"}</span>
+                          <span style={{ opacity: 0.3 }}>·</span>
+                          <span style={{ display: "flex", alignItems: "center", gap: "3px" }}><Coins size={10} />{entry.solPayout.toFixed(4)} SOL</span>
+                          <span style={{ opacity: 0.3 }}>·</span>
+                          <span>{entry.estimationMode ?? "unavailable"}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ── On-Chain Receipt ─────────────────────────────────────── */}
+              {task?.solana_tx_hash ? (
+                <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
+                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "10px" }}>ON-CHAIN RECEIPT</div>
+                  <div style={{ borderRadius: "10px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "12px 14px" }}>
+                    <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)", letterSpacing: "0.06em", marginBottom: "6px" }}>$ solana tx</div>
+                    <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--accent-emerald)", wordBreak: "break-all", lineHeight: 1.6 }}>{task.solana_tx_hash}</div>
+                  </div>
+                </div>
+              ) : null}
+            </>
           )}
-
-          {task?.solana_tx_hash ? (
-            <div className="mt-4 rounded-md border border-border-subtle p-3 bg-void">
-              <div className="mono text-[10px] text-text-muted mb-1">ON-CHAIN RECEIPT</div>
-              <div className="mono text-xs text-text-primary break-all">{task.solana_tx_hash}</div>
-            </div>
-          ) : null}
-        </div>
-      )}
 
       {taskResult ? (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
@@ -1990,8 +2432,8 @@ export function LiveDeliberation() {
             <div className="mono text-xs text-text-muted mb-3">RESILIENCE & DEGRADATION</div>
             <div className="grid grid-cols-2 gap-3 mb-4">
               <MetricTile label="Fallback Events" value={String(fallbackEvents.length)} />
-              <MetricTile label="Stream Errors" value={String(displayTimeline.filter((entry) => entry.type === "error").length)} />
-              <MetricTile label="Retries Seen" value={String(displayTimeline.filter((entry) => entry.type === "provider_retrying").length)} />
+              <MetricTile label="Stream Errors" value={String(streamErrorCount)} />
+              <MetricTile label="Retries Seen" value={String(retryCount)} />
               <MetricTile label="Selector Override" value={(taskResult.mechanism_override_source ?? "none").replace(/_/g, " ")} />
             </div>
             {fallbackEvents.length === 0 ? (
@@ -2022,107 +2464,11 @@ export function LiveDeliberation() {
 
       <div className="mb-10">
         <h3 className="mono text-sm mb-4 text-accent tracking-widest">LIVE DELIBERATION TIMELINE</h3>
-        <div className="space-y-3">
-          {displayTimeline.map((entry) => {
-            const isLatestEntry = entry.key === displayTimeline[displayTimeline.length - 1]?.key;
-            const isActiveStream = Boolean(entry.isDraft && isLatestEntry);
-            const provider = providerFromModel(entry.agentModel ?? "");
-            const usageLine = formatUsageLine(entry.details);
-            return (
-              <motion.div
-                key={entry.key}
-                ref={isLatestEntry ? latestTimelineEntryRef : undefined}
-                layout
-                initial={{ opacity: 0, y: 10, scale: 0.995 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-                className={`card p-4 border-l-4 ${eventCardTone(entry.type)}`}
-                style={{ willChange: 'transform, opacity' }}
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                    {entry.type === "cross_examination" ? <Zap size={14} /> : null}
-                    {entry.type === "mechanism_switch" ? <ArrowRightLeft size={14} /> : null}
-                    {entry.type === "receipt_committed" ? <FileText size={14} /> : null}
-                    {isToolTimelineEvent(entry) ? (
-                      entry.toolStatus === "failed" ? <AlertTriangle size={14} /> :
-                      entry.toolStatus === "retrying" ? <RotateCcw size={14} /> :
-                      entry.toolName?.includes("search") ? <Search size={14} /> :
-                      entry.toolName?.includes("python") ? <TerminalSquare size={14} /> :
-                      <Wrench size={14} />
-                    ) : null}
-                    <span className="mono text-xs text-text-muted uppercase tracking-wide">
-                      {entry.title}
-                    </span>
-                    {entry.isDraft ? (
-                      <span
-                        className="rounded-full border border-accent/40 bg-accent/10 px-2 py-0.5 mono text-[10px] text-accent"
-                        style={{
-                          animation: isActiveStream ? 'ld-cursor-blink 1.4s ease-in-out infinite' : 'none',
-                        }}
-                      >
-                        LIVE
-                      </span>
-                    ) : null}
-                    {entry.agentModel ? (
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ${providerTone(provider)}`}
-                      >
-                        <ProviderGlyph provider={provider} size={13} />
-                        <span className="mono text-[10px]">{entry.agentModel}</span>
-                      </span>
-                    ) : null}
-                  </div>
-                  <span className="mono text-[10px] text-text-muted flex-shrink-0">
-                    {formatTimestamp(entry.timestamp)}
-                  </span>
-                </div>
-
-                {/* Summary / streaming body */}
-                {isToolTimelineEvent(entry) ? (
-                  <ToolTimelineCard
-                    entry={entry}
-                    isActiveStream={isActiveStream}
-                    usageLine={usageLine}
-                  />
-                ) : (
-                  <>
-                    <div className="text-text-primary mb-2 break-words">
-                      {entry.isDraft ? (
-                        <StreamingText text={entry.summary} isActive={isActiveStream} />
-                      ) : (
-                        <MarkdownSummary>{entry.summary}</MarkdownSummary>
-                      )}
-                    </div>
-
-                    {usageLine ? (
-                      <div className="mono text-[11px] text-text-muted mb-2">
-                        {usageLine}
-                      </div>
-                    ) : null}
-
-                    {typeof entry.confidence === "number" ? (
-                      <div className="mono text-[11px] text-text-muted mb-2">
-                        confidence {(entry.confidence * 100).toFixed(1)}%
-                      </div>
-                    ) : null}
-
-                    {entry.details ? (
-                      <details className="rounded-md border border-border-subtle bg-void p-2">
-                        <summary className="mono text-[11px] text-text-muted cursor-pointer select-none">
-                          ▸ {detailLabelForEvent(entry)}
-                        </summary>
-                        <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap break-words mt-2">
-                          {JSON.stringify(entry.details, null, 2)}
-                        </pre>
-                      </details>
-                    ) : null}
-                  </>
-                )}
-              </motion.div>
-            );
-          })}
-        </div>
+        <LiveTimelineList
+          timeline={displayTimeline}
+          followLiveUpdates={followLiveUpdates}
+          latestTimelineEntryRef={latestTimelineEntryRef}
+        />
       </div>
         </> /* end Logs tab */
       )}
