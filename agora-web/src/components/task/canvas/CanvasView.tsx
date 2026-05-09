@@ -33,6 +33,7 @@ interface CanvasViewProps {
   roundCount: number;
   eventCount: number;
   entropy?: number;
+  citationItems?: import("../../../lib/api.generated").CitationItemResponse[];
 }
 
 interface TransitionPill {
@@ -655,7 +656,7 @@ const GRID_BG_DARK = `
 `.trim();
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism, roundCount, eventCount, entropy }: CanvasViewProps) {
+export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism, roundCount, eventCount, entropy, citationItems = [] }: CanvasViewProps) {
   const containerRef  = useRef<HTMLDivElement>(null);
   const hasFitRef     = useRef(false);
   const scaleRef      = useRef(1);
@@ -969,7 +970,7 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
 
         {/* Ensure QuorumOverlay is seen as a modal to prevent canvas interference */}
         <div data-modal="true">
-          <QuorumOverlay finalAnswer={finalAnswer} taskId={taskId} />
+          <QuorumOverlay finalAnswer={finalAnswer} taskId={taskId} citationItems={citationItems} />
         </div>
       </div>
     </div>

@@ -2028,6 +2028,7 @@ export function LiveDeliberation() {
             roundCount={task?.round_count || Math.max(1, convergence.lockedClaims.length)}
             eventCount={deferredCanvasTimeline.length}
             entropy={convergence.entropy}
+            citationItems={taskResult?.citation_items ?? []}
           />
         </div>
       )}
