@@ -10,8 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from agora.runtime.model_catalog import is_openrouter_model_id
 from agora.tools.broker import ToolBroker
 from agora.tools.types import CitationItem, EvidenceItem, SourceRef, ToolResult
 
@@ -157,21 +158,13 @@ async def maybe_augment_prompt_with_tool(
             retry_context=retry_context,
             prior_tool_results=tool_results,
         )
-        try:
-            raw_decision, decision_usage = await caller.call(
-                system_prompt=_TOOL_DECISION_SYSTEM_PROMPT,
-                user_prompt=decision_prompt,
-                response_format=ToolDecision,
-                temperature=0.0,
-                stream=False,
-            )
-        except Exception:
+        decision, decision_usage = await _request_tool_decision(
+            caller=caller,
+            decision_prompt=decision_prompt,
+        )
+        if decision is None:
             break
         planning_usages.append(decision_usage)
-        if not isinstance(raw_decision, ToolDecision):
-            break
-
-        decision = raw_decision
         if not decision.should_call or decision.tool_name is None:
             break
 
@@ -218,6 +211,85 @@ async def maybe_augment_prompt_with_tool(
         tool_results=tool_results,
         planning_usage=merged_usage,
     )
+
+
+async def _request_tool_decision(
+    *,
+    caller: _SupportsStructuredCall,
+    decision_prompt: str,
+) -> tuple[ToolDecision | None, dict[str, Any]]:
+    """Request one tool decision with a raw-text fallback for weaker tool planners."""
+
+    planning_usage: dict[str, Any] = {}
+    try:
+        raw_decision, planning_usage = await caller.call(
+            system_prompt=_TOOL_DECISION_SYSTEM_PROMPT,
+            user_prompt=decision_prompt,
+            response_format=ToolDecision,
+            temperature=0.0,
+            stream=False,
+        )
+        if isinstance(raw_decision, ToolDecision):
+            return raw_decision, planning_usage
+    except Exception:
+        if not is_openrouter_model_id(getattr(caller, "model", "")):
+            return None, planning_usage
+
+    try:
+        raw_text, fallback_usage = await caller.call(
+            system_prompt=_TOOL_DECISION_SYSTEM_PROMPT,
+            user_prompt=decision_prompt,
+            response_format=None,
+            temperature=0.0,
+            stream=False,
+        )
+        planning_usage = merge_raw_usage([entry for entry in [planning_usage, fallback_usage] if entry])
+    except Exception:
+        return None, planning_usage
+
+    if isinstance(raw_text, ToolDecision):
+        return raw_text, planning_usage
+
+    parsed = _coerce_tool_decision_text(str(raw_text or ""))
+    return parsed, planning_usage
+
+
+def _coerce_tool_decision_text(raw_text: str) -> ToolDecision | None:
+    """Parse a raw JSON-ish model answer into a ToolDecision."""
+
+    candidate = raw_text.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("```"):
+        candidate = candidate.strip("`")
+        if "\n" in candidate:
+            candidate = candidate.split("\n", 1)[1]
+        if candidate.endswith("```"):
+            candidate = candidate[:-3]
+        candidate = candidate.strip()
+
+    decoder = json.JSONDecoder()
+    payload: Any | None = None
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        for opener in ("{", "["):
+            start = candidate.find(opener)
+            if start < 0:
+                continue
+            try:
+                payload, _ = decoder.raw_decode(candidate[start:])
+                break
+            except json.JSONDecodeError:
+                continue
+
+    if payload is None:
+        return None
+
+    try:
+        return ToolDecision.model_validate(payload)
+    except ValidationError:
+        return None
 
 
 def merge_raw_usage(entries: list[dict[str, Any]]) -> dict[str, Any]:

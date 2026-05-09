@@ -440,7 +440,13 @@ export function buildGraphLayout(
         : (event.displayPrimary ?? event.summary),
       supportContent: isInlineTool
         ? existing?.supportContent
-        : (event.displaySupport ?? existing?.supportContent),
+        : (
+            event.displaySupport !== undefined
+              ? event.displaySupport
+              : (event.streamChannel === "content" && event.displayPrimary
+                  ? undefined
+                  : existing?.supportContent)
+          ),
       thinkingContent,
       rawContent: isInlineTool
         ? existing?.rawContent

@@ -35,6 +35,32 @@ class _FakeCaller:
         return self._responses.pop(0), {"tokens": 3, "latency_ms": 5.0}
 
 
+class _OpenRouterFallbackCaller:
+    def __init__(self) -> None:
+        self.model = "qwen/qwen3.5-flash-02-23"
+        self.calls: list[type[BaseModel] | None] = []
+
+    async def call(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None = None,
+        temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[str | ToolDecision, dict[str, Any]]:
+        del system_prompt, user_prompt, temperature, stream, stream_callback
+        self.calls.append(response_format)
+        if response_format is not None:
+            raise RuntimeError("structured tool planning failed")
+        return (
+            """```json
+{"should_call":true,"tool_name":"execute_python","rationale":"Need exact computation","source_ids":["file-1"],"python_code":"print(42)"}
+```""",
+            {"tokens": 4, "latency_ms": 6.0},
+        )
+
+
 class _RaisingBroker:
     def __init__(self) -> None:
         self.calls = 0
@@ -261,6 +287,32 @@ async def test_tool_runtime_allows_multiple_successive_tool_calls_in_one_pass() 
     assert "Loaded local text file source dataset.csv" in caller.prompts[1]
     assert "Executed Python sandbox task successfully" in result.user_prompt
     assert result.planning_usage["tokens"] == 9
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_falls_back_to_raw_openrouter_tool_decision() -> None:
+    caller = _OpenRouterFallbackCaller()
+
+    result = await maybe_augment_prompt_with_tool(
+        caller=caller,
+        system_prompt="system",
+        user_prompt="Read the attached CSV and compute the exact winner.",
+        context=ToolInvocationContext(
+            task="Read the attached CSV and compute the exact winner.",
+            agent_id="agent-1",
+            round_index=0,
+            stage="independent_generation",
+            sources=[_source()],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_MultiToolBroker(),
+        ),
+    )
+
+    assert caller.calls == [ToolDecision, None]
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].tool_name == "execute_python"
+    assert result.tool_results[0].status == "success"
+    assert "Executed Python sandbox task successfully" in result.user_prompt
 
 
 async def _capture_event(

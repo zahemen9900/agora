@@ -280,7 +280,14 @@ export function upsertTimelineEvent(
   const previous = timeline[index];
   const preserveStructuredIdentity = Boolean(previous.displayPrimary) && nextEvent.streamChannel !== "content";
   const displayPrimary = nextEvent.displayPrimary || previous.displayPrimary;
-  const displaySupport = nextEvent.displaySupport || previous.displaySupport;
+  const shouldClearStaleSupport = (
+    nextEvent.streamChannel === "content"
+    && Boolean(nextEvent.displayPrimary)
+    && nextEvent.displaySupport === undefined
+  );
+  const displaySupport = shouldClearStaleSupport
+    ? undefined
+    : (nextEvent.displaySupport || previous.displaySupport);
   const displayThinking = nextEvent.displayThinking || previous.displayThinking;
   const merged: TimelineEvent = {
     ...(preserveStructuredIdentity ? previous : {}),
