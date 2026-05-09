@@ -61,6 +61,37 @@ class _OpenRouterFallbackCaller:
         )
 
 
+class _OpenRouterDeclineThenUseCaller:
+    def __init__(self) -> None:
+        self.model = "qwen/qwen3.5-flash-02-23"
+        self.prompts: list[str] = []
+        self._responses = [
+            ToolDecision(
+                should_call=False,
+                rationale="I can answer from general knowledge",
+            ),
+            ToolDecision(
+                should_call=True,
+                tool_name="search_online",
+                rationale="Fresh evidence is required for grounding",
+                query="IMF COFER dollar share reserve currency May 2026",
+            ),
+        ]
+
+    async def call(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None = None,
+        temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[ToolDecision, dict[str, Any]]:
+        del system_prompt, response_format, temperature, stream, stream_callback
+        self.prompts.append(user_prompt)
+        return self._responses.pop(0), {"tokens": 5, "latency_ms": 7.0}
+
+
 class _RaisingBroker:
     def __init__(self) -> None:
         self.calls = 0
@@ -107,6 +138,22 @@ class _FailedThenStopBroker:
 
 
 class _MultiToolBroker:
+    async def search_online(
+        self,
+        *,
+        query: str,
+        event_callback: Callable[[str, dict[str, object]], Any] | None = None,
+    ) -> ToolResult:
+        del event_callback
+        return ToolResult(
+            tool_name="search_online",
+            status="success",
+            request={"query": query},
+            summary="Retrieved 5 Brave search result(s) for query.",
+            citations=[],
+            raw_text="IMF COFER data still shows the US dollar leading reserve shares.",
+        )
+
     async def analyze_file(
         self,
         *,
@@ -313,6 +360,33 @@ async def test_tool_runtime_falls_back_to_raw_openrouter_tool_decision() -> None
     assert result.tool_results[0].tool_name == "execute_python"
     assert result.tool_results[0].status == "success"
     assert "Executed Python sandbox task successfully" in result.user_prompt
+
+
+@pytest.mark.asyncio
+async def test_openrouter_early_stage_decline_gets_one_grounding_reconsideration() -> None:
+    caller = _OpenRouterDeclineThenUseCaller()
+
+    result = await maybe_augment_prompt_with_tool(
+        caller=caller,
+        system_prompt="system",
+        user_prompt="Assess whether the US dollar should remain the world's reserve currency as of May 2026.",
+        context=ToolInvocationContext(
+            task="Assess whether the US dollar should remain the world's reserve currency as of May 2026.",
+            agent_id="agent-1",
+            round_index=0,
+            stage="initial",
+            sources=[],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_MultiToolBroker(),
+        ),
+    )
+
+    assert len(caller.prompts) == 2
+    assert "Reconsider and choose the single highest-value tool call" in caller.prompts[1]
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].tool_name == "search_online"
+    assert result.tool_results[0].status == "success"
+    assert "Retrieved 5 Brave search result(s) for query." in result.user_prompt
 
 
 async def _capture_event(

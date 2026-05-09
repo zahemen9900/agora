@@ -118,20 +118,7 @@ def should_offer_tools(*, task: str, sources: list[SourceRef], policy: ToolPolic
         return False
     if sources:
         return True
-    normalized = task.lower()
-    triggers = (
-        "current ",
-        "latest",
-        "today",
-        "yesterday",
-        "news",
-        "search",
-        "web",
-        "interest rate",
-        "price",
-        "compare docs",
-    )
-    return any(token in normalized for token in triggers)
+    return _task_has_freshness_or_retrieval_trigger(task)
 
 
 async def maybe_augment_prompt_with_tool(
@@ -149,8 +136,10 @@ async def maybe_augment_prompt_with_tool(
     tool_results: list[ToolResult] = []
     retry_context = ""
     max_steps = max(1, context.tool_policy.max_tool_calls_per_agent)
+    reconsidered_decline = False
+    step_index = 0
 
-    for step_index in range(max_steps):
+    while step_index < max_steps:
         decision_prompt = _build_decision_prompt(
             task=context.task,
             original_prompt=user_prompt,
@@ -166,6 +155,19 @@ async def maybe_augment_prompt_with_tool(
             break
         planning_usages.append(decision_usage)
         if not decision.should_call or decision.tool_name is None:
+            if (
+                not reconsidered_decline
+                and step_index == 0
+                and _should_reconsider_declined_tool_use(caller=caller, context=context)
+            ):
+                reconsidered_decline = True
+                retry_context = (
+                    "You declined tool use, but this is an early-stage grounding pass with"
+                    " attached or freshness-sensitive evidence. Reconsider and choose the"
+                    " single highest-value tool call unless you are certain no tool would"
+                    " materially improve the answer."
+                )
+                continue
             break
 
         call_id = f"tool-{uuid.uuid4().hex[:12]}"
@@ -199,6 +201,7 @@ async def maybe_augment_prompt_with_tool(
             )
         else:
             retry_context = ""
+        step_index += 1
 
     if not tool_results:
         merged_usage = merge_raw_usage([entry for entry in planning_usages if entry])
@@ -321,6 +324,59 @@ def merge_raw_usage(entries: list[dict[str, Any]]) -> dict[str, Any]:
         _merge_numeric_map(merged["model_latency_ms"], usage.get("model_latency_ms", {}))
         merged["fallback_events"].extend(usage.get("fallback_events", []))
     return merged
+
+
+def _should_reconsider_declined_tool_use(
+    *,
+    caller: _SupportsStructuredCall,
+    context: ToolInvocationContext,
+) -> bool:
+    """Return whether one extra grounding pass should follow a no-tool decision."""
+
+    if not is_openrouter_model_id(getattr(caller, "model", "")):
+        return False
+
+    early_grounding_stages = {
+        "initial",
+        "opening",
+        "vote",
+        "independent_generation",
+        "revision_round",
+    }
+    if context.stage not in early_grounding_stages:
+        return False
+
+    if context.sources:
+        return True
+
+    return _task_has_freshness_or_retrieval_trigger(context.task)
+
+
+def _task_has_freshness_or_retrieval_trigger(task: str) -> bool:
+    """Return whether task wording implies fresh retrieval or external grounding."""
+
+    normalized = task.lower()
+    triggers = (
+        "current",
+        "latest",
+        "today",
+        "yesterday",
+        "as of ",
+        "news",
+        "search",
+        "web",
+        "interest rate",
+        "price",
+        "compare docs",
+        "compare ",
+        "forecast",
+        "outlook",
+        "status",
+        "update",
+        "2026",
+        "2025",
+    )
+    return any(token in normalized for token in triggers)
 
 
 def tool_results_to_evidence(
