@@ -180,6 +180,8 @@ class HostedCitationItem(BaseModel):
     domain: str | None = None
     rank: int | None = None
     source_kind: Literal["text_file", "code_file", "pdf", "image", "url"] | None = None
+    source_id: str | None = None
+    note: str | None = None
 
 
 class HostedEvidenceItem(BaseModel):
@@ -2053,16 +2055,18 @@ class AgoraArbitrator:
             for model, telemetry in model_telemetry.items()
             if telemetry.thinking_tokens is not None
         }
+        hosted_sources = status.result.sources or status.sources
         sources = [
             SourceRef(
                 source_id=source.source_id,
                 kind=source.kind,
                 display_name=source.display_name,
                 mime_type=source.mime_type,
-                storage_uri=source.source_url or "",
+                source_url=source.source_url,
                 size_bytes=int(source.size_bytes),
+                sha256=source.sha256,
             )
-            for source in status.result.sources
+            for source in hosted_sources
         ]
         citation_items = [
             CitationItem(
@@ -2071,6 +2075,8 @@ class AgoraArbitrator:
                 domain=item.domain,
                 rank=item.rank,
                 source_kind=item.source_kind,
+                source_id=item.source_id,
+                note=item.note,
             )
             for item in status.result.citation_items
         ]
@@ -2089,6 +2095,8 @@ class AgoraArbitrator:
                         domain=citation.domain,
                         rank=citation.rank,
                         source_kind=citation.source_kind,
+                        source_id=citation.source_id,
+                        note=citation.note,
                     )
                     for citation in item.citations
                 ],

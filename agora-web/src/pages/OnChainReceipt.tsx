@@ -4,7 +4,12 @@ import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   CheckCircle2,
+  Code2,
+  Download,
   ExternalLink,
+  FileText,
+  Globe,
+  Image as ImageIcon,
   ShieldCheck,
   Copy,
   Check,
@@ -24,6 +29,7 @@ import {
   useTaskDetailQuery,
 } from "../lib/taskQueries";
 import { deriveReceiptPaymentState } from "../lib/paymentRelease";
+import { CitationPill } from "../components/CitationPill";
 import { usePostHog } from "@posthog/react";
 import { useAuth } from "../lib/useAuth";
 
@@ -39,6 +45,11 @@ function injectSkeletonKeyframes() {
       0%   { background-position: -200% center; }
       100% { background-position:  200% center; }
     }
+    @keyframes rcpt-marquee {
+      0%   { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
+    }
+    .rcpt-marquee-strip:hover { animation-play-state: paused !important; }
   `;
   document.head.appendChild(s);
 }
@@ -576,44 +587,24 @@ export function OnChainReceipt() {
           gap: '16px',
           marginBottom: '32px',
         }}>
+          {/* ── Tool Usage ─────────────────────────────────────────────── */}
           {toolSummary ? (
-            <div style={{
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-default)',
-              borderRadius: '12px',
-              padding: '18px 20px',
-            }}>
-              <div style={{
-                fontFamily: FONT,
-                fontSize: '9px',
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: 'var(--text-tertiary)',
-                marginBottom: '12px',
-                fontWeight: 600,
-              }}>Tool Usage</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-primary)' }}>
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 24px' }}>
+              <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', fontWeight: 600 }}>Tool Usage</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                <span style={{ borderRadius: '999px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: 'var(--text-secondary)' }}>
                   {toolSummary.total_tool_calls} calls
                 </span>
-                <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--accent-emerald)' }}>
+                <span style={{ borderRadius: '999px', border: '1px solid rgba(52,211,153,0.35)', background: 'rgba(52,211,153,0.08)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: 'var(--accent-emerald)' }}>
                   {toolSummary.successful_tool_calls} successful
                 </span>
-                <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-secondary)' }}>
-                  {toolSummary.failed_tool_calls} failed
-                </span>
+                {toolSummary.failed_tool_calls > 0 && (
+                  <span style={{ borderRadius: '999px', border: '1px solid rgba(251,113,133,0.35)', background: 'rgba(251,113,133,0.08)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: '#fb7185' }}>
+                    {toolSummary.failed_tool_calls} failed
+                  </span>
+                )}
                 {Object.entries(toolSummary.tool_counts).map(([toolName, count]) => (
-                  <span
-                    key={toolName}
-                    style={{
-                      fontFamily: FONT,
-                      fontSize: '11px',
-                      color: 'var(--text-secondary)',
-                      border: '1px solid var(--border-default)',
-                      borderRadius: '999px',
-                      padding: '4px 8px',
-                    }}
-                  >
+                  <span key={toolName} style={{ borderRadius: '999px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: 'var(--text-secondary)' }}>
                     {toolName} · {count}
                   </span>
                 ))}
@@ -621,150 +612,101 @@ export function OnChainReceipt() {
             </div>
           ) : null}
 
+          {/* ── Attached Sources ───────────────────────────────────────── */}
           {attachedSources.length > 0 ? (
-            <div style={{
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-default)',
-              borderRadius: '12px',
-              padding: '18px 20px',
-            }}>
-              <div style={{
-                fontFamily: FONT,
-                fontSize: '9px',
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: 'var(--text-tertiary)',
-                marginBottom: '12px',
-                fontWeight: 600,
-              }}>Attached Sources</div>
-              <div style={{ display: 'grid', gap: '10px' }}>
-                {attachedSources.map((source) => (
-                  <div key={source.source_id} style={{
-                    border: '1px solid var(--border-default)',
-                    borderRadius: '10px',
-                    padding: '12px 14px',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '4px',
-                  }}>
-                    <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-primary)' }}>
-                      {source.display_name}
-                    </span>
-                    <span style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '12px', color: 'var(--text-secondary)' }}>
-                      {source.kind} · {source.mime_type} · {source.size_bytes.toLocaleString()} bytes
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void handleOpenSource(source)}
-                      style={{
-                        width: 'fit-content',
-                        fontFamily: FONT,
-                        fontSize: '11px',
-                        color: 'var(--accent-emerald)',
-                        textDecoration: 'none',
-                        background: 'transparent',
-                        border: 'none',
-                        padding: 0,
-                        cursor: 'pointer',
-                      }}
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 24px' }}>
+              <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', fontWeight: 600 }}>Attached Sources</div>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                {attachedSources.map((source) => {
+                  const isUrl   = source.kind === 'url';
+                  const isPdf   = source.kind === 'pdf' || source.mime_type?.includes('pdf');
+                  const isImage = source.kind === 'image' || source.mime_type?.startsWith('image/');
+                  const isCode  = source.kind === 'code_file';
+                  const SrcIcon = isUrl ? Globe : isPdf ? FileText : isImage ? ImageIcon : isCode ? Code2 : FileText;
+                  const iconColor = isPdf ? 'var(--accent-rose)' : isUrl ? 'var(--text-muted)' : 'var(--accent-emerald)';
+                  const badge   = isPdf ? 'PDF' : isUrl ? 'URL' : isImage ? 'IMG' : isCode ? 'CODE' : source.kind.replace('_', ' ').toUpperCase().slice(0, 4);
+                  return (
+                    <div
+                      key={source.source_id}
+                      style={{ flex: '0 0 auto', borderRadius: '10px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', position: 'relative', display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 36px 8px 10px', maxWidth: '220px', transition: 'border-color 0.15s ease' }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = `${iconColor}60`; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-default)'; }}
                     >
-                      Open source <ExternalLink size={11} style={{ verticalAlign: 'text-top' }} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {evidenceItems.length > 0 ? (
-            <div style={{
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-default)',
-              borderRadius: '12px',
-              padding: '18px 20px',
-            }}>
-              <div style={{
-                fontFamily: FONT,
-                fontSize: '9px',
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: 'var(--text-tertiary)',
-                marginBottom: '12px',
-                fontWeight: 600,
-              }}>Evidence Trail</div>
-              <div style={{ display: 'grid', gap: '10px' }}>
-                {evidenceItems.map((item) => (
-                  <div key={item.evidence_id} style={{
-                    border: '1px solid var(--border-default)',
-                    borderRadius: '10px',
-                    padding: '12px 14px',
-                    display: 'grid',
-                    gap: '6px',
-                  }}>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
-                      <span style={{ fontFamily: FONT, fontSize: '11px', color: 'var(--accent-emerald)' }}>
-                        {item.tool_name}
-                      </span>
-                      <span style={{ fontFamily: FONT, fontSize: '11px', color: 'var(--text-secondary)' }}>
-                        {item.agent_id} · round {item.round_index}
-                      </span>
-                    </div>
-                    <span style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
-                      {item.summary}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {citationItems.length > 0 ? (
-            <div style={{
-              background: 'var(--bg-elevated)',
-              border: '1px solid var(--border-default)',
-              borderRadius: '12px',
-              padding: '18px 20px',
-            }}>
-              <div style={{
-                fontFamily: FONT,
-                fontSize: '9px',
-                letterSpacing: '0.12em',
-                textTransform: 'uppercase',
-                color: 'var(--text-tertiary)',
-                marginBottom: '12px',
-                fontWeight: 600,
-              }}>Citations</div>
-              <div style={{ display: 'grid', gap: '10px' }}>
-                {citationItems.map((item, index) => (
-                  <div key={`${item.title}-${index}`} style={{
-                    border: '1px solid var(--border-default)',
-                    borderRadius: '10px',
-                    padding: '12px 14px',
-                    display: 'grid',
-                    gap: '4px',
-                  }}>
-                    <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-primary)' }}>
-                      {item.title}
-                    </span>
-                    <span style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '12px', color: 'var(--text-secondary)' }}>
-                      {item.domain ?? item.source_kind ?? "source"}{typeof item.rank === 'number' ? ` · rank ${item.rank}` : ""}
-                    </span>
-                    {item.url ? (
-                      <a
-                        href={item.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{
-                          fontFamily: FONT,
-                          fontSize: '11px',
-                          color: 'var(--accent-emerald)',
-                          textDecoration: 'none',
-                        }}
+                      <SrcIcon size={15} style={{ color: iconColor, flexShrink: 0 }} />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontFamily: FONT, fontSize: '11px', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.display_name}</div>
+                        <div style={{ fontFamily: FONT, fontSize: '9px', color: iconColor, letterSpacing: '0.06em', marginTop: '2px' }}>{badge} · {source.size_bytes.toLocaleString()} B</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenSource(source)}
+                        title={isUrl ? 'Open URL' : 'Download'}
+                        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: '32px', borderRadius: '0 10px 10px 0', background: 'transparent', border: 'none', borderLeft: '1px solid var(--border-default)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-muted)', transition: 'background 0.15s ease, color 0.15s ease' }}
+                        onMouseEnter={(e) => { const b = e.currentTarget; b.style.background = `${iconColor}14`; b.style.color = iconColor; }}
+                        onMouseLeave={(e) => { const b = e.currentTarget; b.style.background = 'transparent'; b.style.color = 'var(--text-muted)'; }}
                       >
-                        Visit citation <ExternalLink size={11} style={{ verticalAlign: 'text-top' }} />
-                      </a>
-                    ) : null}
+                        <Download size={12} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {/* ── Evidence Trail ────────────────────────────────────────── */}
+          {evidenceItems.length > 0 && (() => {
+            // Need ≥4 distinct items so the doubled strip meaningfully overflows the
+            // ~1000px container (4 × 252px = 1008px). Below that, use a static
+            // horizontal-scroll strip — no animation, no overflow bleed.
+            const useMarquee = evidenceItems.length >= 4;
+            const EvidenceCard = ({ item, idx }: { item: typeof evidenceItems[0]; idx: number }) => (
+              <div key={`${item.evidence_id}-${idx}`} style={{ width: '240px', flexShrink: 0, borderRadius: '10px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', padding: '12px 14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: FONT, fontSize: '9px', color: 'var(--accent-emerald)', background: 'rgba(52,211,153,0.1)', borderRadius: '4px', padding: '1px 5px', letterSpacing: '0.06em' }}>{item.tool_name}</span>
+                  <span style={{ fontFamily: FONT, fontSize: '9px', color: 'var(--text-muted)' }}>R{item.round_index}</span>
+                </div>
+                <p style={{ fontFamily: FONT, fontSize: '10px', color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{item.summary}</p>
+              </div>
+            );
+            return (
+              <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 0', overflow: 'hidden' }}>
+                <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', paddingLeft: '24px', fontWeight: 600 }}>Evidence Trail</div>
+                {useMarquee ? (
+                  /* Animated marquee — enough items to scroll continuously */
+                  <div style={{ position: 'relative', overflow: 'hidden' }}>
+                    <div aria-hidden style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '48px', background: 'linear-gradient(to right, var(--bg-elevated), transparent)', zIndex: 2, pointerEvents: 'none' }} />
+                    <div aria-hidden style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '48px', background: 'linear-gradient(to left, var(--bg-elevated), transparent)', zIndex: 2, pointerEvents: 'none' }} />
+                    <div
+                      className="rcpt-marquee-strip"
+                      style={{ display: 'flex', gap: '12px', width: 'max-content', padding: '4px 24px', animation: `rcpt-marquee ${Math.max(14, evidenceItems.length * 7)}s linear infinite` }}
+                    >
+                      {[...evidenceItems, ...evidenceItems].map((item, i) => (
+                        <EvidenceCard key={`${item.evidence_id}-${i}`} item={item} idx={i} />
+                      ))}
+                    </div>
                   </div>
+                ) : (
+                  /* Static horizontal strip — too few items for a seamless marquee */
+                  <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', padding: '4px 24px', scrollbarWidth: 'none' }}>
+                    {evidenceItems.map((item, i) => (
+                      <EvidenceCard key={`${item.evidence_id}-${i}`} item={item} idx={i} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Citations — compact hover-reveal pills ────────────────── */}
+          {citationItems.length > 0 ? (
+            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 24px' }}>
+              <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', fontWeight: 600 }}>
+                Citations <span style={{ opacity: 0.5, fontWeight: 400 }}>· hover to expand</span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                {citationItems.map((item, index) => (
+                  <CitationPill key={`${item.title}-${index}`} item={item} />
                 ))}
               </div>
             </div>

@@ -47,6 +47,7 @@ from api.models import (
 from api.routes import api_keys as api_key_routes
 from api.routes import auth_session
 from api.routes import benchmarks as benchmark_routes
+from api.routes import sources as source_routes
 from api.routes import tasks as task_routes
 from api.routes import webhooks as webhook_routes
 from api.store_local import LocalTaskStore
@@ -691,6 +692,209 @@ async def test_create_list_get_task_with_local_store(
         assert fetched.status == "pending"
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_task_source_metadata_survives_upload_create_run_and_detailed_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "task-source-roundtrip"))
+    task_routes._store = store
+    source_routes._store = store
+
+    uploaded_source_id: str | None = None
+    uploaded_sha256: str | None = None
+
+    class _FakeAttachmentRunOrchestrator:
+        def __init__(self, agent_count: int, reasoning_presets=None, allow_offline_fallback: bool = False):
+            self.agent_count = agent_count
+            self.reasoning_presets = reasoning_presets
+            self.allow_offline_fallback = allow_offline_fallback
+            self.selector = self
+
+        async def select(self, task_text: str, agent_count: int, stakes: float):
+            del task_text, agent_count, stakes
+            return make_selection(mechanism=MechanismType.VOTE, topic_category="code")
+
+        async def execute_selection(
+            self,
+            task: str,
+            selection: MechanismSelection,
+            event_sink=None,
+            agents=None,
+            allow_switch: bool = True,
+            sources=None,
+            tools_enabled: bool = False,
+            tool_policy=None,
+        ) -> DeliberationResult:
+            del agents, allow_switch, tools_enabled, tool_policy
+            if event_sink is not None:
+                await event_sink(
+                    "complete",
+                    {"task": task, "mechanism": selection.mechanism.value},
+                )
+            assert uploaded_source_id is not None
+            assert uploaded_sha256 is not None
+            return DeliberationResult(
+                task=task,
+                mechanism_used=MechanismType.VOTE,
+                mechanism_selection=selection,
+                final_answer="The attached worker script and the linked spec agree on 42.",
+                confidence=0.91,
+                quorum_reached=True,
+                round_count=1,
+                agent_count=self.agent_count,
+                mechanism_switches=0,
+                merkle_root="attachment-root",
+                transcript_hashes=["attachment-leaf-1"],
+                agent_models_used=["gemini-3-flash-preview"],
+                model_token_usage={},
+                model_latency_ms={},
+                convergence_history=[],
+                locked_claims=[],
+                mechanism_trace=[],
+                sources=list(sources or []),
+                tool_usage_summary={
+                    "total_tool_calls": 2,
+                    "successful_tool_calls": 2,
+                    "failed_tool_calls": 0,
+                    "tool_counts": {
+                        "analyze_file": 1,
+                        "execute_python": 1,
+                    },
+                },
+                evidence_items=[
+                    {
+                        "evidence_id": "evidence-1",
+                        "tool_name": "execute_python",
+                        "agent_id": "agent-1",
+                        "summary": "Parsed the attached worker file and confirmed the output.",
+                        "round_index": 0,
+                        "source_ids": [uploaded_source_id],
+                        "citations": [
+                            {
+                                "title": "worker.py",
+                                "source_kind": "code_file",
+                                "source_id": uploaded_source_id,
+                                "note": "Attached worker file parsed in sandbox.",
+                            }
+                        ],
+                    }
+                ],
+                citation_items=[
+                    {
+                        "title": "worker.py",
+                        "source_kind": "code_file",
+                        "source_id": uploaded_source_id,
+                        "note": "Attached worker file parsed in sandbox.",
+                    },
+                    {
+                        "title": "Specification",
+                        "url": "https://example.com/spec",
+                        "domain": "example.com",
+                        "rank": 1,
+                    },
+                ],
+                total_tokens_used=18,
+                total_latency_ms=7.5,
+            )
+
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeAttachmentRunOrchestrator)
+
+        app.dependency_overrides[auth.get_current_user] = _override_user
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            init_response = await client.post(
+                "/sources/upload-init",
+                json={
+                    "filename": "worker.py",
+                    "mime_type": "text/x-python",
+                    "size_bytes": 12,
+                },
+            )
+            assert init_response.status_code == 200
+            init_payload = init_response.json()
+            uploaded_source_id = init_payload["source"]["source_id"]
+
+            bytes_response = await client.put(
+                init_payload["upload_url"],
+                content=b"print(42)\n",
+                headers={"Content-Type": "text/x-python"},
+            )
+            assert bytes_response.status_code == 200
+            uploaded_sha256 = bytes_response.json()["sha256"]
+
+            complete_response = await client.post(
+                f"/sources/{uploaded_source_id}/upload-complete",
+                json={"sha256": uploaded_sha256},
+            )
+            assert complete_response.status_code == 200
+
+            create_response = await client.post(
+                "/tasks/",
+                json={
+                    "task": "Compare the uploaded worker script against the linked specification.",
+                    "agent_count": 3,
+                    "stakes": 0.0,
+                    "source_file_ids": [uploaded_source_id],
+                    "source_urls": ["https://example.com/spec"],
+                },
+            )
+            assert create_response.status_code == 200
+            task_id = create_response.json()["task_id"]
+
+            run_response = await client.post(f"/tasks/{task_id}/run")
+            assert run_response.status_code == 200
+            run_payload = run_response.json()
+
+            detail_response = await client.get(
+                f"/tasks/{task_id}",
+                params={"detailed": "true"},
+            )
+            assert detail_response.status_code == 200
+            detail_payload = detail_response.json()
+    finally:
+        app.dependency_overrides.clear()
+        source_routes._store = None
+        task_routes._store = None
+
+    attached_file = next(
+        source for source in run_payload["sources"] if source["source_id"] == uploaded_source_id
+    )
+    assert attached_file["status"] == "ready"
+    assert attached_file["sha256"] == uploaded_sha256
+    assert attached_file["source_url"] == f"/api/sources/{uploaded_source_id}/content"
+
+    attached_file_detail = next(
+        source for source in detail_payload["result"]["sources"] if source["source_id"] == uploaded_source_id
+    )
+    assert attached_file_detail["status"] == "ready"
+    assert attached_file_detail["sha256"] == uploaded_sha256
+    assert attached_file_detail["source_url"] == f"/api/sources/{uploaded_source_id}/content"
+
+    attached_url_detail = next(
+        source for source in detail_payload["result"]["sources"] if source["kind"] == "url"
+    )
+    assert attached_url_detail["source_url"] == "https://example.com/spec"
+    assert attached_url_detail["status"] == "ready"
+
+    assert detail_payload["sources"] == detail_payload["result"]["sources"]
+    assert detail_payload["result"]["tool_usage_summary"]["tool_counts"] == {
+        "analyze_file": 1,
+        "execute_python": 1,
+    }
+    assert detail_payload["result"]["citation_items"][0]["source_id"] == uploaded_source_id
+    assert (
+        detail_payload["result"]["citation_items"][0]["note"]
+        == "Attached worker file parsed in sandbox."
+    )
+    assert (
+        detail_payload["result"]["evidence_items"][0]["citations"][0]["source_id"]
+        == uploaded_source_id
+    )
 
 
 @pytest.mark.asyncio

@@ -162,6 +162,65 @@ def _build_url_source(url: str) -> TaskSourceResponse:
     )
 
 
+def _task_source_from_runtime(item: Any) -> TaskSourceResponse:
+    """Convert one runtime source payload into the public task-source shape."""
+
+    if isinstance(item, TaskSourceResponse):
+        return item
+    payload = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+    source_id = str(payload.get("source_id") or "").strip()
+    if not source_id:
+        raise ValueError("Runtime source payload is missing source_id")
+    kind = str(payload.get("kind") or "text_file").strip() or "text_file"
+    source_url = payload.get("source_url")
+    return TaskSourceResponse(
+        source_id=source_id,
+        kind=cast(Any, kind),
+        display_name=str(payload.get("display_name") or source_id),
+        mime_type=str(payload.get("mime_type") or "application/octet-stream"),
+        size_bytes=max(0, int(payload.get("size_bytes") or 0)),
+        sha256=str(payload["sha256"]) if payload.get("sha256") else None,
+        status=cast(Any, payload.get("status") or "ready"),
+        created_at=payload.get("created_at") or datetime.now(UTC),
+        source_url=str(source_url) if source_url else None,
+    )
+
+
+def _merge_result_sources(
+    *,
+    persisted_sources: list[TaskSourceResponse],
+    runtime_sources: Any,
+) -> list[TaskSourceResponse]:
+    """Preserve validated task-source metadata while accepting runtime enrichments."""
+
+    merged_by_id: dict[str, TaskSourceResponse] = {
+        source.source_id: source.model_copy() for source in persisted_sources
+    }
+    ordered_ids = [source.source_id for source in persisted_sources]
+
+    for runtime_item in runtime_sources or []:
+        runtime_source = _task_source_from_runtime(runtime_item)
+        existing = merged_by_id.get(runtime_source.source_id)
+        if existing is None:
+            merged_by_id[runtime_source.source_id] = runtime_source
+            ordered_ids.append(runtime_source.source_id)
+            continue
+        merged_by_id[runtime_source.source_id] = existing.model_copy(
+            update={
+                "kind": existing.kind or runtime_source.kind,
+                "display_name": existing.display_name or runtime_source.display_name,
+                "mime_type": existing.mime_type or runtime_source.mime_type,
+                "size_bytes": existing.size_bytes or runtime_source.size_bytes,
+                "sha256": existing.sha256 or runtime_source.sha256,
+                "status": existing.status if existing.status != "pending_upload" else runtime_source.status,
+                "created_at": existing.created_at or runtime_source.created_at,
+                "source_url": existing.source_url or runtime_source.source_url,
+            }
+        )
+
+    return [merged_by_id[source_id] for source_id in ordered_ids if source_id in merged_by_id]
+
+
 def _resolve_tool_policy(
     enable_tools: bool,
     request_policy: ToolPolicy | None,
@@ -781,15 +840,10 @@ def _result_to_response(
         )
     )
 
-    normalized_sources = list(sources or [])
-    runtime_sources = getattr(result, "sources", None)
-    if runtime_sources:
-        normalized_sources = [
-            item
-            if isinstance(item, TaskSourceResponse)
-            else TaskSourceResponse.model_validate(item.model_dump(mode="json") if hasattr(item, "model_dump") else item)
-            for item in runtime_sources
-        ]
+    normalized_sources = _merge_result_sources(
+        persisted_sources=list(sources or []),
+        runtime_sources=getattr(result, "sources", None),
+    )
 
     return DeliberationResultResponse(
         task_id=task_id,
