@@ -165,12 +165,13 @@ export interface StreamHandle {
 export interface LocalModelSpecPayload {
   provider: "gemini" | "anthropic" | "openrouter";
   model: string;
+  reasoning_preset?: string | null;
 }
 
 export interface LocalProviderKeysPayload {
-  gemini_api_key?: string;
-  anthropic_api_key?: string;
-  openrouter_api_key?: string;
+  gemini_api_key?: string | null;
+  anthropic_api_key?: string | null;
+  openrouter_api_key?: string | null;
 }
 
 export interface LocalDebateConfigPayload {
@@ -182,6 +183,26 @@ export interface TaskRunRequestPayload {
   local_models?: LocalModelSpecPayload[] | null;
   local_provider_keys?: LocalProviderKeysPayload | null;
   local_debate_config?: LocalDebateConfigPayload | null;
+}
+
+export interface TaskSourcePayload {
+  source_id: string;
+  kind: "text_file" | "code_file" | "pdf" | "image" | "url";
+  display_name: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256?: string | null;
+  status: "pending_upload" | "uploaded" | "ready" | "failed";
+  created_at: string;
+  source_url?: string | null;
+}
+
+export interface SourceUploadInitPayload {
+  source: TaskSourcePayload;
+  upload_url: string;
+  upload_method: "PUT";
+  upload_headers: Record<string, string>;
+  expires_at: string;
 }
 
 export type TaskStatusResponse = GeneratedTaskStatusResponse & {
@@ -253,6 +274,11 @@ export async function submitTask(
   reasoningPresets: Partial<ReasoningPresetState>,
   tierModelOverrides: RuntimeTierModelOverridesPayload | undefined,
   token: string | null,
+  options?: {
+    sourceUrls?: string[];
+    sourceFileIds?: string[];
+    enableTools?: boolean;
+  },
 ): Promise<TaskCreateResponse> {
   return requestJson<TaskCreateResponse>("/tasks", {
     method: "POST",
@@ -268,8 +294,82 @@ export async function submitTask(
       allow_offline_fallback: true,
       reasoning_presets: reasoningPresets,
       tier_model_overrides: tierModelOverrides,
+      source_urls: options?.sourceUrls ?? [],
+      source_file_ids: options?.sourceFileIds ?? [],
+      enable_tools: options?.enableTools ?? true,
     }),
   });
+}
+
+export async function initSourceUpload(
+  token: string | null,
+  payload: {
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+  },
+): Promise<SourceUploadInitPayload> {
+  return requestJson<SourceUploadInitPayload>("/sources/upload-init", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({
+      filename: payload.filename,
+      mime_type: payload.mimeType,
+      size_bytes: payload.sizeBytes,
+    }),
+  });
+}
+
+export async function uploadSourceBytes(
+  uploadUrl: string,
+  method: "PUT",
+  headers: Record<string, string>,
+  file: File,
+  token?: string | null,
+): Promise<void> {
+  const isAbsoluteUrl = uploadUrl.startsWith("http");
+  const response = await fetch(isAbsoluteUrl ? uploadUrl : `${API_URL}${uploadUrl}`, {
+    method,
+    headers: {
+      ...headers,
+      ...(isAbsoluteUrl ? {} : authHeaders(token ?? null)),
+    },
+    body: file,
+  });
+  if (!response.ok) {
+    throw new Error(`Source upload failed: ${response.status}`);
+  }
+}
+
+export async function completeSourceUpload(
+  token: string | null,
+  sourceId: string,
+  sha256?: string | null,
+): Promise<TaskSourcePayload> {
+  return requestJson<TaskSourcePayload>(`/sources/${sourceId}/upload-complete`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(token),
+    },
+    body: JSON.stringify({ sha256: sha256 ?? null }),
+  });
+}
+
+export async function fetchSourceContent(
+  token: string | null,
+  sourceId: string,
+): Promise<Blob> {
+  const response = await fetch(`${API_URL}/sources/${sourceId}/content`, {
+    headers: authHeaders(token),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch source content: ${response.status}`);
+  }
+  return response.blob();
 }
 
 export async function listTasks(token: string | null): Promise<TaskStatusResponse[]> {
@@ -812,6 +912,15 @@ export async function streamDeliberation(
     "mechanism_selected",
     "agent_output",
     "agent_output_delta",
+    "tool_call_started",
+    "tool_call_delta",
+    "tool_call_completed",
+    "tool_call_failed",
+    "search_retrying",
+    "search_key_rotated",
+    "sandbox_execution_started",
+    "sandbox_execution_delta",
+    "sandbox_execution_completed",
     "cross_examination",
     "cross_examination_delta",
     "delphi_feedback",

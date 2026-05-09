@@ -67,3 +67,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

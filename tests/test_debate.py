@@ -238,6 +238,22 @@ def test_rebuttal_response_coerces_partial_payload() -> None:
     assert response.confidence == pytest.approx(0.5)
 
 
+def test_synthesis_response_preserves_audit_fields() -> None:
+    """Structured synthesis fields should survive validation for downstream audit use."""
+
+    response = _SynthesisResponse.model_validate(
+        {
+            "final_answer": "Choose Architecture A.",
+            "confidence": 0.78,
+            "key_surviving_claims": ["It isolates failures.", "Recovery is simpler."],
+            "dropped_claims": ["It is always cheaper."],
+        }
+    )
+
+    assert response.key_surviving_claims == ["It isolates failures.", "Recovery is simpler."]
+    assert response.dropped_claims == ["It is always cheaper."]
+
+
 def test_cross_exam_response_coerces_partial_payload() -> None:
     """Malformed cross-exam JSON should degrade to an empty analysis list."""
 

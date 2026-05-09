@@ -153,6 +153,10 @@ export function inferSegmentedTaskEvents(
 
 export function segmentDraftKeyForEvent(event: TaskEvent): string | null {
   const data = asRecord(event.data) ?? {};
+  const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : "";
+  if (toolCallId) {
+    return toolCallId;
+  }
   const agentId = typeof data.agent_id === "string" ? data.agent_id : "";
   const stage = typeof data.stage === "string" ? data.stage : "";
   const roundNumber = resolveSegmentRound(data);

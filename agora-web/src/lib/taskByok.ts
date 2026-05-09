@@ -43,8 +43,9 @@ export interface TaskByokRunRequestPayload {
   local_models: Array<{
     provider: TaskByokProviderFamily;
     model: string;
+    reasoning_preset?: string | null;
   }>;
-  local_provider_keys: Partial<TaskByokProviderKeys>;
+  local_provider_keys: Partial<Record<keyof TaskByokProviderKeys, string | null>>;
 }
 
 const PROVIDER_FAMILIES: TaskByokProviderFamily[] = [
@@ -269,6 +270,7 @@ export function buildTaskByokRunRequest(
     local_models: config.roster.map((item) => ({
       provider: item.provider,
       model: item.model.trim(),
+      reasoning_preset: null,
     })),
     local_provider_keys: localProviderKeys,
   };

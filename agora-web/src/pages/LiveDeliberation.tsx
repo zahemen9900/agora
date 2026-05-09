@@ -7,10 +7,20 @@ import {
   AlertTriangle,
   ArrowRightLeft,
   CheckCircle2,
+  ChevronDown,
+  Code2,
   Coins,
+  Download,
+  ExternalLink,
   FileText,
+  Globe,
+  Image as ImageIcon,
   Loader2,
+  RotateCcw,
+  Search,
+  Wrench,
   ScrollText,
+  TerminalSquare,
   Zap,
 } from "lucide-react";
 
@@ -27,6 +37,10 @@ function injectLdKeyframes() {
     @keyframes ld-text-fade {
       0%   { opacity: 0; }
       100% { opacity: 1; }
+    }
+    @keyframes marquee {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(-50%); }
     }
   `;
   document.head.appendChild(s);
@@ -128,6 +142,7 @@ import {
 } from "../lib/deliberationTimeline";
 import { usePostHog } from "@posthog/react";
 import { Button } from "../components/ui/Button";
+import { openTaskSource } from "../lib/sourceAccess";
 
 const EMPTY_TIMELINE: TimelineEvent[] = [];
 
@@ -228,6 +243,21 @@ function eventCardTone(eventType: string): string {
   if (eventType === "thinking_delta") {
     return "border-l-emerald-400";
   }
+  if (
+    eventType === "tool_call_started"
+    || eventType === "tool_call_delta"
+    || eventType === "tool_call_completed"
+    || eventType === "search_retrying"
+    || eventType === "search_key_rotated"
+    || eventType === "sandbox_execution_started"
+    || eventType === "sandbox_execution_delta"
+    || eventType === "sandbox_execution_completed"
+  ) {
+    return "border-l-sky-400";
+  }
+  if (eventType === "tool_call_failed") {
+    return "border-l-red-400";
+  }
   if (eventType === "usage_delta") {
     return "border-l-violet-400";
   }
@@ -297,6 +327,18 @@ function detailLabelForEvent(event: TimelineEvent): string {
   }
   if (event.type === "thinking_delta") {
     return "thinking stream";
+  }
+  if (event.type === "tool_call_started" || event.type === "tool_call_delta") {
+    return "tool stream";
+  }
+  if (event.type === "search_retrying" || event.type === "search_key_rotated") {
+    return "search retry state";
+  }
+  if (event.type === "tool_call_completed" || event.type === "sandbox_execution_completed") {
+    return "tool result";
+  }
+  if (event.type === "tool_call_failed") {
+    return "tool error";
   }
   if (event.type === "usage_delta") {
     return "usage telemetry";
@@ -448,6 +490,143 @@ function MarkdownSummary({ children }: { children: string }) {
     <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
       {children}
     </Markdown>
+  );
+}
+
+function isToolTimelineEvent(event: TimelineEvent): boolean {
+  return event.streamChannel === "tool";
+}
+
+function toolStatusLabel(status: TimelineEvent["toolStatus"]): string {
+  if (status === "failed") return "FAILED";
+  if (status === "retrying") return "RETRYING";
+  if (status === "success") return "COMPLETE";
+  return "RUNNING";
+}
+
+function toolStatusTone(status: TimelineEvent["toolStatus"]): string {
+  if (status === "failed") return "border-danger/40 bg-danger/10 text-danger";
+  if (status === "retrying") return "border-warning/40 bg-warning/10 text-warning";
+  if (status === "success") return "border-accent/40 bg-accent/10 text-accent";
+  return "border-sky-400/40 bg-sky-400/10 text-sky-300";
+}
+
+function toolIconForName(toolName: string | undefined): ReactNode {
+  const normalized = (toolName ?? "").toLowerCase();
+  if (normalized.includes("search")) {
+    return <Search size={14} />;
+  }
+  if (normalized.includes("python")) {
+    return <TerminalSquare size={14} />;
+  }
+  if (normalized.includes("url")) {
+    return <ExternalLink size={14} />;
+  }
+  if (normalized.includes("file")) {
+    return <FileText size={14} />;
+  }
+  return <Wrench size={14} />;
+}
+
+function toolDetailTitle(event: TimelineEvent): string {
+  if (event.type === "tool_call_started") return "request envelope";
+  if (event.type === "tool_call_delta" || event.type === "sandbox_execution_delta") return "live operation output";
+  if (event.type === "tool_call_completed" || event.type === "sandbox_execution_completed") return "result payload";
+  if (event.type === "tool_call_failed") return "failure payload";
+  if (event.type === "tool_call_retrying" || event.type === "search_retrying" || event.type === "search_key_rotated") return "retry state";
+  return "tool payload";
+}
+
+function ToolTimelineCard({
+  entry,
+  isActiveStream,
+  usageLine,
+}: {
+  entry: TimelineEvent;
+  isActiveStream: boolean;
+  usageLine: string | null;
+}) {
+  const statusLabel = toolStatusLabel(entry.toolStatus);
+  const tone = toolStatusTone(entry.toolStatus);
+  const toolLabel = entry.toolName
+    ? entry.toolName.replace(/_/g, " ")
+    : entry.title.replace(/^.*·\s*/, "");
+
+  return (
+    <div className="space-y-3">
+      <div className={`rounded-2xl border ${tone} overflow-hidden`}>
+        <div className="flex items-center justify-between gap-3 border-b border-current/15 px-3 py-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full border border-current/30 bg-black/10">
+              {entry.toolStatus === "retrying"
+                ? <RotateCcw size={14} />
+                : entry.toolStatus === "failed"
+                  ? <AlertTriangle size={14} />
+                  : entry.toolStatus === "running"
+                    ? <Loader2 size={14} className="animate-spin" />
+                    : toolIconForName(entry.toolName)}
+            </span>
+            <div className="min-w-0">
+              <div className="mono truncate text-[11px] uppercase tracking-[0.18em]">
+                {toolLabel}
+              </div>
+              <div className="truncate text-[11px] text-current/80">
+                {entry.agentId ?? "agent"} · {entry.stage?.replace(/_/g, " ") ?? "tool step"}
+              </div>
+            </div>
+          </div>
+          <span className="mono rounded-full border border-current/30 bg-black/10 px-2 py-1 text-[10px] tracking-[0.16em]">
+            {statusLabel}
+          </span>
+        </div>
+
+        <div className="px-3 py-3">
+          {entry.isDraft ? (
+            <StreamingText text={entry.summary} isActive={isActiveStream} />
+          ) : (
+            <MarkdownSummary>{entry.summary}</MarkdownSummary>
+          )}
+        </div>
+      </div>
+
+      <details className="overflow-hidden rounded-2xl border border-border-subtle bg-void/80">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="mono text-[10px] uppercase tracking-[0.18em] text-text-muted">
+              {toolDetailTitle(entry)}
+            </span>
+            {usageLine ? (
+              <span className="mono truncate text-[10px] text-text-muted">{usageLine}</span>
+            ) : null}
+          </div>
+          <ChevronDown size={14} className="text-text-muted" />
+        </summary>
+        <div className="border-t border-border-subtle px-3 py-3">
+          <div className="mb-3 overflow-hidden rounded-xl border border-border-subtle bg-surface/60">
+            <div className="whitespace-nowrap px-3 py-2 [mask-image:linear-gradient(to_right,black_80%,transparent)]">
+              <div
+                className="mono inline-flex gap-8 text-[10px] uppercase tracking-[0.18em] text-text-muted"
+                style={{ animation: "marquee 18s linear infinite", minWidth: "max-content" }}
+              >
+                <span>{toolLabel}</span>
+                <span>{statusLabel}</span>
+                <span>{entry.toolCallId ?? "ephemeral-call"}</span>
+                <span>{entry.timestamp ? formatTimestamp(entry.timestamp) : "timestamp n/a"}</span>
+                <span>{toolLabel}</span>
+                <span>{statusLabel}</span>
+              </div>
+            </div>
+          </div>
+          {entry.details ? (
+            <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-border-subtle bg-void p-3 mono text-[10px] text-text-secondary">
+              {JSON.stringify(entry.details, null, 2)}
+            </pre>
+          ) : (
+            <div className="text-sm text-text-secondary">No structured payload was persisted for this operation.</div>
+          )}
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -1076,6 +1255,9 @@ export function LiveDeliberation() {
   }, [recoveredTimeline, timeline]);
 
   const taskResult = task?.result ?? null;
+  const attachedTaskSources = taskResult?.sources?.length
+    ? taskResult.sources
+    : (task?.sources ?? []);
   const resolvedStopMessage = stopMessage ?? (
     task && isTaskStopped(task) ? (task.failure_reason ?? TASK_STOPPED_REASON) : null
   );
@@ -1108,6 +1290,16 @@ export function LiveDeliberation() {
     ? summarizeChainHealth(chainOperations.map(([, operation]) => operation))
     : "no chain operations yet";
   const hotPathModel = dominantModelFromUsage(modelUsage);
+
+  const handleOpenSource = useCallback(async (source: NonNullable<typeof attachedTaskSources>[number]) => {
+    try {
+      const token = await getAccessToken();
+      await openTaskSource(source, token);
+    } catch (error) {
+      console.error("Failed to open attached source.", error);
+      setTaskActionError(error instanceof Error ? error.message : "Failed to open attached source.");
+    }
+  }, [getAccessToken, setTaskActionError]);
 
   const taskStatus = task?.status ?? "pending";
   const isPendingLocalByok = taskStatus === "pending" && task?.execution_source === "local_byok";
@@ -1306,6 +1498,80 @@ export function LiveDeliberation() {
         </div>
       ) : null}
 
+      {attachedTaskSources.length > 0 ? (
+        <div className="mb-6 rounded-xl border border-border-subtle bg-panel px-4 py-3 flex items-center gap-4">
+          {/* Left: label */}
+          <div className="shrink-0">
+            <div className="mono text-[11px] tracking-[0.12em] text-text-muted">ATTACHED SOURCES</div>
+            <div className="text-xs text-text-secondary mt-0.5">
+              {attachedTaskSources.length} file{attachedTaskSources.length === 1 ? "" : "s"}
+            </div>
+          </div>
+          {/* Divider */}
+          <div className="w-px self-stretch bg-border-subtle shrink-0" />
+          {/* Right: cards */}
+          <div className="flex gap-3 overflow-x-auto" style={{ scrollbarWidth: "none" }}>
+            {attachedTaskSources.map((source) => {
+              const isUrl    = source.kind === "url";
+              const isPdf    = source.kind === "pdf" || source.mime_type?.includes("pdf");
+              const isImage  = source.kind === "image" || source.mime_type?.startsWith("image/");
+              const isCode   = source.kind === "code_file";
+              const Icon     = isUrl ? Globe : isPdf ? FileText : isImage ? ImageIcon : isCode ? Code2 : FileText;
+              const iconColor = isPdf ? "var(--accent-rose)" : isUrl ? "var(--text-muted)" : "var(--accent-emerald)";
+              const badge    = isPdf ? "PDF" : isUrl ? "URL" : isImage ? "IMG" : isCode ? "CODE" : source.kind.replace("_", " ").toUpperCase().slice(0, 4);
+              return (
+                <div
+                  key={source.source_id}
+                  style={{
+                    flex: "0 0 auto",
+                    borderRadius: "8px", border: "1px solid var(--border-default)",
+                    background: "var(--bg-base)", position: "relative",
+                    display: "flex", alignItems: "center", gap: "7px",
+                    padding: "6px 32px 6px 8px",
+                    transition: "border-color 0.15s ease",
+                    maxWidth: "200px",
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = `${iconColor}60`; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = "var(--border-default)"; }}
+                >
+                  <Icon size={14} style={{ color: iconColor, flexShrink: 0 }} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{
+                      fontFamily: "'Commit Mono', monospace", fontSize: "10px",
+                      color: "var(--text-primary)", whiteSpace: "nowrap",
+                      overflow: "hidden", textOverflow: "ellipsis",
+                    }}>{source.display_name}</div>
+                    <div style={{
+                      fontFamily: "'Commit Mono', monospace", fontSize: "9px",
+                      color: iconColor, letterSpacing: "0.06em",
+                    }}>{badge}</div>
+                  </div>
+                  {/* Download button */}
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenSource(source)}
+                    title={isUrl ? "Open URL" : "Download"}
+                    style={{
+                      position: "absolute", top: 0, right: 0, bottom: 0,
+                      width: "28px", borderRadius: "0 8px 8px 0",
+                      background: "transparent", border: "none",
+                      borderLeft: "1px solid var(--border-default)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      cursor: "pointer", color: "var(--text-muted)",
+                      transition: "background 0.15s ease",
+                    }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = `${iconColor}14`; (e.currentTarget as HTMLButtonElement).style.color = iconColor; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; (e.currentTarget as HTMLButtonElement).style.color = "var(--text-muted)"; }}
+                  >
+                    <Download size={11} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       {/* ── Canvas tab ───────────────────────────────────────────────────── */}
       {activeTab === "canvas" && (
         <div style={{ border: "1px solid var(--border-subtle)", borderRadius: "14px", overflow: "hidden", minHeight: "600px", marginBottom: "32px", position: "relative" }}>
@@ -1415,6 +1681,109 @@ export function LiveDeliberation() {
                   >
                     {providerKey.replace(/_/g, " ")}: {preset}
                   </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {taskResult.tool_usage_summary ? (
+            <div className="mb-4">
+              <div className="mono text-[11px] text-text-muted mb-2">TOOL USAGE</div>
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary">
+                  {taskResult.tool_usage_summary.total_tool_calls} calls
+                </span>
+                <span className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-accent">
+                  {taskResult.tool_usage_summary.successful_tool_calls} successful
+                </span>
+                <span className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary">
+                  {taskResult.tool_usage_summary.failed_tool_calls} failed
+                </span>
+                {Object.entries(taskResult.tool_usage_summary.tool_counts).map(([toolName, count]) => (
+                  <span
+                    key={toolName}
+                    className="rounded-full border border-border-subtle bg-void px-3 py-1 mono text-[11px] text-text-secondary"
+                  >
+                    {toolName}: {count}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {attachedTaskSources.length > 0 ? (
+            <div className="mb-4">
+              <div className="mono text-[11px] text-text-muted mb-2">ATTACHED SOURCES</div>
+              <div className="grid gap-2">
+                {attachedTaskSources.map((source) => (
+                  <div
+                    key={source.source_id}
+                    className="rounded-md border border-border-subtle bg-void p-3"
+                  >
+                    <div className="flex items-center gap-2 mono text-xs text-text-primary mb-1">
+                      <FileText size={12} />
+                      <span>{source.display_name}</span>
+                    </div>
+                    <div className="text-xs text-text-secondary">
+                      {source.kind} · {source.mime_type} · {source.size_bytes.toLocaleString()} bytes
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenSource(source)}
+                      className="mono text-[11px] text-accent inline-flex items-center gap-1 mt-2"
+                    >
+                      Open source <ExternalLink size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {taskResult.evidence_items.length > 0 ? (
+            <div className="mb-4">
+              <div className="mono text-[11px] text-text-muted mb-2">EVIDENCE TRAIL</div>
+              <div className="grid gap-2">
+                {taskResult.evidence_items.map((item) => (
+                  <div
+                    key={item.evidence_id}
+                    className="rounded-md border border-border-subtle bg-void p-3"
+                  >
+                    <div className="mono text-[11px] text-accent mb-1">
+                      {item.tool_name} · {item.agent_id} · round {item.round_index}
+                    </div>
+                    <div className="text-sm text-text-primary leading-6">{item.summary}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {taskResult.citation_items.length > 0 ? (
+            <div className="mb-4">
+              <div className="mono text-[11px] text-text-muted mb-2">CITATIONS</div>
+              <div className="grid gap-2">
+                {taskResult.citation_items.map((item, index) => (
+                  <div
+                    key={`${item.title}-${index}`}
+                    className="rounded-md border border-border-subtle bg-void p-3"
+                  >
+                    <div className="mono text-xs text-text-primary mb-1">{item.title}</div>
+                    <div className="text-xs text-text-secondary">
+                      {item.domain ?? item.source_kind ?? "source"}
+                      {typeof item.rank === "number" ? ` · rank ${item.rank}` : ""}
+                    </div>
+                    {item.url ? (
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mono text-[11px] text-accent inline-block mt-2"
+                      >
+                        Visit citation
+                      </a>
+                    ) : null}
+                  </div>
                 ))}
               </div>
             </div>
@@ -1675,6 +2044,13 @@ export function LiveDeliberation() {
                     {entry.type === "cross_examination" ? <Zap size={14} /> : null}
                     {entry.type === "mechanism_switch" ? <ArrowRightLeft size={14} /> : null}
                     {entry.type === "receipt_committed" ? <FileText size={14} /> : null}
+                    {isToolTimelineEvent(entry) ? (
+                      entry.toolStatus === "failed" ? <AlertTriangle size={14} /> :
+                      entry.toolStatus === "retrying" ? <RotateCcw size={14} /> :
+                      entry.toolName?.includes("search") ? <Search size={14} /> :
+                      entry.toolName?.includes("python") ? <TerminalSquare size={14} /> :
+                      <Wrench size={14} />
+                    ) : null}
                     <span className="mono text-xs text-text-muted uppercase tracking-wide">
                       {entry.title}
                     </span>
@@ -1703,36 +2079,46 @@ export function LiveDeliberation() {
                 </div>
 
                 {/* Summary / streaming body */}
-                <div className="text-text-primary mb-2 break-words">
-                  {entry.isDraft ? (
-                    <StreamingText text={entry.summary} isActive={isActiveStream} />
-                  ) : (
-                    <MarkdownSummary>{entry.summary}</MarkdownSummary>
-                  )}
-                </div>
+                {isToolTimelineEvent(entry) ? (
+                  <ToolTimelineCard
+                    entry={entry}
+                    isActiveStream={isActiveStream}
+                    usageLine={usageLine}
+                  />
+                ) : (
+                  <>
+                    <div className="text-text-primary mb-2 break-words">
+                      {entry.isDraft ? (
+                        <StreamingText text={entry.summary} isActive={isActiveStream} />
+                      ) : (
+                        <MarkdownSummary>{entry.summary}</MarkdownSummary>
+                      )}
+                    </div>
 
-                {usageLine ? (
-                  <div className="mono text-[11px] text-text-muted mb-2">
-                    {usageLine}
-                  </div>
-                ) : null}
+                    {usageLine ? (
+                      <div className="mono text-[11px] text-text-muted mb-2">
+                        {usageLine}
+                      </div>
+                    ) : null}
 
-                {typeof entry.confidence === "number" ? (
-                  <div className="mono text-[11px] text-text-muted mb-2">
-                    confidence {(entry.confidence * 100).toFixed(1)}%
-                  </div>
-                ) : null}
+                    {typeof entry.confidence === "number" ? (
+                      <div className="mono text-[11px] text-text-muted mb-2">
+                        confidence {(entry.confidence * 100).toFixed(1)}%
+                      </div>
+                    ) : null}
 
-                {entry.details ? (
-                  <details className="rounded-md border border-border-subtle bg-void p-2">
-                    <summary className="mono text-[11px] text-text-muted cursor-pointer select-none">
-                      ▸ {detailLabelForEvent(entry)}
-                    </summary>
-                    <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap break-words mt-2">
-                      {JSON.stringify(entry.details, null, 2)}
-                    </pre>
-                  </details>
-                ) : null}
+                    {entry.details ? (
+                      <details className="rounded-md border border-border-subtle bg-void p-2">
+                        <summary className="mono text-[11px] text-text-muted cursor-pointer select-none">
+                          ▸ {detailLabelForEvent(entry)}
+                        </summary>
+                        <pre className="mono text-[10px] text-text-secondary whitespace-pre-wrap break-words mt-2">
+                          {JSON.stringify(entry.details, null, 2)}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </>
+                )}
               </motion.div>
             );
           })}

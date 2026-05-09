@@ -4,6 +4,7 @@ export type NodeKind =
   | "task"
   | "selector"
   | "agent"
+  | "tool"
   | "crossexam"
   | "convergence"
   | "switch"
@@ -20,6 +21,15 @@ export interface NodeTelemetry {
   thinkingTokens?: number;
   latencyMs?: number;
   usdCost?: number;
+}
+
+export interface ToolActivity {
+  id: string;
+  name: string;
+  status: "running" | "success" | "failed" | "retrying";
+  summary: string;
+  details?: Record<string, unknown>;
+  timestamp?: string | null;
 }
 
 export interface GraphNode {
@@ -50,6 +60,9 @@ export interface GraphNode {
   transitionLabel?: string;
   /** detailed causal copy for transition affordances */
   transitionDescription?: string;
+  toolName?: string;
+  toolStatus?: "running" | "success" | "failed" | "retrying";
+  toolActivities?: ToolActivity[];
 }
 
 export interface GraphEdge {

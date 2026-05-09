@@ -29,6 +29,16 @@ from agora.runtime.model_policy import balanced_participant_tiers, resolve_reaso
 from agora.runtime.monitor import StateMonitor
 from agora.runtime.provider_errors import provider_error_details, should_try_alternate_live_model
 from agora.runtime.prompt_policy import delphi_independent_prompt, delphi_revision_prompt
+from agora.tools.broker import ToolBroker
+from agora.tools.runtime import (
+    ToolInvocationContext,
+    ToolPolicyConfig,
+    maybe_augment_prompt_with_tool,
+    merge_raw_usage,
+    normalize_raw_usage,
+    tool_results_to_evidence,
+)
+from agora.tools.types import SourceRef, ToolResult
 from agora.types import (
     AgentOutput,
     DeliberationResult,
@@ -100,6 +110,7 @@ class DelphiEngine:
         self._claude_run_semaphore = asyncio.Semaphore(
             get_config().anthropic_concurrent_requests_per_run
         )
+        self._tool_broker: ToolBroker | None = None
         if self._participant_models is not None and len(self._participant_models) != self.agent_count:
             raise ValueError("participant_models must contain exactly agent_count items")
         self.graph = self._build_graph()
@@ -110,6 +121,9 @@ class DelphiEngine:
         selection: MechanismSelection,
         event_sink: EventSink | None = None,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> DeliberationResult:
         """Execute iterative Delphi rounds and return the final result."""
 
@@ -118,6 +132,9 @@ class DelphiEngine:
             "selection": selection,
             "event_sink": event_sink,
             "custom_agents": custom_agents,
+            "sources": list(sources or []),
+            "tools_enabled": bool(tools_enabled),
+            "tool_policy": tool_policy or ToolPolicyConfig(enabled=False),
             "execution": DelphiState(
                 task=task,
                 task_features=selection.task_features,
@@ -138,6 +155,7 @@ class DelphiEngine:
             "model_latency_ms": {},
             "latency_ms": 0.0,
             "fallback_events": [],
+            "tool_results": [],
             "result": None,
         }
         final_state = await self.graph.ainvoke(initial_state)
@@ -179,6 +197,9 @@ class DelphiEngine:
             task=execution.task,
             custom_agents=graph_state.get("custom_agents"),
             event_sink=graph_state.get("event_sink"),
+            sources=graph_state.get("sources"),
+            tools_enabled=bool(graph_state.get("tools_enabled")),
+            tool_policy=graph_state.get("tool_policy"),
         )
         execution.round = 1
         execution.independent_outputs = outputs
@@ -232,6 +253,9 @@ class DelphiEngine:
             feedback=execution.anonymized_feedback,
             custom_agents=graph_state.get("custom_agents"),
             event_sink=graph_state.get("event_sink"),
+            sources=graph_state.get("sources"),
+            tools_enabled=bool(graph_state.get("tools_enabled")),
+            tool_policy=graph_state.get("tool_policy"),
         )
         execution.round += 1
         execution.revision_outputs.extend(outputs)
@@ -307,6 +331,11 @@ class DelphiEngine:
             model_thinking_tokens=graph_state["model_thinking_token_usage"],
             fallback_total_tokens=int(graph_state["token_counter"]),
         )
+        evidence_items, citation_items = tool_results_to_evidence(
+            tool_results=graph_state.get("tool_results", []),
+            agent_id="delphi",
+            round_index=execution.round,
+        )
         graph_state["result"] = DeliberationResult(
             task=execution.task,
             mechanism_used=MechanismType.DELPHI,
@@ -347,6 +376,10 @@ class DelphiEngine:
             thinking_tokens_used=self._optional_counter(graph_state["thinking_token_counter"]),
             total_latency_ms=float(graph_state["latency_ms"]),
             cost=cost,
+            sources=list(graph_state.get("sources", [])),
+            tool_usage_summary=ToolBroker.summarize_usage(graph_state.get("tool_results", [])),
+            evidence_items=evidence_items,
+            citation_items=citation_items,
         )
         await self._emit_event(
             graph_state.get("event_sink"),
@@ -369,6 +402,9 @@ class DelphiEngine:
         task: str,
         custom_agents: Sequence[CustomAgentCallable] | None,
         event_sink: EventSink | None,
+        sources: Sequence[SourceRef] | None,
+        tools_enabled: bool,
+        tool_policy: ToolPolicyConfig | None,
     ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate the first independent Delphi round in parallel."""
 
@@ -385,6 +421,13 @@ class DelphiEngine:
                     reasoning="Offline fallback for unavailable Delphi independent round.",
                 ),
                 custom_agent=custom_agents[agent_idx] if custom_agents is not None else None,
+                task=task,
+                event_sink=event_sink,
+                round_index=1,
+                stage="independent_generation",
+                sources=sources,
+                tools_enabled=tools_enabled,
+                tool_policy=tool_policy,
             )
             output = self._build_output(
                 agent_idx=agent_idx,
@@ -423,6 +466,9 @@ class DelphiEngine:
         feedback: dict[str, list[str]],
         custom_agents: Sequence[CustomAgentCallable] | None,
         event_sink: EventSink | None,
+        sources: Sequence[SourceRef] | None,
+        tools_enabled: bool,
+        tool_policy: ToolPolicyConfig | None,
     ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate one anonymized Delphi revision round in parallel."""
 
@@ -433,6 +479,8 @@ class DelphiEngine:
                 task=task,
                 prior_answer=prior_output.content,
                 peer_feedback=feedback.get(agent_id, []),
+                round_number=round_number,
+                max_rounds=self.max_rounds,
             )
             response, usage, agent_model = await self._call_participant(
                 agent_idx=agent_idx,
@@ -445,6 +493,13 @@ class DelphiEngine:
                     reasoning="Offline fallback preserved the prior Delphi answer.",
                 ),
                 custom_agent=custom_agents[agent_idx] if custom_agents is not None else None,
+                task=task,
+                event_sink=event_sink,
+                round_index=round_number,
+                stage="revision_round",
+                sources=sources,
+                tools_enabled=tools_enabled,
+                tool_policy=tool_policy,
             )
             output = self._build_output(
                 agent_idx=agent_idx,
@@ -483,6 +538,13 @@ class DelphiEngine:
         response_model: type[BaseModel],
         fallback: BaseModel,
         custom_agent: CustomAgentCallable | None,
+        task: str,
+        event_sink: EventSink | None,
+        round_index: int,
+        stage: str,
+        sources: Sequence[SourceRef] | None,
+        tools_enabled: bool,
+        tool_policy: ToolPolicyConfig | None,
     ) -> tuple[_DelphiResponse, dict[str, Any], str]:
         """Call one Delphi participant with provider and fallback handling."""
 
@@ -505,20 +567,60 @@ class DelphiEngine:
         explicit_model = self._participant_model(agent_idx)
         if explicit_model is not None:
             caller = self._participant_caller(agent_idx, explicit_model)
+            final_user_prompt = user_prompt
+            planning_usage: dict[str, Any] = {}
+            tool_results: list[ToolResult] = []
+            if tools_enabled:
+                if self._tool_broker is None:
+                    self._tool_broker = ToolBroker()
+                augmentation = await maybe_augment_prompt_with_tool(
+                    caller=caller,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    context=ToolInvocationContext(
+                        task=task,
+                        agent_id=f"agent-{agent_idx + 1}",
+                        round_index=round_index,
+                        stage=stage,
+                        sources=list(sources or []),
+                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                        event_sink=event_sink,
+                        broker=self._tool_broker,
+                    ),
+                )
+                final_user_prompt = augmentation.user_prompt
+                tool_results = augmentation.tool_results
+                if augmentation.planning_usage:
+                    planning_usage = normalize_raw_usage(
+                        usage=augmentation.planning_usage,
+                        model_name=explicit_model.model,
+                        provider=explicit_model.provider,
+                    )
             try:
                 response, usage = await caller.call(
                     system_prompt=system_prompt,
-                    user_prompt=user_prompt,
+                    user_prompt=final_user_prompt,
                     response_format=response_model,
                 )
                 if not isinstance(response, response_model):
                     raise AgentCallError("Explicit Delphi local model returned an unexpected payload.")
-                normalized = self._normalize_usage(
-                    usage=usage,
-                    model_name=explicit_model.model,
-                    provider=explicit_model.provider,
-                    component=f"delphi.{response_model.__name__}",
+                normalized = merge_raw_usage(
+                    [
+                        entry
+                        for entry in [
+                            planning_usage,
+                            self._normalize_usage(
+                                usage=usage,
+                                model_name=explicit_model.model,
+                                provider=explicit_model.provider,
+                                component=f"delphi.{response_model.__name__}",
+                            ),
+                        ]
+                        if entry
+                    ]
                 )
+                if tool_results:
+                    normalized["tool_results"] = list(tool_results)
                 return _DelphiResponse.model_validate(response), normalized, explicit_model.model
             except AgentCallError as exc:
                 if not self.allow_offline_fallback:
@@ -535,7 +637,12 @@ class DelphiEngine:
                     model_name=explicit_model.model,
                     provider=explicit_model.provider,
                 )
-                return _DelphiResponse.model_validate(fallback), offline_usage, explicit_model.model
+                merged_offline = merge_raw_usage(
+                    [entry for entry in [planning_usage, offline_usage] if entry]
+                )
+                if tool_results:
+                    merged_offline["tool_results"] = list(tool_results)
+                return _DelphiResponse.model_validate(fallback), merged_offline, explicit_model.model
 
         tier = self._tier_for_agent(agent_idx)
         live_fallback_events: list[FallbackEvent] = []
@@ -543,25 +650,65 @@ class DelphiEngine:
 
         for index, caller_tier in enumerate(caller_tiers):
             caller = self._get_caller(caller_tier)
+            final_user_prompt = user_prompt
+            planning_usage: dict[str, Any] = {}
+            tool_results: list[ToolResult] = []
+            if index == 0 and tools_enabled:
+                if self._tool_broker is None:
+                    self._tool_broker = ToolBroker()
+                augmentation = await maybe_augment_prompt_with_tool(
+                    caller=caller,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    context=ToolInvocationContext(
+                        task=task,
+                        agent_id=f"agent-{agent_idx + 1}",
+                        round_index=round_index,
+                        stage=stage,
+                        sources=list(sources or []),
+                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                        event_sink=event_sink,
+                        broker=self._tool_broker,
+                    ),
+                )
+                final_user_prompt = augmentation.user_prompt
+                tool_results = augmentation.tool_results
+                if augmentation.planning_usage:
+                    planning_usage = normalize_raw_usage(
+                        usage=augmentation.planning_usage,
+                        model_name=caller.model,
+                        provider=self._provider_for_tier(caller_tier),
+                    )
             try:
                 response, usage = await self._call_hosted_participant(
                     caller_tier=caller_tier,
                     caller=caller,
                     system_prompt=system_prompt,
-                    user_prompt=user_prompt,
+                    user_prompt=final_user_prompt,
                     response_model=response_model,
                 )
-                normalized = self._normalize_usage(
-                    usage=usage,
-                    model_name=caller.model,
-                    provider=self._provider_for_tier(caller_tier),
-                    component=f"delphi.{response_model.__name__}",
+                normalized = merge_raw_usage(
+                    [
+                        entry
+                        for entry in [
+                            planning_usage,
+                            self._normalize_usage(
+                                usage=usage,
+                                model_name=caller.model,
+                                provider=self._provider_for_tier(caller_tier),
+                                component=f"delphi.{response_model.__name__}",
+                            ),
+                        ]
+                        if entry
+                    ]
                 )
                 if live_fallback_events:
                     normalized["fallback_events"] = [
                         *live_fallback_events,
                         *list(normalized.get("fallback_events", [])),
                     ]
+                if tool_results:
+                    normalized["tool_results"] = list(tool_results)
                 if index > 0:
                     logger.info(
                         "delphi_live_fallback_success",
@@ -611,11 +758,16 @@ class DelphiEngine:
                     model_name=caller.model,
                     provider=self._provider_for_tier(caller_tier),
                 )
-                offline_usage["fallback_events"] = [
+                merged_offline = merge_raw_usage(
+                    [entry for entry in [planning_usage, offline_usage] if entry]
+                )
+                merged_offline["fallback_events"] = [
                     *live_fallback_events,
-                    *list(offline_usage.get("fallback_events", [])),
+                    *list(merged_offline.get("fallback_events", [])),
                 ]
-                return _DelphiResponse.model_validate(fallback), offline_usage, caller.model
+                if tool_results:
+                    merged_offline["tool_results"] = list(tool_results)
+                return _DelphiResponse.model_validate(fallback), merged_offline, caller.model
 
         raise AgentCallError("Delphi participant live fallback chain terminated unexpectedly.")
 
@@ -842,6 +994,7 @@ class DelphiEngine:
             "model_thinking_tokens": {},
             "model_latency_ms": {},
             "fallback_events": [],
+            "tool_results": [],
         }
         for usage in usages:
             merged["tokens"] += int(usage.get("tokens", 0))
@@ -867,6 +1020,7 @@ class DelphiEngine:
                 usage.get("model_latency_ms", {}),
             )
             merged["fallback_events"].extend(usage.get("fallback_events", []))
+            merged["tool_results"].extend(usage.get("tool_results", []))
         return merged
 
     def _accumulate_usage(self, graph_state: dict[str, Any], usage: dict[str, Any]) -> None:
@@ -903,6 +1057,7 @@ class DelphiEngine:
             usage.get("model_latency_ms", {}),
         )
         graph_state["fallback_events"].extend(usage.get("fallback_events", []))
+        graph_state["tool_results"].extend(usage.get("tool_results", []))
 
     def _normalize_usage(
         self,

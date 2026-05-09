@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { providerFromModel } from "../../../lib/modelProviders";
-import type { GraphEdge, GraphNode, NodeKind, NodeStatus, NodeTelemetry } from "./canvasTypes";
+import type { GraphEdge, GraphNode, NodeKind, NodeStatus, NodeTelemetry, ToolActivity } from "./canvasTypes";
 
 interface TimelineEventLike {
   key: string;
@@ -21,6 +21,11 @@ interface TimelineEventLike {
   displaySupport?: string;
   displayThinking?: string;
   rawText?: string;
+  timestamp?: string | null;
+  streamChannel?: "content" | "thinking" | "usage" | "system" | "tool";
+  toolCallId?: string;
+  toolName?: string;
+  toolStatus?: "running" | "success" | "failed" | "retrying";
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -212,6 +217,13 @@ function nodeIdOf(event: TimelineEventLike): string {
   const segment = segmentOf(event);
   const stage = canonicalStageOf(event);
   const round = roundOf(event);
+  if (shouldInlineToolEvent(event)) {
+    const agentId = event.agentId ?? "agent";
+    return `agent:${segment}:${agentId}:${stage}:${round}`;
+  }
+  if (typeof event.toolCallId === "string" && event.toolCallId.trim()) {
+    return `tool:${event.toolCallId.trim()}`;
+  }
 
   if (stage === "selector") {
     return `selector:${segment}`;
@@ -239,7 +251,10 @@ function nodeIdOf(event: TimelineEventLike): string {
   return `agent:${segment}:${agentId}:${stage}:${round}`;
 }
 
-function kindOf(type: string): NodeKind {
+function kindOf(event: TimelineEventLike): NodeKind {
+  const type = event.type;
+  if (shouldInlineToolEvent(event)) return "agent";
+  if (event.streamChannel === "tool" || event.toolCallId) return "tool";
   if (type === "mechanism_selected") return "selector";
   if (type === "cross_examination" || type === "cross_examination_delta") return "crossexam";
   if (type === "convergence_update") return "convergence";
@@ -249,7 +264,54 @@ function kindOf(type: string): NodeKind {
   return "agent";
 }
 
+function shouldInlineToolEvent(event: TimelineEventLike): boolean {
+  return event.streamChannel === "tool"
+    && typeof event.agentId === "string"
+    && event.agentId.trim().length > 0;
+}
+
+function mergeToolActivities(
+  existing: ToolActivity[] | undefined,
+  event: TimelineEventLike,
+): ToolActivity[] | undefined {
+  if (!shouldInlineToolEvent(event)) {
+    return existing;
+  }
+  const toolId = typeof event.toolCallId === "string" && event.toolCallId.trim()
+    ? event.toolCallId.trim()
+    : `${event.key}:tool`;
+  const nextActivity: ToolActivity = {
+    id: toolId,
+    name: event.toolName ?? event.title,
+    status: event.toolStatus ?? "running",
+    summary: event.summary,
+    details: event.details,
+    timestamp: event.timestamp ?? null,
+  };
+  const current = existing ?? [];
+  const index = current.findIndex((activity) => activity.id === toolId);
+  if (index === -1) {
+    return [...current, nextActivity];
+  }
+  return current.map((activity, activityIndex) => (
+    activityIndex === index
+      ? {
+          ...activity,
+          ...nextActivity,
+          summary: nextActivity.summary || activity.summary,
+          details: nextActivity.details ?? activity.details,
+        }
+      : activity
+  ));
+}
+
 function statusOf(event: TimelineEventLike, prevStatus?: NodeStatus): NodeStatus {
+  if (event.streamChannel === "tool") {
+    if (event.toolStatus === "failed") return "error";
+    if (event.toolStatus === "retrying") return "active";
+    if (event.toolStatus === "success") return "done";
+    return event.isDraft ? "active" : "thinking";
+  }
   const next: NodeStatus =
     event.type === "error" ? "error" :
     event.type === "thinking_delta" ? "thinking" :
@@ -358,10 +420,12 @@ export function buildGraphLayout(
 
     const reasonRaw = event.details?.reason ?? event.details?.reasoning;
     const reason = typeof reasonRaw === "string" && reasonRaw.trim() ? reasonRaw.trim() : undefined;
+    const toolActivities = mergeToolActivities(existing?.toolActivities, event);
+    const isInlineTool = shouldInlineToolEvent(event);
 
     const merged: GraphNode = {
       id: nodeId,
-      kind: existing?.kind ?? kindOf(event.type),
+      kind: existing?.kind ?? kindOf(event),
       stage: canonicalStageOf(event),
       row: 0,
       col: 0,
@@ -370,11 +434,17 @@ export function buildGraphLayout(
       provider: event.agentModel
         ? providerFromModel(event.agentModel)
         : existing?.provider,
-      title: event.title,
-      content: event.displayPrimary ?? event.summary,
-      supportContent: event.displaySupport ?? existing?.supportContent,
+      title: isInlineTool ? (existing?.title ?? event.agentId ?? event.title) : event.title,
+      content: isInlineTool
+        ? (existing?.content ?? "")
+        : (event.displayPrimary ?? event.summary),
+      supportContent: isInlineTool
+        ? existing?.supportContent
+        : (event.displaySupport ?? existing?.supportContent),
       thinkingContent,
-      rawContent: event.rawText ?? existing?.rawContent,
+      rawContent: isInlineTool
+        ? existing?.rawContent
+        : (event.rawText ?? existing?.rawContent),
       isLive: event.isDraft ?? false,
       confidence: event.confidence ?? existing?.confidence,
       telemetry: telemetryOf(event.details) ?? existing?.telemetry,
@@ -382,6 +452,9 @@ export function buildGraphLayout(
       reason: reason ?? existing?.reason,
       transitionLabel: transitionLabelOf(event),
       transitionDescription: transitionDescriptionOf(event),
+      toolName: isInlineTool ? undefined : (event.toolName ?? existing?.toolName),
+      toolStatus: isInlineTool ? undefined : (event.toolStatus ?? existing?.toolStatus),
+      toolActivities,
     };
     nodeMap.set(nodeId, merged);
   }

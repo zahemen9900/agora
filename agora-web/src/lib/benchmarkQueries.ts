@@ -317,6 +317,8 @@ export function seedTriggeredBenchmarkRunCache(
     status: run.status,
     created_at: run.created_at,
     updated_at: run.created_at,
+    execution_source: "hosted",
+    background_recovery_allowed: false,
     error: null,
     artifact_id: null,
     request: null,

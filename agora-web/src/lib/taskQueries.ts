@@ -36,6 +36,9 @@ export interface SubmitTaskInput {
   mechanismOverride?: MechanismName | null;
   reasoningPresets: Partial<ReasoningPresetState>;
   tierModelOverrides?: RuntimeTierModelOverridesPayload;
+  sourceUrls?: string[];
+  sourceFileIds?: string[];
+  enableTools?: boolean;
 }
 
 function toTaskListSnapshot(task: TaskStatusResponse): TaskStatusResponse {
@@ -210,6 +213,9 @@ export function useSubmitTaskMutation() {
       mechanismOverride,
       reasoningPresets,
       tierModelOverrides,
+      sourceUrls,
+      sourceFileIds,
+      enableTools,
     }) => {
       const token = await getAccessToken();
       return submitTask(
@@ -220,6 +226,11 @@ export function useSubmitTaskMutation() {
         reasoningPresets,
         tierModelOverrides,
         token,
+        {
+          sourceUrls,
+          sourceFileIds,
+          enableTools,
+        },
       );
     },
   });

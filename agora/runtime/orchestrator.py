@@ -19,6 +19,8 @@ from agora.runtime.local_models import validate_local_model_config
 from agora.runtime.model_policy import resolve_reasoning_presets
 from agora.runtime.monitor import StateMonitor
 from agora.selector.features import extract_features
+from agora.tools.runtime import ToolPolicyConfig
+from agora.tools.types import SourceRef
 from agora.selector.selector import AgoraSelector
 from agora.types import (
     SUPPORTED_MECHANISMS,
@@ -224,6 +226,9 @@ class AgoraOrchestrator:
         mechanism_override: str | MechanismType | None = None,
         event_sink: EventSink | None = None,
         agents: Sequence[Callable[..., Any]] | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> DeliberationResult:
         """Execute full selection-to-deliberation pipeline.
 
@@ -271,6 +276,9 @@ class AgoraOrchestrator:
             event_sink=event_sink,
             agents=agents,
             allow_switch=mechanism_override is None,
+            sources=sources,
+            tools_enabled=tools_enabled,
+            tool_policy=tool_policy,
         )
 
         receipt = self.hasher.build_receipt(
@@ -297,6 +305,9 @@ class AgoraOrchestrator:
         event_sink: EventSink | None = None,
         agents: Sequence[Callable[..., Any]] | None = None,
         allow_switch: bool = True,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> DeliberationResult:
         """Execute a precomputed selector decision.
 
@@ -310,6 +321,9 @@ class AgoraOrchestrator:
             event_sink=event_sink,
             agents=agents,
             allow_switch=allow_switch,
+            sources=sources,
+            tools_enabled=tools_enabled,
+            tool_policy=tool_policy,
         )
 
     async def run_and_learn(
@@ -420,11 +434,20 @@ class AgoraOrchestrator:
         event_sink: EventSink | None = None,
         agents: Sequence[Callable[..., Any]] | None = None,
         allow_switch: bool = True,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> DeliberationResult:
         """Execute selected mechanism with fallback/switch handling."""
 
         if selection.mechanism == MechanismType.DEBATE:
-            debate_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+            debate_run_kwargs: dict[str, Any] = {
+                "task": task,
+                "selection": selection,
+                "sources": list(sources or []),
+                "tools_enabled": tools_enabled,
+                "tool_policy": tool_policy,
+            }
             if event_sink is not None:
                 debate_run_kwargs["event_sink"] = self._segment_event_sink(
                     event_sink,
@@ -452,7 +475,13 @@ class AgoraOrchestrator:
                         "next_segment_mechanism": MechanismType.VOTE.value,
                     },
                 )
-                vote_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+                vote_run_kwargs: dict[str, Any] = {
+                    "task": task,
+                    "selection": selection,
+                    "sources": list(sources or []),
+                    "tools_enabled": tools_enabled,
+                    "tool_policy": tool_policy,
+                }
                 if event_sink is not None:
                     vote_run_kwargs["event_sink"] = self._segment_event_sink(
                         event_sink,
@@ -489,7 +518,13 @@ class AgoraOrchestrator:
             raise RuntimeError("Debate engine produced no result")
 
         if selection.mechanism == MechanismType.VOTE:
-            vote_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+            vote_run_kwargs: dict[str, Any] = {
+                "task": task,
+                "selection": selection,
+                "sources": list(sources or []),
+                "tools_enabled": tools_enabled,
+                "tool_policy": tool_policy,
+            }
             if event_sink is not None:
                 vote_run_kwargs["event_sink"] = self._segment_event_sink(
                     event_sink,
@@ -516,7 +551,13 @@ class AgoraOrchestrator:
                         "next_segment_mechanism": MechanismType.DEBATE.value,
                     },
                 )
-                debate_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+                debate_run_kwargs: dict[str, Any] = {
+                    "task": task,
+                    "selection": selection,
+                    "sources": list(sources or []),
+                    "tools_enabled": tools_enabled,
+                    "tool_policy": tool_policy,
+                }
                 if event_sink is not None:
                     debate_run_kwargs["event_sink"] = self._segment_event_sink(
                         event_sink,
@@ -552,7 +593,13 @@ class AgoraOrchestrator:
             return vote_outcome.result
 
         if selection.mechanism == MechanismType.DELPHI:
-            delphi_run_kwargs: dict[str, Any] = {"task": task, "selection": selection}
+            delphi_run_kwargs: dict[str, Any] = {
+                "task": task,
+                "selection": selection,
+                "sources": list(sources or []),
+                "tools_enabled": tools_enabled,
+                "tool_policy": tool_policy,
+            }
             if event_sink is not None:
                 delphi_run_kwargs["event_sink"] = self._segment_event_sink(
                     event_sink,

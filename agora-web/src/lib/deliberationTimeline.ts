@@ -26,7 +26,10 @@ export interface TimelineEvent {
   displaySupport?: string;
   displayThinking?: string;
   rawText?: string;
-  streamChannel?: "content" | "thinking" | "usage" | "system";
+  streamChannel?: "content" | "thinking" | "usage" | "system" | "tool";
+  toolCallId?: string;
+  toolName?: string;
+  toolStatus?: "running" | "success" | "failed" | "retrying";
 }
 
 export interface FinalAnswerState {
@@ -44,6 +47,10 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function safeString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -390,6 +397,125 @@ export function mapTaskEvent(event: TaskEvent): TimelineEvent {
       displayThinking: thinkingSoFar || undefined,
       rawText: contentSoFar,
       streamChannel: "content",
+    };
+    return { ...mappedEvent, ...segmentMetadata };
+  }
+
+  if (event.event === "tool_call_started") {
+    const toolName = safeString(data.tool_name, "tool");
+    const rationale = safeString(data.rationale, "");
+    mappedEvent = {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · ${toolName}`,
+      summary: rationale || `Starting ${toolName}`,
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      stage: safeString(data.stage, "tool"),
+      draftKey: eventKeyForTimeline(event),
+      isDraft: true,
+      streamChannel: "tool",
+      toolCallId: optionalString(data.tool_call_id),
+      toolName,
+      toolStatus: "running",
+    };
+    return { ...mappedEvent, ...segmentMetadata };
+  }
+
+  if (event.event === "tool_call_delta" || event.event === "sandbox_execution_delta") {
+    const preview = safeString(
+      data.result_preview,
+      safeString(
+        data.stdout_preview,
+        safeString(data.stderr_preview, safeString(data.message, "Tool running")),
+      ),
+    );
+    const toolName = safeString(data.tool_name, "tool");
+    mappedEvent = {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · ${toolName}`,
+      summary: preview || "Tool streaming output",
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      stage: safeString(data.stage, "tool"),
+      draftKey: eventKeyForTimeline(event),
+      isDraft: true,
+      rawText: preview,
+      streamChannel: "tool",
+      toolCallId: optionalString(data.tool_call_id),
+      toolName,
+      toolStatus: "running",
+    };
+    return { ...mappedEvent, ...segmentMetadata };
+  }
+
+  if (event.event === "search_retrying" || event.event === "search_key_rotated" || event.event === "tool_call_retrying") {
+    const message = safeString(
+      data.message,
+      event.event === "search_retrying"
+        ? "Retrying Brave search"
+        : event.event === "search_key_rotated"
+          ? "Rotated Brave search key"
+          : "Retrying tool call",
+    );
+    const toolName = safeString(data.tool_name, "tool");
+    mappedEvent = {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · ${toolName}`,
+      summary: message,
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      stage: safeString(data.stage, "tool"),
+      rawText: message,
+      streamChannel: "tool",
+      toolCallId: optionalString(data.tool_call_id),
+      toolName,
+      toolStatus: "retrying",
+    };
+    return { ...mappedEvent, ...segmentMetadata };
+  }
+
+  if (event.event === "tool_call_completed" || event.event === "sandbox_execution_completed") {
+    const toolName = safeString(data.tool_name, "tool");
+    const summary = safeString(data.summary, `${toolName} completed`);
+    mappedEvent = {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · ${toolName}`,
+      summary,
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      stage: safeString(data.stage, "tool"),
+      streamChannel: "tool",
+      toolCallId: optionalString(data.tool_call_id),
+      toolName,
+      toolStatus: "success",
+      rawText: summary,
+    };
+    return { ...mappedEvent, ...segmentMetadata };
+  }
+
+  if (event.event === "tool_call_failed") {
+    const toolName = safeString(data.tool_name, "tool");
+    mappedEvent = {
+      key: eventKeyForTimeline(event),
+      type: event.event,
+      title: `${safeString(data.agent_id, "agent")} · ${toolName}`,
+      summary: safeString(data.error, "Tool execution failed"),
+      timestamp: event.timestamp,
+      details: data,
+      agentId: safeString(data.agent_id, "agent"),
+      stage: safeString(data.stage, "tool"),
+      streamChannel: "tool",
+      toolCallId: optionalString(data.tool_call_id),
+      toolName,
+      toolStatus: "failed",
     };
     return { ...mappedEvent, ...segmentMetadata };
   }

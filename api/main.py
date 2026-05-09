@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.background_recovery import background_recovery_loop, shutdown_background_task
 from api.config import settings
 from api.coordination import validate_coordination_configuration
-from api.routes import api_keys, auth_session, benchmarks, health, tasks, webhooks
+from api.routes import api_keys, auth_session, benchmarks, health, sources, tasks, webhooks
 from api.streaming import validate_streaming_configuration
 from api.telemetry import initialize_telemetry, shutdown_telemetry
 from agora.version import __version__ as AGORA_VERSION
@@ -63,5 +63,7 @@ app.include_router(health.router, tags=["health"])
 app.include_router(auth_session.router, tags=["auth"])
 app.include_router(api_keys.router)
 app.include_router(benchmarks.router, tags=["benchmarks"])
+app.include_router(sources.router)
+app.include_router(sources.router, prefix="/api", include_in_schema=False)
 app.include_router(tasks.router, prefix="/tasks", tags=["tasks"])
 app.include_router(webhooks.router, tags=["webhooks"])

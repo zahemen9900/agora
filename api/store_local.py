@@ -79,6 +79,30 @@ class LocalTaskStore:
             f"{safe_run_id}.json",
         )
 
+    def _source_path(self, workspace_id: str, source_id: str) -> Path:
+        safe_workspace_id = validate_storage_id(workspace_id, field_name="workspace_id")
+        safe_source_id = validate_storage_id(source_id, field_name="source_id")
+        return safe_child_path(
+            self._agora_root,
+            "users",
+            safe_workspace_id,
+            "sources",
+            f"{safe_source_id}.json",
+        )
+
+    def _source_object_path(self, workspace_id: str, source_id: str, filename: str) -> Path:
+        safe_workspace_id = validate_storage_id(workspace_id, field_name="workspace_id")
+        safe_source_id = validate_storage_id(source_id, field_name="source_id")
+        safe_filename = validate_storage_id(filename, field_name="filename")
+        return safe_child_path(
+            self._agora_root,
+            "users",
+            safe_workspace_id,
+            "source-objects",
+            safe_source_id,
+            safe_filename,
+        )
+
     def _runtime_state_path(self, key: str) -> Path:
         safe_key = validate_storage_id(key, field_name="runtime_state_key")
         return safe_child_path(self._agora_root, "runtime", f"{safe_key}.json")
@@ -128,6 +152,34 @@ class LocalTaskStore:
     async def save_task(self, workspace_id: str, task_id: str, data: dict[str, Any]) -> None:
         path = self._task_path(workspace_id, task_id)
         self._write_json(path, data, operation="save_task")
+
+    async def save_source(self, workspace_id: str, source_id: str, data: dict[str, Any]) -> None:
+        path = self._source_path(workspace_id, source_id)
+        self._write_json(path, data, operation="save_source")
+
+    async def get_source(self, workspace_id: str, source_id: str) -> dict[str, Any] | None:
+        return self._read_json(
+            self._source_path(workspace_id, source_id),
+            allow_missing=True,
+            operation="get_source",
+        )
+
+    async def list_user_sources(self, workspace_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        safe_workspace_id = validate_storage_id(workspace_id, field_name="workspace_id")
+        source_dir = safe_child_path(self._agora_root, "users", safe_workspace_id, "sources")
+        if not source_dir.exists():
+            return []
+        files = sorted(
+            source_dir.glob("*.json"),
+            key=lambda file: file.stat().st_mtime,
+            reverse=True,
+        )
+        sources: list[dict[str, Any]] = []
+        for file in files[:limit]:
+            source = self._read_json(file, allow_missing=True, operation="list_user_sources")
+            if source is not None:
+                sources.append(source)
+        return sources
 
     async def upsert_user(
         self,

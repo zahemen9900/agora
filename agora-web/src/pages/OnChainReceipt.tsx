@@ -17,6 +17,7 @@ import {
   verifyMerkleRoot,
   ApiRequestError,
 } from "../lib/api";
+import { openTaskSource } from "../lib/sourceAccess";
 import {
   taskQueryKeys,
   useReleaseTaskPaymentMutation,
@@ -24,6 +25,7 @@ import {
 } from "../lib/taskQueries";
 import { deriveReceiptPaymentState } from "../lib/paymentRelease";
 import { usePostHog } from "@posthog/react";
+import { useAuth } from "../lib/useAuth";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 const SKELETON_STYLE_ID = "receipt-skeleton-kf";
@@ -198,6 +200,7 @@ export function OnChainReceipt() {
     const posthog = usePostHog();
   const { taskId } = useParams();
   const navigate = useNavigate();
+  const { getAccessToken } = useAuth();
   const queryClient = useQueryClient();
   const taskQuery = useTaskDetailQuery(taskId);
   const releasePaymentMutation = useReleaseTaskPaymentMutation(taskId);
@@ -280,6 +283,19 @@ export function OnChainReceipt() {
   } = paymentState;
   const loading = taskQuery.isPending && task === null;
   const isPaying = releasePaymentMutation.isPending;
+  const attachedSources = result?.sources ?? [];
+  const toolSummary = result?.tool_usage_summary ?? null;
+  const evidenceItems = result?.evidence_items ?? [];
+  const citationItems = result?.citation_items ?? [];
+
+  const handleOpenSource = async (source: (typeof attachedSources)[number]) => {
+    try {
+      const token = await getAccessToken();
+      await openTaskSource(source, token);
+    } catch (error) {
+      setPaymentError(error instanceof Error ? error.message : "Failed to open attached source.");
+    }
+  };
 
   return (
     <>
@@ -550,6 +566,209 @@ export function OnChainReceipt() {
           }}>
             {result?.final_answer ?? task?.task_text}
           </p>
+        </div>
+      ) : null}
+
+      {!loading && (toolSummary || attachedSources.length > 0 || evidenceItems.length > 0 || citationItems.length > 0) ? (
+        <div style={{
+          position: 'relative', zIndex: 1,
+          display: 'grid',
+          gap: '16px',
+          marginBottom: '32px',
+        }}>
+          {toolSummary ? (
+            <div style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-default)',
+              borderRadius: '12px',
+              padding: '18px 20px',
+            }}>
+              <div style={{
+                fontFamily: FONT,
+                fontSize: '9px',
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: 'var(--text-tertiary)',
+                marginBottom: '12px',
+                fontWeight: 600,
+              }}>Tool Usage</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-primary)' }}>
+                  {toolSummary.total_tool_calls} calls
+                </span>
+                <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--accent-emerald)' }}>
+                  {toolSummary.successful_tool_calls} successful
+                </span>
+                <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-secondary)' }}>
+                  {toolSummary.failed_tool_calls} failed
+                </span>
+                {Object.entries(toolSummary.tool_counts).map(([toolName, count]) => (
+                  <span
+                    key={toolName}
+                    style={{
+                      fontFamily: FONT,
+                      fontSize: '11px',
+                      color: 'var(--text-secondary)',
+                      border: '1px solid var(--border-default)',
+                      borderRadius: '999px',
+                      padding: '4px 8px',
+                    }}
+                  >
+                    {toolName} · {count}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {attachedSources.length > 0 ? (
+            <div style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-default)',
+              borderRadius: '12px',
+              padding: '18px 20px',
+            }}>
+              <div style={{
+                fontFamily: FONT,
+                fontSize: '9px',
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: 'var(--text-tertiary)',
+                marginBottom: '12px',
+                fontWeight: 600,
+              }}>Attached Sources</div>
+              <div style={{ display: 'grid', gap: '10px' }}>
+                {attachedSources.map((source) => (
+                  <div key={source.source_id} style={{
+                    border: '1px solid var(--border-default)',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                  }}>
+                    <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-primary)' }}>
+                      {source.display_name}
+                    </span>
+                    <span style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      {source.kind} · {source.mime_type} · {source.size_bytes.toLocaleString()} bytes
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenSource(source)}
+                      style={{
+                        width: 'fit-content',
+                        fontFamily: FONT,
+                        fontSize: '11px',
+                        color: 'var(--accent-emerald)',
+                        textDecoration: 'none',
+                        background: 'transparent',
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Open source <ExternalLink size={11} style={{ verticalAlign: 'text-top' }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {evidenceItems.length > 0 ? (
+            <div style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-default)',
+              borderRadius: '12px',
+              padding: '18px 20px',
+            }}>
+              <div style={{
+                fontFamily: FONT,
+                fontSize: '9px',
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: 'var(--text-tertiary)',
+                marginBottom: '12px',
+                fontWeight: 600,
+              }}>Evidence Trail</div>
+              <div style={{ display: 'grid', gap: '10px' }}>
+                {evidenceItems.map((item) => (
+                  <div key={item.evidence_id} style={{
+                    border: '1px solid var(--border-default)',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    display: 'grid',
+                    gap: '6px',
+                  }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' }}>
+                      <span style={{ fontFamily: FONT, fontSize: '11px', color: 'var(--accent-emerald)' }}>
+                        {item.tool_name}
+                      </span>
+                      <span style={{ fontFamily: FONT, fontSize: '11px', color: 'var(--text-secondary)' }}>
+                        {item.agent_id} · round {item.round_index}
+                      </span>
+                    </div>
+                    <span style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                      {item.summary}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {citationItems.length > 0 ? (
+            <div style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-default)',
+              borderRadius: '12px',
+              padding: '18px 20px',
+            }}>
+              <div style={{
+                fontFamily: FONT,
+                fontSize: '9px',
+                letterSpacing: '0.12em',
+                textTransform: 'uppercase',
+                color: 'var(--text-tertiary)',
+                marginBottom: '12px',
+                fontWeight: 600,
+              }}>Citations</div>
+              <div style={{ display: 'grid', gap: '10px' }}>
+                {citationItems.map((item, index) => (
+                  <div key={`${item.title}-${index}`} style={{
+                    border: '1px solid var(--border-default)',
+                    borderRadius: '10px',
+                    padding: '12px 14px',
+                    display: 'grid',
+                    gap: '4px',
+                  }}>
+                    <span style={{ fontFamily: FONT, fontSize: '12px', color: 'var(--text-primary)' }}>
+                      {item.title}
+                    </span>
+                    <span style={{ fontFamily: "'Hanken Grotesk', sans-serif", fontSize: '12px', color: 'var(--text-secondary)' }}>
+                      {item.domain ?? item.source_kind ?? "source"}{typeof item.rank === 'number' ? ` · rank ${item.rank}` : ""}
+                    </span>
+                    {item.url ? (
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          fontFamily: FONT,
+                          fontSize: '11px',
+                          color: 'var(--accent-emerald)',
+                          textDecoration: 'none',
+                        }}
+                      >
+                        Visit citation <ExternalLink size={11} style={{ verticalAlign: 'text-top' }} />
+                      </a>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

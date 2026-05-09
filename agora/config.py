@@ -289,6 +289,17 @@ def _resolve_openrouter_api_key() -> str | None:
     )
 
 
+def _resolve_brave_api_keys() -> tuple[str, ...]:
+    """Resolve the configured Brave Search API key pool."""
+
+    keys: list[str] = []
+    for env_name in ("AGORA_BRAVE_API_KEY", "AGORA_BRAVE_API_KEY_2", "AGORA_BRAVE_API_KEY_3"):
+        raw = os.getenv(env_name, "").strip()
+        if raw:
+            keys.append(raw)
+    return tuple(dict.fromkeys(keys))
+
+
 class AgoraConfig(BaseModel):
     """Typed runtime configuration for model routing and thresholds."""
 
@@ -328,6 +339,12 @@ class AgoraConfig(BaseModel):
                 default="qwen/qwen3.5-flash-02-23",
             )
             or "qwen/qwen3.5-flash-02-23"
+        )
+    )
+    openrouter_analysis_model: str = Field(
+        default_factory=lambda: (
+            _env_optional_str("AGORA_OPENROUTER_ANALYSIS_MODEL", "google/gemma-4-31b-it")
+            or "google/gemma-4-31b-it"
         )
     )
     anthropic_api_key: str | None = Field(default_factory=_resolve_anthropic_api_key)
@@ -431,6 +448,40 @@ class AgoraConfig(BaseModel):
     anthropic_concurrent_requests_per_run: int = Field(
         default_factory=lambda: int(os.getenv("AGORA_ANTHROPIC_CONCURRENT_REQUESTS_PER_RUN", "1")),
         ge=1,
+    )
+    tools_enabled: bool = Field(
+        default_factory=lambda: _env_bool("AGORA_TOOLS_ENABLED", True)
+    )
+    brave_api_keys: tuple[str, ...] = Field(default_factory=_resolve_brave_api_keys)
+    brave_base_url: str = Field(
+        default_factory=lambda: _env_optional_str(
+            "AGORA_BRAVE_BASE_URL",
+            "https://api.search.brave.com/res/v1",
+        )
+        or "https://api.search.brave.com/res/v1"
+    )
+    brave_requests_per_second_per_key: float = Field(
+        default_factory=lambda: float(os.getenv("AGORA_BRAVE_RPS_PER_KEY", "1.0")),
+        gt=0.0,
+    )
+    brave_max_retries: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_BRAVE_MAX_RETRIES", "3")),
+        ge=0,
+        le=10,
+    )
+    brave_llm_context_max_urls: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_BRAVE_LLM_CONTEXT_MAX_URLS", "5")),
+        ge=1,
+        le=20,
+    )
+    source_max_file_bytes: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_SOURCE_MAX_FILE_BYTES", "25000000")),
+        ge=1,
+    )
+    source_max_urls_per_task: int = Field(
+        default_factory=lambda: int(os.getenv("AGORA_SOURCE_MAX_URLS_PER_TASK", "10")),
+        ge=0,
+        le=50,
     )
 
     max_rounds: int = 4

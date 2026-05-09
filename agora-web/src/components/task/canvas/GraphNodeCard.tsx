@@ -9,7 +9,7 @@ import { usePostHog } from "@posthog/react";
 export const NODE_WIDTH = 240;
 export const NODE_HEIGHT = 170;
 export const NODE_GAP_H = 20;
-export const NODE_GAP_V = 160;
+export const NODE_GAP_V = 300;
 
 const CANVAS_MARKDOWN_COMPONENTS = {
   p: ({ children }: { children?: React.ReactNode }) => (
@@ -132,6 +132,7 @@ const KIND_COLOR: Record<NodeKind, string> = {
   task:        "#6b7280",
   selector:    "#a78bfa",
   agent:       "#22d3ee",
+  tool:        "#5eead4",
   crossexam:   "#fbbf24",
   convergence: "#c084fc",
   switch:      "#fb923c",
@@ -150,6 +151,12 @@ const STAGE_COLOR: Record<string, string> = {
 
 function nodeColor(node: GraphNode): string {
   if (node.status === "error") return "#f87171";
+  if (node.kind === "tool") {
+    if (node.toolStatus === "failed") return "#f87171";
+    if (node.toolStatus === "retrying") return "#fbbf24";
+    if (node.toolStatus === "success") return "#34d399";
+    return "#38bdf8";
+  }
   if (node.kind !== "agent") return KIND_COLOR[node.kind];
   for (const [key, color] of Object.entries(STAGE_COLOR)) {
     if (node.stage?.toLowerCase().includes(key)) return color;
@@ -160,6 +167,11 @@ function nodeColor(node: GraphNode): string {
 function glowColor(node: GraphNode): string {
   const c = nodeColor(node);
   if (node.kind === "quorum") return "rgba(52,211,153,0.28)";
+  if (node.kind === "tool") {
+    if (node.toolStatus === "failed") return "rgba(248,113,113,0.18)";
+    if (node.toolStatus === "retrying") return "rgba(251,191,36,0.18)";
+    return `${c}26`;
+  }
   if (node.status === "active") return `${c}30`;
   if (node.status === "thinking") return "rgba(251,191,36,0.20)";
   return "transparent";
@@ -360,6 +372,30 @@ function StatusBadge({ status }: { status: GraphNode["status"] }) {
   );
 }
 
+function toolStatusLabel(status: GraphNode["toolStatus"]): string {
+  if (status === "failed") return "FAILED";
+  if (status === "retrying") return "RETRYING";
+  if (status === "success") return "COMPLETE";
+  return "RUNNING";
+}
+
+function toolActivityTone(status: GraphNode["toolStatus"]): { border: string; text: string; bg: string } {
+  if (status === "failed") {
+    return { border: "rgba(248,113,113,0.38)", text: "#fca5a5", bg: "rgba(248,113,113,0.08)" };
+  }
+  if (status === "retrying") {
+    return { border: "rgba(251,191,36,0.34)", text: "#fcd34d", bg: "rgba(251,191,36,0.08)" };
+  }
+  if (status === "success") {
+    return { border: "rgba(52,211,153,0.32)", text: "#34d399", bg: "rgba(52,211,153,0.08)" };
+  }
+  return { border: "rgba(56,189,248,0.34)", text: "#7dd3fc", bg: "rgba(56,189,248,0.08)" };
+}
+
+function toolActivityLabel(name: string): string {
+  return name.replace(/_/g, " ").trim().toUpperCase();
+}
+
 // ─── Icon button ──────────────────────────────────────────────────────────────
 function QBtn({ onClick }: { onClick: () => void }) {
     const posthog = usePostHog();
@@ -401,8 +437,15 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
   const [thinkingOpen,  setThinkingOpen]  = useState(false);
   const [telemetryOpen, setTelemetryOpen] = useState(false);
   const [infoOpen,      setInfoOpen]      = useState(false);
+  const streamRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { injectCanvasKeyframes(); }, []);
+
+  const inlineToolActivities = node.toolActivities ?? [];
+
+  useEffect(() => {
+    if (streamRef.current) streamRef.current.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" });
+  }, [inlineToolActivities]);
 
   const color = nodeColor(node);
   const glow  = glowColor(node);
@@ -410,13 +453,20 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
   const isThinking = node.status === "thinking";
   const isStreaming = isActive || isThinking;
 
-  const isReceipt  = node.kind === "receipt";
-  const isTask     = node.kind === "task";
+  const isReceipt    = node.kind === "receipt";
+  const isTask       = node.kind === "task";
+  const isToolNode   = node.kind === "tool";
+  const isSandboxTool = isToolNode && (
+    node.toolName?.toLowerCase().includes("execute") ||
+    node.toolName?.toLowerCase().includes("python") ||
+    node.toolName?.toLowerCase().includes("sandbox")
+  );
+  const hasInlineToolActivities = !isToolNode && inlineToolActivities.length > 0;
   const hasThinking  = typeof node.thinkingContent === "string" && node.thinkingContent.length > 0;
   const inlineThinking = (!node.content || !node.content.trim()) && hasThinking
     ? node.thinkingContent ?? ""
     : "";
-  const rawContent = node.content || inlineThinking || "—";
+  const rawContent = node.content || inlineThinking || (hasInlineToolActivities ? "" : "—");
   const rawSupport = node.supportContent?.trim() || "";
 
   // Always cap the card preview at PREVIEW_LIMIT chars —
@@ -469,10 +519,191 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
           whiteSpace: "nowrap",
           animation: isActive ? "canvas-active-border 2s ease-in-out infinite" : undefined,
         }}>
-          {node.agentModel ?? node.title}
+          {isToolNode ? (node.toolName ?? node.title) : (node.agentModel ?? node.title)}
         </span>
+        {isToolNode ? (
+          <span
+            style={{
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: "9px",
+              padding: "2px 7px",
+              borderRadius: "999px",
+              border: `1px solid ${color}55`,
+              background: `${color}12`,
+              color,
+              flexShrink: 0,
+              letterSpacing: "0.08em",
+            }}
+          >
+            {toolStatusLabel(node.toolStatus)}
+          </span>
+        ) : null}
         <StatusBadge status={node.status} />
       </div>
+
+      {isToolNode ? (
+        <div
+          style={{
+            border: `1px solid ${color}${isSandboxTool ? "55" : "40"}`,
+            background: `linear-gradient(135deg, ${color}${isSandboxTool ? "1a" : "14"} 0%, transparent 100%)`,
+            borderRadius: "12px",
+            padding: "8px 10px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "5px",
+          }}
+        >
+          {isSandboxTool && (
+            <div style={{
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: "8px",
+              color: `${color}99`,
+              letterSpacing: "0.14em",
+              textTransform: "uppercase",
+            }}>
+              Sandbox
+            </div>
+          )}
+          <div
+            style={{
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: "9px",
+              color,
+              letterSpacing: "0.1em",
+              textTransform: "uppercase",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {isSandboxTool ? `$ ${node.toolName ?? "execute"}` : (node.toolName ?? "tool operation")}
+          </div>
+          <div
+            style={{
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: "10px",
+              color: "var(--text-muted)",
+              lineHeight: 1.45,
+            }}
+          >
+            {node.toolStatus === "failed"
+              ? (isSandboxTool ? "Script exited with a non-zero code." : "Execution returned an error state.")
+              : node.toolStatus === "retrying"
+                ? (isSandboxTool ? "Retrying with corrected code." : "Retrying with corrected inputs.")
+                : node.toolStatus === "success"
+                  ? (isSandboxTool ? "Script ran to completion and returned output." : "Operation finished and returned structured evidence.")
+                  : (isSandboxTool ? "Script is running in an isolated sandbox." : "Operation is running and streaming incremental output.")}
+          </div>
+        </div>
+      ) : null}
+
+      {hasInlineToolActivities ? (
+        <div
+          style={{
+            position: "relative",
+            border: `1px solid ${color}33`,
+            background: "var(--bg-base)",
+            borderRadius: "12px",
+            overflow: "hidden",
+          }}
+        >
+          {/* Top blur */}
+          <div
+            aria-hidden
+            style={{
+              position: "absolute", top: 0, left: 0, right: 0, height: "22px",
+              background: "linear-gradient(to bottom, var(--bg-base), transparent)",
+              pointerEvents: "none", zIndex: 2,
+            }}
+          />
+          <div
+            ref={streamRef}
+            data-no-drag
+            data-no-zoom
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{
+              padding: "8px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+              maxHeight: "118px",
+              overflowY: "auto",
+            }}
+          >
+            {inlineToolActivities.map((activity) => {
+              const tone = toolActivityTone(activity.status);
+              return (
+                <div
+                  key={activity.id}
+                  style={{
+                    border: `1px solid ${tone.border}`,
+                    background: tone.bg,
+                    borderRadius: "10px",
+                    padding: "7px 8px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "5px",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                    <span
+                      style={{
+                        fontFamily: "'Commit Mono', monospace",
+                        fontSize: "9px",
+                        color: tone.text,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {toolActivityLabel(activity.name)}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: "'Commit Mono', monospace",
+                        fontSize: "8px",
+                        color: tone.text,
+                        letterSpacing: "0.08em",
+                        textTransform: "uppercase",
+                        border: `1px solid ${tone.border}`,
+                        borderRadius: "999px",
+                        padding: "2px 5px",
+                        background: "var(--bg-base)",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {toolStatusLabel(activity.status)}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "'Commit Mono', monospace",
+                      fontSize: "10px",
+                      color: "var(--text-muted)",
+                      lineHeight: 1.45,
+                      whiteSpace: "pre-wrap",
+                      overflowWrap: "anywhere",
+                    }}
+                  >
+                    {activity.summary}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Bottom blur */}
+          <div
+            aria-hidden
+            style={{
+              position: "absolute", bottom: 0, left: 0, right: 0, height: "22px",
+              background: "linear-gradient(to top, var(--bg-base), transparent)",
+              pointerEvents: "none", zIndex: 2,
+            }}
+          />
+        </div>
+      ) : null}
 
       {/* Body — always capped at PREVIEW_LIMIT; "show more" opens the modal */}
       <div style={{
@@ -597,6 +828,11 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
 
       {/* Footer */}
       <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "8px", display: "flex", alignItems: "center", gap: "7px", position: "relative" }}>
+        {isToolNode ? (
+          <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color }}>
+            {node.toolStatus === "failed" ? "error" : node.toolStatus === "retrying" ? "retry loop" : "op stream"}
+          </span>
+        ) : null}
         {node.confidence !== undefined && (
           <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)" }}>
             {(node.confidence * 100).toFixed(0)}% conf
