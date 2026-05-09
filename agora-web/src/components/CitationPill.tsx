@@ -252,13 +252,6 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
     document.head.appendChild(s);
   }, []);
 
-  // Lock body scroll while open
-  useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
-  }, []);
-
   // Close on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -313,9 +306,9 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
           zIndex: 9001,
           display: "flex",
           flexDirection: "column",
+          overflow: "hidden",
           animation: "cm-panel 0.3s cubic-bezier(0.22,1,0.36,1) both",
           boxShadow: "0 24px 80px rgba(0,0,0,0.5)",
-          // No overflow: hidden here — tooltips inside need to escape
         }}
       >
         {/* Header */}
@@ -348,7 +341,7 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
         </div>
 
         {/* Scrollable content with blur overlays */}
-        <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+        <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden" }}>
           {/* Top blur */}
           <div aria-hidden style={{
             position: "absolute", top: 0, left: 0, right: 0, height: "28px",
@@ -358,7 +351,9 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
           {/* Scroll container */}
           <div
             style={{
-              height: "100%",
+              position: "absolute",
+              inset: 0,
+              zIndex: 1,
               overflowY: "auto",
               overscrollBehavior: "contain",
               WebkitOverflowScrolling: "touch",
@@ -378,14 +373,6 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
             zIndex: 2, pointerEvents: "none",
           }} />
         </div>
-
-        {/* Rounded bottom edge bg — compensates for no overflow:hidden on panel */}
-        <div style={{
-          height: "20px", flexShrink: 0,
-          background: "var(--bg-elevated)",
-          borderRadius: "0 0 20px 20px",
-          borderTop: "1px solid var(--border-default)",
-        }} />
       </div>
     </>,
     document.body,
