@@ -258,3 +258,108 @@ test("buildGraphLayout keeps normalized content when later telemetry and thinkin
   assert.equal(openingNode.telemetry?.totalTokens, 2055);
   assert.equal(openingNode.telemetry?.latencyMs, 12519);
 });
+
+test("buildGraphLayout keeps sandbox execution inline on the originating agent card and preserves its output preview", () => {
+  const timeline = [
+    {
+      key: "agent:0:agent-2:rebuttal:1",
+      type: "agent_output",
+      title: "agent-2 · rebuttal",
+      summary: "Primary rebuttal content",
+      agentId: "agent-2",
+      agentModel: "claude-sonnet-4-6",
+      stage: "rebuttal",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "rebuttal",
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+      },
+    },
+    {
+      key: "sandbox-start",
+      type: "sandbox_execution_started",
+      title: "agent-2 · execute_python",
+      summary: "Starting sandbox execution",
+      agentId: "agent-2",
+      agentModel: "claude-sonnet-4-6",
+      stage: "rebuttal",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "rebuttal",
+      streamChannel: "tool" as const,
+      toolCallId: "tool-123",
+      toolName: "execute_python",
+      toolStatus: "running" as const,
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+        python_code_preview: "print('hello')",
+      },
+    },
+    {
+      key: "sandbox-delta",
+      type: "sandbox_execution_delta",
+      title: "agent-2 · execute_python",
+      summary: "stdout preview",
+      agentId: "agent-2",
+      agentModel: "claude-sonnet-4-6",
+      stage: "rebuttal",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "rebuttal",
+      streamChannel: "tool" as const,
+      toolCallId: "tool-123",
+      toolName: "execute_python",
+      toolStatus: "running" as const,
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+        stdout_preview: "result rows",
+      },
+    },
+    {
+      key: "sandbox-complete",
+      type: "sandbox_execution_completed",
+      title: "agent-2 · execute_python",
+      summary: "Script ran to completion and returned output.",
+      agentId: "agent-2",
+      agentModel: "claude-sonnet-4-6",
+      stage: "rebuttal",
+      segmentIndex: 0,
+      segmentMechanism: "debate",
+      segmentRound: 1,
+      canonicalStage: "rebuttal",
+      streamChannel: "tool" as const,
+      toolCallId: "tool-123",
+      toolName: "execute_python",
+      toolStatus: "success" as const,
+      details: {
+        execution_segment: 0,
+        segment_mechanism: "debate",
+        round_number: 1,
+        summary: "Script ran to completion and returned output.",
+        stderr_preview: "",
+      },
+    },
+  ];
+
+  const { nodes } = buildGraphLayout(timeline);
+  const rebuttalNode = nodes.find((node) => node.kind === "agent" && node.agentId === "agent-2" && node.stage === "rebuttal");
+  const sandboxNode = nodes.find((node) => node.kind === "tool" && node.toolName === "execute_python");
+
+  assert.ok(rebuttalNode);
+  assert.equal(rebuttalNode.kind, "agent");
+  assert.equal(rebuttalNode.toolActivities?.length ?? 0, 1);
+  assert.equal(rebuttalNode.toolActivities?.[0]?.name, "execute_python");
+  assert.equal(rebuttalNode.toolActivities?.[0]?.status, "success");
+  assert.equal(rebuttalNode.toolActivities?.[0]?.summary, "result rows");
+  assert.equal(sandboxNode, undefined);
+});

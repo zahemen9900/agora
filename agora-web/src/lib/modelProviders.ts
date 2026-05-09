@@ -50,19 +50,19 @@ export function providerTone(provider: ProviderName): string {
     return "text-text-primary border-border-muted bg-[rgba(255,255,255,0.03)]";
   }
   if (provider === "gpt") {
-    return "text-[#d1fae5] border-[rgba(16,185,129,0.25)] bg-[rgba(16,185,129,0.08)]";
+    return "text-[var(--provider-gpt-text)] border-[rgba(16,185,129,0.25)] bg-[rgba(16,185,129,0.08)]";
   }
   if (provider === "glm") {
-    return "text-[#e0f2fe] border-[rgba(56,189,248,0.25)] bg-[rgba(56,189,248,0.08)]";
+    return "text-[var(--provider-glm-text)] border-[rgba(56,189,248,0.25)] bg-[rgba(56,189,248,0.08)]";
   }
   if (provider === "qwen") {
-    return "text-[#fef3c7] border-[rgba(245,158,11,0.25)] bg-[rgba(245,158,11,0.08)]";
+    return "text-[var(--provider-qwen-text)] border-[rgba(245,158,11,0.25)] bg-[rgba(245,158,11,0.08)]";
   }
   if (provider === "gemma") {
-    return "text-[#ede9fe] border-[rgba(139,92,246,0.25)] bg-[rgba(139,92,246,0.08)]";
+    return "text-[var(--provider-gemma-text)] border-[rgba(139,92,246,0.25)] bg-[rgba(139,92,246,0.08)]";
   }
   if (provider === "deepseek") {
-    return "text-[#dbeafe] border-[rgba(59,130,246,0.25)] bg-[rgba(59,130,246,0.08)]";
+    return "text-[var(--provider-deepseek-text)] border-[rgba(59,130,246,0.25)] bg-[rgba(59,130,246,0.08)]";
   }
   if (provider === "kimi" || provider === "openrouter") {
     return "text-text-secondary border-border-subtle bg-void";

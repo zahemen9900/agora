@@ -111,6 +111,7 @@ function StreamingText({ text, isActive }: { text: string; isActive: boolean }) 
 
 import remarkGfm from "remark-gfm";
 
+import { CitationPill } from "../components/CitationPill";
 import { ConvergenceMeter } from "../components/ConvergenceMeter";
 import { Flyout } from "../components/Flyout";
 import { ProviderGlyph } from "../components/ProviderGlyph";
@@ -2204,30 +2205,15 @@ export function LiveDeliberation() {
                 );
               })()}
 
-              {/* ── Citations ────────────────────────────────────────────── */}
+              {/* ── Citations — hover-reveal pills ───────────────────────── */}
               {taskResult.citation_items.length > 0 ? (
                 <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)", borderRadius: "16px", padding: "20px 24px", marginBottom: "16px" }}>
-                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "12px" }}>CITATIONS</div>
-                  <div style={{ display: "grid", gap: "8px" }}>
+                  <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)", letterSpacing: "0.1em", marginBottom: "12px" }}>
+                    CITATIONS <span style={{ opacity: 0.5, fontWeight: 400 }}>· hover to expand</span>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
                     {taskResult.citation_items.map((item, index) => (
-                      <div key={`${item.title}-${index}`} style={{ borderRadius: "10px", border: "1px solid var(--border-default)", background: "var(--bg-base)", padding: "12px 14px", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-primary)", marginBottom: "4px", lineHeight: 1.5 }}>{item.title}</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
-                            <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)", background: "var(--bg-elevated)", border: "1px solid var(--border-default)", borderRadius: "4px", padding: "1px 6px" }}>
-                              {item.domain ?? item.source_kind ?? "source"}
-                            </span>
-                            {typeof item.rank === "number" && (
-                              <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)" }}>rank {item.rank}</span>
-                            )}
-                          </div>
-                        </div>
-                        {item.url ? (
-                          <a href={item.url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: "4px", fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--accent-emerald)", flexShrink: 0, textDecoration: "none" }}>
-                            <ExternalLink size={11} />
-                          </a>
-                        ) : null}
-                      </div>
+                      <CitationPill key={`${item.title}-${index}`} item={item} />
                     ))}
                   </div>
                 </div>

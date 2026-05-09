@@ -111,6 +111,13 @@
   --shadow-md:   0 4px 12px rgba(0,0,0,0.6);
   --shadow-lg:   0 8px 32px rgba(0,0,0,0.7);
   --shadow-glow: 0 0 20px rgba(34,211,138,0.25);
+
+  /* Provider text colors — dark mode uses pale tints */
+  --provider-gpt-text:      #d1fae5;
+  --provider-glm-text:      #e0f2fe;
+  --provider-qwen-text:     #fef3c7;
+  --provider-gemma-text:    #ede9fe;
+  --provider-deepseek-text: #dbeafe;
 }
 
 /* ─── Light mode override — warm cream palette ───────────────────── */
@@ -166,6 +173,13 @@
   --shadow-md:   0 4px 12px rgba(0,0,0,0.08);
   --shadow-lg:   0 8px 32px rgba(0,0,0,0.12);
   --shadow-glow: 0 0 20px rgba(16,185,129,0.25);
+
+  /* Provider text colors — light mode uses dark saturated values */
+  --provider-gpt-text:      #065f46;
+  --provider-glm-text:      #0c4a6e;
+  --provider-qwen-text:     #78350f;
+  --provider-gemma-text:    #4c1d95;
+  --provider-deepseek-text: #1e3a8a;
 }
 
 /* ─── Global reset ───────────────────────────────────────────────── */

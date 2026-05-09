@@ -291,6 +291,12 @@ function preferredToolSummary(
     "tool streaming output",
     "starting sandbox execution",
   ]);
+  const genericCompletionHints = [
+    " completed",
+    "returned output",
+    "ran to completion",
+    "finished successfully",
+  ];
 
   if (resultPreview) return resultPreview;
   if (stdoutPreview) return stdoutPreview;
@@ -300,6 +306,13 @@ function preferredToolSummary(
   const normalizedSummary = summary.toLowerCase();
   if (genericCompletions.has(normalizedSummary) || genericRunning.has(normalizedSummary)) {
     return previousSummary ?? summary;
+  }
+  if (
+    previousSummary
+    && (event.type === "tool_call_completed" || event.type === "sandbox_execution_completed")
+    && genericCompletionHints.some((hint) => normalizedSummary.includes(hint))
+  ) {
+    return previousSummary;
   }
   return summary;
 }

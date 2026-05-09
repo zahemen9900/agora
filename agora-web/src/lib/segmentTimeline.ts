@@ -17,6 +17,21 @@ export interface TaskEventSegmentMetadata {
   canonicalStage: string;
 }
 
+function isToolLifecycleEvent(eventType: string): boolean {
+  return (
+    eventType === "tool_call_started"
+    || eventType === "tool_call_delta"
+    || eventType === "tool_call_completed"
+    || eventType === "tool_call_failed"
+    || eventType === "tool_call_retrying"
+    || eventType === "search_retrying"
+    || eventType === "search_key_rotated"
+    || eventType === "sandbox_execution_started"
+    || eventType === "sandbox_execution_delta"
+    || eventType === "sandbox_execution_completed"
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
@@ -154,6 +169,9 @@ export function inferSegmentedTaskEvents(
 export function segmentDraftKeyForEvent(event: TaskEvent): string | null {
   const data = asRecord(event.data) ?? {};
   const toolCallId = typeof data.tool_call_id === "string" ? data.tool_call_id : "";
+  if (toolCallId && isToolLifecycleEvent(event.event)) {
+    return `${toolCallId}:${event.event}`;
+  }
   if (toolCallId) {
     return toolCallId;
   }

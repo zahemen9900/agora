@@ -3,7 +3,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ProviderGlyph } from "../../ProviderGlyph";
 import type { ProviderName } from "../../../lib/modelProviders";
-import type { GraphNode, NodeKind } from "./canvasTypes";
+import type { GraphNode, NodeKind, ToolActivity } from "./canvasTypes";
 import { usePostHog } from "@posthog/react";
 
 export const NODE_WIDTH = 240;
@@ -396,6 +396,36 @@ function toolActivityLabel(name: string): string {
   return name.replace(/_/g, " ").trim().toUpperCase();
 }
 
+function isSandboxActivity(activity: ToolActivity): boolean {
+  const name = activity.name.toLowerCase();
+  return (
+    name.includes("execute_python")
+    || name.includes("python")
+    || name.includes("sandbox")
+    || typeof activity.details?.python_code_preview === "string"
+    || typeof activity.details?.stdout_preview === "string"
+    || typeof activity.details?.stderr_preview === "string"
+  );
+}
+
+function sandboxActivityDetail(activity: ToolActivity): string {
+  const stdoutPreview = typeof activity.details?.stdout_preview === "string"
+    ? activity.details.stdout_preview.trim()
+    : "";
+  const stderrPreview = typeof activity.details?.stderr_preview === "string"
+    ? activity.details.stderr_preview.trim()
+    : "";
+  const resultPreview = typeof activity.details?.result_preview === "string"
+    ? activity.details.result_preview.trim()
+    : "";
+  const summary = activity.summary.trim();
+
+  if (stderrPreview) return stderrPreview;
+  if (stdoutPreview) return stdoutPreview;
+  if (resultPreview) return resultPreview;
+  return summary;
+}
+
 // ─── Icon button ──────────────────────────────────────────────────────────────
 function QBtn({ onClick }: { onClick: () => void }) {
     const posthog = usePostHog();
@@ -632,6 +662,8 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
           >
             {inlineToolActivities.map((activity) => {
               const tone = toolActivityTone(activity.status);
+              const sandboxActivity = isSandboxActivity(activity);
+              const detailText = sandboxActivityDetail(activity);
               return (
                 <div
                   key={activity.id}
@@ -645,6 +677,19 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
                     gap: "5px",
                   }}
                 >
+                  {sandboxActivity ? (
+                    <div
+                      style={{
+                        fontFamily: "'Commit Mono', monospace",
+                        fontSize: "8px",
+                        color: `${tone.text}AA`,
+                        letterSpacing: "0.14em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      Sandbox
+                    </div>
+                  ) : null}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
                     <span
                       style={{
@@ -658,7 +703,7 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {toolActivityLabel(activity.name)}
+                      {sandboxActivity ? `$ ${activity.name}` : toolActivityLabel(activity.name)}
                     </span>
                     <span
                       style={{
@@ -687,7 +732,7 @@ export function GraphNodeCard({ node, onShowMore }: GraphNodeCardProps) {
                       overflowWrap: "anywhere",
                     }}
                   >
-                    {activity.summary}
+                    {detailText}
                   </div>
                 </div>
               );

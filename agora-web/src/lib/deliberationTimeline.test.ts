@@ -341,3 +341,80 @@ test("buildDeliberationTimeline progressively extracts Delphi revisions from par
   );
   assert.doesNotMatch(timeline[0].summary, /\{|\}|\"answer\"|\"reasoning\"/);
 });
+
+test("buildDeliberationTimeline maps sandbox execution start events onto the tool stream", () => {
+  const timeline = buildDeliberationTimeline([
+    {
+      event: "sandbox_execution_started",
+      timestamp: "2026-05-09T00:00:01.000Z",
+      data: {
+        agent_id: "agent-2",
+        agent_model: "claude-sonnet-4-6",
+        stage: "rebuttal",
+        round_number: 1,
+        tool_call_id: "tool-123",
+        tool_name: "execute_python",
+        python_code_preview: "print('hello world')",
+      },
+    },
+  ], "debate");
+
+  assert.equal(timeline.length, 1);
+  assert.equal(timeline[0]?.streamChannel, "tool");
+  assert.equal(timeline[0]?.toolCallId, "tool-123");
+  assert.equal(timeline[0]?.toolName, "execute_python");
+  assert.equal(timeline[0]?.toolStatus, "running");
+  assert.equal(timeline[0]?.agentId, "agent-2");
+});
+
+test("buildDeliberationTimeline keeps distinct tool lifecycle cards for the same tool call", () => {
+  const timeline = buildDeliberationTimeline([
+    {
+      event: "tool_call_started",
+      timestamp: "2026-05-09T00:00:01.000Z",
+      data: {
+        agent_id: "agent-2",
+        stage: "rebuttal",
+        round_number: 1,
+        tool_call_id: "tool-abc",
+        tool_name: "search_online",
+        rationale: "ground with web search",
+      },
+    },
+    {
+      event: "tool_call_delta",
+      timestamp: "2026-05-09T00:00:02.000Z",
+      data: {
+        agent_id: "agent-2",
+        stage: "rebuttal",
+        round_number: 1,
+        tool_call_id: "tool-abc",
+        tool_name: "search_online",
+        result_preview: "Found 3 supporting sources.",
+      },
+    },
+    {
+      event: "tool_call_completed",
+      timestamp: "2026-05-09T00:00:03.000Z",
+      data: {
+        agent_id: "agent-2",
+        stage: "rebuttal",
+        round_number: 1,
+        tool_call_id: "tool-abc",
+        tool_name: "search_online",
+        summary: "search_online completed",
+      },
+    },
+  ], "debate");
+
+  assert.equal(timeline.length, 3);
+  assert.deepEqual(
+    timeline.map((entry) => entry.key),
+    [
+      "tool-abc:tool_call_started",
+      "tool-abc:tool_call_delta",
+      "tool-abc:tool_call_completed",
+    ],
+  );
+  assert.ok(timeline.every((entry) => entry.streamChannel === "tool"));
+});

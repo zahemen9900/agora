@@ -408,9 +408,14 @@ export function mapTaskEvent(event: TaskEvent): TimelineEvent {
     return { ...mappedEvent, ...segmentMetadata };
   }
 
-  if (event.event === "tool_call_started") {
+  if (event.event === "tool_call_started" || event.event === "sandbox_execution_started") {
     const toolName = safeString(data.tool_name, "tool");
-    const rationale = safeString(data.rationale, "");
+    const rationale = safeString(
+      data.rationale,
+      event.event === "sandbox_execution_started"
+        ? safeString(data.message, "Starting sandbox execution")
+        : "",
+    );
     mappedEvent = {
       key: eventKeyForTimeline(event),
       type: event.event,
