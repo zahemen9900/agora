@@ -30,6 +30,7 @@ from agora.telemetry import (
     set_current_span_attributes,
     start_observation_span,
 )
+from agora.tools.types import CitationItem, EvidenceItem, SourceRef, ToolUsageSummary
 from agora.types import (
     ConvergenceMetrics,
     CostEstimate,
@@ -137,6 +138,77 @@ class HostedTaskCreateResponse(BaseModel):
     mechanism_override_source: str | None = None
 
 
+class HostedToolPolicy(BaseModel):
+    """Hosted task tool policy configuration."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool = True
+    allow_search: bool = True
+    allow_url_analysis: bool = True
+    allow_file_analysis: bool = True
+    allow_code_execution: bool = True
+    max_tool_calls_per_agent: int = 12
+    max_urls_per_call: int = 5
+    max_files_per_call: int = 3
+    execution_timeout_seconds: int = 20
+
+
+class HostedTaskSource(BaseModel):
+    """One hosted source attached to a task or result."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_id: str
+    kind: Literal["text_file", "code_file", "pdf", "image", "url"]
+    display_name: str
+    mime_type: str
+    size_bytes: int
+    sha256: str | None = None
+    status: Literal["pending_upload", "uploaded", "ready", "failed"] = "ready"
+    created_at: datetime | None = None
+    source_url: str | None = None
+
+
+class HostedCitationItem(BaseModel):
+    """Persisted citation metadata returned by hosted tool runs."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+    url: str | None = None
+    domain: str | None = None
+    rank: int | None = None
+    source_kind: Literal["text_file", "code_file", "pdf", "image", "url"] | None = None
+    source_id: str | None = None
+    note: str | None = None
+
+
+class HostedEvidenceItem(BaseModel):
+    """Persisted evidence item returned by hosted tool runs."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    evidence_id: str
+    tool_name: str
+    agent_id: str
+    summary: str
+    round_index: int = 0
+    source_ids: list[str] = Field(default_factory=list)
+    citations: list[HostedCitationItem] = Field(default_factory=list)
+
+
+class HostedToolUsageSummary(BaseModel):
+    """Aggregate hosted tool usage counts."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    total_tool_calls: int = 0
+    successful_tool_calls: int = 0
+    failed_tool_calls: int = 0
+    tool_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class HostedDeliberationResult(BaseModel):
     """Hosted deliberation result payload returned by run/status endpoints."""
 
@@ -172,6 +244,10 @@ class HostedDeliberationResult(BaseModel):
     fallback_count: int = 0
     fallback_events: list[FallbackEvent] = Field(default_factory=list)
     mechanism_override_source: str | None = None
+    sources: list[HostedTaskSource] = Field(default_factory=list)
+    tool_usage_summary: HostedToolUsageSummary | None = None
+    evidence_items: list[HostedEvidenceItem] = Field(default_factory=list)
+    citation_items: list[HostedCitationItem] = Field(default_factory=list)
 
 
 class HostedChainOperationRecord(BaseModel):
@@ -201,6 +277,13 @@ class HostedTaskStatus(BaseModel):
     allow_mechanism_switch: bool = True
     allow_offline_fallback: bool = True
     quorum_threshold: float = 0.6
+    execution_source: Literal["hosted", "local_byok"] = "hosted"
+    background_recovery_allowed: bool = True
+    enable_tools: bool = True
+    tool_policy: HostedToolPolicy | None = None
+    source_urls: list[str] = Field(default_factory=list)
+    source_file_ids: list[str] = Field(default_factory=list)
+    sources: list[HostedTaskSource] = Field(default_factory=list)
     selector_source: str = "llm_reasoning"
     selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None
@@ -223,7 +306,9 @@ class HostedTaskStatus(BaseModel):
     payment_status: Literal["locked", "released", "none"] = "none"
     chain_operations: dict[str, HostedChainOperationRecord] = Field(default_factory=dict)
     created_at: str | None = None
+    updated_at: str | None = None
     completed_at: str | None = None
+    stop_requested_at: str | None = None
     failure_reason: str | None = None
     latest_error_event: dict[str, Any] | None = None
     result: HostedDeliberationResult | None = None
@@ -761,6 +846,10 @@ class AgoraArbitrator:
         allow_mechanism_switch: bool | None = None,
         allow_offline_fallback: bool | None = None,
         quorum_threshold: float | None = None,
+        source_urls: list[str] | None = None,
+        source_file_ids: list[str] | None = None,
+        enable_tools: bool | None = None,
+        tool_policy: HostedToolPolicy | dict[str, Any] | None = None,
     ) -> HostedTaskCreateResponse:
         """Create a hosted task without executing it."""
 
@@ -781,6 +870,9 @@ class AgoraArbitrator:
             "quorum_threshold": (
                 self.config.quorum_threshold if quorum_threshold is None else quorum_threshold
             ),
+            "source_urls": list(source_urls or []),
+            "source_file_ids": list(source_file_ids or []),
+            "enable_tools": True if enable_tools is None else enable_tools,
         }
         effective_mechanism = mechanism or self.config.mechanism
         if effective_mechanism is not None:
@@ -798,6 +890,12 @@ class AgoraArbitrator:
                 effective_tier_model_overrides.model_dump(mode="json", by_alias=True)
                 if isinstance(effective_tier_model_overrides, BaseModel)
                 else effective_tier_model_overrides
+            )
+        if tool_policy is not None:
+            payload["tool_policy"] = (
+                tool_policy.model_dump(mode="json")
+                if isinstance(tool_policy, BaseModel)
+                else tool_policy
             )
 
         with observation_context(
@@ -1957,6 +2055,69 @@ class AgoraArbitrator:
             for model, telemetry in model_telemetry.items()
             if telemetry.thinking_tokens is not None
         }
+        hosted_sources = status.result.sources or status.sources
+        sources = [
+            SourceRef(
+                source_id=source.source_id,
+                kind=source.kind,
+                display_name=source.display_name,
+                mime_type=source.mime_type,
+                source_url=source.source_url,
+                size_bytes=int(source.size_bytes),
+                sha256=source.sha256,
+            )
+            for source in hosted_sources
+        ]
+        citation_items = [
+            CitationItem(
+                title=item.title,
+                url=item.url,
+                domain=item.domain,
+                rank=item.rank,
+                source_kind=item.source_kind,
+                source_id=item.source_id,
+                note=item.note,
+            )
+            for item in status.result.citation_items
+        ]
+        evidence_items = [
+            EvidenceItem(
+                evidence_id=item.evidence_id,
+                tool_name=item.tool_name,
+                agent_id=item.agent_id,
+                summary=item.summary,
+                round_index=int(item.round_index),
+                source_ids=list(item.source_ids),
+                citations=[
+                    CitationItem(
+                        title=citation.title,
+                        url=citation.url,
+                        domain=citation.domain,
+                        rank=citation.rank,
+                        source_kind=citation.source_kind,
+                        source_id=citation.source_id,
+                        note=citation.note,
+                    )
+                    for citation in item.citations
+                ],
+            )
+            for item in status.result.evidence_items
+        ]
+        tool_usage_summary = (
+            ToolUsageSummary(
+                total_tool_calls=int(status.result.tool_usage_summary.total_tool_calls),
+                successful_tool_calls=int(
+                    status.result.tool_usage_summary.successful_tool_calls
+                ),
+                failed_tool_calls=int(status.result.tool_usage_summary.failed_tool_calls),
+                tool_counts={
+                    str(tool): int(count)
+                    for tool, count in status.result.tool_usage_summary.tool_counts.items()
+                },
+            )
+            if status.result.tool_usage_summary is not None
+            else None
+        )
         return DeliberationResult(
             task=str(status.task_text),
             mechanism_used=MechanismType(str(status.result.mechanism).lower()),
@@ -2002,6 +2163,10 @@ class AgoraArbitrator:
             ),
             total_latency_ms=float(status.result.latency_ms),
             cost=cost,
+            sources=sources,
+            tool_usage_summary=tool_usage_summary,
+            evidence_items=evidence_items,
+            citation_items=citation_items,
         )
 
     def _headers(self) -> dict[str, str]:

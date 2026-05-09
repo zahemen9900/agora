@@ -18,6 +18,10 @@ interface TimelineEventLike {
   key: string; type: string; title: string; summary: string;
   agentId?: string; agentModel?: string; confidence?: number;
   stage?: string; isDraft?: boolean; details?: Record<string, unknown>;
+  toolCallId?: string;
+  toolName?: string;
+  toolStatus?: "running" | "success" | "failed" | "retrying";
+  streamChannel?: "content" | "thinking" | "usage" | "system" | "tool";
 }
 
 interface CanvasViewProps {
@@ -29,6 +33,7 @@ interface CanvasViewProps {
   roundCount: number;
   eventCount: number;
   entropy?: number;
+  citationItems?: import("../../../lib/api.generated").CitationItemResponse[];
 }
 
 interface TransitionPill {
@@ -51,6 +56,7 @@ const KIND_COLOR: Record<NodeKind, string> = {
   task:        "#6b7280",
   selector:    "#a78bfa",
   agent:       "#22d3ee",
+  tool:        "#5eead4",
   crossexam:   "#fbbf24",
   convergence: "#c084fc",
   switch:      "#fb923c",
@@ -58,6 +64,7 @@ const KIND_COLOR: Record<NodeKind, string> = {
   receipt:     "#38bdf8",
 };
 function stageColor(kind: NodeKind, stage?: string): string {
+  if (kind === "tool") return "#5eead4";
   if (kind !== "agent") return KIND_COLOR[kind];
   if (stage?.includes("rebuttal")) return "#60a5fa";
   return "#22d3ee";
@@ -99,7 +106,8 @@ function SplitTransitionPill({
         maxWidth: "220px",
         border: `1px solid ${color}`,
         borderRadius: "999px",
-        background: "rgba(8, 13, 18, 0.92)",
+        background: "var(--bg-elevated)",
+        backdropFilter: "blur(12px)",
         color,
         padding: "5px 10px",
         boxShadow: `0 0 0 3px rgba(0,0,0,0.28), 0 8px 22px rgba(0,0,0,0.32)`,
@@ -155,8 +163,20 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
   const color = stageColor(node.kind, node.stage);
   const t = node.telemetry;
   const [showTelemetry, setShowTelemetry] = useState(false);
+  const isToolNode = node.kind === "tool";
+  const isSandboxNode = isToolNode && (
+    node.toolName?.toLowerCase().includes("execute") ||
+    node.toolName?.toLowerCase().includes("python") ||
+    node.toolName?.toLowerCase().includes("sandbox")
+  );
+  const toolActivities = node.toolActivities ?? [];
+  const modalStreamRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { injectModalKeyframes(); }, []);
+
+  useEffect(() => {
+    if (modalStreamRef.current) modalStreamRef.current.scrollTo({ top: modalStreamRef.current.scrollHeight, behavior: "smooth" });
+  }, [toolActivities]);
 
   return (
     <div
@@ -189,7 +209,7 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
             <ProviderGlyph provider={node.provider as ProviderName} size={16} />
           </div>
         )}
-        <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", fontWeight: 600, color, textTransform: "uppercase", letterSpacing: "0.08em", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.agentModel ?? node.title}</span>
+        <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", fontWeight: 600, color, textTransform: "uppercase", letterSpacing: "0.08em", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.kind === "tool" ? (node.toolName ?? node.title) : (node.agentModel ?? node.title)}</span>
         <button
           onClick={(e: any) => { posthog?.capture('canvasview_clicked'); const handler = (e: any) => { e.stopPropagation(); onClose(); }; if (typeof handler === 'function') (handler as any)(e); }}
           style={{ 
@@ -224,6 +244,160 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
           </div>
         )}
 
+        {isToolNode ? (
+          <div
+            style={{
+              marginBottom: "18px",
+              padding: "12px 14px",
+              border: `1px solid ${color}${isSandboxNode ? "55" : "44"}`,
+              borderRadius: "12px",
+              background: `linear-gradient(135deg, ${color}${isSandboxNode ? "1a" : "12"} 0%, transparent 100%)`,
+            }}
+          >
+            {isSandboxNode && (
+              <div style={{
+                fontFamily: "’Commit Mono’, monospace",
+                fontSize: "9px",
+                color: `${color}99`,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                marginBottom: "4px",
+              }}>
+                Sandbox Execution
+              </div>
+            )}
+            <div
+              style={{
+                fontFamily: "’Commit Mono’, monospace",
+                fontSize: "10px",
+                color,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                marginBottom: "6px",
+              }}
+            >
+              {isSandboxNode ? `$ ${node.toolName ?? "execute"}` : (node.toolName ?? "tool operation")}
+            </div>
+            <div style={{ fontSize: "12px", lineHeight: 1.6, color: "var(--text-secondary)" }}>
+              {node.toolStatus === "failed"
+                ? (isSandboxNode
+                    ? "The script exited with a non-zero code. Check the stderr preview below to see what the agent received."
+                    : "The operation returned an error state. The details below show the exact failure or stderr preview that the agent saw.")
+                : node.toolStatus === "retrying"
+                  ? (isSandboxNode
+                      ? "The agent revised the code and is re-running it in the sandbox."
+                      : "The agent is iterating on this operation with corrected parameters.")
+                  : node.toolStatus === "success"
+                    ? (isSandboxNode
+                        ? "The script ran to completion. Its stdout and structured output were fed back into the agent’s reasoning path."
+                        : "The operation completed and fed structured evidence back into the agent’s reasoning path.")
+                    : (isSandboxNode
+                        ? "The script is executing inside an isolated sandbox environment."
+                        : "The operation is currently running and streaming output into the node.")}
+            </div>
+          </div>
+        ) : null}
+
+        {!isToolNode && toolActivities.length > 0 ? (
+          <div
+            style={{
+              marginBottom: "18px",
+              border: `1px solid ${color}2f`,
+              borderRadius: "14px",
+              background: "var(--bg-base)",
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: "'Commit Mono', monospace",
+                fontSize: "10px",
+                color,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                padding: "12px 14px 0",
+                marginBottom: "10px",
+              }}
+            >
+              Operation stream
+            </div>
+            {/* Top blur */}
+            <div
+              aria-hidden
+              style={{
+                position: "absolute", top: "36px", left: 0, right: 0, height: "22px",
+                background: "linear-gradient(to bottom, var(--bg-base), transparent)",
+                pointerEvents: "none", zIndex: 2,
+              }}
+            />
+            <div
+              ref={modalStreamRef}
+              style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "220px", overflowY: "auto", padding: "0 14px 14px", paddingRight: "12px" }}
+            >
+              {toolActivities.map((activity) => {
+                const tone = activity.status === "failed"
+                  ? { border: "rgba(248,113,113,0.38)", text: "#fca5a5", bg: "rgba(248,113,113,0.08)" }
+                  : activity.status === "retrying"
+                    ? { border: "rgba(251,191,36,0.34)", text: "#fcd34d", bg: "rgba(251,191,36,0.08)" }
+                    : activity.status === "success"
+                      ? { border: "rgba(52,211,153,0.32)", text: "#34d399", bg: "rgba(52,211,153,0.08)" }
+                      : { border: "rgba(56,189,248,0.34)", text: "#7dd3fc", bg: "rgba(56,189,248,0.08)" };
+                const label = activity.name.replace(/_/g, " ").trim().toUpperCase();
+                const status = activity.status === "failed"
+                  ? "FAILED"
+                  : activity.status === "retrying"
+                    ? "RETRYING"
+                    : activity.status === "success"
+                      ? "COMPLETE"
+                      : "RUNNING";
+                return (
+                  <div
+                    key={activity.id}
+                    style={{
+                      border: `1px solid ${tone.border}`,
+                      background: tone.bg,
+                      borderRadius: "12px",
+                      padding: "10px 12px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", marginBottom: "6px" }}>
+                      <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: tone.text, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+                        {label}
+                      </span>
+                      <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: tone.text, letterSpacing: "0.08em", textTransform: "uppercase", border: `1px solid ${tone.border}`, borderRadius: "999px", padding: "2px 6px" }}>
+                        {status}
+                      </span>
+                    </div>
+                    <div style={{ fontFamily: "'Commit Mono', monospace", fontSize: "11px", color: "var(--text-secondary)", lineHeight: 1.55, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                      {activity.summary}
+                    </div>
+                    {activity.details ? (
+                      <details style={{ marginTop: "8px" }}>
+                        <summary style={{ fontFamily: "'Commit Mono', monospace", fontSize: "9px", color: "var(--text-muted)", cursor: "pointer", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                          View payload
+                        </summary>
+                        <pre style={{ margin: "8px 0 0", padding: "10px 12px", borderRadius: "10px", border: "1px solid var(--border-subtle)", background: "var(--bg-elevated)", fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-secondary)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" }}>
+                          {JSON.stringify(activity.details, null, 2)}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+            {/* Bottom blur */}
+            <div
+              aria-hidden
+              style={{
+                position: "absolute", bottom: 0, left: 0, right: 0, height: "22px",
+                background: "linear-gradient(to top, var(--bg-base), transparent)",
+                pointerEvents: "none", zIndex: 2,
+              }}
+            />
+          </div>
+        ) : null}
+
         <div style={{ marginBottom: "20px" }}>
           {node.status === "active" ? (
             node.content ? (
@@ -233,13 +407,15 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
                 fontSize="13px"
                 color="var(--text-primary)"
               />
-            ) : (
+            ) : node.thinkingContent ? (
               <CanvasMarkdownText
-                text={node.thinkingContent || "—"}
+                text={node.thinkingContent}
                 fontSize="13px"
                 color="var(--text-muted)"
                 italic
               />
+            ) : toolActivities.length > 0 ? null : (
+              <div style={{ fontSize: "13px", lineHeight: 1.65, color: "var(--text-muted)" }}>Awaiting answer stream…</div>
             )
           ) : looksLikeJson(node.content || "") ? (
             <pre style={{
@@ -267,7 +443,7 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
                 }
               })()}
             </pre>
-          ) : (
+          ) : node.content || node.thinkingContent ? (
             <div style={{ fontSize: "13px", lineHeight: 1.65, color: "var(--text-primary)" }}>
               <Markdown
                 remarkPlugins={[remarkGfm]}
@@ -299,6 +475,8 @@ function ExpandedCardModal({ node, onClose }: { node: GraphNode; onClose: () => 
                   : (node.thinkingContent || "—")}
               </Markdown>
             </div>
+          ) : toolActivities.length > 0 ? null : (
+            <div style={{ fontSize: "13px", lineHeight: 1.65, color: "var(--text-muted)" }}>Awaiting answer stream…</div>
           )}
         </div>
 
@@ -478,7 +656,7 @@ const GRID_BG_DARK = `
 `.trim();
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism, roundCount, eventCount, entropy }: CanvasViewProps) {
+export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism, roundCount, eventCount, entropy, citationItems = [] }: CanvasViewProps) {
   const containerRef  = useRef<HTMLDivElement>(null);
   const hasFitRef     = useRef(false);
   const scaleRef      = useRef(1);
@@ -687,6 +865,7 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
   const onWheel = useCallback((e: WheelEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest('[data-modal="true"]')) return;
+    if (target.closest('[data-no-zoom]')) return;
 
     e.preventDefault();
     const factor = e.deltaY > 0 ? 0.95 : 1.05;
@@ -791,7 +970,7 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
 
         {/* Ensure QuorumOverlay is seen as a modal to prevent canvas interference */}
         <div data-modal="true">
-          <QuorumOverlay finalAnswer={finalAnswer} taskId={taskId} />
+          <QuorumOverlay finalAnswer={finalAnswer} taskId={taskId} citationItems={citationItems} />
         </div>
       </div>
     </div>

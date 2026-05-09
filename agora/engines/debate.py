@@ -47,6 +47,16 @@ from agora.runtime.prompt_policy import (
     debate_rebuttal_prompt,
     debate_synthesis_prompt,
 )
+from agora.tools.broker import ToolBroker
+from agora.tools.runtime import (
+    ToolInvocationContext,
+    ToolPolicyConfig,
+    maybe_augment_prompt_with_tool,
+    merge_raw_usage,
+    normalize_raw_usage,
+    tool_results_to_evidence,
+)
+from agora.tools.types import SourceRef, ToolResult
 from agora.types import (
     AgentOutput,
     DebateState,
@@ -166,11 +176,25 @@ class _SynthesisResponse(BaseModel):
     final_answer: str = ""
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     summary: str = ""
+    key_surviving_claims: list[str] = Field(default_factory=list)
+    dropped_claims: list[str] = Field(default_factory=list)
 
     @field_validator("final_answer", "summary", mode="before")
     @classmethod
     def _coerce_text(cls, value: Any) -> str:
         return "" if value is None else str(value)
+
+    @field_validator("key_surviving_claims", "dropped_claims", mode="before")
+    @classmethod
+    def _coerce_list(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return ["" if item is None else str(item) for item in value]
+        if isinstance(value, tuple):
+            return ["" if item is None else str(item) for item in value]
+        text = str(value).strip()
+        return [text] if text else []
 
 
 class DebateEngineOutcome(BaseModel):
@@ -265,6 +289,7 @@ class DebateEngine:
         self._claude_run_semaphore = asyncio.Semaphore(
             get_config().anthropic_concurrent_requests_per_run
         )
+        self._tool_broker: ToolBroker | None = None
 
         self.graph = self._build_graph()
 
@@ -275,6 +300,9 @@ class DebateEngine:
         event_sink: EventSink | None = None,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
         allow_switch: bool = True,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> DebateEngineOutcome:
         """Execute factional debate and return either result or switch signal.
 
@@ -292,6 +320,9 @@ class DebateEngine:
             event_sink=event_sink,
             custom_agents=custom_agents,
             allow_switch=allow_switch,
+            sources=sources,
+            tools_enabled=tools_enabled,
+            tool_policy=tool_policy,
         )
 
     async def _run_graph(
@@ -302,6 +333,9 @@ class DebateEngine:
         event_sink: EventSink | None,
         custom_agents: Sequence[CustomAgentCallable] | None,
         allow_switch: bool,
+        sources: Sequence[SourceRef] | None,
+        tools_enabled: bool,
+        tool_policy: ToolPolicyConfig | None,
     ) -> DebateEngineOutcome:
         """Execute debate through the compiled LangGraph when available."""
 
@@ -311,6 +345,9 @@ class DebateEngine:
             "event_sink": event_sink,
             "custom_agents": custom_agents,
             "allow_switch": allow_switch,
+            "sources": list(sources or []),
+            "tools_enabled": bool(tools_enabled),
+            "tool_policy": tool_policy or ToolPolicyConfig(enabled=False),
             "execution": DebateState(
                 task=task,
                 task_features=selection.task_features,
@@ -329,6 +366,7 @@ class DebateEngine:
             "model_thinking_token_usage": {},
             "model_latency_ms": {},
             "fallback_events": [],
+            "tool_results": [],
             "round_cursor": 1,
             "switch_to_vote": False,
             "suggested_mechanism": None,
@@ -412,6 +450,9 @@ class DebateEngine:
             execution.task,
             custom_agents=custom_agents,
             event_sink=event_sink,
+            sources=graph_state.get("sources"),
+            tools_enabled=bool(graph_state.get("tools_enabled")),
+            tool_policy=graph_state.get("tool_policy"),
         )
         self._graph_accumulate_usage(graph_state, usage)
         self.monitor.seed_baseline(initial_outputs)
@@ -446,6 +487,9 @@ class DebateEngine:
             opp_answer=graph_state["opp_answer"],
             custom_agents=graph_state.get("custom_agents"),
             event_sink=event_sink,
+            sources=graph_state.get("sources"),
+            tools_enabled=bool(graph_state.get("tools_enabled")),
+            tool_policy=graph_state.get("tool_policy"),
         )
         self._graph_accumulate_usage(graph_state, usage)
         for output in opening_outputs:
@@ -520,6 +564,9 @@ class DebateEngine:
             locked_claims=execution.locked_claims,
             custom_agents=graph_state.get("custom_agents"),
             event_sink=event_sink,
+            sources=graph_state.get("sources"),
+            tools_enabled=bool(graph_state.get("tools_enabled")),
+            tool_policy=graph_state.get("tool_policy"),
         )
         self._graph_accumulate_usage(graph_state, usage)
 
@@ -628,6 +675,10 @@ class DebateEngine:
             prior_fallback_events=graph_state["fallback_events"],
             custom_agents=graph_state.get("custom_agents"),
             event_sink=graph_state.get("event_sink"),
+            sources=graph_state.get("sources"),
+            tools_enabled=bool(graph_state.get("tools_enabled")),
+            tool_policy=graph_state.get("tool_policy"),
+            tool_results=graph_state.get("tool_results", []),
         )
         graph_state["result"] = result
         graph_state["reason"] = str(graph_state.get("reason") or "completed")
@@ -782,6 +833,7 @@ class DebateEngine:
             usage,
         )
         self._accumulate_fallback_events(graph_state["fallback_events"], usage)
+        graph_state["tool_results"].extend(usage.get("tool_results", []))
 
     @staticmethod
     def _agent_models_from_state(state: DebateState) -> list[str]:
@@ -804,6 +856,9 @@ class DebateEngine:
         task: str,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
         event_sink: EventSink | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate independent initial answers for faction assignment."""
 
@@ -818,6 +873,9 @@ class DebateEngine:
             )
 
             custom_agent = custom_agents[agent_idx] if custom_agents is not None else None
+            final_user_prompt = prompt.user
+            planning_usage: dict[str, Any] = {}
+            tool_results: list[ToolResult] = []
             stream_callback = self._make_stream_delta_callback(
                 event_sink,
                 event_type="agent_output_delta",
@@ -834,12 +892,43 @@ class DebateEngine:
                     "stage": "initial",
                 },
             )
+            if custom_agent is None and tools_enabled:
+                planning_caller = (
+                    self._participant_caller(agent_idx, explicit_model)
+                    if explicit_model is not None
+                    else self._get_caller(tier)
+                )
+                if self._tool_broker is None:
+                    self._tool_broker = ToolBroker()
+                augmentation = await maybe_augment_prompt_with_tool(
+                    caller=planning_caller,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    context=ToolInvocationContext(
+                        task=task,
+                        agent_id=agent_id,
+                        round_index=0,
+                        stage="initial",
+                        sources=list(sources or []),
+                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                        event_sink=event_sink,
+                        broker=self._tool_broker,
+                    ),
+                )
+                final_user_prompt = augmentation.user_prompt
+                tool_results = augmentation.tool_results
+                if augmentation.planning_usage:
+                    planning_usage = normalize_raw_usage(
+                        usage=augmentation.planning_usage,
+                        model_name=planning_caller.model,
+                        provider=getattr(planning_caller, "provider", "unknown"),
+                    )
             if explicit_model is not None and custom_agent is None:
                 response, usage = await self._call_structured_explicit_model(
                     agent_idx=agent_idx,
                     model_spec=explicit_model,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_InitialAnswerResponse,
                     fallback=fallback,
                     stream=event_sink is not None,
@@ -849,7 +938,7 @@ class DebateEngine:
                 response, usage = await self._call_structured(
                     tier=tier,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_InitialAnswerResponse,
                     fallback=fallback,
                     custom_agent=custom_agent,
@@ -874,15 +963,31 @@ class DebateEngine:
                 content_hash=self.hasher.hash_content(content),
                 timestamp=timestamp,
             )
-            await self._emit_usage_delta(event_sink, output, usage)
-            return output, usage
+            merged_usage = merge_raw_usage(
+                [entry for entry in [planning_usage, usage] if entry]
+            )
+            if tool_results:
+                merged_usage["tool_results"] = list(tool_results)
+            await self._emit_usage_delta(event_sink, output, merged_usage)
+            return output, merged_usage
 
         results = await asyncio.gather(*(one_call(idx) for idx in range(self.agent_count)))
         outputs = [output for output, _usage in results]
         usage_totals = self._merge_usage([usage for _output, usage in results])
-        model_tokens, model_latency = self._merge_usage_by_output(results)
-        usage_totals["model_tokens"] = model_tokens
-        usage_totals["model_latency_ms"] = model_latency
+        if not usage_totals["model_tokens"] or not usage_totals["model_latency_ms"]:
+            model_tokens, model_latency = self._merge_usage_by_output(results)
+            if not usage_totals["model_tokens"]:
+                self._accumulate_optional_usage_map(usage_totals["model_tokens"], model_tokens)
+            if not usage_totals["model_latency_ms"]:
+                self._accumulate_optional_latency_map(
+                    usage_totals["model_latency_ms"],
+                    model_latency,
+                )
+        usage_totals["tool_results"] = [
+            tool_result
+            for _output, usage in results
+            for tool_result in usage.get("tool_results", [])
+        ]
         return outputs, usage_totals
 
     def _assign_factions(
@@ -943,6 +1048,9 @@ class DebateEngine:
         opp_answer: str,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
         event_sink: EventSink | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate faction opening statements in parallel."""
 
@@ -963,6 +1071,9 @@ class DebateEngine:
             custom_agent = (
                 custom_agents[self._agent_index(agent_id)] if custom_agents is not None else None
             )
+            final_user_prompt = prompt.user
+            planning_usage: dict[str, Any] = {}
+            tool_results: list[ToolResult] = []
             stream_callback = self._make_stream_delta_callback(
                 event_sink,
                 event_type="agent_output_delta",
@@ -979,12 +1090,43 @@ class DebateEngine:
                     "stage": "opening",
                 },
             )
+            if custom_agent is None and tools_enabled:
+                planning_caller = (
+                    self._participant_caller(agent_idx, explicit_model)
+                    if explicit_model is not None
+                    else self._get_caller(tier)
+                )
+                if self._tool_broker is None:
+                    self._tool_broker = ToolBroker()
+                augmentation = await maybe_augment_prompt_with_tool(
+                    caller=planning_caller,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    context=ToolInvocationContext(
+                        task=task,
+                        agent_id=agent_id,
+                        round_index=1,
+                        stage="opening",
+                        sources=list(sources or []),
+                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                        event_sink=event_sink,
+                        broker=self._tool_broker,
+                    ),
+                )
+                final_user_prompt = augmentation.user_prompt
+                tool_results = augmentation.tool_results
+                if augmentation.planning_usage:
+                    planning_usage = normalize_raw_usage(
+                        usage=augmentation.planning_usage,
+                        model_name=planning_caller.model,
+                        provider=getattr(planning_caller, "provider", "unknown"),
+                    )
             if explicit_model is not None and custom_agent is None:
                 response, usage = await self._call_structured_explicit_model(
                     agent_idx=agent_idx,
                     model_spec=explicit_model,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_OpeningResponse,
                     fallback=fallback,
                     stream=event_sink is not None,
@@ -994,7 +1136,7 @@ class DebateEngine:
                 response, usage = await self._call_structured(
                     tier=tier,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_OpeningResponse,
                     fallback=fallback,
                     custom_agent=custom_agent,
@@ -1032,17 +1174,33 @@ class DebateEngine:
                 content_hash=self.hasher.hash_content(content),
                 timestamp=timestamp,
             )
-            await self._emit_usage_delta(event_sink, output, usage)
-            return output, usage
+            merged_usage = merge_raw_usage(
+                [entry for entry in [planning_usage, usage] if entry]
+            )
+            if tool_results:
+                merged_usage["tool_results"] = list(tool_results)
+            await self._emit_usage_delta(event_sink, output, merged_usage)
+            return output, merged_usage
 
         results = await asyncio.gather(
             *(one_call(agent_id, side) for agent_id, side in assignments.items())
         )
         outputs = [output for output, _usage in results]
         usage_totals = self._merge_usage([usage for _output, usage in results])
-        model_tokens, model_latency = self._merge_usage_by_output(results)
-        usage_totals["model_tokens"] = model_tokens
-        usage_totals["model_latency_ms"] = model_latency
+        if not usage_totals["model_tokens"] or not usage_totals["model_latency_ms"]:
+            model_tokens, model_latency = self._merge_usage_by_output(results)
+            if not usage_totals["model_tokens"]:
+                self._accumulate_optional_usage_map(usage_totals["model_tokens"], model_tokens)
+            if not usage_totals["model_latency_ms"]:
+                self._accumulate_optional_latency_map(
+                    usage_totals["model_latency_ms"],
+                    model_latency,
+                )
+        usage_totals["tool_results"] = [
+            tool_result
+            for _output, usage in results
+            for tool_result in usage.get("tool_results", [])
+        ]
         return outputs, usage_totals
 
     async def _cross_examination(
@@ -1152,6 +1310,9 @@ class DebateEngine:
         locked_claims: list[VerifiedClaim],
         custom_agents: Sequence[CustomAgentCallable] | None = None,
         event_sink: EventSink | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate faction rebuttals responding to cross-examination."""
 
@@ -1175,6 +1336,9 @@ class DebateEngine:
             custom_agent = (
                 custom_agents[self._agent_index(agent_id)] if custom_agents is not None else None
             )
+            final_user_prompt = prompt.user
+            planning_usage: dict[str, Any] = {}
+            tool_results: list[ToolResult] = []
             stream_callback = self._make_stream_delta_callback(
                 event_sink,
                 event_type="agent_output_delta",
@@ -1191,12 +1355,43 @@ class DebateEngine:
                     "stage": "rebuttal",
                 },
             )
+            if custom_agent is None and tools_enabled:
+                planning_caller = (
+                    self._participant_caller(agent_idx, explicit_model)
+                    if explicit_model is not None
+                    else self._get_caller(tier)
+                )
+                if self._tool_broker is None:
+                    self._tool_broker = ToolBroker()
+                augmentation = await maybe_augment_prompt_with_tool(
+                    caller=planning_caller,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    context=ToolInvocationContext(
+                        task=task,
+                        agent_id=agent_id,
+                        round_index=round_number,
+                        stage="rebuttal",
+                        sources=list(sources or []),
+                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                        event_sink=event_sink,
+                        broker=self._tool_broker,
+                    ),
+                )
+                final_user_prompt = augmentation.user_prompt
+                tool_results = augmentation.tool_results
+                if augmentation.planning_usage:
+                    planning_usage = normalize_raw_usage(
+                        usage=augmentation.planning_usage,
+                        model_name=planning_caller.model,
+                        provider=getattr(planning_caller, "provider", "unknown"),
+                    )
             if explicit_model is not None and custom_agent is None:
                 response, usage = await self._call_structured_explicit_model(
                     agent_idx=agent_idx,
                     model_spec=explicit_model,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_RebuttalResponse,
                     fallback=fallback,
                     temperature=0.4,
@@ -1207,7 +1402,7 @@ class DebateEngine:
                 response, usage = await self._call_structured(
                     tier=tier,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_RebuttalResponse,
                     fallback=fallback,
                     temperature=0.4,
@@ -1245,16 +1440,32 @@ class DebateEngine:
                 timestamp=datetime.now(UTC),
             )
             await self._emit_usage_delta(event_sink, output, usage)
-            return output, usage
+            merged_usage = merge_raw_usage(
+                [entry for entry in [planning_usage, usage] if entry]
+            )
+            if tool_results:
+                merged_usage["tool_results"] = list(tool_results)
+            return output, merged_usage
 
         results = await asyncio.gather(
             *(one_call(agent_id, side) for agent_id, side in assignments.items())
         )
         outputs = [output for output, _usage in results]
         usage_totals = self._merge_usage([usage for _output, usage in results])
-        model_tokens, model_latency = self._merge_usage_by_output(results)
-        usage_totals["model_tokens"] = model_tokens
-        usage_totals["model_latency_ms"] = model_latency
+        if not usage_totals["model_tokens"] or not usage_totals["model_latency_ms"]:
+            model_tokens, model_latency = self._merge_usage_by_output(results)
+            if not usage_totals["model_tokens"]:
+                self._accumulate_optional_usage_map(usage_totals["model_tokens"], model_tokens)
+            if not usage_totals["model_latency_ms"]:
+                self._accumulate_optional_latency_map(
+                    usage_totals["model_latency_ms"],
+                    model_latency,
+                )
+        usage_totals["tool_results"] = [
+            tool_result
+            for _output, usage in results
+            for tool_result in usage.get("tool_results", [])
+        ]
         return outputs, usage_totals
 
     async def _final_aggregation(
@@ -1273,6 +1484,10 @@ class DebateEngine:
         prior_fallback_events: list[FallbackEvent] | None = None,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
         event_sink: EventSink | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
+        tool_results: list[ToolResult] | None = None,
     ) -> tuple[DeliberationResult, dict[str, Any]]:
         """Aggregate trajectory, synthesize final answer, and build result."""
 
@@ -1309,10 +1524,15 @@ class DebateEngine:
                 f"confidence-weighted debate score exceeded the alternative on task: "
                 f"{self._task_fragment(state.task)}"
             ),
+            key_surviving_claims=[winning_answer],
+            dropped_claims=[],
         )
 
         custom_agent = self._coordinator_custom_agent(custom_agents)
         explicit_model = self._synthesis_model() if custom_agent is None else None
+        final_user_prompt = prompt.user
+        planning_usage: dict[str, Any] = {}
+        synthesis_tool_results: list[ToolResult] = []
         stream_callback = self._make_stream_delta_callback(
             event_sink,
             event_type="agent_output_delta",
@@ -1327,12 +1547,43 @@ class DebateEngine:
                 "stage": "final_synthesis",
             },
         )
+        if custom_agent is None and tools_enabled:
+            planning_caller = (
+                self._participant_caller(0, explicit_model)
+                if explicit_model is not None
+                else self._get_caller("pro")
+            )
+            if self._tool_broker is None:
+                self._tool_broker = ToolBroker()
+            augmentation = await maybe_augment_prompt_with_tool(
+                caller=planning_caller,
+                system_prompt=prompt.system,
+                user_prompt=prompt.user,
+                context=ToolInvocationContext(
+                    task=state.task,
+                    agent_id="synthesis",
+                    round_index=max(1, state.round),
+                    stage="final_synthesis",
+                    sources=list(sources or []),
+                    tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                    event_sink=event_sink,
+                    broker=self._tool_broker,
+                ),
+            )
+            final_user_prompt = augmentation.user_prompt
+            synthesis_tool_results = augmentation.tool_results
+            if augmentation.planning_usage:
+                planning_usage = normalize_raw_usage(
+                    usage=augmentation.planning_usage,
+                    model_name=planning_caller.model,
+                    provider=getattr(planning_caller, "provider", "unknown"),
+                )
         if explicit_model is not None and custom_agent is None:
             response, usage = await self._call_structured_explicit_model(
                 agent_idx=0,
                 model_spec=explicit_model,
                 system_prompt=prompt.system,
-                user_prompt=prompt.user,
+                user_prompt=final_user_prompt,
                 response_model=_SynthesisResponse,
                 fallback=fallback,
                 temperature=0.2,
@@ -1343,7 +1594,7 @@ class DebateEngine:
             response, usage = await self._call_structured(
                 tier="pro",
                 system_prompt=prompt.system,
-                user_prompt=prompt.user,
+                user_prompt=final_user_prompt,
                 response_model=_SynthesisResponse,
                 fallback=fallback,
                 temperature=0.2,
@@ -1352,6 +1603,7 @@ class DebateEngine:
                 stream_callback=stream_callback,
             )
         assert isinstance(response, _SynthesisResponse)
+        usage = merge_raw_usage([entry for entry in [planning_usage, usage] if entry])
 
         state.final_answer = response.final_answer
         state.merkle_root = self.hasher.build_merkle_tree(state.transcript_hashes)
@@ -1364,11 +1616,28 @@ class DebateEngine:
         model_token_usage = dict(prior_model_token_usage)
         model_latency_ms = dict(prior_model_latency_ms)
         synthesis_usage = dict(usage)
-        model_name = synthesis_usage.get("model")
-        if isinstance(model_name, str) and model_name:
-            synthesis_usage["model_tokens"] = {model_name: int(synthesis_usage.get("tokens", 0))}
+        synthesis_model_name = (
+            "custom-agent"
+            if custom_agent is not None
+            else (
+                explicit_model.model
+                if explicit_model is not None
+                else self._model_name("pro")
+            )
+        )
+        if (
+            not isinstance(synthesis_usage.get("model_tokens"), dict)
+            or not synthesis_usage.get("model_tokens")
+        ):
+            synthesis_usage["model_tokens"] = {
+                synthesis_model_name: int(synthesis_usage.get("tokens", 0))
+            }
+        if (
+            not isinstance(synthesis_usage.get("model_latency_ms"), dict)
+            or not synthesis_usage.get("model_latency_ms")
+        ):
             synthesis_usage["model_latency_ms"] = {
-                model_name: float(synthesis_usage.get("latency_ms", 0.0))
+                synthesis_model_name: float(synthesis_usage.get("latency_ms", 0.0))
             }
         self._accumulate_model_usage(model_token_usage, model_latency_ms, synthesis_usage)
         model_input_token_usage = dict(prior_model_input_token_usage)
@@ -1409,6 +1678,12 @@ class DebateEngine:
             model_output_tokens=model_output_token_usage,
             model_thinking_tokens=model_thinking_token_usage,
             fallback_total_tokens=total_tokens,
+        )
+        persisted_tool_results = list(tool_results or []) + list(synthesis_tool_results)
+        evidence_items, citation_items = tool_results_to_evidence(
+            tool_results=persisted_tool_results,
+            agent_id="debate",
+            round_index=max(1, state.round),
         )
         result = DeliberationResult(
             task=state.task,
@@ -1462,6 +1737,10 @@ class DebateEngine:
             total_latency_ms=total_latency_ms,
             cost=cost,
             reasoning_presets=self.reasoning_presets,
+            sources=list(sources or []),
+            tool_usage_summary=ToolBroker.summarize_usage(persisted_tool_results),
+            evidence_items=evidence_items,
+            citation_items=citation_items,
         )
         await self._emit_usage_delta(
             event_sink,
@@ -2139,8 +2418,14 @@ class DebateEngine:
                     parsed.setdefault("confidence", _SCHEMA_COERCION_CONFIDENCE)
                     return _OpeningResponse.model_validate(parsed), "schema_coercion"
                 if response_model is _RebuttalResponse:
-                    parsed.setdefault("answer", parsed.get("final_answer", cleaned))
-                    parsed.setdefault("defense", parsed.get("reasoning", cleaned))
+                    parsed.setdefault(
+                        "answer",
+                        parsed.get("revised_answer", parsed.get("final_answer", cleaned)),
+                    )
+                    parsed.setdefault(
+                        "defense",
+                        parsed.get("rebuttal_text", parsed.get("reasoning", cleaned)),
+                    )
                     parsed.setdefault("confidence", _SCHEMA_COERCION_CONFIDENCE)
                     return _RebuttalResponse.model_validate(parsed), "schema_coercion"
                 if response_model is _SynthesisResponse:
@@ -2492,6 +2777,22 @@ class DebateEngine:
                             },
                         )
                     )
+                    return
+                try:
+                    generic_payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    generic_payload = {"message": payload}
+                if not isinstance(generic_payload, dict):
+                    generic_payload = {"payload": generic_payload}
+                loop.create_task(
+                    event_sink(
+                        stream_kind,
+                        {
+                            **base_payload,
+                            **generic_payload,
+                        },
+                    )
+                )
                 return
 
             content_buffer.append(chunk)
@@ -2868,13 +3169,55 @@ class DebateEngine:
 
         total_tokens = sum(int(entry.get("tokens", 0)) for entry in entries)
         total_latency = sum(float(entry.get("latency_ms", 0.0)) for entry in entries)
+        input_tokens = sum(int(entry.get("input_tokens") or 0) for entry in entries) or None
+        output_tokens = sum(int(entry.get("output_tokens") or 0) for entry in entries) or None
+        thinking_tokens = (
+            sum(
+                int(entry.get("thinking_tokens") or entry.get("reasoning_tokens") or 0)
+                for entry in entries
+            )
+            or None
+        )
         fallback_events: list[FallbackEvent] = []
+        tool_results: list[ToolResult] = []
+        model_tokens: dict[str, int] = {}
+        model_input_tokens: dict[str, int] = {}
+        model_output_tokens: dict[str, int] = {}
+        model_thinking_tokens: dict[str, int] = {}
+        model_latency_ms: dict[str, float] = {}
         for entry in entries:
             DebateEngine._accumulate_fallback_events(fallback_events, entry)
+            tool_results.extend(entry.get("tool_results", []))
+            DebateEngine._accumulate_optional_usage_map(model_tokens, entry.get("model_tokens"))
+            DebateEngine._accumulate_optional_usage_map(
+                model_input_tokens,
+                entry.get("model_input_tokens"),
+            )
+            DebateEngine._accumulate_optional_usage_map(
+                model_output_tokens,
+                entry.get("model_output_tokens"),
+            )
+            DebateEngine._accumulate_optional_usage_map(
+                model_thinking_tokens,
+                entry.get("model_thinking_tokens"),
+            )
+            DebateEngine._accumulate_optional_latency_map(
+                model_latency_ms,
+                entry.get("model_latency_ms"),
+            )
         return {
             "tokens": total_tokens,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "thinking_tokens": thinking_tokens,
             "latency_ms": total_latency,
             "fallback_events": fallback_events,
+            "tool_results": tool_results,
+            "model_tokens": model_tokens,
+            "model_input_tokens": model_input_tokens,
+            "model_output_tokens": model_output_tokens,
+            "model_thinking_tokens": model_thinking_tokens,
+            "model_latency_ms": model_latency_ms,
         }
 
     @staticmethod
@@ -2945,6 +3288,30 @@ class DebateEngine:
             if amount is None:
                 continue
             store[model] = store.get(model, 0) + max(0, int(amount))
+
+    @staticmethod
+    def _accumulate_optional_usage_map(
+        store: dict[str, int],
+        stage_usage: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(stage_usage, dict):
+            return
+        for model, amount in stage_usage.items():
+            if not isinstance(model, str) or amount is None:
+                continue
+            store[model] = store.get(model, 0) + max(0, int(amount))
+
+    @staticmethod
+    def _accumulate_optional_latency_map(
+        store: dict[str, float],
+        stage_usage: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(stage_usage, dict):
+            return
+        for model, amount in stage_usage.items():
+            if not isinstance(model, str) or amount is None:
+                continue
+            store[model] = store.get(model, 0.0) + float(amount)
 
     @staticmethod
     def _compact_split_total(*, counter: int, model_usage: dict[str, int]) -> int | None:

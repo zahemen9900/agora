@@ -37,6 +37,33 @@ class Settings(BaseSettings):
 
     google_cloud_project: str = ""
     gcs_bucket: str = "agora-data"
+    source_upload_expiry_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=60,
+        validation_alias=AliasChoices(
+            "AGORA_SOURCE_UPLOAD_EXPIRY_MINUTES",
+            "SOURCE_UPLOAD_EXPIRY_MINUTES",
+        ),
+    )
+    source_max_file_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1,
+        le=25_000_000,
+        validation_alias=AliasChoices(
+            "AGORA_SOURCE_MAX_FILE_BYTES",
+            "SOURCE_MAX_FILE_BYTES",
+        ),
+    )
+    source_max_attachments_per_task: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        validation_alias=AliasChoices(
+            "AGORA_SOURCE_MAX_ATTACHMENTS_PER_TASK",
+            "SOURCE_MAX_ATTACHMENTS_PER_TASK",
+        ),
+    )
     local_data_dir: str = Field(
         default="api/data",
         validation_alias=AliasChoices("AGORA_LOCAL_DATA_DIR", "LOCAL_DATA_DIR"),
@@ -171,6 +198,26 @@ class Settings(BaseSettings):
         default=365,
         ge=0,
         validation_alias=AliasChoices("AGORA_API_KEY_DEFAULT_TTL_DAYS", "API_KEY_DEFAULT_TTL_DAYS"),
+    )
+    sandbox_runner_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_SANDBOX_RUNNER_URL", "SANDBOX_RUNNER_URL"),
+    )
+    sandbox_runner_bearer_token: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "AGORA_SANDBOX_RUNNER_BEARER_TOKEN",
+            "SANDBOX_RUNNER_BEARER_TOKEN",
+        ),
+    )
+    sandbox_execution_timeout_seconds: int = Field(
+        default=20,
+        ge=1,
+        le=30,
+        validation_alias=AliasChoices(
+            "AGORA_SANDBOX_EXECUTION_TIMEOUT_SECONDS",
+            "SANDBOX_EXECUTION_TIMEOUT_SECONDS",
+        ),
     )
     axiom_enabled: bool = Field(
         default=False,

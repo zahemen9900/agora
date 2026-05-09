@@ -31,6 +31,10 @@ export interface TaskCreateRequest {
   quorum_threshold: number;
   reasoning_presets: ReasoningPresetOverrides | null;
   tier_model_overrides: RuntimeTierModelOverrides | null;
+  source_urls: Array<string>;
+  source_file_ids: Array<string>;
+  enable_tools: boolean;
+  tool_policy: ToolPolicy | null;
 }
 
 export interface RuntimeTierModelOverrides {
@@ -38,6 +42,18 @@ export interface RuntimeTierModelOverrides {
   flash: string | null;
   openrouter: string | null;
   claude: string | null;
+}
+
+export interface ToolPolicy {
+  enabled: boolean;
+  allow_search: boolean;
+  allow_url_analysis: boolean;
+  allow_file_analysis: boolean;
+  allow_code_execution: boolean;
+  max_tool_calls_per_agent: number;
+  max_urls_per_call: number;
+  max_files_per_call: number;
+  execution_timeout_seconds: number;
 }
 
 export interface TaskEvent {
@@ -81,6 +97,10 @@ export interface DeliberationResultResponse {
   fallback_count: number;
   fallback_events: Array<Record<string, unknown>>;
   mechanism_override_source: string | null;
+  sources: Array<TaskSourceResponse>;
+  tool_usage_summary: ToolUsageSummaryResponse | null;
+  evidence_items: Array<EvidenceItemResponse>;
+  citation_items: Array<CitationItemResponse>;
 }
 
 export interface BenchmarkCostEstimateResponse {
@@ -90,6 +110,26 @@ export interface BenchmarkCostEstimateResponse {
   estimated_at: string | null;
   estimation_mode: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
   pricing_sources: Record<string, string>;
+}
+
+export interface CitationItemResponse {
+  title: string;
+  url: string | null;
+  domain: string | null;
+  rank: number | null;
+  source_kind: "text_file" | "code_file" | "pdf" | "image" | "url" | null;
+  source_id: string | null;
+  note: string | null;
+}
+
+export interface EvidenceItemResponse {
+  evidence_id: string;
+  tool_name: string;
+  agent_id: string;
+  summary: string;
+  round_index: number;
+  source_ids: Array<string>;
+  citations: Array<CitationItemResponse>;
 }
 
 export interface ModelTelemetryResponse {
@@ -102,6 +142,25 @@ export interface ModelTelemetryResponse {
   estimation_mode: "exact" | "approx_total_tokens" | "unavailable" | "mixed" | null;
 }
 
+export interface TaskSourceResponse {
+  source_id: string;
+  kind: "text_file" | "code_file" | "pdf" | "image" | "url";
+  display_name: string;
+  mime_type: string;
+  size_bytes: number;
+  sha256: string | null;
+  status: "pending_upload" | "uploaded" | "ready" | "failed";
+  created_at: string;
+  source_url: string | null;
+}
+
+export interface ToolUsageSummaryResponse {
+  total_tool_calls: number;
+  successful_tool_calls: number;
+  failed_tool_calls: number;
+  tool_counts: Record<string, number>;
+}
+
 export interface TaskStatusResponse {
   task_id: string;
   task_text: string;
@@ -112,6 +171,13 @@ export interface TaskStatusResponse {
   allow_mechanism_switch: boolean;
   allow_offline_fallback: boolean;
   quorum_threshold: number;
+  execution_source: "hosted" | "local_byok";
+  background_recovery_allowed: boolean;
+  enable_tools: boolean;
+  tool_policy: ToolPolicy | null;
+  source_urls: Array<string>;
+  source_file_ids: Array<string>;
+  sources: Array<TaskSourceResponse>;
   selector_source: string;
   selector_fallback_path: Array<string>;
   mechanism_override_source: string | null;
@@ -134,7 +200,9 @@ export interface TaskStatusResponse {
   payment_status: "locked" | "released" | "none";
   chain_operations: Record<string, ChainOperationRecord>;
   created_at: string;
+  updated_at: string;
   completed_at: string | null;
+  stop_requested_at: string | null;
   failure_reason: string | null;
   latest_error_event: TaskEvent | null;
   result: DeliberationResultResponse | null;
@@ -218,12 +286,32 @@ export interface BenchmarkRunRequest {
   domain_prompts: Record<string, BenchmarkDomainPrompt>;
   reasoning_presets: ReasoningPresetOverrides | null;
   tier_model_overrides: RuntimeTierModelOverrides | null;
+  local_models: Array<LocalModelSpec> | null;
+  local_provider_keys: LocalProviderKeys | null;
+  local_debate_config: LocalDebateConfig | null;
 }
 
 export interface BenchmarkDomainPrompt {
   template_id: string | null;
   question: string | null;
   source: "template" | "custom";
+}
+
+export interface LocalDebateConfig {
+  devils_advocate_model: LocalModelSpec | null;
+  devils_advocate_fallback_models: Array<LocalModelSpec> | null;
+}
+
+export interface LocalModelSpec {
+  provider: "gemini" | "anthropic" | "openrouter";
+  model: string;
+  reasoning_preset: string | null;
+}
+
+export interface LocalProviderKeys {
+  gemini_api_key: string | null;
+  anthropic_api_key: string | null;
+  openrouter_api_key: string | null;
 }
 
 export interface BenchmarkRunResponse {
@@ -239,6 +327,8 @@ export interface BenchmarkRunStatusResponse {
   updated_at: string;
   error: string | null;
   artifact_id: string | null;
+  execution_source: "hosted" | "local_byok";
+  background_recovery_allowed: boolean;
   request: BenchmarkStoredRequest | null;
   reasoning_presets: ReasoningPresets | null;
   tier_model_overrides: RuntimeTierModelOverrides | null;
@@ -328,6 +418,8 @@ export interface BenchmarkDetailResponse {
   total_latency_ms: number;
   models: Array<string>;
   run_id: string | null;
+  execution_source: "hosted" | "local_byok";
+  background_recovery_allowed: boolean;
   request: BenchmarkStoredRequest | null;
   reasoning_presets: ReasoningPresets | null;
   tier_model_overrides: RuntimeTierModelOverrides | null;

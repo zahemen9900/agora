@@ -11,7 +11,9 @@ from agora.runtime.prompt_policy import (
     selector_prompt,
     vote_participant_prompt,
 )
+from agora.tools.runtime import ToolPolicyConfig, _build_decision_prompt
 from agora.types import MechanismType
+from agora.tools.types import SourceRef
 from tests.helpers import make_features
 
 
@@ -37,9 +39,16 @@ def test_selector_prompt_describes_when_each_mechanism_should_and_should_not_be_
     assert "If two mechanisms seem plausible, choose the one whose failure mode is less costly" in system
     assert "Do not use stakes alone as a reason to escalate into debate" in system
     assert "Do not treat delphi as the generic choice for any hard task" in system
+    assert "Treat historical performance as one data point about past task distributions" in system
     assert "Example for vote:" in system
     assert "Example for debate:" in system
     assert "Example for delphi:" in system
+
+
+def test_base_policy_defines_confidence_operationally() -> None:
+    prompt = vote_participant_prompt(task="What is the capital of France?")
+
+    assert "Confidence means your probability that a domain expert would mark this answer correct" in prompt.system
 
 
 def test_vote_prompt_enforces_independent_non_consensus_behavior() -> None:
@@ -65,6 +74,7 @@ def test_delphi_prompts_enforce_evidence_updates_without_social_convergence() ->
     assert "Revise only when the evidence materially changes your view" in revision.system
     assert "Do not converge just to reduce disagreement" in revision.system
     assert "Keep a dissenting answer when the alternatives are weaker" in revision.system
+    assert "This is revision round 2 of 3." in revision.user
 
 
 def test_debate_prompts_enforce_targeted_falsification_and_evidence_sensitive_synthesis() -> None:
@@ -102,6 +112,62 @@ def test_debate_prompts_enforce_targeted_falsification_and_evidence_sensitive_sy
     assert "Do not reward rhetorical confidence without evidence" in rebuttal.system
     assert "Preserve genuine uncertainty when the critique lands" in rebuttal.system
     assert "Answer the targeted challenge before introducing new supporting claims" in rebuttal.system
+    assert "Return JSON" in rebuttal.user
+    assert '"answer":' in rebuttal.user
+    assert '"defense":' in rebuttal.user
+    assert "treat these as established facts you cannot contradict" in rebuttal.user
     assert "Do not average incompatible positions into fake balance" in synthesis.system
     assert "Pick the answer that survives scrutiny, not the answer that sounds most moderate" in synthesis.system
     assert "Carry forward only claims that remained defensible under critique" in synthesis.system
+    assert '"key_surviving_claims"' in synthesis.user
+    assert '"dropped_claims"' in synthesis.user
+
+
+def test_tool_decision_prompt_gives_concise_examples_and_pushes_tool_use_for_files_and_exact_checks() -> None:
+    prompt = _build_decision_prompt(
+        task="Compute the exact SHA256 of the attached file and compare it with a public changelog URL.",
+        original_prompt="Find the exact digest and note any mismatch with the changelog.",
+        context=type(
+            "Ctx",
+            (),
+            {
+                "stage": "vote",
+                "agent_id": "agent-1",
+                "round_index": 0,
+                "sources": [
+                    SourceRef(
+                        source_id="file-1",
+                        kind="code_file",
+                        display_name="worker.py",
+                        mime_type="text/x-python",
+                        storage_uri="file:///tmp/worker.py",
+                        size_bytes=12,
+                    ),
+                    SourceRef(
+                        source_id="url-1",
+                        kind="url",
+                        display_name="example.com/changelog",
+                        mime_type="text/html",
+                        storage_uri="",
+                        source_url="https://example.com/changelog",
+                        size_bytes=0,
+                    ),
+                ],
+                "tool_policy": ToolPolicyConfig(),
+            },
+        )(),
+    )
+
+    assert "Use a tool whenever the task requires exact computation" in prompt
+    assert "If attached files exist, prefer analyze_file or execute_python" in prompt
+    assert "sandbox_path=/workspace/input/file-1__worker.py" in prompt
+    assert "use the listed sandbox_path values exactly" in prompt
+    assert "Sandbox libraries available without pip install: pandas, numpy, polars, duckdb, pyarrow" in prompt
+    assert "Use pandas/openpyxl/xlrd/pyxlsb for spreadsheet formats like .xlsx/.xls/.xlsb" in prompt
+    assert "Use pyarrow/polars/duckdb/pandas for parquet or structured tabular data" in prompt
+    assert "Use csv only for plain-text CSV/TSV, not for binary spreadsheets" in prompt
+    assert "Do not write pip install commands" in prompt
+    assert "Example execute_python" in prompt
+    assert "Example analyze_urls" in prompt
+    assert "Example search_online" in prompt
+    assert "Example analyze_file" in prompt

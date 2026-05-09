@@ -269,17 +269,18 @@ export function buildBenchmarkByokRunRequest(
     local_models: config.roster.map((item) => ({
       provider: item.provider,
       model: item.model,
+      reasoning_preset: null,
     })),
     local_provider_keys: {
       gemini_api_key: selectedProviders.has("gemini")
-        ? (config.providerKeys.gemini_api_key.trim() || undefined)
-        : undefined,
+        ? (config.providerKeys.gemini_api_key.trim() || null)
+        : null,
       anthropic_api_key: selectedProviders.has("anthropic")
-        ? (config.providerKeys.anthropic_api_key.trim() || undefined)
-        : undefined,
+        ? (config.providerKeys.anthropic_api_key.trim() || null)
+        : null,
       openrouter_api_key: selectedProviders.has("openrouter")
-        ? (config.providerKeys.openrouter_api_key.trim() || undefined)
-        : undefined,
+        ? (config.providerKeys.openrouter_api_key.trim() || null)
+        : null,
     },
   };
 }

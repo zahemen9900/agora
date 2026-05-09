@@ -22,6 +22,8 @@ _BASE_POLICY = (
     "Stay in your assigned role. Preserve useful disagreement instead of converging early. "
     "Calibrate confidence to the actual strength of evidence: be willing to express uncertainty, "
     "and do not inflate certainty to sound persuasive. "
+    "Confidence means your probability that a domain expert would mark this answer correct, "
+    "not how strongly you feel about it or how certain you sound. "
     "When structured output is requested, obey the requested schema exactly and do not add prose. "
     "Think when the task needs it, answer directly when it does not. "
     "Final content should stay concise, auditable, and easy to compare across runs."
@@ -65,6 +67,8 @@ def selector_prompt(
         "If two mechanisms seem plausible, choose the one whose failure mode is less costly for this task. "
         "Do not use stakes alone as a reason to escalate into debate. "
         "Do not treat delphi as the generic choice for any hard task. "
+        "Treat historical performance as one data point about past task distributions, "
+        "not as a prior you are expected to match. "
         "Example for vote: 'What is 17 * 19?' or 'Which log line identifies the failing service?'. "
         "Example for debate: 'Should we centralize orchestration or keep services independent?' or "
         "'Which safety policy better handles adversarial misuse?'. "
@@ -97,6 +101,7 @@ def vote_participant_prompt(*, task: str) -> PromptBundle:
         "Do not coordinate with an imagined majority. "
         "Do not game the aggregation rule by trying to predict what answer will win. "
         "Treat yourself as one independent sample in an ensemble, not a consensus-finding process. "
+        "When attached files, URLs, or freshness-sensitive claims matter, prefer tool-grounded evidence over unsupported recall. "
         "Return your own answer, calibrated "
         "confidence, your forecast of the group's likely answer, and a short rationale."
     )
@@ -116,6 +121,7 @@ def delphi_independent_prompt(*, task: str) -> PromptBundle:
         "Answer without simulating consensus or anticipating what the group wants. "
         "Do not anchor on what you think the group will prefer. "
         "Preserve a minority answer when it is still better supported by the evidence. "
+        "Use tool-grounded evidence when attached sources or freshness-sensitive claims are in play. "
         "State your current best answer, a calibrated confidence, and the shortest rationale "
         "needed for another expert to audit the answer."
     )
@@ -131,6 +137,8 @@ def delphi_revision_prompt(
     task: str,
     prior_answer: str,
     peer_feedback: list[str],
+    round_number: int = 2,
+    max_rounds: int = 3,
 ) -> PromptBundle:
     """Build anonymized revision prompts for iterative Delphi rounds."""
 
@@ -142,14 +150,16 @@ def delphi_revision_prompt(
         "and prefer convergence through better reasoning rather than social mimicry. "
         "Do not converge just to reduce disagreement. "
         "Keep a dissenting answer when the alternatives are weaker. "
+        "When tools are available, prefer verified evidence over social pressure. "
         "If you keep your answer, justify why it remains stronger than the alternatives."
     )
     user = (
         f"Task: {task}\n"
+        f"This is revision round {round_number} of {max_rounds}.\n"
         f"Your prior answer: {prior_answer}\n"
         "Anonymous peer answers:\n"
         f"{json.dumps(peer_feedback, indent=2)}\n"
-        "Return JSON with fields: answer, confidence (0-1), reasoning."
+        'Return JSON with fields: answer, confidence (0-1), reasoning.'
     )
     return PromptBundle(system=system, user=user)
 
@@ -161,6 +171,7 @@ def debate_initial_prompt(*, task: str) -> PromptBundle:
         f"{_BASE_POLICY} "
         "Your role is debate initial answer. Produce your own best answer before seeing faction "
         "coordination. Do not pre-compromise before the adversarial phase begins. "
+        "If the task depends on exact computation, current information, or attached files, use tool-grounded evidence early. "
         "Commit to a clear candidate answer. Concise first-pass reasoning is better than overexplaining."
     )
     return PromptBundle(system=system, user=task)
@@ -175,12 +186,13 @@ def debate_opening_prompt(*, task: str, faction_answer: str) -> PromptBundle:
         "with the strongest evidence you can justify. "
         "Defend the assigned answer even if you can imagine respectable objections. "
         "Do not blur the faction boundary by preemptively conceding the other side's case. "
+        "When tools are available, anchor claims in verified evidence rather than rhetorical force. "
         "Do not hedge toward compromise."
     )
     user = (
         f"Task: {task}\n"
         f"Assigned faction answer: {faction_answer}\n"
-        "Respond as {claim, evidence, confidence}."
+        'Respond with JSON: {"claim": "...", "evidence": "...", "confidence": 0.0}'
     )
     return PromptBundle(system=system, user=user)
 
@@ -211,8 +223,10 @@ def debate_devil_prompt(
         f"Round: {round_number}\n"
         f"Pro statements: {pro_outputs}\n"
         f"Opp statements: {opp_outputs}\n"
-        "Respond as {'analyses': [{'faction': 'pro'|'opp', 'weakest_claim': str, 'flaw': str, "
-        "'attack_axis': str, 'counterexample': str, 'failure_mode': str, 'question': str}]}. "
+        'Respond with JSON: {"analyses": [{"faction": "pro"|"opp", "weakest_claim": "...", '
+        '"flaw": "...", "attack_axis": "...", "counterexample": "...", '
+        '"failure_mode": "...", "question": "..."}]}. '
+        "Produce exactly one analysis per faction. "
         "Each question must be concrete, task-aware, and materially different from the others."
     )
     return PromptBundle(system=system, user=user)
@@ -236,6 +250,7 @@ def debate_rebuttal_prompt(
         "answer when the evidence actually forces it. "
         "Answer the targeted challenge before introducing new supporting claims. "
         "Preserve genuine uncertainty when the critique lands. "
+        "Prefer tool-grounded verification when the critique depends on exact facts, file contents, or computation. "
         "Avoid boilerplate and avoid repeating the "
         "same generic fallback sentence."
     )
@@ -243,7 +258,9 @@ def debate_rebuttal_prompt(
         f"Task: {task}\n"
         f"Faction answer: {faction_answer}\n"
         f"Targeted challenge: {targeted_prompt}\n"
-        f"Locked claims: {locked_claims}"
+        "Locked claims (positions both factions have conceded as correct in prior rounds — "
+        f"treat these as established facts you cannot contradict): {locked_claims}\n"
+        'Return JSON: {"answer": "...", "defense": "...", "confidence": 0.0}'
     )
     return PromptBundle(system=system, user=user)
 
@@ -270,6 +287,8 @@ def debate_synthesis_prompt(
         f"Task: {task}\n"
         f"Winning faction: {winning_side}\n"
         f"Winning answer candidate: {winning_answer}\n"
-        f"Faction transcript: {transcript}"
+        f"Faction transcript: {transcript}\n"
+        'Return JSON: {"final_answer": "...", "confidence": 0.0, '
+        '"key_surviving_claims": ["..."], "dropped_claims": ["..."]}'
     )
     return PromptBundle(system=system, user=user)

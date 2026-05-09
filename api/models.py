@@ -21,6 +21,8 @@ TaskStatusName = Literal["pending", "in_progress", "completed", "failed", "paid"
 PaymentStatusName = Literal["locked", "released", "none"]
 ChainOperationStatusName = Literal["pending", "succeeded", "failed"]
 TaskExecutionSourceName = Literal["hosted", "local_byok"]
+TaskSourceKindName = Literal["text_file", "code_file", "pdf", "image", "url"]
+TaskSourceStatusName = Literal["pending_upload", "uploaded", "ready", "failed"]
 AuthMethodName = Literal["jwt", "api_key"]
 ApiKeyScopeName = Literal[
     "tasks:read",
@@ -30,6 +32,99 @@ ApiKeyScopeName = Literal[
     "api_keys:read",
     "api_keys:write",
 ]
+
+
+class ToolPolicy(BaseModel):
+    """Execution policy for broker-owned tool calls."""
+
+    enabled: bool = True
+    allow_search: bool = True
+    allow_url_analysis: bool = True
+    allow_file_analysis: bool = True
+    allow_code_execution: bool = True
+    max_tool_calls_per_agent: int = Field(default=12, ge=0, le=20)
+    max_urls_per_call: int = Field(default=5, ge=0, le=20)
+    max_files_per_call: int = Field(default=3, ge=0, le=10)
+    execution_timeout_seconds: int = Field(default=20, ge=1, le=30)
+
+
+class TaskSourceResponse(BaseModel):
+    """Frontend-safe task source metadata."""
+
+    source_id: str
+    kind: TaskSourceKindName
+    display_name: str
+    mime_type: str
+    size_bytes: int = Field(default=0, ge=0)
+    sha256: str | None = None
+    status: TaskSourceStatusName = "pending_upload"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    source_url: str | None = None
+
+
+class TaskSourceRecord(TaskSourceResponse):
+    """Persisted task source metadata with internal storage location."""
+
+    workspace_id: str
+    created_by: str
+    storage_uri: str
+
+
+class SourceUploadInitRequest(BaseModel):
+    """Create one source upload session and registry record."""
+
+    filename: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=0, le=5 * 1024 * 1024)
+
+
+class SourceUploadInitResponse(BaseModel):
+    """Signed-upload bootstrap payload for one source."""
+
+    source: TaskSourceResponse
+    upload_url: str
+    upload_method: Literal["PUT"] = "PUT"
+    upload_headers: dict[str, str] = Field(default_factory=dict)
+    expires_at: datetime
+
+
+class SourceUploadCompleteRequest(BaseModel):
+    """Finalize an upload after the object is written."""
+
+    sha256: str | None = Field(default=None, min_length=32, max_length=128)
+
+
+class CitationItemResponse(BaseModel):
+    """Persistable citation metadata derived from search or file analysis."""
+
+    title: str
+    url: str | None = None
+    domain: str | None = None
+    rank: int | None = Field(default=None, ge=1)
+    source_kind: TaskSourceKindName | None = None
+    source_id: str | None = None
+    note: str | None = None
+
+
+class EvidenceItemResponse(BaseModel):
+    """Compact evidence record used by task results and UI replay."""
+
+    evidence_id: str
+    tool_name: str
+    agent_id: str
+    summary: str
+    round_index: int = Field(default=0, ge=0)
+    source_ids: list[str] = Field(default_factory=list)
+    citations: list[CitationItemResponse] = Field(default_factory=list)
+
+
+class ToolUsageSummaryResponse(BaseModel):
+    """Aggregate tool telemetry persisted with one completed run."""
+
+    total_tool_calls: int = Field(default=0, ge=0)
+    successful_tool_calls: int = Field(default=0, ge=0)
+    failed_tool_calls: int = Field(default=0, ge=0)
+    tool_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class TaskCreateRequest(BaseModel):
@@ -44,6 +139,10 @@ class TaskCreateRequest(BaseModel):
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     reasoning_presets: ReasoningPresetOverrides | None = None
     tier_model_overrides: RuntimeTierModelOverrides | None = None
+    source_urls: list[str] = Field(default_factory=list)
+    source_file_ids: list[str] = Field(default_factory=list)
+    enable_tools: bool = True
+    tool_policy: ToolPolicy | None = None
 
 
 class TaskCreateResponse(BaseModel):
@@ -124,6 +223,10 @@ class DeliberationResultResponse(BaseModel):
     fallback_count: int = Field(default=0, ge=0)
     fallback_events: list[dict[str, Any]] = Field(default_factory=list)
     mechanism_override_source: str | None = None
+    sources: list[TaskSourceResponse] = Field(default_factory=list)
+    tool_usage_summary: ToolUsageSummaryResponse | None = None
+    evidence_items: list[EvidenceItemResponse] = Field(default_factory=list)
+    citation_items: list[CitationItemResponse] = Field(default_factory=list)
 
 
 class TaskStatusResponse(BaseModel):
@@ -140,6 +243,11 @@ class TaskStatusResponse(BaseModel):
     quorum_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
     execution_source: TaskExecutionSourceName = "hosted"
     background_recovery_allowed: bool = True
+    enable_tools: bool = True
+    tool_policy: ToolPolicy | None = None
+    source_urls: list[str] = Field(default_factory=list)
+    source_file_ids: list[str] = Field(default_factory=list)
+    sources: list[TaskSourceResponse] = Field(default_factory=list)
     selector_source: str = "llm_reasoning"
     selector_fallback_path: list[str] = Field(default_factory=list)
     mechanism_override_source: str | None = None

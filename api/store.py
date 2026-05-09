@@ -164,6 +164,23 @@ class TaskStore:
         return f"{cls._AGORA_NAMESPACE_PREFIX}/{cls._user_prefix(user_id)}/tests/{safe_run_id}.json"
 
     @classmethod
+    def _source_blob_name(cls, workspace_id: str, source_id: str) -> str:
+        safe_source_id = validate_storage_id(source_id, field_name="source_id")
+        return (
+            f"{cls._AGORA_NAMESPACE_PREFIX}/{cls._user_prefix(workspace_id)}"
+            f"/sources/{safe_source_id}.json"
+        )
+
+    @classmethod
+    def _source_object_name(cls, workspace_id: str, source_id: str, filename: str) -> str:
+        safe_source_id = validate_storage_id(source_id, field_name="source_id")
+        safe_filename = validate_storage_id(filename, field_name="filename")
+        return (
+            f"{cls._AGORA_NAMESPACE_PREFIX}/{cls._user_prefix(workspace_id)}"
+            f"/source-objects/{safe_source_id}/{safe_filename}"
+        )
+
+    @classmethod
     def _runtime_state_blob_name(cls, key: str) -> str:
         safe_key = validate_storage_id(key, field_name="runtime_state_key")
         return f"{cls._AGORA_NAMESPACE_PREFIX}/runtime/{safe_key}.json"
@@ -256,6 +273,38 @@ class TaskStore:
     async def save_task(self, workspace_id: str, task_id: str, data: dict[str, Any]) -> None:
         blob = self.bucket.blob(self._task_blob_name(workspace_id, task_id))
         self._upload_blob_json(blob, data, operation="save_task")
+
+    async def save_source(self, workspace_id: str, source_id: str, data: dict[str, Any]) -> None:
+        blob = self.bucket.blob(self._source_blob_name(workspace_id, source_id))
+        self._upload_blob_json(blob, data, operation="save_source")
+
+    async def get_source(self, workspace_id: str, source_id: str) -> dict[str, Any] | None:
+        blob = self.bucket.blob(self._source_blob_name(workspace_id, source_id))
+        return self._download_blob_json(blob, allow_missing=True, operation="get_source")
+
+    async def list_user_sources(
+        self,
+        workspace_id: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        prefix = (
+            f"{self._AGORA_NAMESPACE_PREFIX}/{self._user_prefix(workspace_id)}/sources/"
+        )
+        blobs = self._list_blobs(prefix=prefix, operation="list_user_sources")
+        blobs.sort(
+            key=lambda blob: blob.updated or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        sources: list[dict[str, Any]] = []
+        for blob in blobs[:limit]:
+            source = self._download_blob_json(
+                blob,
+                allow_missing=True,
+                operation="list_user_sources.read_source",
+            )
+            if source is not None:
+                sources.append(source)
+        return sources
 
     async def get_task(self, workspace_id: str, task_id: str) -> dict[str, Any] | None:
         blob = self.bucket.blob(self._task_blob_name(workspace_id, task_id))

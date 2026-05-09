@@ -1965,6 +1965,143 @@ async def test_sdk_get_task_result_tracks_task_id_mapping(
 
 
 @pytest.mark.asyncio
+async def test_sdk_get_task_result_preserves_hosted_sources_and_citation_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    arbitrator = AgoraArbitrator(
+        auth_token="agora_test_public.secret",
+        strict_verification=False,
+    )
+    status_payload: dict[str, Any] = {
+        "task_id": "task-attached",
+        "task_text": "Compare the attached worker against the linked specification.",
+        "mechanism": "vote",
+        "status": "completed",
+        "selector_reasoning": "Low disagreement, use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.88,
+        "sources": [
+            {
+                "source_id": "file-1",
+                "kind": "code_file",
+                "display_name": "worker.py",
+                "mime_type": "text/x-python",
+                "size_bytes": 12,
+                "sha256": "a" * 64,
+                "status": "ready",
+                "created_at": "2026-05-08T20:00:00Z",
+                "source_url": "/api/sources/file-1/content",
+            },
+            {
+                "source_id": "url-1",
+                "kind": "url",
+                "display_name": "example.com/spec",
+                "mime_type": "text/html",
+                "size_bytes": 0,
+                "sha256": None,
+                "status": "ready",
+                "created_at": "2026-05-08T20:00:01Z",
+                "source_url": "https://example.com/spec",
+            },
+        ],
+        "result": {
+            "task_id": "task-attached",
+            "mechanism": "vote",
+            "final_answer": "The worker and the spec agree on 42.",
+            "confidence": 0.88,
+            "quorum_reached": True,
+            "round_count": 1,
+            "mechanism_switches": 0,
+            "merkle_root": "attached-root",
+            "decision_hash": "attached-decision-hash",
+            "transcript_hashes": ["leaf-1"],
+            "agent_models_used": ["gemini-3-flash-preview"],
+            "convergence_history": [],
+            "locked_claims": [],
+            "total_tokens_used": 24,
+            "latency_ms": 11.0,
+            "sources": [
+                {
+                    "source_id": "file-1",
+                    "kind": "code_file",
+                    "display_name": "worker.py",
+                    "mime_type": "text/x-python",
+                    "size_bytes": 12,
+                    "sha256": "a" * 64,
+                    "status": "ready",
+                    "created_at": "2026-05-08T20:00:00Z",
+                    "source_url": "/api/sources/file-1/content",
+                }
+            ],
+            "tool_usage_summary": {
+                "total_tool_calls": 2,
+                "successful_tool_calls": 2,
+                "failed_tool_calls": 0,
+                "tool_counts": {
+                    "analyze_file": 1,
+                    "execute_python": 1,
+                },
+            },
+            "evidence_items": [
+                {
+                    "evidence_id": "evidence-1",
+                    "tool_name": "execute_python",
+                    "agent_id": "agent-1",
+                    "summary": "Parsed the attached worker file and confirmed the output.",
+                    "round_index": 0,
+                    "source_ids": ["file-1"],
+                    "citations": [
+                        {
+                            "title": "worker.py",
+                            "source_kind": "code_file",
+                            "source_id": "file-1",
+                            "note": "Attached worker file parsed in sandbox.",
+                        }
+                    ],
+                }
+            ],
+            "citation_items": [
+                {
+                    "title": "worker.py",
+                    "source_kind": "code_file",
+                    "source_id": "file-1",
+                    "note": "Attached worker file parsed in sandbox.",
+                },
+                {
+                    "title": "Specification",
+                    "url": "https://example.com/spec",
+                    "domain": "example.com",
+                    "rank": 1,
+                },
+            ],
+        },
+    }
+
+    async def fake_get(url: str, *_args: object, **_kwargs: object) -> _FakeResponse:
+        if url != "/tasks/task-attached":
+            raise AssertionError(f"Unexpected GET url: {url}")
+        return _FakeResponse(status_payload)
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+
+    result = await arbitrator.get_task_result("task-attached")
+    await arbitrator.aclose()
+
+    assert result.sources[0].source_id == "file-1"
+    assert result.sources[0].source_url == "/api/sources/file-1/content"
+    assert result.sources[0].storage_uri is None
+    assert result.tool_usage_summary is not None
+    assert result.tool_usage_summary.tool_counts == {
+        "analyze_file": 1,
+        "execute_python": 1,
+    }
+    assert result.citation_items[0].source_id == "file-1"
+    assert result.citation_items[0].note == "Attached worker file parsed in sandbox."
+    assert result.evidence_items[0].citations[0].source_id == "file-1"
+    assert result.evidence_items[0].citations[0].note == "Attached worker file parsed in sandbox."
+
+
+@pytest.mark.asyncio
 async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

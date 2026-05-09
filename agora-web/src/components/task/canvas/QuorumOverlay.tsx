@@ -1,13 +1,16 @@
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { usePostHog } from "@posthog/react";
+import { CitationStack } from "../../CitationPill";
+import type { CitationItemResponse } from "../../../lib/api.generated";
 
 interface QuorumOverlayProps {
   finalAnswer: { text: string; confidence: number; mechanism: string } | null;
   taskId: string | undefined;
+  citationItems?: CitationItemResponse[];
 }
 
-export function QuorumOverlay({ finalAnswer, taskId }: QuorumOverlayProps) {
+export function QuorumOverlay({ finalAnswer, taskId, citationItems = [] }: QuorumOverlayProps) {
     const posthog = usePostHog();
   const navigate = useNavigate();
 
@@ -64,23 +67,30 @@ export function QuorumOverlay({ finalAnswer, taskId }: QuorumOverlayProps) {
           </div>
 
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ 
-              fontFamily: "'Commit Mono', monospace", 
-              fontSize: "10px", 
-              color: "#10b981", 
+            <div style={{
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: "10px",
+              color: "#10b981",
               fontWeight: 600,
-              letterSpacing: "0.1em", 
-              marginBottom: "3px" 
+              letterSpacing: "0.1em",
+              marginBottom: "3px",
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              flexWrap: "wrap",
             }}>
-              QUORUM REACHED · {(finalAnswer.confidence * 100).toFixed(1)}% confidence
+              <span>QUORUM REACHED · {(finalAnswer.confidence * 100).toFixed(1)}% confidence</span>
+              {citationItems.length > 0 && (
+                <CitationStack items={citationItems} maxShown={5} />
+              )}
             </div>
-            <div style={{ 
-              fontSize: "13.5px", 
-              color: "var(--text-primary)", 
+            <div style={{
+              fontSize: "13.5px",
+              color: "var(--text-primary)",
               fontWeight: 500,
-              overflow: "hidden", 
-              textOverflow: "ellipsis", 
-              whiteSpace: "nowrap" 
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap"
             }}>
               {finalAnswer.text}
             </div>

@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, cast
+from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,6 +24,8 @@ from agora.runtime.task_execution import (
     resolve_task_like_selection,
 )
 from agora.selector.features import extract_features
+from agora.tools.runtime import ToolPolicyConfig
+from agora.tools.types import SourceRef
 from agora.types import (
     SUPPORTED_MECHANISMS,
     CostEstimate,
@@ -47,16 +50,22 @@ from api.models import (
     BenchmarkCostEstimateResponse,
     ChainOperationRecord,
     DeliberationResultResponse,
+    EvidenceItemResponse,
+    CitationItemResponse,
     MechanismName,
     ModelTelemetryResponse,
     PaymentStatusName,
+    TaskSourceResponse,
     TaskDeleteResponse,
     TaskCreateRequest,
     TaskCreateResponse,
     TaskEvent,
     TaskRunRequest,
     TaskStatusResponse,
+    ToolPolicy,
+    ToolUsageSummaryResponse,
 )
+from api.source_storage import build_source_content_path, normalize_source_url
 from api.solana_bridge import LAMPORTS_PER_SOL, bridge
 from api.store import TaskStore, get_store
 from api.store_local import LocalTaskStore
@@ -91,6 +100,8 @@ _BUFFERED_TASK_EVENT_TYPES = {
     "thinking_delta",
     "usage_delta",
     "cross_examination_delta",
+    "tool_call_delta",
+    "sandbox_execution_delta",
 }
 _TERMINAL_TASK_EVENT_TYPES = {"complete", "error", "task_stopped"}
 _TASK_SPAN_MILESTONE_EVENTS = {
@@ -128,6 +139,140 @@ def _build_task_id(task_text: str) -> str:
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))
+
+
+def _build_url_source(url: str) -> TaskSourceResponse:
+    parsed = urlparse(url)
+    display_name = parsed.netloc or url
+    if parsed.path and parsed.path not in {"", "/"}:
+        display_name = f"{display_name}{parsed.path}"
+    source_id = hashlib.sha256(f"url:{url}".encode("utf-8")).hexdigest()
+    return TaskSourceResponse(
+        source_id=source_id,
+        kind="url",
+        display_name=display_name[:255],
+        mime_type="text/html",
+        size_bytes=0,
+        status="ready",
+        source_url=url,
+    )
+
+
+def _task_source_from_runtime(item: Any) -> TaskSourceResponse:
+    """Convert one runtime source payload into the public task-source shape."""
+
+    if isinstance(item, TaskSourceResponse):
+        return item
+    payload = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+    source_id = str(payload.get("source_id") or "").strip()
+    if not source_id:
+        raise ValueError("Runtime source payload is missing source_id")
+    kind = str(payload.get("kind") or "text_file").strip() or "text_file"
+    source_url = payload.get("source_url")
+    return TaskSourceResponse(
+        source_id=source_id,
+        kind=cast(Any, kind),
+        display_name=str(payload.get("display_name") or source_id),
+        mime_type=str(payload.get("mime_type") or "application/octet-stream"),
+        size_bytes=max(0, int(payload.get("size_bytes") or 0)),
+        sha256=str(payload["sha256"]) if payload.get("sha256") else None,
+        status=cast(Any, payload.get("status") or "ready"),
+        created_at=payload.get("created_at") or datetime.now(UTC),
+        source_url=str(source_url) if source_url else None,
+    )
+
+
+def _merge_result_sources(
+    *,
+    persisted_sources: list[TaskSourceResponse],
+    runtime_sources: Any,
+) -> list[TaskSourceResponse]:
+    """Preserve validated task-source metadata while accepting runtime enrichments."""
+
+    merged_by_id: dict[str, TaskSourceResponse] = {
+        source.source_id: source.model_copy() for source in persisted_sources
+    }
+    ordered_ids = [source.source_id for source in persisted_sources]
+
+    for runtime_item in runtime_sources or []:
+        runtime_source = _task_source_from_runtime(runtime_item)
+        existing = merged_by_id.get(runtime_source.source_id)
+        if existing is None:
+            merged_by_id[runtime_source.source_id] = runtime_source
+            ordered_ids.append(runtime_source.source_id)
+            continue
+        merged_by_id[runtime_source.source_id] = existing.model_copy(
+            update={
+                "kind": existing.kind or runtime_source.kind,
+                "display_name": existing.display_name or runtime_source.display_name,
+                "mime_type": existing.mime_type or runtime_source.mime_type,
+                "size_bytes": existing.size_bytes or runtime_source.size_bytes,
+                "sha256": existing.sha256 or runtime_source.sha256,
+                "status": existing.status if existing.status != "pending_upload" else runtime_source.status,
+                "created_at": existing.created_at or runtime_source.created_at,
+                "source_url": existing.source_url or runtime_source.source_url,
+            }
+        )
+
+    return [merged_by_id[source_id] for source_id in ordered_ids if source_id in merged_by_id]
+
+
+def _resolve_tool_policy(
+    enable_tools: bool,
+    request_policy: ToolPolicy | None,
+) -> ToolPolicy:
+    if request_policy is None:
+        return ToolPolicy(enabled=enable_tools)
+    return request_policy.model_copy(update={"enabled": enable_tools and request_policy.enabled})
+
+
+def _runtime_tool_policy(policy: ToolPolicy | None, *, enabled: bool) -> ToolPolicyConfig:
+    if policy is None:
+        return ToolPolicyConfig(enabled=enabled)
+    return ToolPolicyConfig.model_validate(policy.model_dump(mode="json"))
+
+
+async def _load_runtime_sources(
+    *,
+    store: TaskStore | LocalTaskStore,
+    task: TaskStatusResponse,
+) -> list[SourceRef]:
+    resolved: list[SourceRef] = []
+    for source_id in task.source_file_ids:
+        raw_source = await store.get_source(task.workspace_id, source_id)
+        if raw_source is None:
+            continue
+        source = TaskSourceResponse.model_validate(raw_source)
+        resolved.append(
+            SourceRef(
+                source_id=source.source_id,
+                kind=source.kind,
+                display_name=source.display_name,
+                mime_type=source.mime_type,
+                storage_uri=str(raw_source.get("storage_uri") or ""),
+                source_url=source.source_url if source.kind == "url" else None,
+                size_bytes=source.size_bytes,
+                sha256=source.sha256,
+            )
+        )
+    for url in task.source_urls:
+        normalized = normalize_source_url(url)
+        url_source = _build_url_source(normalized)
+        resolved.append(
+            SourceRef(
+                source_id=url_source.source_id,
+                kind=url_source.kind,
+                display_name=url_source.display_name,
+                mime_type=url_source.mime_type,
+                source_url=url_source.source_url,
+                size_bytes=0,
+            )
+        )
+    return resolved
 
 
 def _stream_key(workspace_id: str, task_id: str) -> str:
@@ -184,6 +329,50 @@ async def _load_task_for_user(
     if _is_deleted_task_record(raw_task):
         raise HTTPException(status_code=404, detail="Task not found")
     return raw_task
+
+
+async def _load_attached_sources(
+    *,
+    store: TaskStore | LocalTaskStore,
+    workspace_id: str,
+    source_file_ids: list[str],
+    source_urls: list[str],
+) -> tuple[list[str], list[str], list[TaskSourceResponse]]:
+    """Resolve and validate task-attached uploaded files and public URLs."""
+
+    normalized_urls: list[str] = []
+    for raw_url in source_urls:
+        try:
+            normalized_urls.append(normalize_source_url(raw_url))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    normalized_urls = _dedupe_preserving_order(normalized_urls)
+    file_ids = _dedupe_preserving_order([value.strip() for value in source_file_ids if value.strip()])
+    max_attachments = settings.source_max_attachments_per_task
+    if len(normalized_urls) + len(file_ids) > max_attachments:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Attach up to {max_attachments} total URLs/files per task.",
+        )
+    resolved_sources: list[TaskSourceResponse] = []
+    for source_id in file_ids:
+        try:
+            raw_source = await store.get_source(workspace_id, source_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=f"Source not found: {source_id}") from exc
+        if raw_source is None:
+            raise HTTPException(status_code=404, detail=f"Source not found: {source_id}")
+        source = TaskSourceResponse.model_validate(raw_source)
+        if source.status != "ready":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Source {source_id} is not ready for task attachment",
+            )
+        source.source_url = build_source_content_path(source.source_id)
+        resolved_sources.append(source)
+
+    resolved_sources.extend(_build_url_source(url) for url in normalized_urls)
+    return file_ids, normalized_urls, resolved_sources
 
 
 def _task_stop_message(actor_label: str) -> str:
@@ -585,6 +774,7 @@ def _result_to_response(
     *,
     payment_amount: float = 0.0,
     payment_status: PaymentStatusName = "none",
+    sources: list[TaskSourceResponse] | None = None,
 ) -> DeliberationResultResponse:
     """Convert runtime result into API response shape."""
 
@@ -618,6 +808,41 @@ def _result_to_response(
         payment_amount=payment_amount,
         model_token_usage=model_token_usage,
         agent_models_used=result.agent_models_used,
+    )
+    evidence_items = [
+        item
+        if isinstance(item, EvidenceItemResponse)
+        else EvidenceItemResponse.model_validate(
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+        )
+        for item in getattr(result, "evidence_items", []) or []
+    ]
+    citation_items = [
+        item
+        if isinstance(item, CitationItemResponse)
+        else CitationItemResponse.model_validate(
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+        )
+        for item in getattr(result, "citation_items", []) or []
+    ]
+    tool_usage_summary_raw = getattr(result, "tool_usage_summary", None)
+    tool_usage_summary = (
+        tool_usage_summary_raw
+        if isinstance(tool_usage_summary_raw, ToolUsageSummaryResponse)
+        else (
+            ToolUsageSummaryResponse.model_validate(
+                tool_usage_summary_raw.model_dump(mode="json")
+                if hasattr(tool_usage_summary_raw, "model_dump")
+                else tool_usage_summary_raw
+            )
+            if tool_usage_summary_raw is not None
+            else None
+        )
+    )
+
+    normalized_sources = _merge_result_sources(
+        persisted_sources=list(sources or []),
+        runtime_sources=getattr(result, "sources", None),
     )
 
     return DeliberationResultResponse(
@@ -660,6 +885,10 @@ def _result_to_response(
         fallback_count=result.fallback_count,
         fallback_events=[event.model_dump(mode="json") for event in result.fallback_events],
         mechanism_override_source=result.mechanism_override_source,
+        sources=normalized_sources,
+        tool_usage_summary=tool_usage_summary,
+        evidence_items=evidence_items,
+        citation_items=citation_items,
     )
 
 
@@ -1734,6 +1963,7 @@ async def create_task(
             "agora.allow_mechanism_switch": request.allow_mechanism_switch,
             "agora.allow_offline_fallback": request.allow_offline_fallback,
             "agora.quorum.threshold": request.quorum_threshold,
+            "agora.tools.enabled": request.enable_tools,
         },
         bind=True,
     )
@@ -1748,6 +1978,19 @@ async def create_task(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    tool_policy = _resolve_tool_policy(request.enable_tools, request.tool_policy)
+    source_file_ids, source_urls, sources = await _load_attached_sources(
+        store=store,
+        workspace_id=user.workspace_id,
+        source_file_ids=request.source_file_ids,
+        source_urls=request.source_urls,
+    )
+    set_current_span_attributes(
+        {
+            "agora.task.source_url_count": len(source_urls),
+            "agora.task.source_file_count": len(source_file_ids),
+        }
+    )
 
     orchestrator = _build_orchestrator(
         agent_count=request.agent_count,
@@ -1804,6 +2047,11 @@ async def create_task(
         allow_mechanism_switch=request.allow_mechanism_switch,
         allow_offline_fallback=request.allow_offline_fallback,
         quorum_threshold=request.quorum_threshold,
+        enable_tools=request.enable_tools,
+        tool_policy=tool_policy,
+        source_urls=source_urls,
+        source_file_ids=source_file_ids,
+        sources=sources,
         selector_source=selector_source,
         selector_fallback_path=selector_fallback_path,
         mechanism_override_source=mechanism_override_source,
@@ -2258,6 +2506,8 @@ async def _execute_task_run(
         else:
             selection = await _stored_selection(task)
 
+        runtime_sources = await _load_runtime_sources(store=store, task=task)
+
         execution = await execute_task_like_run(
             orchestrator=orchestrator,
             task_text=task.task_text,
@@ -2269,6 +2519,9 @@ async def _execute_task_run(
             ),
             event_sink=runtime_event_sink,
             allow_switch=task.allow_mechanism_switch if effective_override is None else False,
+            sources=runtime_sources,
+            tools_enabled=task.enable_tools,
+            tool_policy=_runtime_tool_policy(task.tool_policy, enabled=task.enable_tools),
         )
         if lease_lost:
             raise RuntimeError("Task execution lease lost")
@@ -2326,6 +2579,7 @@ async def _execute_task_run(
         result,
         payment_amount=task.payment_amount,
         payment_status=task.payment_status,
+        sources=task.sources,
     )
 
     task.mechanism = result_response.mechanism

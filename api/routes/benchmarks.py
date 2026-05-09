@@ -763,7 +763,7 @@ async def resume_stale_background_benchmark_runs(
             )
             continue
         recovery_deadline_at = _parse_optional_timestamp(record.get("background_recovery_deadline_at"))
-        if recovery_deadline_at is not None and recovery_deadline_at <= now:
+        if status == "queued" and recovery_deadline_at is not None and recovery_deadline_at <= now:
             await _persist_stopped_benchmark_run(
                 workspace_id=workspace_id,
                 run_id=run_id,

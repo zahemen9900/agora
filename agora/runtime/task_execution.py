@@ -18,6 +18,8 @@ from agora.telemetry import (
     set_current_span_attributes,
     start_observation_span,
 )
+from agora.tools.runtime import ToolPolicyConfig
+from agora.tools.types import SourceRef
 from agora.types import (
     DeliberationResult,
     MechanismOverrideSource,
@@ -63,6 +65,9 @@ async def _invoke_orchestrator_run(
     mechanism_override: MechanismType,
     event_sink: EventSink | None,
     agents: Sequence[Callable[..., Any]] | None,
+    sources: Sequence[SourceRef] | None,
+    tools_enabled: bool,
+    tool_policy: ToolPolicyConfig | None,
 ) -> DeliberationResult:
     """Call orchestrator.run while tolerating legacy adapters with narrower signatures."""
 
@@ -72,6 +77,9 @@ async def _invoke_orchestrator_run(
         "mechanism_override": mechanism_override,
         "event_sink": event_sink,
         "agents": agents,
+        "sources": sources,
+        "tools_enabled": tools_enabled,
+        "tool_policy": tool_policy,
     }
     parameters = inspect.signature(orchestrator.run).parameters.values()
     accepts_kwargs = any(
@@ -86,6 +94,45 @@ async def _invoke_orchestrator_run(
         if name in inspect.signature(orchestrator.run).parameters
     }
     return await orchestrator.run(**supported_kwargs)
+
+
+async def _invoke_orchestrator_execute_selection(
+    orchestrator: Any,
+    *,
+    task_text: str,
+    selection: MechanismSelection,
+    event_sink: EventSink | None,
+    agents: Sequence[Callable[..., Any]] | None,
+    allow_switch: bool,
+    sources: Sequence[SourceRef] | None,
+    tools_enabled: bool,
+    tool_policy: ToolPolicyConfig | None,
+) -> DeliberationResult:
+    """Call execute_selection while tolerating legacy adapters with narrower signatures."""
+
+    kwargs: dict[str, Any] = {
+        "task": task_text,
+        "selection": selection,
+        "event_sink": event_sink,
+        "agents": agents,
+        "allow_switch": allow_switch,
+        "sources": sources,
+        "tools_enabled": tools_enabled,
+        "tool_policy": tool_policy,
+    }
+    parameters = inspect.signature(orchestrator.execute_selection).parameters.values()
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
+    if accepts_kwargs:
+        return await orchestrator.execute_selection(**kwargs)
+
+    supported_kwargs = {
+        name: value
+        for name, value in kwargs.items()
+        if name in inspect.signature(orchestrator.execute_selection).parameters
+    }
+    return await orchestrator.execute_selection(**supported_kwargs)
 
 
 async def build_pinned_selection(
@@ -181,6 +228,9 @@ async def execute_task_like_run(
     event_sink: EventSink | None = None,
     agents: Sequence[Callable[..., Any]] | None = None,
     allow_switch: bool = True,
+    sources: Sequence[SourceRef] | None = None,
+    tools_enabled: bool = False,
+    tool_policy: ToolPolicyConfig | None = None,
 ) -> TaskLikeExecutionOutcome:
     """Execute one task-like run and normalize success or failure."""
 
@@ -240,14 +290,21 @@ async def execute_task_like_run(
                     mechanism_override=selection.mechanism,
                     event_sink=instrumented_event_sink,
                     agents=agents,
+                    sources=sources,
+                    tools_enabled=tools_enabled,
+                    tool_policy=tool_policy,
                 )
             elif hasattr(orchestrator, "execute_selection"):
-                result = await orchestrator.execute_selection(
-                    task=task_text,
+                result = await _invoke_orchestrator_execute_selection(
+                    orchestrator,
+                    task_text=task_text,
                     selection=selection,
                     event_sink=instrumented_event_sink,
                     agents=agents,
                     allow_switch=allow_switch,
+                    sources=sources,
+                    tools_enabled=tools_enabled,
+                    tool_policy=tool_policy,
                 )
             else:
                 # Compatibility path for legacy orchestrator adapters and test doubles.
@@ -258,6 +315,9 @@ async def execute_task_like_run(
                     mechanism_override=selection.mechanism,
                     event_sink=instrumented_event_sink,
                     agents=agents,
+                    sources=sources,
+                    tools_enabled=tools_enabled,
+                    tool_policy=tool_policy,
                 )
             if result.fallback_count > 0 and not getattr(
                 orchestrator, "allow_offline_fallback", True

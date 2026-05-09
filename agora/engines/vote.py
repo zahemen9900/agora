@@ -32,6 +32,16 @@ from agora.runtime.model_policy import (
     resolve_reasoning_presets,
 )
 from agora.runtime.prompt_policy import vote_participant_prompt
+from agora.tools.broker import ToolBroker
+from agora.tools.runtime import (
+    ToolInvocationContext,
+    ToolPolicyConfig,
+    maybe_augment_prompt_with_tool,
+    merge_raw_usage,
+    normalize_raw_usage,
+    tool_results_to_evidence,
+)
+from agora.tools.types import SourceRef, ToolResult
 from agora.types import (
     AgentOutput,
     DeliberationResult,
@@ -151,6 +161,7 @@ class VoteEngine:
         self._claude_run_semaphore = asyncio.Semaphore(
             get_config().anthropic_concurrent_requests_per_run
         )
+        self._tool_broker: ToolBroker | None = None
         self.graph = self._build_graph()
 
     async def run(
@@ -159,6 +170,9 @@ class VoteEngine:
         selection: MechanismSelection,
         event_sink: EventSink | None = None,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> VoteEngineOutcome:
         """Execute ISP vote workflow and return deliberation result.
 
@@ -175,6 +189,9 @@ class VoteEngine:
             selection=selection,
             event_sink=event_sink,
             custom_agents=custom_agents,
+            sources=sources,
+            tools_enabled=tools_enabled,
+            tool_policy=tool_policy,
         )
 
     async def _run_graph(
@@ -184,6 +201,9 @@ class VoteEngine:
         selection: MechanismSelection,
         event_sink: EventSink | None,
         custom_agents: Sequence[CustomAgentCallable] | None,
+        sources: Sequence[SourceRef] | None,
+        tools_enabled: bool,
+        tool_policy: ToolPolicyConfig | None,
     ) -> VoteEngineOutcome:
         """Execute vote through the compiled LangGraph."""
 
@@ -191,6 +211,9 @@ class VoteEngine:
             "selection": selection,
             "event_sink": event_sink,
             "custom_agents": custom_agents,
+            "sources": list(sources or []),
+            "tools_enabled": bool(tools_enabled),
+            "tool_policy": tool_policy or ToolPolicyConfig(enabled=False),
             "execution": VoteState(
                 task=task,
                 task_features=selection.task_features,
@@ -202,6 +225,7 @@ class VoteEngine:
             "thinking_token_counter": 0,
             "latency_ms": 0.0,
             "usage": {},
+            "tool_results": [],
             "model_token_usage": {},
             "model_input_token_usage": {},
             "model_output_token_usage": {},
@@ -245,6 +269,8 @@ class VoteEngine:
         model_thinking_token_usage: dict[str, int],
         model_latency_ms: dict[str, float],
         latency_ms: float,
+        sources: list[SourceRef],
+        tool_results: list[ToolResult],
     ) -> DeliberationResult:
         """Build the final vote result from aggregated state."""
 
@@ -265,6 +291,11 @@ class VoteEngine:
             model_output_tokens=model_output_token_usage,
             model_thinking_tokens=model_thinking_token_usage,
             fallback_total_tokens=token_counter,
+        )
+        evidence_items, citation_items = tool_results_to_evidence(
+            tool_results=tool_results,
+            agent_id="vote",
+            round_index=1,
         )
         return DeliberationResult(
             task=state.task,
@@ -320,6 +351,10 @@ class VoteEngine:
             total_latency_ms=latency_ms,
             cost=cost,
             reasoning_presets=self.reasoning_presets,
+            sources=sources,
+            tool_usage_summary=ToolBroker.summarize_usage(tool_results),
+            evidence_items=evidence_items,
+            citation_items=citation_items,
         )
 
     def _build_graph(self) -> Any:
@@ -346,6 +381,9 @@ class VoteEngine:
             execution.task,
             custom_agents=graph_state.get("custom_agents"),
             event_sink=graph_state.get("event_sink"),
+            sources=graph_state.get("sources"),
+            tools_enabled=bool(graph_state.get("tools_enabled")),
+            tool_policy=graph_state.get("tool_policy"),
         )
         graph_state["usage"] = usage
         graph_state["token_counter"] = int(graph_state["token_counter"]) + int(usage["tokens"])
@@ -379,6 +417,7 @@ class VoteEngine:
             graph_state["model_latency_ms"],
             usage.get("model_latency_ms"),
         )
+        graph_state["tool_results"].extend(usage.get("tool_results", []))
         execution.agent_outputs = vote_outputs
         execution.transcript_hashes = [
             self.hasher.hash_agent_output(output) for output in vote_outputs
@@ -415,6 +454,8 @@ class VoteEngine:
             model_thinking_token_usage=graph_state["model_thinking_token_usage"],
             model_latency_ms=graph_state["model_latency_ms"],
             latency_ms=float(graph_state["latency_ms"]),
+            sources=graph_state.get("sources", []),
+            tool_results=graph_state.get("tool_results", []),
         )
         return graph_state
 
@@ -423,6 +464,9 @@ class VoteEngine:
         task: str,
         custom_agents: Sequence[CustomAgentCallable] | None = None,
         event_sink: EventSink | None = None,
+        sources: Sequence[SourceRef] | None = None,
+        tools_enabled: bool = False,
+        tool_policy: ToolPolicyConfig | None = None,
     ) -> tuple[list[AgentOutput], dict[str, Any]]:
         """Generate one independent vote per agent in parallel."""
 
@@ -433,6 +477,9 @@ class VoteEngine:
             prompt = vote_participant_prompt(task=task)
             fallback = self._fallback_vote(task=task, agent_idx=agent_idx)
             custom_agent = custom_agents[agent_idx] if custom_agents is not None else None
+            final_user_prompt = prompt.user
+            planning_usage: dict[str, Any] = {}
+            tool_results: list[ToolResult] = []
             stream_callback = self._make_stream_delta_callback(
                 event_sink,
                 event_type="agent_output_delta",
@@ -449,12 +496,43 @@ class VoteEngine:
                     "stage": "vote",
                 },
             )
+            if custom_agent is None and tools_enabled:
+                planning_caller = (
+                    self._participant_caller(agent_idx, explicit_model)
+                    if explicit_model is not None
+                    else self._get_caller(tier)
+                )
+                if self._tool_broker is None:
+                    self._tool_broker = ToolBroker()
+                augmentation = await maybe_augment_prompt_with_tool(
+                    caller=planning_caller,
+                    system_prompt=prompt.system,
+                    user_prompt=prompt.user,
+                    context=ToolInvocationContext(
+                        task=task,
+                        agent_id=agent_id,
+                        round_index=1,
+                        stage="vote",
+                        sources=list(sources or []),
+                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                        event_sink=event_sink,
+                        broker=self._tool_broker,
+                    ),
+                )
+                final_user_prompt = augmentation.user_prompt
+                tool_results = augmentation.tool_results
+                if augmentation.planning_usage:
+                    planning_usage = normalize_raw_usage(
+                        usage=augmentation.planning_usage,
+                        model_name=planning_caller.model,
+                        provider=getattr(planning_caller, "provider", "unknown"),
+                    )
             if explicit_model is not None and custom_agent is None:
                 response, usage = await self._call_structured_explicit_model(
                     agent_idx=agent_idx,
                     model_spec=explicit_model,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_VoteResponse,
                     fallback=fallback,
                     stream=event_sink is not None,
@@ -464,7 +542,7 @@ class VoteEngine:
                 response, usage = await self._call_structured(
                     tier=tier,
                     system_prompt=prompt.system,
-                    user_prompt=prompt.user,
+                    user_prompt=final_user_prompt,
                     response_model=_VoteResponse,
                     fallback=fallback,
                     custom_agent=custom_agent,
@@ -489,8 +567,13 @@ class VoteEngine:
                 content_hash=self.hasher.hash_content(content),
                 timestamp=datetime.now(UTC),
             )
-            await self._emit_usage_delta(event_sink, output, usage)
-            return output, usage
+            merged_usage = merge_raw_usage(
+                [entry for entry in [planning_usage, usage] if entry]
+            )
+            if tool_results:
+                merged_usage["tool_results"] = list(tool_results)
+            await self._emit_usage_delta(event_sink, output, merged_usage)
+            return output, merged_usage
 
         results = await asyncio.gather(*(one_call(idx) for idx in range(self.agent_count)))
         outputs = [output for output, _usage in results]
@@ -501,11 +584,8 @@ class VoteEngine:
         model_output_tokens: dict[str, int] = {}
         model_thinking_tokens: dict[str, int] = {}
         for output, usage in results:
-            model = output.agent_model
-            model_tokens[model] = model_tokens.get(model, 0) + int(usage.get("tokens", 0))
-            model_latency_ms[model] = model_latency_ms.get(model, 0.0) + float(
-                usage.get("latency_ms", 0.0)
-            )
+            self._merge_optional_usage(model_tokens, usage.get("model_tokens"))
+            self._merge_model_latency_usage(model_latency_ms, usage.get("model_latency_ms"))
             self._merge_optional_usage(model_input_tokens, usage.get("model_input_tokens"))
             self._merge_optional_usage(model_output_tokens, usage.get("model_output_tokens"))
             self._merge_optional_usage(model_thinking_tokens, usage.get("model_thinking_tokens"))
@@ -514,6 +594,11 @@ class VoteEngine:
         usage_totals["model_input_tokens"] = model_input_tokens
         usage_totals["model_output_tokens"] = model_output_tokens
         usage_totals["model_thinking_tokens"] = model_thinking_tokens
+        usage_totals["tool_results"] = [
+            tool_result
+            for _output, usage in results
+            for tool_result in usage.get("tool_results", [])
+        ]
         return outputs, usage_totals
 
     def _calibrate_confidence(self, state: VoteState) -> None:
@@ -1461,6 +1546,22 @@ class VoteEngine:
                             },
                         )
                     )
+                    return
+                try:
+                    generic_payload = json.loads(payload)
+                except json.JSONDecodeError:
+                    generic_payload = {"message": payload}
+                if not isinstance(generic_payload, dict):
+                    generic_payload = {"payload": generic_payload}
+                loop.create_task(
+                    event_sink(
+                        stream_kind,
+                        {
+                            **base_payload,
+                            **generic_payload,
+                        },
+                    )
+                )
                 return
 
             content_buffer.append(chunk)

@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from agora.tools.types import CitationItem, EvidenceItem, SourceRef, ToolUsageSummary
+
 
 class MechanismType(StrEnum):
     """Deliberation mechanisms in the protocol narrative.
@@ -340,6 +342,10 @@ class DeliberationResult(BaseModel):
     fallback_count: int = Field(default=0, ge=0)
     fallback_events: list[FallbackEvent] = Field(default_factory=list)
     mechanism_override_source: MechanismOverrideSource | None = None
+    sources: list[SourceRef] = Field(default_factory=list)
+    tool_usage_summary: ToolUsageSummary | None = None
+    evidence_items: list[EvidenceItem] = Field(default_factory=list)
+    citation_items: list[CitationItem] = Field(default_factory=list)
     total_tokens_used: int = Field(ge=0)
     input_tokens_used: int | None = None
     output_tokens_used: int | None = None

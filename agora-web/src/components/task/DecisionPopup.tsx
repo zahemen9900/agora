@@ -63,6 +63,25 @@ export function DecisionPopup({ mechanism, confidence, reasoning, onNavigate, de
   const pct = Math.round(confidence * 100);
   const color = mechColor(mechanism);
 
+  // Inject popup-specific keyframes that bake in the centering transform so
+  // the card never flashes at the wrong position during the entrance animation.
+  useEffect(() => {
+    if (document.getElementById('decision-popup-kf')) return;
+    const s = document.createElement('style');
+    s.id = 'decision-popup-kf';
+    s.textContent = `
+      @keyframes dp-backdrop-in {
+        from { opacity: 0; }
+        to   { opacity: 1; }
+      }
+      @keyframes dp-card-in {
+        from { opacity: 0; transform: translate(-50%, -50%) scale(0.90); }
+        to   { opacity: 1; transform: translate(-50%, -50%) scale(1);    }
+      }
+    `;
+    document.head.appendChild(s);
+  }, []);
+
   // Auto-navigate after delay
   useEffect(() => {
     const t = setTimeout(onNavigate, delay);
@@ -77,17 +96,17 @@ export function DecisionPopup({ mechanism, confidence, reasoning, onNavigate, de
         background: 'rgba(0,0,0,0.65)',
         backdropFilter: 'blur(8px)',
         zIndex: 2000,
-        animation: 'agora-fade-in 0.2s ease',
+        animation: 'dp-backdrop-in 0.25s ease both',
       }} />
 
-      {/* Card */}
+      {/* Card — transform is owned entirely by dp-card-in so centering is
+          consistent throughout the entrance; no separate inline transform. */}
       <div
         role="alertdialog"
         aria-label="Deliberation mechanism selected"
         style={{
           position: 'fixed',
           top: '50%', left: '50%',
-          transform: 'translate(-50%, -50%)',
           width: 'min(480px, calc(100vw - 32px))',
           background: 'var(--bg-elevated)',
           border: `1px solid ${color}40`,
@@ -98,7 +117,7 @@ export function DecisionPopup({ mechanism, confidence, reasoning, onNavigate, de
           display: 'flex',
           flexDirection: 'column',
           gap: '20px',
-          animation: 'agora-fade-in 0.25s ease',
+          animation: 'dp-card-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both',
         }}
       >
         {/* Header row */}
