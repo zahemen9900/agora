@@ -426,6 +426,19 @@ function UrlAttachModal({
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          {/* Context hint */}
+          <div style={{
+            padding: '9px 12px',
+            borderRadius: '8px',
+            border: '1px solid var(--border-subtle)',
+            background: 'var(--bg-base)',
+            fontFamily: FONT,
+            fontSize: '11px',
+            lineHeight: 1.6,
+            color: 'var(--text-muted)',
+          }}>
+            Paste URLs you think are relevant to your query — agents will read them as grounding context before deliberating.
+          </div>
           {/* Input row */}
           <div style={{ display: 'flex', gap: '8px' }}>
             <input
