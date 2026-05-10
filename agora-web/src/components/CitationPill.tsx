@@ -340,37 +340,31 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
           </button>
         </div>
 
-        {/* Scrollable content with blur overlays */}
-        <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: "hidden" }}>
-          {/* Top blur */}
+        {/* Scrollable body — the flex item IS the scroll container (flex:1 + minHeight:0 is the reliable pattern) */}
+        <div style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          overscrollBehavior: "contain",
+          position: "relative",
+        }}>
+          {/* Top blur — absolute inside the scroll container so it stays at the visible top edge */}
           <div aria-hidden style={{
             position: "absolute", top: 0, left: 0, right: 0, height: "28px",
             background: "linear-gradient(to bottom, var(--bg-elevated), transparent)",
-            zIndex: 2, pointerEvents: "none",
+            pointerEvents: "none", zIndex: 2,
           }} />
-          {/* Scroll container */}
-          <div
-            style={{
-              position: "absolute",
-              inset: 0,
-              zIndex: 1,
-              overflowY: "auto",
-              overscrollBehavior: "contain",
-              WebkitOverflowScrolling: "touch",
-              padding: "16px 20px",
-            }}
-          >
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", paddingTop: "6px", paddingBottom: "6px" }}>
-              {items.map((item, i) => (
-                <CitationPill key={`${item.title}-${i}`} item={item} />
-              ))}
-            </div>
+          {/* Pills */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", padding: "16px 20px" }}>
+            {items.map((item, i) => (
+              <CitationPill key={`${item.title}-${i}`} item={item} />
+            ))}
           </div>
           {/* Bottom blur */}
           <div aria-hidden style={{
             position: "absolute", bottom: 0, left: 0, right: 0, height: "28px",
             background: "linear-gradient(to top, var(--bg-elevated), transparent)",
-            zIndex: 2, pointerEvents: "none",
+            pointerEvents: "none", zIndex: 2,
           }} />
         </div>
       </div>
