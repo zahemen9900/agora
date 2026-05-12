@@ -5,7 +5,7 @@ import { StepCard } from '../components/landing/StepCard';
 import { MartingaleViz } from '../components/landing/MartingaleViz';
 import { AgoraFixViz } from '../components/landing/AgoraFixViz';
 import { PaperSection, type PaperCardProps } from '../components/landing/PaperCard';
-import { MechanismSelector } from '../components/landing/MechanismSelector';
+import { InteractiveSdkDemo } from '../components/landing/InteractiveSdkDemo';
 import { LiveDeliberationPreview } from '../components/landing/LiveDeliberationPreview';
 import { OnChainReceiptPreview } from '../components/landing/OnChainReceiptPreview';
 import { BenchmarksPreview } from '../components/landing/BenchmarksPreview';
@@ -220,8 +220,8 @@ export function LoginPage() {
         </div>
       </section>
 
-      {/* ── §8.5 MECHANISM SELECTOR INTERACTIVE DEMO ─────────────── */}
-      <MechanismSelector />
+      {/* ── §8.5 SDK INTEGRATION DEMO ────────────────────────────── */}
+      <InteractiveSdkDemo />
 
       {/* ── §8.6 LIVE DELIBERATION PREVIEW ───────────────────────── */}
       <LiveDeliberationPreview reducedMotion={reducedMotion} />
