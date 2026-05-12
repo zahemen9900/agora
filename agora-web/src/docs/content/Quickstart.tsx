@@ -10,7 +10,7 @@ from agora.sdk import AgoraArbitrator
 
 async def main():
     arbitrator = AgoraArbitrator(
-        api_url="https://agora-api-dcro4pg6ca-uc.a.run.app"
+        api_url="https://agora-api-b4auawqzbq-uc.a.run.app"
     )
 
     result = await arbitrator.arbitrate(

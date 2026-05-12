@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-API_URL="${AGORA_API_URL:-https://agora-api-dcro4pg6ca-uc.a.run.app}"
+API_URL="${AGORA_API_URL:-https://agora-api-b4auawqzbq-uc.a.run.app}"
 RUN_ANCHOR_CHECKS="${RUN_ANCHOR_CHECKS:-auto}"
 RUN_GEMINI_SMOKE="${RUN_GEMINI_SMOKE:-auto}"
 RUN_CLAUDE_SMOKE="${RUN_CLAUDE_SMOKE:-auto}"

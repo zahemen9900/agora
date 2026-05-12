@@ -352,8 +352,8 @@ RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL
 RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_OPENROUTER_SMOKE=always RUN_ALL_MODELS_E2E=never ./scripts/week1_demo.sh
 
 # 4) Strict model, Anchor, and hosted Week 1 E2E demo
-export GOOGLE_CLOUD_PROJECT="agora-ai-493714"
-export AGORA_API_URL="${AGORA_API_URL:-https://agora-api-dcro4pg6ca-uc.a.run.app}"
+export GOOGLE_CLOUD_PROJECT="agora-ai-9900"
+export AGORA_API_URL="${AGORA_API_URL:-https://agora-api-b4auawqzbq-uc.a.run.app}"
 export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
 export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
 RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
@@ -382,7 +382,7 @@ development.
 ```bash
 gcloud auth login
 gcloud auth application-default login
-gcloud config set project agora-ai-493714
+gcloud config set project agora-ai-9900
 ```
 
 Verification:
@@ -390,7 +390,7 @@ Verification:
 ```bash
 gcloud auth print-access-token >/dev/null
 gcloud auth application-default print-access-token >/dev/null
-gcloud secrets versions access latest --secret agora-gemini-api-key --project agora-ai-493714 >/dev/null
+gcloud secrets versions access latest --secret agora-gemini-api-key --project agora-ai-9900 >/dev/null
 ```
 
 ## Quick Usage
@@ -534,8 +534,8 @@ Hosted auth setup notes:
 Hosted auth bootstrap example (fully automated key create + store + run):
 
 ```bash
-export AGORA_API_URL="https://agora-api-dcro4pg6ca-uc.a.run.app"
-export GOOGLE_CLOUD_PROJECT="agora-ai-493714"
+export AGORA_API_URL="https://agora-api-b4auawqzbq-uc.a.run.app"
+export GOOGLE_CLOUD_PROJECT="agora-ai-9900"
 export AGORA_PHASE2_BOOTSTRAP_JWT="<human-workos-jwt>"
 
 # This run auto-creates a workspace API key, persists it to Secret Manager,
@@ -677,8 +677,8 @@ Week 1 bridge behavior:
 Cloud Run keypair setup example:
 
 ```bash
-PROJECT_ID="agora-ai-493714"
-SERVICE_ACCOUNT="agora-api-runtime@agora-ai-493714.iam.gserviceaccount.com"
+PROJECT_ID="agora-ai-9900"
+SERVICE_ACCOUNT="agora-api-runtime@agora-ai-9900.iam.gserviceaccount.com"
 SECRET_NAME="agora-solana-devnet-keypair"
 
 gcloud secrets create "$SECRET_NAME" --replication-policy=automatic --project "$PROJECT_ID"

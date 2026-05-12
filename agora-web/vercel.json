@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://agora-api-dcro4pg6ca-uc.a.run.app/:path*"
+      "destination": "https://agora-api-b4auawqzbq-uc.a.run.app/:path*"
     },
     {
       "source": "/user_management/:path*",

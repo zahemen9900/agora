@@ -10,7 +10,7 @@ const workosProxyAgent = new Agent({
 })
 
 const DEFAULT_LOCAL_API_URL = 'http://localhost:8000'
-const DEFAULT_GCLOUD_API_URL = 'https://agora-api-dcro4pg6ca-uc.a.run.app'
+const DEFAULT_GCLOUD_API_URL = 'https://agora-api-b4auawqzbq-uc.a.run.app'
 
 function resolveApiProxyTarget(env: Record<string, string>): string {
   const explicitProxyTarget = env.VITE_AGORA_API_PROXY_TARGET?.trim()
