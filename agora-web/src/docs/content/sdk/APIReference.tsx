@@ -5,7 +5,7 @@ import { Callout } from "../../components/Callout";
 /* ── Code samples ──────────────────────────────────────────────────── */
 
 const authCurlCode = `# Obtain a JWT from WorkOS, then pass it as a Bearer token.
-curl -X POST https://agora-api-dcro4pg6ca-uc.a.run.app/tasks/ \\
+curl -X POST https://agora-api-b4auawqzbq-uc.a.run.app/tasks/ \\
   -H "Authorization: Bearer <YOUR_JWT>" \\
   -H "Content-Type: application/json" \\
   -d '{"task": "Should we adopt GraphQL or REST for our new API?"}'`;
@@ -115,7 +115,7 @@ Content-Type: application/json
   "solana_network": "devnet"
 }`;
 
-const jsClientCode = `const BASE_URL = "https://agora-api-dcro4pg6ca-uc.a.run.app";
+const jsClientCode = `const BASE_URL = "https://agora-api-b4auawqzbq-uc.a.run.app";
 const JWT = "your-workos-jwt";
 
 // 1. Create the task
@@ -261,7 +261,7 @@ export function APIReference() {
             </h2>
 
             <CodeBlock
-                code="https://agora-api-dcro4pg6ca-uc.a.run.app"
+                code="https://agora-api-b4auawqzbq-uc.a.run.app"
                 language="text"
                 filename="base URL"
             />
