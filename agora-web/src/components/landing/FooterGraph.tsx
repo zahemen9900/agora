@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import * as d3Force from 'd3-force';
 
 const LABELS = [
@@ -340,6 +341,16 @@ export function FooterGraph() {
               >
                 SDK ↗
               </a>
+            </li>
+            <li>
+              <Link
+                to="/docs"
+                style={{ fontSize: '13px', color: 'var(--text-secondary)', fontFamily: "'Hanken Grotesk', sans-serif", transition: 'color 0.12s ease-out', textDecoration: 'none' }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent-emerald)')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-secondary)')}
+              >
+                Docs
+              </Link>
             </li>
             <li>
               <a
