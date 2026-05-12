@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { RotateCcw, Copy, Check, BookOpen } from 'lucide-react';
 
 // ─── Keyframe injection ───────────────────────────────────────────────────────
 const STYLE_ID = 'sdk-demo-kf';
@@ -181,34 +183,41 @@ function Cursor({ on }: { on: boolean }) {
   );
 }
 
-function TitleBtn({
-  label, onClick, active = false,
-}: { label: string; onClick: () => void; active?: boolean }) {
+function IconBtn({
+  title, onClick, active = false, children,
+}: { title: string; onClick: () => void; active?: boolean; children: React.ReactNode }) {
   return (
     <button
       type="button"
+      title={title}
       onClick={onClick}
       style={{
-        fontFamily: "'Commit Mono', monospace", fontSize: '10px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: 26, height: 26,
         color: active ? '#34d399' : '#6b7280',
         background: 'transparent',
         border: `1px solid ${active ? '#34d39966' : '#30363d'}`,
-        borderRadius: '4px', padding: '2px 8px',
-        cursor: 'pointer', letterSpacing: '0.04em',
-        transition: 'color 0.15s, border-color 0.15s',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        transition: 'color 0.15s, border-color 0.15s, background 0.15s',
+        flexShrink: 0,
       }}
       onMouseEnter={e => {
         if (active) return;
-        (e.currentTarget).style.color = '#e6edf3';
-        (e.currentTarget).style.borderColor = '#6b7280';
+        const b = e.currentTarget;
+        b.style.color = '#e6edf3';
+        b.style.borderColor = '#6b7280';
+        b.style.background = 'rgba(255,255,255,0.06)';
       }}
       onMouseLeave={e => {
         if (active) return;
-        (e.currentTarget).style.color = '#6b7280';
-        (e.currentTarget).style.borderColor = '#30363d';
+        const b = e.currentTarget;
+        b.style.color = '#6b7280';
+        b.style.borderColor = '#30363d';
+        b.style.background = 'transparent';
       }}
     >
-      {label}
+      {children}
     </button>
   );
 }
@@ -507,8 +516,12 @@ export function InteractiveSdkDemo() {
                 transition: 'opacity 0.4s',
                 pointerEvents: isStarted ? 'auto' : 'none',
               }}>
-                <TitleBtn label="Reset" onClick={onReset} />
-                <TitleBtn label={copied ? '✓ Copied' : 'Copy'} onClick={onCopy} active={copied} />
+                <IconBtn title="Reset" onClick={onReset}>
+                  <RotateCcw size={13} />
+                </IconBtn>
+                <IconBtn title={copied ? 'Copied!' : 'Copy code'} onClick={onCopy} active={copied}>
+                  {copied ? <Check size={13} /> : <Copy size={13} />}
+                </IconBtn>
               </div>
             </div>
 
@@ -568,6 +581,39 @@ export function InteractiveSdkDemo() {
               )}
             </div>
           </div>
+        </div>
+
+        {/* Docs link */}
+        <div style={{ textAlign: 'center', marginTop: '28px' }}>
+          <Link
+            to="/docs"
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '7px',
+              fontFamily: "'Commit Mono', monospace",
+              fontSize: '12px',
+              letterSpacing: '0.04em',
+              color: 'var(--text-secondary)',
+              textDecoration: 'none',
+              padding: '8px 16px',
+              borderRadius: '999px',
+              border: '1px solid var(--border-strong)',
+              background: 'transparent',
+              transition: 'color 0.18s ease, border-color 0.18s ease',
+            }}
+            onMouseEnter={e => {
+              const el = e.currentTarget;
+              el.style.color = 'var(--accent-emerald)';
+              el.style.borderColor = 'var(--accent-emerald)';
+            }}
+            onMouseLeave={e => {
+              const el = e.currentTarget;
+              el.style.color = 'var(--text-secondary)';
+              el.style.borderColor = 'var(--border-strong)';
+            }}
+          >
+            <BookOpen size={13} />
+            View our docs
+          </Link>
         </div>
 
       </div>
