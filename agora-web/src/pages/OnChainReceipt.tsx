@@ -4,12 +4,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   CheckCircle2,
-  Code2,
-  Download,
   ExternalLink,
-  FileText,
-  Globe,
-  Image as ImageIcon,
   ShieldCheck,
   Copy,
   Check,
@@ -22,16 +17,13 @@ import {
   verifyMerkleRoot,
   ApiRequestError,
 } from "../lib/api";
-import { openTaskSource } from "../lib/sourceAccess";
 import {
   taskQueryKeys,
   useReleaseTaskPaymentMutation,
   useTaskDetailQuery,
 } from "../lib/taskQueries";
 import { deriveReceiptPaymentState } from "../lib/paymentRelease";
-import { CitationPill } from "../components/CitationPill";
 import { usePostHog } from "@posthog/react";
-import { useAuth } from "../lib/useAuth";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
 const SKELETON_STYLE_ID = "receipt-skeleton-kf";
@@ -45,11 +37,6 @@ function injectSkeletonKeyframes() {
       0%   { background-position: -200% center; }
       100% { background-position:  200% center; }
     }
-    @keyframes rcpt-marquee {
-      0%   { transform: translateX(0); }
-      100% { transform: translateX(-50%); }
-    }
-    .rcpt-marquee-strip:hover { animation-play-state: paused !important; }
   `;
   document.head.appendChild(s);
 }
@@ -126,7 +113,7 @@ function SkeletonVerifCard() {
   );
 }
 
-function CopyHash({ hash }: { hash: string | null | undefined }) {
+function CopyHash({ hash, extra }: { hash: string | null | undefined; extra?: React.ReactNode }) {
     const posthog = usePostHog();
   const [copied, setCopied] = useState(false);
   const val = hash ?? "Unavailable";
@@ -141,13 +128,18 @@ function CopyHash({ hash }: { hash: string | null | undefined }) {
   };
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
       <span style={{
         fontFamily: FONT,
         fontSize: '12px',
         color: 'var(--text-primary)',
-        wordBreak: 'break-all',
+        flex: 1,
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
       }}>{display}</span>
+      {extra}
       {val !== "Unavailable" && (
         <button
           type="button"
@@ -211,7 +203,6 @@ export function OnChainReceipt() {
     const posthog = usePostHog();
   const { taskId } = useParams();
   const navigate = useNavigate();
-  const { getAccessToken } = useAuth();
   const queryClient = useQueryClient();
   const taskQuery = useTaskDetailQuery(taskId);
   const releasePaymentMutation = useReleaseTaskPaymentMutation(taskId);
@@ -294,28 +285,16 @@ export function OnChainReceipt() {
   } = paymentState;
   const loading = taskQuery.isPending && task === null;
   const isPaying = releasePaymentMutation.isPending;
-  const attachedSources = result?.sources ?? [];
-  const toolSummary = result?.tool_usage_summary ?? null;
-  const evidenceItems = result?.evidence_items ?? [];
-  const citationItems = result?.citation_items ?? [];
-
-  const handleOpenSource = async (source: (typeof attachedSources)[number]) => {
-    try {
-      const token = await getAccessToken();
-      await openTaskSource(source, token);
-    } catch (error) {
-      setPaymentError(error instanceof Error ? error.message : "Failed to open attached source.");
-    }
-  };
 
   return (
     <>
+      <style>{`@media (max-width: 480px) { .rcpt-explorer-label { display: none; } }`}</style>
       <title>{taskId ? `Receipt · ${taskId} — Agora` : "On-Chain Receipt — Agora"}</title>
       <meta
         name="description"
         content="On-chain proof of deliberation for this task — Merkle root, transcript hash, and chain submission status."
       />
-    <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '0 0 80px', position: 'relative' }}>
+    <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '0 0 80px', position: 'relative', overflow: 'hidden' }}>
       <Flyout
         show={showPaymentFlyout}
         variant="success"
@@ -439,7 +418,7 @@ export function OnChainReceipt() {
               lineHeight: 1.6,
             }}>
               Cryptographic verification of the governance process for task{' '}
-              <span style={{ fontFamily: FONT, color: 'var(--text-primary)', fontSize: '12px' }}>{taskId}</span>.
+              <span style={{ fontFamily: FONT, color: 'var(--text-primary)', fontSize: '12px', wordBreak: 'break-all' }}>{taskId}</span>.
             </p>
           </div>
 
@@ -580,140 +559,6 @@ export function OnChainReceipt() {
         </div>
       ) : null}
 
-      {!loading && (toolSummary || attachedSources.length > 0 || evidenceItems.length > 0 || citationItems.length > 0) ? (
-        <div style={{
-          position: 'relative', zIndex: 1,
-          display: 'grid',
-          gap: '16px',
-          marginBottom: '32px',
-        }}>
-          {/* ── Tool Usage ─────────────────────────────────────────────── */}
-          {toolSummary ? (
-            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 24px' }}>
-              <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', fontWeight: 600 }}>Tool Usage</div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                <span style={{ borderRadius: '999px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: 'var(--text-secondary)' }}>
-                  {toolSummary.total_tool_calls} calls
-                </span>
-                <span style={{ borderRadius: '999px', border: '1px solid rgba(52,211,153,0.35)', background: 'rgba(52,211,153,0.08)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: 'var(--accent-emerald)' }}>
-                  {toolSummary.successful_tool_calls} successful
-                </span>
-                {toolSummary.failed_tool_calls > 0 && (
-                  <span style={{ borderRadius: '999px', border: '1px solid rgba(251,113,133,0.35)', background: 'rgba(251,113,133,0.08)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: '#fb7185' }}>
-                    {toolSummary.failed_tool_calls} failed
-                  </span>
-                )}
-                {Object.entries(toolSummary.tool_counts).map(([toolName, count]) => (
-                  <span key={toolName} style={{ borderRadius: '999px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', padding: '4px 12px', fontFamily: FONT, fontSize: '11px', color: 'var(--text-secondary)' }}>
-                    {toolName} · {count}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {/* ── Attached Sources ───────────────────────────────────────── */}
-          {attachedSources.length > 0 ? (
-            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 24px' }}>
-              <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', fontWeight: 600 }}>Attached Sources</div>
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                {attachedSources.map((source) => {
-                  const isUrl   = source.kind === 'url';
-                  const isPdf   = source.kind === 'pdf' || source.mime_type?.includes('pdf');
-                  const isImage = source.kind === 'image' || source.mime_type?.startsWith('image/');
-                  const isCode  = source.kind === 'code_file';
-                  const SrcIcon = isUrl ? Globe : isPdf ? FileText : isImage ? ImageIcon : isCode ? Code2 : FileText;
-                  const iconColor = isPdf ? 'var(--accent-rose)' : isUrl ? 'var(--text-muted)' : 'var(--accent-emerald)';
-                  const badge   = isPdf ? 'PDF' : isUrl ? 'URL' : isImage ? 'IMG' : isCode ? 'CODE' : source.kind.replace('_', ' ').toUpperCase().slice(0, 4);
-                  return (
-                    <div
-                      key={source.source_id}
-                      style={{ flex: '0 0 auto', borderRadius: '10px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', position: 'relative', display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 36px 8px 10px', maxWidth: '220px', transition: 'border-color 0.15s ease' }}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = `${iconColor}60`; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = 'var(--border-default)'; }}
-                    >
-                      <SrcIcon size={15} style={{ color: iconColor, flexShrink: 0 }} />
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontFamily: FONT, fontSize: '11px', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{source.display_name}</div>
-                        <div style={{ fontFamily: FONT, fontSize: '9px', color: iconColor, letterSpacing: '0.06em', marginTop: '2px' }}>{badge} · {source.size_bytes.toLocaleString()} B</div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleOpenSource(source)}
-                        title={isUrl ? 'Open URL' : 'Download'}
-                        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: '32px', borderRadius: '0 10px 10px 0', background: 'transparent', border: 'none', borderLeft: '1px solid var(--border-default)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-muted)', transition: 'background 0.15s ease, color 0.15s ease' }}
-                        onMouseEnter={(e) => { const b = e.currentTarget; b.style.background = `${iconColor}14`; b.style.color = iconColor; }}
-                        onMouseLeave={(e) => { const b = e.currentTarget; b.style.background = 'transparent'; b.style.color = 'var(--text-muted)'; }}
-                      >
-                        <Download size={12} />
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          {/* ── Evidence Trail ────────────────────────────────────────── */}
-          {evidenceItems.length > 0 && (() => {
-            // Need ≥4 distinct items so the doubled strip meaningfully overflows the
-            // ~1000px container (4 × 252px = 1008px). Below that, use a static
-            // horizontal-scroll strip — no animation, no overflow bleed.
-            const useMarquee = evidenceItems.length >= 4;
-            const EvidenceCard = ({ item, idx }: { item: typeof evidenceItems[0]; idx: number }) => (
-              <div key={`${item.evidence_id}-${idx}`} style={{ width: '240px', flexShrink: 0, borderRadius: '10px', border: '1px solid var(--border-default)', background: 'var(--bg-base)', padding: '12px 14px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '6px', flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: FONT, fontSize: '9px', color: 'var(--accent-emerald)', background: 'rgba(52,211,153,0.1)', borderRadius: '4px', padding: '1px 5px', letterSpacing: '0.06em' }}>{item.tool_name}</span>
-                  <span style={{ fontFamily: FONT, fontSize: '9px', color: 'var(--text-muted)' }}>R{item.round_index}</span>
-                </div>
-                <p style={{ fontFamily: FONT, fontSize: '10px', color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{item.summary}</p>
-              </div>
-            );
-            return (
-              <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 0', overflow: 'hidden' }}>
-                <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', paddingLeft: '24px', fontWeight: 600 }}>Evidence Trail</div>
-                {useMarquee ? (
-                  /* Animated marquee — enough items to scroll continuously */
-                  <div style={{ position: 'relative', overflow: 'hidden' }}>
-                    <div aria-hidden style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '48px', background: 'linear-gradient(to right, var(--bg-elevated), transparent)', zIndex: 2, pointerEvents: 'none' }} />
-                    <div aria-hidden style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '48px', background: 'linear-gradient(to left, var(--bg-elevated), transparent)', zIndex: 2, pointerEvents: 'none' }} />
-                    <div
-                      className="rcpt-marquee-strip"
-                      style={{ display: 'flex', gap: '12px', width: 'max-content', padding: '4px 24px', animation: `rcpt-marquee ${Math.max(14, evidenceItems.length * 7)}s linear infinite` }}
-                    >
-                      {[...evidenceItems, ...evidenceItems].map((item, i) => (
-                        <EvidenceCard key={`${item.evidence_id}-${i}`} item={item} idx={i} />
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  /* Static horizontal strip — too few items for a seamless marquee */
-                  <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', padding: '4px 24px', scrollbarWidth: 'none' }}>
-                    {evidenceItems.map((item, i) => (
-                      <EvidenceCard key={`${item.evidence_id}-${i}`} item={item} idx={i} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* ── Citations — compact hover-reveal pills ────────────────── */}
-          {citationItems.length > 0 ? (
-            <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-default)', borderRadius: '16px', padding: '20px 24px' }}>
-              <div style={{ fontFamily: FONT, fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-tertiary)', marginBottom: '14px', fontWeight: 600 }}>
-                Citations <span style={{ opacity: 0.5, fontWeight: 400 }}>· hover to expand</span>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                {citationItems.map((item, index) => (
-                  <CitationPill key={`${item.title}-${index}`} item={item} />
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
       {/* ── On-chain verification card ──────────────────────────────── */}
       {loading ? (
         <div style={{ position: 'relative', zIndex: 1, marginBottom: '32px' }}>
@@ -747,26 +592,31 @@ export function OnChainReceipt() {
             { label: 'Merkle Root', value: <CopyHash hash={result?.merkle_root} />, extra: null },
             {
               label: 'Receipt Transaction',
-              value: <CopyHash hash={task?.solana_tx_hash} />,
-              extra: task?.explorer_url ? (
-                <a
-                  href={task.explorer_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    fontFamily: FONT,
-                    fontSize: '11px',
-                    color: 'var(--accent-emerald)',
-                    textDecoration: 'none',
-                    flexShrink: 0,
-                  }}
-                >
-                  Explorer <ExternalLink size={12} />
-                </a>
-              ) : null,
+              value: (
+                <CopyHash
+                  hash={task?.solana_tx_hash}
+                  extra={task?.explorer_url ? (
+                    <a
+                      href={task.explorer_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontFamily: FONT,
+                        fontSize: '11px',
+                        color: 'var(--accent-emerald)',
+                        textDecoration: 'none',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <span className="rcpt-explorer-label">Explorer </span><ExternalLink size={12} />
+                    </a>
+                  ) : null}
+                />
+              ),
+              extra: null,
             },
             { label: 'Selector Reasoning Hash', value: <CopyHash hash={task?.selector_reasoning_hash} />, extra: null },
             {
