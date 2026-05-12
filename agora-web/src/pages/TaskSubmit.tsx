@@ -902,7 +902,14 @@ export function TaskSubmit() {
         name="description"
         content="Configure and submit a deliberation task. Choose your agents, mechanism, and models, then receive a cryptographic proof of the outcome."
       />
-      <style>{`@keyframes pill-tip-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+      <style>{`
+        @keyframes pill-tip-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+        @media (max-width: 480px) {
+          .task-toolbar { padding: 10px 12px !important; gap: 6px !important; }
+          .task-toolbar-left { gap: 4px !important; }
+          .task-toolbar-badge { display: none !important; }
+        }
+      `}</style>
 
       {/* ── Toolbar button tooltips ── */}
       {toolbarTooltip && (() => {
@@ -1135,9 +1142,9 @@ export function TaskSubmit() {
         <div style={{ height: '1px', background: 'var(--border-default)', margin: '0 16px' }} />
 
         {/* ── Bottom toolbar ── */}
-        <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', gap: '8px' }}>
+        <div className="task-toolbar" style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', gap: '8px' }}>
           {/* Left cluster: config + URL + files */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div className="task-toolbar-left" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             {/* Config button */}
             <button
               type="button"
@@ -1148,7 +1155,7 @@ export function TaskSubmit() {
               onMouseLeave={(e) => { const b = e.currentTarget; b.style.borderColor = 'var(--border-default)'; b.style.color = 'var(--text-secondary)'; setToolbarTooltip(null); }}
             >
               <Settings2 size={14} />
-              <span style={{ marginLeft: '4px', padding: '1px 6px', borderRadius: '100px', background: 'var(--border-default)', fontSize: '10px', color: 'var(--text-tertiary)' }}>
+              <span className="task-toolbar-badge" style={{ marginLeft: '4px', padding: '1px 6px', borderRadius: '100px', background: 'var(--border-default)', fontSize: '10px', color: 'var(--text-tertiary)' }}>
                 {effectiveAgentCount} agents · {stakes} SOL{byokConfig.enabled ? ' · BYOK' : ''}
               </span>
             </button>
