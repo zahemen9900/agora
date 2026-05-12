@@ -201,7 +201,7 @@ interface TeamMember {
 const TEAM: TeamMember[] = [
     {
         index: "01",
-        name: "Dave Zahemen",
+        name: "David Zahemen Yeboah",
         role: "ML / LLM Lead",
         blurb: "Built the deliberation engines from scratch: Thompson Sampling mechanism selector, factional debate with Devil's Advocate cross-examination, ISP-weighted voting, Delphi consensus, and the tool-calling layer that lets agents search the web, analyze files, and run sandboxed code before reaching consensus.",
         image: "/team/dave.jpg",
