@@ -188,6 +188,7 @@ export function LoginPage() {
                             </Link>
                             <Link
                                 to="/docs"
+                                className="hidden sm:inline"
                                 style={{
                                     fontFamily: "'Commit Mono', monospace",
                                     fontSize: "13px",
