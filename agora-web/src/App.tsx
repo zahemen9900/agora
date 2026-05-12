@@ -15,6 +15,7 @@ import { AuthQueryBoundary } from "./lib/AuthQueryBoundary";
 // Page components
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { DocsLayout } from "./layouts/DocsLayout";
+import { Team } from "./pages/Team";
 import { DocsHome } from "./docs/content/DocsHome";
 import { Quickstart } from "./docs/content/Quickstart";
 import { Installation } from "./docs/content/Installation";
@@ -111,6 +112,9 @@ function AppRoutes() {
                 }
             />
             <Route path="/callback" element={<Callback />} />
+
+            {/* Always-accessible public routes */}
+            <Route path="/team" element={<Team />} />
 
             {/* Always-accessible docs routes */}
             <Route path="/docs" element={<DocsLayout />}>
