@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import os
+
 import httpx
 
-from api.config import settings as api_settings
 from agora.tools.types import SourceRef, ToolResult
 
 
@@ -12,12 +13,39 @@ class SandboxRunnerError(RuntimeError):
     """Raised when sandbox execution cannot be completed."""
 
 
+def _first_env(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 class SandboxRunnerClient:
     """Thin authenticated client for the e2-small sandbox runner."""
 
-    def __init__(self, *, http_client: httpx.AsyncClient | None = None) -> None:
-        self._base_url = api_settings.sandbox_runner_url.rstrip("/")
-        self._token = api_settings.sandbox_runner_bearer_token
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        bearer_token: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        resolved_base_url = (
+            base_url.strip()
+            if base_url is not None
+            else _first_env("AGORA_SANDBOX_RUNNER_URL", "SANDBOX_RUNNER_URL")
+        )
+        resolved_token = (
+            bearer_token.strip()
+            if bearer_token is not None
+            else _first_env(
+                "AGORA_SANDBOX_RUNNER_BEARER_TOKEN",
+                "SANDBOX_RUNNER_BEARER_TOKEN",
+            )
+        )
+        self._base_url = resolved_base_url.rstrip("/")
+        self._token = resolved_token
         self._http = http_client or httpx.AsyncClient(timeout=45.0)
         self._owns_http_client = http_client is None
         if not self._base_url:
