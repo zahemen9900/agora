@@ -11,7 +11,6 @@ from crewai import Agent, Task, Crew
 
 # 1. Instantiate the Agora tool
 agora_tool = AgoraCrewAITool(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     mechanism=None,   # auto-select (recommended)
     agent_count=5,
 )
@@ -82,7 +81,6 @@ const multiAgentCrewCode = `from agora.sdk.crewai import AgoraCrewAITool
 from crewai import Agent, Task, Crew
 
 agora_tool = AgoraCrewAITool(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     agent_count=7,  # Higher count for more critical decisions
 )
 

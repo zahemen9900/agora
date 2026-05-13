@@ -15,7 +15,6 @@ class ResearchState(TypedDict):
 
 # 2. Instantiate AgoraNode (auto-selects mechanism)
 agora_node = AgoraNode(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     agent_count=5,
 )
 
@@ -68,7 +67,6 @@ class DecisionState(TypedDict):
     route: str
 
 agora_node = AgoraNode(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     agent_count=3,
 )
 
@@ -125,21 +123,18 @@ const forcedMechanismCode = `from agora.sdk import AgoraNode
 
 # Force debate for adversarial reasoning tasks
 debate_node = AgoraNode(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     mechanism="debate",
     agent_count=5,
 )
 
 # Force ISP vote for factual aggregation tasks
 vote_node = AgoraNode(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     mechanism="vote",
     agent_count=7,
 )
 
 # Force Delphi for open-ended or value-laden tasks
 delphi_node = AgoraNode(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     mechanism="delphi",
     agent_count=5,
 )
@@ -154,7 +149,6 @@ const customKeysCode = `# If your graph already uses different state keys,
 from agora.sdk import AgoraNode
 
 node = AgoraNode(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     input_key="user_query",     # read from state["user_query"]
     output_key="deliberation",  # write to state["deliberation"]
 )`;

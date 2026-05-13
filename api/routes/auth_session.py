@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.auth import (
@@ -23,6 +24,7 @@ from api.models import (
 
 router = APIRouter()
 CurrentUser = Annotated[AuthenticatedUser, Depends(get_current_user)]
+logger = structlog.get_logger(__name__)
 
 
 @router.get("/auth/config", response_model=AuthConfigResponse)
@@ -46,7 +48,20 @@ async def auth_me(
     store = get_auth_store()
     workspace = await store.get_workspace(user.workspace_id)
     if workspace is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+        if user.auth_method == "jwt" and user.user_id:
+            logger.warning(
+                "workspace_missing_self_heal_attempt",
+                user_id=user.user_id,
+                workspace_id=user.workspace_id,
+                email=user.email,
+            )
+            workspace = await store.ensure_personal_workspace(
+                user_id=user.user_id,
+                email=user.email,
+                name=user.display_name,
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Workspace not found")
     return AuthMeResponse(
         principal=PrincipalResponse.model_validate(principal_payload(user)),
         workspace=WorkspaceResponse.model_validate(workspace),

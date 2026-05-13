@@ -170,6 +170,11 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
   const blockedBootstrapSubjectRef = useRef<string | null>(null);
   const backendUnavailableWarnedRef = useRef(false);
 
+  function resetBootstrapGuards(): void {
+    bootstrappedSubjectRef.current = null;
+    blockedBootstrapSubjectRef.current = null;
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -184,8 +189,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
         setFeatureFlags(null);
         setAuthIssue(null);
         setAuthStatus("unauthenticated");
-        bootstrappedSubjectRef.current = null;
-        blockedBootstrapSubjectRef.current = null;
+        resetBootstrapGuards();
         backendUnavailableWarnedRef.current = false;
         return;
       }
@@ -298,10 +302,16 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
     authIssue,
     signIn: () => {
       const returnTo = rememberReturnTo();
+      resetBootstrapGuards();
+      setAuthIssue(null);
+      setAuthStatus("loading");
       signIn({ state: { returnTo } });
     },
     signUp: () => {
       const returnTo = rememberReturnTo();
+      resetBootstrapGuards();
+      setAuthIssue(null);
+      setAuthStatus("loading");
       signUp({ state: { returnTo } });
     },
     signOut: () => {
@@ -311,7 +321,7 @@ function AuthStateProvider({ children }: { children: ReactNode }) {
       setFeatureFlags(null);
       setAuthIssue(null);
       setAuthStatus("unauthenticated");
-      blockedBootstrapSubjectRef.current = null;
+      resetBootstrapGuards();
       signOut({ returnTo: `${window.location.origin}/auth` });
     },
     getAccessToken: async () => {

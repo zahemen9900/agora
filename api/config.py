@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     program_id: str = "82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd"
 
     google_cloud_project: str = ""
-    gcs_bucket: str = "agora-data"
+    gcs_bucket: str = ""
     source_upload_expiry_minutes: int = Field(
         default=15,
         ge=1,

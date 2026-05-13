@@ -22,8 +22,8 @@ uv pip install -e ".[dev]"`;
 
 const envFile = `# .env — add to your project root (never commit this file)
 
-# Required: Agora API endpoint
-AGORA_API_URL=https://agora-api-b4auawqzbq-uc.a.run.app
+# Optional: override the hosted Agora API endpoint
+# AGORA_API_URL=https://agora-api-b4auawqzbq-uc.a.run.app
 
 # Required for on-chain features: Helius RPC URL (get one at helius.dev)
 HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
@@ -42,7 +42,7 @@ load_dotenv()
 from agora.sdk import AgoraArbitrator
 
 arbitrator = AgoraArbitrator(
-    api_url=os.environ["AGORA_API_URL"],
+    api_url=os.environ.get("AGORA_API_URL"),
 )`;
 
 const dockerCompose = `# docker-compose.yml
@@ -53,7 +53,8 @@ services:
     volumes:
       - .:/app
     environment:
-      - AGORA_API_URL=https://agora-api-b4auawqzbq-uc.a.run.app
+      # Optional only if you need to override the hosted default:
+      # - AGORA_API_URL=https://agora-api-b4auawqzbq-uc.a.run.app
       - SOLANA_NETWORK=devnet
     command: pip install agora-sdk && python main.py`;
 

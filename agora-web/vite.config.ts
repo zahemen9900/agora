@@ -9,7 +9,7 @@ const workosProxyAgent = new Agent({
   timeout: 15_000,
 })
 
-const DEFAULT_LOCAL_API_URL = 'http://localhost:8000'
+const DEFAULT_LOCAL_API_URL = 'http://127.0.0.1:8000'
 const DEFAULT_GCLOUD_API_URL = 'https://agora-api-b4auawqzbq-uc.a.run.app'
 
 function resolveApiProxyTarget(env: Record<string, string>): string {
@@ -34,11 +34,11 @@ export default defineConfig(({ mode }) => {
     plugins: [react(), tailwindcss()],
     server: {
       proxy: {
-        '^/api(?:/|$)': {
+        '/api': {
           target: apiProxyTarget,
           changeOrigin: true,
           secure: false,
-          rewrite: (path) => path.replace(/^\/api/, ''),
+          rewrite: (path) => path.replace(/^\/api(?=\/|$)/, ''),
         },
         "/user_management": {
           target: "https://api.workos.com",
