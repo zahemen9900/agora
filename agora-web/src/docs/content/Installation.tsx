@@ -35,15 +35,12 @@ SOLANA_NETWORK=devnet
 GOOGLE_CLOUD_PROJECT=your-gcp-project-id`;
 
 const envLoad = `from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
 from agora.sdk import AgoraArbitrator
 
-arbitrator = AgoraArbitrator(
-    api_url=os.environ.get("AGORA_API_URL"),
-)`;
+arbitrator = AgoraArbitrator()`;
 
 const dockerCompose = `# docker-compose.yml
 services:

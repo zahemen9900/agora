@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
-
-from google.cloud import storage
 
 from agora.config import get_config
 from agora.tools.types import SourceRef
@@ -16,7 +15,7 @@ class SourceResolver:
 
     def __init__(self) -> None:
         self._config = get_config()
-        self._storage_client: storage.Client | None = None
+        self._storage_client: Any | None = None
 
     async def read_bytes(self, source: SourceRef) -> bytes:
         """Read one source payload into memory."""
@@ -32,6 +31,8 @@ class SourceResolver:
 
     def _read_gcs_bytes(self, *, bucket_name: str, object_name: str) -> bytes:
         if self._storage_client is None:
+            from google.cloud import storage
+
             project = self._config.google_cloud_project or None
             self._storage_client = storage.Client(project=project)
         bucket = self._storage_client.bucket(bucket_name)
