@@ -9,9 +9,7 @@ const arbitrateCode = `import asyncio
 from agora.sdk import AgoraArbitrator
 
 async def main():
-    arbitrator = AgoraArbitrator(
-        api_url="https://agora-api-b4auawqzbq-uc.a.run.app"
-    )
+    arbitrator = AgoraArbitrator()
 
     result = await arbitrator.arbitrate(
         "Should a startup with 3 engineers use microservices or a monolith?"

@@ -5,7 +5,6 @@ import { ParamTable } from "../../components/ParamTable";
 const constructorCode = `from agora.sdk import AgoraArbitrator
 
 arbitrator = AgoraArbitrator(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     mechanism=None,       # auto-select (default)
     agent_count=3,        # 3, 5, or 7
     solana_wallet=None,   # required for staked arbitration
@@ -60,7 +59,6 @@ class State(TypedDict):
 
 # AgoraNode reads state["task"] and writes state["agora_result"]
 node = AgoraNode(
-    api_url="https://agora-api-b4auawqzbq-uc.a.run.app",
     mechanism=None,   # auto-select
     agent_count=5,
 )
@@ -162,8 +160,10 @@ export function PythonSDK() {
                     {
                         name: "api_url",
                         type: "str",
-                        required: true,
-                        description: "URL of the Agora API endpoint.",
+                        required: false,
+                        default: "canonical hosted backend",
+                        description:
+                            "Optional Agora API endpoint override. By default the SDK uses the canonical hosted Cloud Run backend automatically.",
                     },
                     {
                         name: "solana_wallet",
