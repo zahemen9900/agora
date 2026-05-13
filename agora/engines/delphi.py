@@ -31,9 +31,11 @@ from agora.runtime.provider_errors import provider_error_details, should_try_alt
 from agora.runtime.prompt_policy import delphi_independent_prompt, delphi_revision_prompt
 from agora.tools.broker import ToolBroker
 from agora.tools.runtime import (
+    ToolPlanningCandidate,
     ToolInvocationContext,
     ToolPolicyConfig,
     maybe_augment_prompt_with_tool,
+    maybe_augment_prompt_with_tool_candidates,
     merge_raw_usage,
     normalize_raw_usage,
     tool_results_to_evidence,
@@ -566,36 +568,25 @@ class DelphiEngine:
 
         explicit_model = self._participant_model(agent_idx)
         if explicit_model is not None:
-            caller = self._participant_caller(agent_idx, explicit_model)
             final_user_prompt = user_prompt
             planning_usage: dict[str, Any] = {}
             tool_results: list[ToolResult] = []
             if tools_enabled:
-                if self._tool_broker is None:
-                    self._tool_broker = ToolBroker()
-                augmentation = await maybe_augment_prompt_with_tool(
-                    caller=caller,
+                final_user_prompt, planning_usage, tool_results = await self._plan_tool_augmentation(
+                    agent_id=f"agent-{agent_idx + 1}",
+                    task=task,
+                    round_index=round_index,
+                    stage=stage,
+                    explicit_model=explicit_model,
+                    caller_tiers=[],
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    context=ToolInvocationContext(
-                        task=task,
-                        agent_id=f"agent-{agent_idx + 1}",
-                        round_index=round_index,
-                        stage=stage,
-                        sources=list(sources or []),
-                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
-                        event_sink=event_sink,
-                        broker=self._tool_broker,
-                    ),
+                    event_sink=event_sink,
+                    sources=sources,
+                    tool_policy=tool_policy,
+                    agent_idx=agent_idx,
                 )
-                final_user_prompt = augmentation.user_prompt
-                tool_results = augmentation.tool_results
-                if augmentation.planning_usage:
-                    planning_usage = normalize_raw_usage(
-                        usage=augmentation.planning_usage,
-                        model_name=explicit_model.model,
-                        provider=explicit_model.provider,
-                    )
+            caller = self._participant_caller(agent_idx, explicit_model)
             try:
                 response, usage = await caller.call(
                     system_prompt=system_prompt,
@@ -654,31 +645,20 @@ class DelphiEngine:
             planning_usage: dict[str, Any] = {}
             tool_results: list[ToolResult] = []
             if index == 0 and tools_enabled:
-                if self._tool_broker is None:
-                    self._tool_broker = ToolBroker()
-                augmentation = await maybe_augment_prompt_with_tool(
-                    caller=caller,
+                final_user_prompt, planning_usage, tool_results = await self._plan_tool_augmentation(
+                    agent_id=f"agent-{agent_idx + 1}",
+                    task=task,
+                    round_index=round_index,
+                    stage=stage,
+                    explicit_model=None,
+                    caller_tiers=caller_tiers,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    context=ToolInvocationContext(
-                        task=task,
-                        agent_id=f"agent-{agent_idx + 1}",
-                        round_index=round_index,
-                        stage=stage,
-                        sources=list(sources or []),
-                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
-                        event_sink=event_sink,
-                        broker=self._tool_broker,
-                    ),
+                    event_sink=event_sink,
+                    sources=sources,
+                    tool_policy=tool_policy,
+                    agent_idx=agent_idx,
                 )
-                final_user_prompt = augmentation.user_prompt
-                tool_results = augmentation.tool_results
-                if augmentation.planning_usage:
-                    planning_usage = normalize_raw_usage(
-                        usage=augmentation.planning_usage,
-                        model_name=caller.model,
-                        provider=self._provider_for_tier(caller_tier),
-                    )
             try:
                 response, usage = await self._call_hosted_participant(
                     caller_tier=caller_tier,
@@ -770,6 +750,86 @@ class DelphiEngine:
                 return _DelphiResponse.model_validate(fallback), merged_offline, caller.model
 
         raise AgentCallError("Delphi participant live fallback chain terminated unexpectedly.")
+
+    async def _plan_tool_augmentation(
+        self,
+        *,
+        agent_id: str,
+        task: str,
+        round_index: int,
+        stage: str,
+        explicit_model: LocalModelSpec | None,
+        caller_tiers: Sequence[ProviderTierName],
+        system_prompt: str,
+        user_prompt: str,
+        event_sink: EventSink | None,
+        sources: Sequence[SourceRef] | None,
+        tool_policy: ToolPolicyConfig | None,
+        agent_idx: int,
+    ) -> tuple[str, dict[str, Any], list[ToolResult]]:
+        """Plan tool use through one or more candidate callers before Delphi responses."""
+
+        if self._tool_broker is None:
+            self._tool_broker = ToolBroker()
+
+        if explicit_model is not None:
+            planning_selection = await maybe_augment_prompt_with_tool_candidates(
+                candidates=[
+                    ToolPlanningCandidate(
+                        caller=self._participant_caller(agent_idx, explicit_model),
+                        provider=explicit_model.provider,
+                    )
+                ],
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                context=ToolInvocationContext(
+                    task=task,
+                    agent_id=agent_id,
+                    round_index=round_index,
+                    stage=stage,
+                    sources=list(sources or []),
+                    tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                    event_sink=event_sink,
+                    broker=self._tool_broker,
+                ),
+            )
+        else:
+            planning_selection = await maybe_augment_prompt_with_tool_candidates(
+                candidates=[
+                    ToolPlanningCandidate(
+                        caller=self._get_caller(candidate_tier),
+                        provider=self._provider_for_tier(candidate_tier),
+                    )
+                    for candidate_tier in caller_tiers
+                ],
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                context=ToolInvocationContext(
+                    task=task,
+                    agent_id=agent_id,
+                    round_index=round_index,
+                    stage=stage,
+                    sources=list(sources or []),
+                    tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                    event_sink=event_sink,
+                    broker=self._tool_broker,
+                ),
+            )
+
+        planning_usage = (
+            normalize_raw_usage(
+                usage=planning_selection.augmentation.planning_usage,
+                model_name=planning_selection.model_name or "unknown",
+                provider=planning_selection.provider or "unknown",
+            )
+            if planning_selection.augmentation.planning_usage
+            else {}
+        )
+        return (
+            planning_selection.augmentation.user_prompt,
+            planning_usage,
+            planning_selection.augmentation.tool_results,
+        )
 
     def _participant_model(self, agent_idx: int) -> LocalModelSpec | None:
         """Return the explicit local model for one participant when configured."""

@@ -12,7 +12,7 @@ from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from agora.runtime.model_catalog import is_openrouter_model_id
+from agora.runtime.model_catalog import is_openrouter_model_id, resolve_model_catalog_entry
 from agora.tools.broker import ToolBroker
 from agora.tools.types import CitationItem, EvidenceItem, SourceRef, ToolResult
 
@@ -92,6 +92,7 @@ class ToolAugmentationResult:
     user_prompt: str
     tool_results: list[ToolResult]
     planning_usage: dict[str, Any]
+    planner_succeeded: bool
 
 
 _TOOL_DECISION_SYSTEM_PROMPT = """You are deciding whether to use broker-owned tools before answering.
@@ -109,6 +110,23 @@ Rules:
 - If attached files exist, prefer analyze_file or execute_python over guessing from memory.
 - Return strictly the requested JSON schema.
 """
+
+
+@dataclass(slots=True)
+class ToolPlanningCandidate:
+    """One provider/model candidate that may perform the planning step."""
+
+    caller: _SupportsStructuredCall
+    provider: str
+
+
+@dataclass(slots=True)
+class ToolPlanningSelection:
+    """Result of a planning attempt, including which candidate produced it."""
+
+    augmentation: ToolAugmentationResult
+    provider: str | None = None
+    model_name: str | None = None
 
 
 def should_offer_tools(*, task: str, sources: list[SourceRef], policy: ToolPolicyConfig) -> bool:
@@ -131,7 +149,12 @@ async def maybe_augment_prompt_with_tool(
     """Let the model optionally choose one tool call, then append the result inline."""
 
     if not should_offer_tools(task=context.task, sources=context.sources, policy=context.tool_policy):
-        return ToolAugmentationResult(user_prompt=user_prompt, tool_results=[], planning_usage={})
+        return ToolAugmentationResult(
+            user_prompt=user_prompt,
+            tool_results=[],
+            planning_usage={},
+            planner_succeeded=False,
+        )
     planning_usages: list[dict[str, Any]] = []
     tool_results: list[ToolResult] = []
     retry_context = ""
@@ -152,6 +175,18 @@ async def maybe_augment_prompt_with_tool(
             decision_prompt=decision_prompt,
         )
         if decision is None:
+            if (
+                not reconsidered_decline
+                and step_index == 0
+                and _should_reconsider_first_planning_failure(caller=caller, context=context)
+            ):
+                reconsidered_decline = True
+                retry_context = (
+                    "Your previous planning response was invalid, empty, or unusable."
+                    " Reconsider and choose the single highest-value tool call unless you"
+                    " are certain no tool would materially improve the answer."
+                )
+                continue
             break
         planning_usages.append(decision_usage)
         if not decision.should_call or decision.tool_name is None:
@@ -205,7 +240,12 @@ async def maybe_augment_prompt_with_tool(
 
     if not tool_results:
         merged_usage = merge_raw_usage([entry for entry in planning_usages if entry])
-        return ToolAugmentationResult(user_prompt=user_prompt, tool_results=[], planning_usage=merged_usage)
+        return ToolAugmentationResult(
+            user_prompt=user_prompt,
+            tool_results=[],
+            planning_usage=merged_usage,
+            planner_succeeded=bool(planning_usages),
+        )
 
     evidence_blocks = "\n\n".join(_tool_result_context_block(result) for result in tool_results)
     merged_usage = merge_raw_usage([entry for entry in planning_usages if entry])
@@ -213,6 +253,54 @@ async def maybe_augment_prompt_with_tool(
         user_prompt=f"{user_prompt}\n\n{evidence_blocks}",
         tool_results=tool_results,
         planning_usage=merged_usage,
+        planner_succeeded=True,
+    )
+
+
+async def maybe_augment_prompt_with_tool_candidates(
+    *,
+    candidates: list[ToolPlanningCandidate],
+    system_prompt: str,
+    user_prompt: str,
+    context: ToolInvocationContext,
+) -> ToolPlanningSelection:
+    """Run tool planning through one or more providers, falling through only on planner failure."""
+
+    if not candidates:
+        return ToolPlanningSelection(
+            augmentation=ToolAugmentationResult(
+                user_prompt=user_prompt,
+                tool_results=[],
+                planning_usage={},
+                planner_succeeded=False,
+            )
+        )
+
+    last_result = ToolAugmentationResult(
+        user_prompt=user_prompt,
+        tool_results=[],
+        planning_usage={},
+        planner_succeeded=False,
+    )
+    for candidate in candidates:
+        augmentation = await maybe_augment_prompt_with_tool(
+            caller=candidate.caller,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            context=context,
+        )
+        last_result = augmentation
+        if augmentation.planner_succeeded:
+            return ToolPlanningSelection(
+                augmentation=augmentation,
+                provider=candidate.provider,
+                model_name=getattr(candidate.caller, "model", None),
+            )
+
+    return ToolPlanningSelection(
+        augmentation=last_result,
+        provider=candidates[-1].provider,
+        model_name=getattr(candidates[-1].caller, "model", None),
     )
 
 
@@ -221,7 +309,7 @@ async def _request_tool_decision(
     caller: _SupportsStructuredCall,
     decision_prompt: str,
 ) -> tuple[ToolDecision | None, dict[str, Any]]:
-    """Request one tool decision with a raw-text fallback for weaker tool planners."""
+    """Request one tool decision with a raw-text fallback for brittle structured planners."""
 
     planning_usage: dict[str, Any] = {}
     try:
@@ -235,8 +323,7 @@ async def _request_tool_decision(
         if isinstance(raw_decision, ToolDecision):
             return raw_decision, planning_usage
     except Exception:
-        if not is_openrouter_model_id(getattr(caller, "model", "")):
-            return None, planning_usage
+        pass
 
     try:
         raw_text, fallback_usage = await caller.call(
@@ -333,7 +420,7 @@ def _should_reconsider_declined_tool_use(
 ) -> bool:
     """Return whether one extra grounding pass should follow a no-tool decision."""
 
-    if not is_openrouter_model_id(getattr(caller, "model", "")):
+    if not _should_reconsider_for_model(getattr(caller, "model", "")):
         return False
 
     early_grounding_stages = {
@@ -350,6 +437,43 @@ def _should_reconsider_declined_tool_use(
         return True
 
     return _task_has_freshness_or_retrieval_trigger(context.task)
+
+
+def _should_reconsider_first_planning_failure(
+    *,
+    caller: _SupportsStructuredCall,
+    context: ToolInvocationContext,
+) -> bool:
+    """Return whether an invalid first planning pass deserves one grounded retry."""
+
+    if not _should_reconsider_for_model(getattr(caller, "model", "")):
+        return False
+
+    early_grounding_stages = {
+        "initial",
+        "opening",
+        "vote",
+        "independent_generation",
+        "revision_round",
+    }
+    if context.stage not in early_grounding_stages:
+        return False
+
+    if context.sources:
+        return True
+
+    return _task_has_freshness_or_retrieval_trigger(context.task)
+
+
+def _should_reconsider_for_model(model_name: str) -> bool:
+    """Return whether the model family benefits from one extra grounded planning pass."""
+
+    if is_openrouter_model_id(model_name):
+        return True
+    entry = resolve_model_catalog_entry(str(model_name or "").strip().lower())
+    if entry is not None:
+        return entry.provider_family == "anthropic"
+    return str(model_name or "").strip().lower().startswith("claude")
 
 
 def _task_has_freshness_or_retrieval_trigger(task: str) -> bool:
