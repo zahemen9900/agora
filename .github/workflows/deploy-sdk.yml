@@ -2,8 +2,15 @@ name: Deploy SDK
 
 on:
   push:
+    branches:
+      - main
     tags:
       - "sdk-v*"
+    paths:
+      - "agora/**"
+      - "sdk/**"
+      - "pyproject.toml"
+      - ".github/workflows/deploy-sdk.yml"
   workflow_dispatch:
     inputs:
       publish:
@@ -15,6 +22,10 @@ on:
 permissions:
   contents: read
   id-token: write
+
+concurrency:
+  group: deploy-sdk
+  cancel-in-progress: false
 
 jobs:
   build-and-publish:
@@ -34,6 +45,54 @@ jobs:
       - name: Install build tooling
         run: python -m pip install --upgrade pip build twine
 
+      - name: Resolve SDK release metadata
+        id: release_meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_PUBLISH: ${{ github.event.inputs.publish || 'false' }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import tomllib
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          pyproject = Path("sdk/pyproject.toml")
+          with pyproject.open("rb") as handle:
+              version = tomllib.load(handle)["project"]["version"]
+
+          published = False
+          try:
+              with urllib.request.urlopen(
+                  "https://pypi.org/pypi/agora-arbitrator-sdk/json",
+                  timeout=15,
+              ) as response:
+                  payload = json.load(response)
+              published = version in payload.get("releases", {})
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+
+          event_name = os.environ["EVENT_NAME"]
+          ref_type = os.environ.get("REF_TYPE", "")
+          input_publish = os.environ.get("INPUT_PUBLISH", "false").lower() == "true"
+
+          should_publish = False
+          if event_name == "workflow_dispatch":
+              should_publish = input_publish and not published
+          elif event_name == "push":
+              should_publish = not published and (ref_type == "tag" or ref_type == "branch")
+
+          output_path = Path(os.environ["GITHUB_OUTPUT"])
+          with output_path.open("a", encoding="utf-8") as handle:
+              handle.write(f"version={version}\n")
+              handle.write(f"published={'true' if published else 'false'}\n")
+              handle.write(f"should_publish={'true' if should_publish else 'false'}\n")
+          PY
+
       - name: Build SDK
         run: python -m build sdk
 
@@ -51,8 +110,14 @@ jobs:
           print("sdk-import-ok")
           PY
 
+      - name: Report publish decision
+        run: |
+          echo "sdk version: ${{ steps.release_meta.outputs.version }}"
+          echo "already on pypi: ${{ steps.release_meta.outputs.published }}"
+          echo "will publish: ${{ steps.release_meta.outputs.should_publish }}"
+
       - name: Publish to PyPI
-        if: ${{ github.event_name == 'push' || inputs.publish }}
+        if: ${{ steps.release_meta.outputs.should_publish == 'true' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: sdk/dist/
