@@ -42,7 +42,7 @@ class ToolPolicy(BaseModel):
     allow_url_analysis: bool = True
     allow_file_analysis: bool = True
     allow_code_execution: bool = True
-    max_tool_calls_per_agent: int = Field(default=12, ge=0, le=20)
+    max_tool_calls_per_agent: int = Field(default=4, ge=0, le=20)
     max_urls_per_call: int = Field(default=5, ge=0, le=20)
     max_files_per_call: int = Field(default=3, ge=0, le=10)
     execution_timeout_seconds: int = Field(default=20, ge=1, le=30)

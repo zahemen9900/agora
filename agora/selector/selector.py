@@ -76,7 +76,7 @@ class AgoraSelector:
                 task_text=task_text,
                 features=features,
                 bandit_recommendation=bandit_rec,
-                historical_performance=self.bandit.get_stats(),
+                historical_performance=self._historical_payload_for(features.topic_category),
             )
         except AgentCallError as exc:
             logger.warning(
@@ -111,6 +111,37 @@ class AgoraSelector:
                 selector_source="bandit_fallback",
                 selector_fallback_path=["reasoning", "heuristic", "bandit"],
             )
+
+    def _historical_payload_for(self, category: str) -> dict[str, object]:
+        """Return only the current routing context plus compact global summaries.
+
+        Passing the full arm table to the reasoning selector encourages it to anchor
+        on broad historical priors that may not match the active task. The selector
+        only needs the current category slice plus a coarse sense of overall pull
+        volume to judge how much weight to place on the bandit's recommendation.
+        """
+
+        stats = self.bandit.get_stats()
+        normalized_category = category if category in {"math", "code", "reasoning", "factual", "creative"} else "reasoning"
+
+        category_stats = {
+            mechanism: mechanism_stats.get(normalized_category, {})
+            for mechanism, mechanism_stats in stats.items()
+        }
+        global_pull_totals = {
+            mechanism: int(
+                sum(
+                    int(category_stats.get("total_pulls") or 0)
+                    for category_stats in mechanism_stats.values()
+                )
+            )
+            for mechanism, mechanism_stats in stats.items()
+        }
+        return {
+            "current_category": normalized_category,
+            "current_category_stats": category_stats,
+            "global_pull_totals": global_pull_totals,
+        }
 
     def update(self, selection: MechanismSelection, reward: float) -> None:
         """Update bandit based on execution outcome.

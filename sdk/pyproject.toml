@@ -5,7 +5,7 @@ backend-path = ["."]
 
 [project]
 name = "agora-arbitrator-sdk"
-version = "0.1.0a20"
+version = "0.1.0a21"
 description = "On-chain multi-agent arbitration primitive. Debate, vote, or Delphi."
 readme = "README.md"
 requires-python = ">=3.11"

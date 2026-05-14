@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from agora.selector.bandit import ThompsonSamplingSelector
 from agora.types import MechanismType
@@ -46,6 +47,39 @@ def test_updates_bias_toward_successful_mechanism() -> None:
     debate_rate = sum(1 for mechanism in selections if mechanism == MechanismType.DEBATE) / 100
 
     assert debate_rate > 0.8
+
+
+def test_sparse_bandit_does_not_emit_overconfident_signal() -> None:
+    """Fresh priors should advertise uncertainty instead of a spiky sample ratio."""
+
+    np.random.seed(11)
+    selector = ThompsonSamplingSelector(
+        mechanisms=[MechanismType.DEBATE, MechanismType.VOTE, MechanismType.DELPHI]
+    )
+    features = make_features(topic_category="reasoning")
+
+    _mechanism, confidence = selector.select(features)
+
+    assert confidence == pytest.approx(1.0 / 3.0)
+
+
+def test_bandit_confidence_rises_after_meaningful_evidence() -> None:
+    """Confidence should only become sharp once the context has enough pull history."""
+
+    np.random.seed(7)
+    selector = ThompsonSamplingSelector(
+        mechanisms=[MechanismType.DEBATE, MechanismType.VOTE, MechanismType.DELPHI]
+    )
+    features = make_features(topic_category="reasoning")
+
+    for _ in range(12):
+        selector.update(MechanismType.DEBATE, "reasoning", reward=1.0)
+        selector.update(MechanismType.VOTE, "reasoning", reward=0.0)
+        selector.update(MechanismType.DELPHI, "reasoning", reward=0.0)
+
+    _mechanism, confidence = selector.select(features)
+
+    assert confidence > 0.7
 
 
 def test_bandit_state_save_load_roundtrip(tmp_path) -> None:

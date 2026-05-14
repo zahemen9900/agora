@@ -49,9 +49,11 @@ from agora.runtime.prompt_policy import (
 )
 from agora.tools.broker import ToolBroker
 from agora.tools.runtime import (
+    ToolPlanningCandidate,
     ToolInvocationContext,
     ToolPolicyConfig,
     maybe_augment_prompt_with_tool,
+    maybe_augment_prompt_with_tool_candidates,
     merge_raw_usage,
     normalize_raw_usage,
     tool_results_to_evidence,
@@ -690,6 +692,86 @@ class DebateEngine:
         graph_state["result"] = None
         return graph_state
 
+    async def _plan_tool_augmentation(
+        self,
+        *,
+        agent_id: str,
+        task: str,
+        round_index: int,
+        stage: str,
+        tier: ProviderTierName,
+        explicit_model: LocalModelSpec | None,
+        prompt_system: str,
+        prompt_user: str,
+        event_sink: EventSink | None,
+        sources: Sequence[SourceRef] | None,
+        tool_policy: ToolPolicyConfig | None,
+        agent_idx: int,
+    ) -> tuple[str, dict[str, Any], list[ToolResult]]:
+        """Plan tool use through one or more candidate callers before the main answer."""
+
+        if self._tool_broker is None:
+            self._tool_broker = ToolBroker()
+
+        if explicit_model is not None:
+            planning_selection = await maybe_augment_prompt_with_tool_candidates(
+                candidates=[
+                    ToolPlanningCandidate(
+                        caller=self._participant_caller(agent_idx, explicit_model),
+                        provider=explicit_model.provider,
+                    )
+                ],
+                system_prompt=prompt_system,
+                user_prompt=prompt_user,
+                context=ToolInvocationContext(
+                    task=task,
+                    agent_id=agent_id,
+                    round_index=round_index,
+                    stage=stage,
+                    sources=list(sources or []),
+                    tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                    event_sink=event_sink,
+                    broker=self._tool_broker,
+                ),
+            )
+        else:
+            planning_selection = await maybe_augment_prompt_with_tool_candidates(
+                candidates=[
+                    ToolPlanningCandidate(
+                        caller=self._get_caller(candidate_tier),
+                        provider=self._provider_for_tier(candidate_tier),
+                    )
+                    for candidate_tier in self._planning_tiers_for(tier)
+                ],
+                system_prompt=prompt_system,
+                user_prompt=prompt_user,
+                context=ToolInvocationContext(
+                    task=task,
+                    agent_id=agent_id,
+                    round_index=round_index,
+                    stage=stage,
+                    sources=list(sources or []),
+                    tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
+                    event_sink=event_sink,
+                    broker=self._tool_broker,
+                ),
+            )
+
+        planning_usage = (
+            normalize_raw_usage(
+                usage=planning_selection.augmentation.planning_usage,
+                model_name=planning_selection.model_name or "unknown",
+                provider=planning_selection.provider or "unknown",
+            )
+            if planning_selection.augmentation.planning_usage
+            else {}
+        )
+        return (
+            planning_selection.augmentation.user_prompt,
+            planning_usage,
+            planning_selection.augmentation.tool_results,
+        )
+
     def _participant_model(self, agent_idx: int) -> LocalModelSpec | None:
         """Return explicit participant model spec when local roster mode is active."""
 
@@ -893,36 +975,20 @@ class DebateEngine:
                 },
             )
             if custom_agent is None and tools_enabled:
-                planning_caller = (
-                    self._participant_caller(agent_idx, explicit_model)
-                    if explicit_model is not None
-                    else self._get_caller(tier)
+                final_user_prompt, planning_usage, tool_results = await self._plan_tool_augmentation(
+                    agent_id=agent_id,
+                    task=task,
+                    round_index=0,
+                    stage="initial",
+                    tier=tier,
+                    explicit_model=explicit_model,
+                    prompt_system=prompt.system,
+                    prompt_user=prompt.user,
+                    event_sink=event_sink,
+                    sources=sources,
+                    tool_policy=tool_policy,
+                    agent_idx=agent_idx,
                 )
-                if self._tool_broker is None:
-                    self._tool_broker = ToolBroker()
-                augmentation = await maybe_augment_prompt_with_tool(
-                    caller=planning_caller,
-                    system_prompt=prompt.system,
-                    user_prompt=prompt.user,
-                    context=ToolInvocationContext(
-                        task=task,
-                        agent_id=agent_id,
-                        round_index=0,
-                        stage="initial",
-                        sources=list(sources or []),
-                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
-                        event_sink=event_sink,
-                        broker=self._tool_broker,
-                    ),
-                )
-                final_user_prompt = augmentation.user_prompt
-                tool_results = augmentation.tool_results
-                if augmentation.planning_usage:
-                    planning_usage = normalize_raw_usage(
-                        usage=augmentation.planning_usage,
-                        model_name=planning_caller.model,
-                        provider=getattr(planning_caller, "provider", "unknown"),
-                    )
             if explicit_model is not None and custom_agent is None:
                 response, usage = await self._call_structured_explicit_model(
                     agent_idx=agent_idx,
@@ -1091,36 +1157,20 @@ class DebateEngine:
                 },
             )
             if custom_agent is None and tools_enabled:
-                planning_caller = (
-                    self._participant_caller(agent_idx, explicit_model)
-                    if explicit_model is not None
-                    else self._get_caller(tier)
+                final_user_prompt, planning_usage, tool_results = await self._plan_tool_augmentation(
+                    agent_id=agent_id,
+                    task=task,
+                    round_index=1,
+                    stage="opening",
+                    tier=tier,
+                    explicit_model=explicit_model,
+                    prompt_system=prompt.system,
+                    prompt_user=prompt.user,
+                    event_sink=event_sink,
+                    sources=sources,
+                    tool_policy=tool_policy,
+                    agent_idx=agent_idx,
                 )
-                if self._tool_broker is None:
-                    self._tool_broker = ToolBroker()
-                augmentation = await maybe_augment_prompt_with_tool(
-                    caller=planning_caller,
-                    system_prompt=prompt.system,
-                    user_prompt=prompt.user,
-                    context=ToolInvocationContext(
-                        task=task,
-                        agent_id=agent_id,
-                        round_index=1,
-                        stage="opening",
-                        sources=list(sources or []),
-                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
-                        event_sink=event_sink,
-                        broker=self._tool_broker,
-                    ),
-                )
-                final_user_prompt = augmentation.user_prompt
-                tool_results = augmentation.tool_results
-                if augmentation.planning_usage:
-                    planning_usage = normalize_raw_usage(
-                        usage=augmentation.planning_usage,
-                        model_name=planning_caller.model,
-                        provider=getattr(planning_caller, "provider", "unknown"),
-                    )
             if explicit_model is not None and custom_agent is None:
                 response, usage = await self._call_structured_explicit_model(
                     agent_idx=agent_idx,
@@ -1356,36 +1406,20 @@ class DebateEngine:
                 },
             )
             if custom_agent is None and tools_enabled:
-                planning_caller = (
-                    self._participant_caller(agent_idx, explicit_model)
-                    if explicit_model is not None
-                    else self._get_caller(tier)
+                final_user_prompt, planning_usage, tool_results = await self._plan_tool_augmentation(
+                    agent_id=agent_id,
+                    task=task,
+                    round_index=round_number,
+                    stage="rebuttal",
+                    tier=tier,
+                    explicit_model=explicit_model,
+                    prompt_system=prompt.system,
+                    prompt_user=prompt.user,
+                    event_sink=event_sink,
+                    sources=sources,
+                    tool_policy=tool_policy,
+                    agent_idx=agent_idx,
                 )
-                if self._tool_broker is None:
-                    self._tool_broker = ToolBroker()
-                augmentation = await maybe_augment_prompt_with_tool(
-                    caller=planning_caller,
-                    system_prompt=prompt.system,
-                    user_prompt=prompt.user,
-                    context=ToolInvocationContext(
-                        task=task,
-                        agent_id=agent_id,
-                        round_index=round_number,
-                        stage="rebuttal",
-                        sources=list(sources or []),
-                        tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
-                        event_sink=event_sink,
-                        broker=self._tool_broker,
-                    ),
-                )
-                final_user_prompt = augmentation.user_prompt
-                tool_results = augmentation.tool_results
-                if augmentation.planning_usage:
-                    planning_usage = normalize_raw_usage(
-                        usage=augmentation.planning_usage,
-                        model_name=planning_caller.model,
-                        provider=getattr(planning_caller, "provider", "unknown"),
-                    )
             if explicit_model is not None and custom_agent is None:
                 response, usage = await self._call_structured_explicit_model(
                     agent_idx=agent_idx,
@@ -1548,36 +1582,20 @@ class DebateEngine:
             },
         )
         if custom_agent is None and tools_enabled:
-            planning_caller = (
-                self._participant_caller(0, explicit_model)
-                if explicit_model is not None
-                else self._get_caller("pro")
+            final_user_prompt, planning_usage, synthesis_tool_results = await self._plan_tool_augmentation(
+                agent_id="synthesis",
+                task=state.task,
+                round_index=max(1, state.round),
+                stage="final_synthesis",
+                tier="pro",
+                explicit_model=explicit_model,
+                prompt_system=prompt.system,
+                prompt_user=prompt.user,
+                event_sink=event_sink,
+                sources=sources,
+                tool_policy=tool_policy,
+                agent_idx=0,
             )
-            if self._tool_broker is None:
-                self._tool_broker = ToolBroker()
-            augmentation = await maybe_augment_prompt_with_tool(
-                caller=planning_caller,
-                system_prompt=prompt.system,
-                user_prompt=prompt.user,
-                context=ToolInvocationContext(
-                    task=state.task,
-                    agent_id="synthesis",
-                    round_index=max(1, state.round),
-                    stage="final_synthesis",
-                    sources=list(sources or []),
-                    tool_policy=tool_policy or ToolPolicyConfig(enabled=False),
-                    event_sink=event_sink,
-                    broker=self._tool_broker,
-                ),
-            )
-            final_user_prompt = augmentation.user_prompt
-            synthesis_tool_results = augmentation.tool_results
-            if augmentation.planning_usage:
-                planning_usage = normalize_raw_usage(
-                    usage=augmentation.planning_usage,
-                    model_name=planning_caller.model,
-                    provider=getattr(planning_caller, "provider", "unknown"),
-                )
         if explicit_model is not None and custom_agent is None:
             response, usage = await self._call_structured_explicit_model(
                 agent_idx=0,
@@ -3033,6 +3051,22 @@ class DebateEngine:
             "kimi": "openrouter",
             "openrouter": "openrouter",
         }.get(tier, "unknown")
+
+    def _planning_tiers_for(self, primary_tier: ProviderTierName) -> list[ProviderTierName]:
+        """Return the planning-only fallback chain for hosted participants."""
+
+        ordered_candidates: list[ProviderTierName] = [
+            primary_tier,
+            "openrouter",
+            "claude",
+            "flash",
+            "pro",
+        ]
+        deduped: list[ProviderTierName] = []
+        for candidate in ordered_candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
 
     @staticmethod
     def _coordinator_custom_agent(

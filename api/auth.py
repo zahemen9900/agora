@@ -240,9 +240,9 @@ def _claim_string(payload: dict[str, object], *keys: str) -> str:
     nested_user = payload.get("user")
     if isinstance(nested_user, dict):
         for key in keys:
-          value = nested_user.get(key)
-          if isinstance(value, str) and value.strip():
-              return value.strip()
+            value = nested_user.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return ""
 
 
@@ -351,9 +351,7 @@ def _decode_verified_token(raw_token: str) -> dict[str, object]:
         _audiences_from_claims(unverified_claims) if isinstance(unverified_claims, dict) else []
     )
 
-    verify_audience = bool(audiences) and (
-        unverified_claims is None or bool(token_audiences)
-    )
+    verify_audience = bool(audiences) and (unverified_claims is None or bool(token_audiences))
 
     if not issuers or not audiences:
         raise RuntimeError(
@@ -543,14 +541,6 @@ async def get_current_user(
         payload = _decode_verified_token(raw_token)
     except RuntimeError as exc:
         logger.error("auth_verification_misconfigured", error=str(exc))
-        if _demo_auth_enabled():
-            demo_user = await _resolve_demo_user(store)
-            bind_user_to_current_span(
-                demo_user,
-                actor_type="demo",
-                actor_id=f"workspace:{demo_user.workspace_id}",
-            )
-            return demo_user
         raise HTTPException(status_code=500, detail="Authentication error") from exc
     except jwt.PyJWTError as exc:
         claims = _decode_unverified_claims(raw_token)
@@ -564,49 +554,17 @@ async def get_current_user(
             configured_issuer=_auth_issuer(),
             configured_audiences=_auth_audiences(),
         )
-        if _demo_auth_enabled():
-            demo_user = await _resolve_demo_user(store)
-            bind_user_to_current_span(
-                demo_user,
-                actor_type="demo",
-                actor_id=f"workspace:{demo_user.workspace_id}",
-            )
-            return demo_user
         raise HTTPException(status_code=401, detail="Invalid bearer token") from exc
 
     user_id = payload.get("sub")
     if not user_id:
-        if _demo_auth_enabled():
-            demo_user = await _resolve_demo_user(store)
-            bind_user_to_current_span(
-                demo_user,
-                actor_type="demo",
-                actor_id=f"workspace:{demo_user.workspace_id}",
-            )
-            return demo_user
         raise HTTPException(status_code=401, detail="Token missing sub claim")
 
     if not isinstance(user_id, str):
-        if _demo_auth_enabled():
-            demo_user = await _resolve_demo_user(store)
-            bind_user_to_current_span(
-                demo_user,
-                actor_type="demo",
-                actor_id=f"workspace:{demo_user.workspace_id}",
-            )
-            return demo_user
         raise HTTPException(status_code=401, detail="Token missing sub claim")
     try:
         validate_storage_id(user_id, field_name="sub")
     except ValueError as exc:
-        if _demo_auth_enabled():
-            demo_user = await _resolve_demo_user(store)
-            bind_user_to_current_span(
-                demo_user,
-                actor_type="demo",
-                actor_id=f"workspace:{demo_user.workspace_id}",
-            )
-            return demo_user
         raise HTTPException(status_code=401, detail="Token has invalid sub claim") from exc
 
     email = payload.get("email")

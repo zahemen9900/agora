@@ -148,7 +148,7 @@ class HostedToolPolicy(BaseModel):
     allow_url_analysis: bool = True
     allow_file_analysis: bool = True
     allow_code_execution: bool = True
-    max_tool_calls_per_agent: int = 12
+    max_tool_calls_per_agent: int = 4
     max_urls_per_call: int = 5
     max_files_per_call: int = 3
     execution_timeout_seconds: int = 20

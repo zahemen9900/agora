@@ -106,7 +106,9 @@ class _FakeSelectionOnlyOrchestrator:
 
 
 class _FakeBanditFallbackOrchestrator:
-    def __init__(self, agent_count: int, reasoning_presets=None, allow_offline_fallback: bool = False):
+    def __init__(
+        self, agent_count: int, reasoning_presets=None, allow_offline_fallback: bool = False
+    ):
         self.agent_count = agent_count
         self.reasoning_presets = reasoning_presets
         self.allow_offline_fallback = allow_offline_fallback
@@ -200,7 +202,10 @@ def test_auth_jwks_url_uses_workos_session_jwks_endpoint(
     monkeypatch.setattr(auth.settings, "auth_jwks_url", "")
     monkeypatch.setattr(auth.settings, "workos_client_id", "client-123")
 
-    assert auth._auth_jwks_url("https://api.workos.com") == "https://api.workos.com/sso/jwks/client-123"
+    assert (
+        auth._auth_jwks_url("https://api.workos.com")
+        == "https://api.workos.com/sso/jwks/client-123"
+    )
 
 
 def test_auth_jwks_candidates_include_explicit_and_derived(
@@ -209,9 +214,7 @@ def test_auth_jwks_candidates_include_explicit_and_derived(
     monkeypatch.setattr(auth.settings, "auth_jwks_url", "https://custom.example/jwks")
     monkeypatch.setattr(auth.settings, "workos_client_id", "client-123")
 
-    assert auth._auth_jwks_candidates(
-        ["https://api.workos.com", "https://tenant.authkit.app"]
-    ) == [
+    assert auth._auth_jwks_candidates(["https://api.workos.com", "https://tenant.authkit.app"]) == [
         "https://custom.example/jwks",
         "https://api.workos.com/sso/jwks/client-123",
         "https://tenant.authkit.app/oauth2/jwks",
@@ -362,7 +365,9 @@ def test_decode_verified_token_allows_session_token_without_audience(
     monkeypatch.setattr(auth.settings, "environment", "production")
     monkeypatch.setattr(auth.settings, "auth_issuer", "https://api.workos.com")
     monkeypatch.setattr(auth.settings, "workos_authkit_domain", "")
-    monkeypatch.setattr(auth.settings, "auth_jwks_url", "https://api.workos.com/sso/jwks/client-123")
+    monkeypatch.setattr(
+        auth.settings, "auth_jwks_url", "https://api.workos.com/sso/jwks/client-123"
+    )
     monkeypatch.setattr(auth.settings, "auth_audience", "client-123")
     monkeypatch.setattr(auth.settings, "auth_audiences", "")
 
@@ -410,7 +415,9 @@ def test_decode_verified_token_accepts_known_workos_claim_issuer_in_production(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(auth.settings, "environment", "production")
-    monkeypatch.setattr(auth.settings, "auth_issuer", "https://healthy-flare-22-staging.authkit.app")
+    monkeypatch.setattr(
+        auth.settings, "auth_issuer", "https://healthy-flare-22-staging.authkit.app"
+    )
     monkeypatch.setattr(auth.settings, "workos_authkit_domain", "")
     monkeypatch.setattr(auth.settings, "auth_jwks_url", "")
     monkeypatch.setattr(auth.settings, "auth_audience", "client-123")
@@ -446,10 +453,14 @@ def test_decode_verified_token_accepts_known_workos_claim_issuer_in_production(
 
         issuer = str(kwargs.get("issuer", ""))
         verify_options = kwargs.get("options")
-        if issuer in {"https://api.workos.com", "https://api.workos.com/"} and isinstance(
-            verify_options,
-            dict,
-        ) and verify_options.get("verify_aud") is False:
+        if (
+            issuer in {"https://api.workos.com", "https://api.workos.com/"}
+            and isinstance(
+                verify_options,
+                dict,
+            )
+            and verify_options.get("verify_aud") is False
+        ):
             return {
                 "sub": "user-123",
                 "email": "josh@example.com",
@@ -707,7 +718,9 @@ async def test_task_source_metadata_survives_upload_create_run_and_detailed_stat
     uploaded_sha256: str | None = None
 
     class _FakeAttachmentRunOrchestrator:
-        def __init__(self, agent_count: int, reasoning_presets=None, allow_offline_fallback: bool = False):
+        def __init__(
+            self, agent_count: int, reasoning_presets=None, allow_offline_fallback: bool = False
+        ):
             self.agent_count = agent_count
             self.reasoning_presets = reasoning_presets
             self.allow_offline_fallback = allow_offline_fallback
@@ -869,7 +882,9 @@ async def test_task_source_metadata_survives_upload_create_run_and_detailed_stat
     assert attached_file["source_url"] == f"/api/sources/{uploaded_source_id}/content"
 
     attached_file_detail = next(
-        source for source in detail_payload["result"]["sources"] if source["source_id"] == uploaded_source_id
+        source
+        for source in detail_payload["result"]["sources"]
+        if source["source_id"] == uploaded_source_id
     )
     assert attached_file_detail["status"] == "ready"
     assert attached_file_detail["sha256"] == uploaded_sha256
@@ -1026,7 +1041,9 @@ async def test_create_task_accepts_delphi_mechanism_override(
             _override_user(),
         )
 
-        fetched = await task_routes.get_task_status(created.task_id, _override_user(), detailed=True)
+        fetched = await task_routes.get_task_status(
+            created.task_id, _override_user(), detailed=True
+        )
     finally:
         task_routes._store = None
 
@@ -1183,7 +1200,9 @@ def test_benchmark_run_request_defaults_and_agent_boundaries() -> None:
                     "source": "custom",
                 }
             }
-        ).domain_prompts["math"].question
+        )
+        .domain_prompts["math"]
+        .question
         == "What is 2 + 2?"
     )
 
@@ -1465,7 +1484,9 @@ async def test_run_async_with_local_execution_persists_only_sanitized_marker(
             captured["workspace_id"] = workspace_id
             captured["run_request"] = run_request
 
-        monkeypatch.setattr(task_routes, "_launch_background_task_run", fake_launch_background_task_run)
+        monkeypatch.setattr(
+            task_routes, "_launch_background_task_run", fake_launch_background_task_run
+        )
 
         run_request = TaskRunRequest(
             local_models=[
@@ -1679,7 +1700,9 @@ async def test_resume_stale_background_task_runs_relaunches_requested_pending_ta
         def fake_launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
             launches.append((task_id, workspace_id))
 
-        monkeypatch.setattr(task_routes, "_launch_background_task_run", fake_launch_background_task_run)
+        monkeypatch.setattr(
+            task_routes, "_launch_background_task_run", fake_launch_background_task_run
+        )
 
         recovered = await task_routes.resume_stale_background_task_runs(
             stale_after_seconds=60,
@@ -1722,7 +1745,9 @@ async def test_resume_stale_background_task_runs_skips_stop_requested_task(
         def fake_launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
             launches.append((task_id, workspace_id))
 
-        monkeypatch.setattr(task_routes, "_launch_background_task_run", fake_launch_background_task_run)
+        monkeypatch.setattr(
+            task_routes, "_launch_background_task_run", fake_launch_background_task_run
+        )
 
         recovered = await task_routes.resume_stale_background_task_runs(
             stale_after_seconds=60,
@@ -1796,11 +1821,15 @@ async def test_resume_stale_background_task_runs_fails_unrecoverable_local_byok_
 
         launches: list[tuple[str, str]] = []
 
-        def fake_launch_background_task_run(*, task_id: str, workspace_id: str, run_request=None) -> None:
+        def fake_launch_background_task_run(
+            *, task_id: str, workspace_id: str, run_request=None
+        ) -> None:
             del run_request
             launches.append((task_id, workspace_id))
 
-        monkeypatch.setattr(task_routes, "_launch_background_task_run", fake_launch_background_task_run)
+        monkeypatch.setattr(
+            task_routes, "_launch_background_task_run", fake_launch_background_task_run
+        )
 
         recovered = await task_routes.resume_stale_background_task_runs(
             stale_after_seconds=60,
@@ -2169,7 +2198,9 @@ async def test_run_and_pay_use_bridge_and_surface_errors(
         assert failed_status.failure_reason == "Failed to submit receipt on Solana"
         assert failed_status.latest_error_event is not None
         assert failed_status.latest_error_event.event == "error"
-        assert failed_status.latest_error_event.data["message"] == "Failed to submit receipt on Solana"
+        assert (
+            failed_status.latest_error_event.data["message"] == "Failed to submit receipt on Solana"
+        )
         assert failed_status.chain_operations["submit_receipt"].status == "failed"
         assert any(event.event == "error" for event in failed_status.events)
     finally:
@@ -2389,7 +2420,9 @@ async def test_switched_task_events_include_execution_segments(
     finally:
         task_routes._store = None
 
-    selected_event = next(event for event in stored_events if event["event"] == "mechanism_selected")
+    selected_event = next(
+        event for event in stored_events if event["event"] == "mechanism_selected"
+    )
     pre_switch_event = next(
         event
         for event in stored_events
@@ -2399,7 +2432,8 @@ async def test_switched_task_events_include_execution_segments(
     post_switch_event = next(
         event
         for event in stored_events
-        if event["event"] == "agent_output" and event.get("data", {}).get("content") == "post-switch"
+        if event["event"] == "agent_output"
+        and event.get("data", {}).get("content") == "post-switch"
     )
 
     assert selected_event["data"]["execution_segment"] == 0
@@ -2510,7 +2544,7 @@ async def test_switched_task_retry_does_not_duplicate_switch_logs(
                     "round_number": 2,
                 },
                 "timestamp": datetime.now(UTC).isoformat(),
-            }
+            },
         )
 
         await task_routes.run_task(created.task_id, _override_user())
@@ -2825,7 +2859,9 @@ async def test_run_task_reconciles_selection_state_without_replaying_selection_w
                     mechanism="debate",
                     switched_to=None,
                     mechanism_switches=0,
-                    payment_amount_lamports=int(created_status.payment_amount * task_routes.LAMPORTS_PER_SOL),
+                    payment_amount_lamports=int(
+                        created_status.payment_amount * task_routes.LAMPORTS_PER_SOL
+                    ),
                     status="in_progress",
                 )
             ),
@@ -2954,7 +2990,9 @@ async def test_completed_task_reconciles_switch_pda_before_retrying_receipt(
         assert failed_status.chain_operations["record_switch:0"].status == "failed"
 
         monkeypatch.setattr(task_routes.bridge, "record_mechanism_switch", switch_unexpected)
-        monkeypatch.setattr(task_routes.bridge, "switch_account_exists", AsyncMock(return_value=True))
+        monkeypatch.setattr(
+            task_routes.bridge, "switch_account_exists", AsyncMock(return_value=True)
+        )
 
         retried = await task_routes.run_task(create.task_id, _override_user())
         final_status = await task_routes.get_task_status(
@@ -3263,7 +3301,9 @@ async def test_release_payment_reconciles_paid_task_without_replaying_bridge_wri
                 )
             ),
         )
-        monkeypatch.setattr(task_routes.bridge, "vault_account_exists", AsyncMock(return_value=False))
+        monkeypatch.setattr(
+            task_routes.bridge, "vault_account_exists", AsyncMock(return_value=False)
+        )
 
         second = await task_routes.release_payment(create.task_id, _override_user())
         final_status = await task_routes.get_task_status(
@@ -4681,6 +4721,22 @@ async def test_auth_me_returns_workspace_bootstrap_payload(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_auth_me_self_heals_missing_workspace_record(tmp_path: Path) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "auth-me-self-heal"))
+    auth._store = store
+    user = _override_user()
+    await store.upsert_user(user.id, user.email, user.display_name)
+
+    payload = await auth_session.auth_me(user)
+
+    assert payload.principal.workspace_id == user.workspace_id
+    assert payload.workspace.id == user.workspace_id
+    repaired_workspace = await store.get_workspace(user.workspace_id)
+    assert repaired_workspace is not None
+    assert repaired_workspace["owner_user_id"] == user.id
+
+
+@pytest.mark.asyncio
 async def test_auth_config_returns_resolved_backend_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -4889,12 +4945,12 @@ async def test_resume_stale_background_benchmark_runs_relaunches_background_requ
             "run_id": run_id,
             "workspace_id": "user-1",
             "kind": "benchmark",
-                "status": "running",
-                "created_at": "2026-04-30T00:00:00+00:00",
-                "updated_at": "2026-04-30T00:05:00+00:00",
-                "background_run_requested_at": "2026-04-30T00:00:00+00:00",
-                "background_recovery_deadline_at": "2026-05-03T00:00:00+00:00",
-                "request": {
+            "status": "running",
+            "created_at": "2026-04-30T00:00:00+00:00",
+            "updated_at": "2026-04-30T00:05:00+00:00",
+            "background_run_requested_at": "2026-04-30T00:00:00+00:00",
+            "background_recovery_deadline_at": "2026-05-03T00:00:00+00:00",
+            "request": {
                 "training_per_category": 1,
                 "holdout_per_category": 1,
                 "agent_count": 4,
@@ -4926,7 +4982,9 @@ async def test_resume_stale_background_benchmark_runs_fails_unrecoverable_local_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "resume-stale-benchmark-local-byok"))
+    task_routes._store = LocalTaskStore(
+        data_dir=str(tmp_path / "resume-stale-benchmark-local-byok")
+    )
     try:
         store = task_routes._store
         assert store is not None
@@ -5020,28 +5078,28 @@ async def test_stop_benchmark_run_marks_stop_requested_and_prevents_recovery(
         },
     )
 
-    monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "test-admin-token")
+    app.dependency_overrides[benchmark_routes.get_current_user] = _override_user
     response = await client.post(
         f"/benchmarks/runs/{run_id}/stop",
-        headers={"x-agora-admin-token": "test-admin-token"},
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload["run_id"] == run_id
     assert payload["status"] == "running"
-    assert "stopped by admin" in payload["error"].lower()
+    assert "stopped by user" in payload["error"].lower()
 
     updated = await store.get_user_test_result("user-1", run_id)
     assert updated is not None
     assert updated["status"] == "running"
     assert updated["stop_requested_at"]
-    assert updated["stop_requested_by"] == "admin"
+    assert updated["stop_requested_by"] == "user"
 
     relaunched = await benchmark_routes.resume_stale_background_benchmark_runs(
         stale_after_seconds=60,
         limit=10,
     )
     assert relaunched == 0
+    app.dependency_overrides.pop(benchmark_routes.get_current_user, None)
 
 
 @pytest.mark.asyncio
@@ -5303,6 +5361,7 @@ async def test_delete_benchmark_rejects_global_only_artifacts(
     detail_response = await client.get(f"/benchmarks/{artifact_id}")
     assert detail_response.status_code == 200
 
+
 def test_merge_benchmark_control_fields_preserves_stop_request() -> None:
     snapshot = {
         "run_id": "run-1",
@@ -5389,26 +5448,24 @@ async def test_benchmark_runtime_config_endpoint_exposes_resolved_tiers_and_cata
         entry["model_id"] == payload["tiers"]["openrouter"]["model_id"]
         for entry in payload["catalog"]["openrouter"]
     )
-    assert any(
-        "openrouter" in entry["allowed_tiers"]
-        for entry in payload["catalog"]["openrouter"]
-    )
-    assert any(
-        "pro" in entry["allowed_tiers"]
-        for entry in payload["catalog"]["gemini"]
-    )
+    assert any("openrouter" in entry["allowed_tiers"] for entry in payload["catalog"]["openrouter"])
+    assert any("pro" in entry["allowed_tiers"] for entry in payload["catalog"]["gemini"])
     assert {
-        entry["model_id"] for entry in payload["catalog"]["gemini"] if "pro" in entry["allowed_tiers"]
+        entry["model_id"]
+        for entry in payload["catalog"]["gemini"]
+        if "pro" in entry["allowed_tiers"]
     } >= {"gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-2.5-pro"}
     assert {
-        entry["model_id"] for entry in payload["catalog"]["gemini"] if "flash" in entry["allowed_tiers"]
+        entry["model_id"]
+        for entry in payload["catalog"]["gemini"]
+        if "flash" in entry["allowed_tiers"]
     } >= {"gemini-3.1-flash-lite-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
-    assert {
-        entry["model_id"] for entry in payload["catalog"]["anthropic"]
-    } >= {"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5"}
-    assert {
-        entry["model_id"] for entry in payload["catalog"]["openrouter"]
-    } >= {
+    assert {entry["model_id"] for entry in payload["catalog"]["anthropic"]} >= {
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+    }
+    assert {entry["model_id"] for entry in payload["catalog"]["openrouter"]} >= {
         "deepseek/deepseek-v3.2-exp",
         "google/gemma-4-31b-it",
         "openai/gpt-oss-120b",
@@ -6140,40 +6197,40 @@ async def test_benchmark_run_endpoint_persists_status_and_artifacts(
         store = task_routes.get_task_store()
         await store.save_global_benchmark_artifact(
             run_id,
-                {
-                    "artifact_id": run_id,
-                    "scope": "global",
-                    "source": "user_triggered",
-                    "status": "completed",
-                    "created_at": "2026-04-18T02:00:00+00:00",
-                    "benchmark_payload": {
-                        "generated_at": "2026-04-18T02:00:00+00:00",
-                        "benchmark_config": {
-                            "agent_count": 1,
-                        },
-                        "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+            {
+                "artifact_id": run_id,
+                "scope": "global",
+                "source": "user_triggered",
+                "status": "completed",
+                "created_at": "2026-04-18T02:00:00+00:00",
+                "benchmark_payload": {
+                    "generated_at": "2026-04-18T02:00:00+00:00",
+                    "benchmark_config": {
+                        "agent_count": 1,
                     },
+                    "runs": [{"mechanism_used": "selector", "model": "model-a"}],
                 },
-            )
+            },
+        )
         await store.save_user_benchmark_artifact(
             workspace_id,
             run_id,
-                {
-                    "artifact_id": run_id,
-                    "scope": "user",
-                    "owner_user_id": workspace_id,
-                    "source": "user_triggered",
-                    "status": "completed",
-                    "created_at": "2026-04-18T02:00:00+00:00",
-                    "benchmark_payload": {
-                        "generated_at": "2026-04-18T02:00:00+00:00",
-                        "benchmark_config": {
-                            "agent_count": 1,
-                        },
-                        "runs": [{"mechanism_used": "selector", "model": "model-a"}],
+            {
+                "artifact_id": run_id,
+                "scope": "user",
+                "owner_user_id": workspace_id,
+                "source": "user_triggered",
+                "status": "completed",
+                "created_at": "2026-04-18T02:00:00+00:00",
+                "benchmark_payload": {
+                    "generated_at": "2026-04-18T02:00:00+00:00",
+                    "benchmark_config": {
+                        "agent_count": 1,
                     },
+                    "runs": [{"mechanism_used": "selector", "model": "model-a"}],
                 },
-            )
+            },
+        )
         await store.save_user_test_result(
             workspace_id,
             run_id,
@@ -6218,12 +6275,8 @@ async def test_benchmark_run_endpoint_persists_status_and_artifacts(
     catalog_response = await client.get("/benchmarks/catalog")
     assert catalog_response.status_code == 200
     catalog_payload = catalog_response.json()
-    assert any(
-        entry["artifact_id"] == run_id for entry in catalog_payload["global_recent"]
-    )
-    assert any(
-        entry["artifact_id"] == run_id for entry in catalog_payload["user_recent"]
-    )
+    assert any(entry["artifact_id"] == run_id for entry in catalog_payload["global_recent"])
+    assert any(entry["artifact_id"] == run_id for entry in catalog_payload["user_recent"])
 
 
 @pytest.mark.asyncio
