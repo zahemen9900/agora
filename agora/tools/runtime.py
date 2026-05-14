@@ -46,7 +46,7 @@ class ToolPolicyConfig(BaseModel):
     allow_url_analysis: bool = True
     allow_file_analysis: bool = True
     allow_code_execution: bool = True
-    max_tool_calls_per_agent: int = Field(default=12, ge=0, le=20)
+    max_tool_calls_per_agent: int = Field(default=4, ge=0, le=20)
     max_urls_per_call: int = Field(default=5, ge=0, le=20)
     max_files_per_call: int = Field(default=3, ge=0, le=10)
     execution_timeout_seconds: int = Field(default=20, ge=1, le=30)
@@ -159,6 +159,7 @@ async def maybe_augment_prompt_with_tool(
     tool_results: list[ToolResult] = []
     retry_context = ""
     max_steps = max(1, context.tool_policy.max_tool_calls_per_agent)
+    reconsidered_failure = False
     reconsidered_decline = False
     step_index = 0
 
@@ -176,11 +177,11 @@ async def maybe_augment_prompt_with_tool(
         )
         if decision is None:
             if (
-                not reconsidered_decline
+                not reconsidered_failure
                 and step_index == 0
                 and _should_reconsider_first_planning_failure(caller=caller, context=context)
             ):
-                reconsidered_decline = True
+                reconsidered_failure = True
                 retry_context = (
                     "Your previous planning response was invalid, empty, or unusable."
                     " Reconsider and choose the single highest-value tool call unless you"
@@ -472,8 +473,9 @@ def _should_reconsider_for_model(model_name: str) -> bool:
         return True
     entry = resolve_model_catalog_entry(str(model_name or "").strip().lower())
     if entry is not None:
-        return entry.provider_family == "anthropic"
-    return str(model_name or "").strip().lower().startswith("claude")
+        return entry.provider_family in {"anthropic", "gemini"}
+    normalized = str(model_name or "").strip().lower()
+    return normalized.startswith("claude") or normalized.startswith("gemini")
 
 
 def _task_has_freshness_or_retrieval_trigger(task: str) -> bool:

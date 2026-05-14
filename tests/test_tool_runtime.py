@@ -87,6 +87,32 @@ class _ClaudeFallbackCaller:
         )
 
 
+class _GeminiFallbackCaller:
+    def __init__(self) -> None:
+        self.model = "gemini-3.1-flash-lite-preview"
+        self.calls: list[type[BaseModel] | None] = []
+
+    async def call(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None = None,
+        temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[str | ToolDecision, dict[str, Any]]:
+        del system_prompt, user_prompt, temperature, stream, stream_callback
+        self.calls.append(response_format)
+        if response_format is not None:
+            raise RuntimeError("structured tool planning failed")
+        return (
+            """```json
+{"should_call":true,"tool_name":"analyze_file","rationale":"Need the attached dataset","source_ids":["file-1"],"question":"Read the attached dataset and identify the best vendor."}
+```""",
+            {"tokens": 4, "latency_ms": 6.0},
+        )
+
+
 class _OpenRouterDeclineThenUseCaller:
     def __init__(self) -> None:
         self.model = "qwen/qwen3.5-flash-02-23"
@@ -159,6 +185,49 @@ class _InvalidThenValidPlanningCaller:
             return "not valid tool decision json", {"tokens": 2, "latency_ms": 3.0}
         return (
             """{"should_call":true,"tool_name":"analyze_file","rationale":"Need the attached dataset","source_ids":["file-1"],"question":"Read the attached dataset and identify the best vendor."}""",
+            {"tokens": 3, "latency_ms": 4.0},
+        )
+
+
+class _InvalidThenDeclineThenUsePlanningCaller:
+    def __init__(self, model: str) -> None:
+        self.model = model
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    async def call(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None = None,
+        temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[str | ToolDecision, dict[str, Any]]:
+        del system_prompt, temperature, stream, stream_callback
+        self.prompts.append(user_prompt)
+        self.calls += 1
+        if self.calls == 1:
+            return "not valid tool decision json", {"tokens": 2, "latency_ms": 3.0}
+        if self.calls == 2:
+            return "still not valid tool decision json", {"tokens": 2, "latency_ms": 3.0}
+        if self.calls == 3:
+            assert response_format is ToolDecision
+            return (
+                ToolDecision(
+                    should_call=False,
+                    rationale="I can probably answer without touching the file.",
+                ),
+                {"tokens": 3, "latency_ms": 4.0},
+            )
+        return (
+            ToolDecision(
+                should_call=True,
+                tool_name="analyze_file",
+                rationale="Need the attached dataset after all.",
+                source_ids=["file-1"],
+                question="Read the attached dataset and identify the best vendor.",
+            ),
             {"tokens": 3, "latency_ms": 4.0},
         )
 
@@ -401,7 +470,7 @@ async def test_tool_runtime_allows_multiple_successive_tool_calls_in_one_pass() 
     assert result.tool_results[1].tool_name == "execute_python"
     assert result.tool_results[0].status == "success"
     assert result.tool_results[1].status == "success"
-    assert "Tool budget for this pass: up to 12 calls total." in caller.prompts[0]
+    assert "Tool budget for this pass: up to 4 calls total." in caller.prompts[0]
     assert "Loaded local text file source dataset.csv" in caller.prompts[1]
     assert "Executed Python sandbox task successfully" in result.user_prompt
     assert result.planning_usage["tokens"] == 9
@@ -436,6 +505,33 @@ async def test_tool_runtime_falls_back_to_raw_openrouter_tool_decision() -> None
 @pytest.mark.asyncio
 async def test_tool_runtime_falls_back_to_raw_claude_tool_decision() -> None:
     caller = _ClaudeFallbackCaller()
+
+    result = await maybe_augment_prompt_with_tool(
+        caller=caller,
+        system_prompt="system",
+        user_prompt="Read the attached CSV and determine the best vendor.",
+        context=ToolInvocationContext(
+            task="Read the attached CSV and determine the best vendor.",
+            agent_id="agent-1",
+            round_index=0,
+            stage="independent_generation",
+            sources=[_source()],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_MultiToolBroker(),
+        ),
+    )
+
+    assert caller.calls == [ToolDecision, None]
+    assert result.planner_succeeded is True
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].tool_name == "analyze_file"
+    assert result.tool_results[0].status == "success"
+    assert "Loaded local text file source dataset.csv" in result.user_prompt
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_falls_back_to_raw_gemini_tool_decision() -> None:
+    caller = _GeminiFallbackCaller()
 
     result = await maybe_augment_prompt_with_tool(
         caller=caller,
@@ -509,6 +605,61 @@ async def test_tool_runtime_retries_invalid_first_planning_pass_for_claude() -> 
     assert caller.calls == 4
     assert len(caller.prompts) == 4
     assert "Previous tool attempt feedback:" in caller.prompts[-1]
+    assert result.planner_succeeded is True
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].tool_name == "analyze_file"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_retries_invalid_first_planning_pass_for_gemini() -> None:
+    caller = _InvalidThenValidPlanningCaller("gemini-3.1-flash-lite-preview")
+
+    result = await maybe_augment_prompt_with_tool(
+        caller=caller,
+        system_prompt="system",
+        user_prompt="Read the attached CSV and determine the best vendor.",
+        context=ToolInvocationContext(
+            task="Read the attached CSV and determine the best vendor.",
+            agent_id="agent-1",
+            round_index=0,
+            stage="initial",
+            sources=[_source()],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_MultiToolBroker(),
+        ),
+    )
+
+    assert caller.calls == 4
+    assert len(caller.prompts) == 4
+    assert "Previous tool attempt feedback:" in caller.prompts[-1]
+    assert result.planner_succeeded is True
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].tool_name == "analyze_file"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_can_recover_from_invalid_then_declined_claude_planning() -> None:
+    caller = _InvalidThenDeclineThenUsePlanningCaller("claude-sonnet-4-6")
+
+    result = await maybe_augment_prompt_with_tool(
+        caller=caller,
+        system_prompt="system",
+        user_prompt="Read the attached CSV and determine the best vendor.",
+        context=ToolInvocationContext(
+            task="Read the attached CSV and determine the best vendor.",
+            agent_id="agent-1",
+            round_index=0,
+            stage="initial",
+            sources=[_source()],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_MultiToolBroker(),
+        ),
+    )
+
+    assert caller.calls == 4
+    assert len(caller.prompts) == 4
+    assert "previous planning response was invalid" in caller.prompts[2].lower()
+    assert "you declined tool use" in caller.prompts[3].lower()
     assert result.planner_succeeded is True
     assert len(result.tool_results) == 1
     assert result.tool_results[0].tool_name == "analyze_file"
