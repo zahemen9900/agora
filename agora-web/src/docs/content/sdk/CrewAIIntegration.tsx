@@ -1,9 +1,9 @@
 import { CodeBlock } from "../../components/CodeBlock";
 import { Callout } from "../../components/Callout";
 
-const installCode = `pip install "agora-sdk[crewai]"
+const installCode = `pip install "agora-arbitrator-sdk[crewai]"
 # or install both separately:
-pip install agora-sdk crewai`;
+pip install agora-arbitrator-sdk crewai`;
 
 const fullExampleCode = `import asyncio
 from agora.sdk.crewai import AgoraCrewAITool
@@ -73,8 +73,8 @@ const toolInputOutputCode = `# The tool receives a plain string input from the C
 #   "quorum_reached": true,
 #   "mechanism_switches": 0,
 #   "merkle_root": "7f3a9c2b1e4d8f6a...",
-#   "solana_tx_hash": "5KkDpQr9...",
-#   "duration_ms": 14320
+#   "tool_usage_summary": {"total_tool_calls": 2, ...},
+#   "total_latency_ms": 14320
 # }`;
 
 const multiAgentCrewCode = `from agora.sdk.crewai import AgoraCrewAITool
@@ -173,7 +173,7 @@ export function CrewAIIntegration() {
 
             <Callout type="info" title="CrewAI compatibility">
                 Requires <IC>crewai</IC> v0.28 or higher. Install both packages
-                together: <IC>pip install "agora-sdk[crewai]"</IC>. The tool is
+                together: <IC>pip install "agora-arbitrator-sdk[crewai]"</IC>. The tool is
                 compatible with both synchronous <IC>crew.kickoff()</IC> and
                 async <IC>await crew.kickoff_async()</IC>.
             </Callout>
@@ -248,7 +248,7 @@ export function CrewAIIntegration() {
                     color: "var(--text-secondary)",
                 }}
             >
-                The <IC>merkle_root</IC> and <IC>solana_tx_hash</IC> fields in
+                The <IC>merkle_root</IC> and <IC>tool_usage_summary</IC> fields in
                 the output are particularly useful for audit trails — instruct
                 your agent to include them in its final output so you have a
                 verifiable reference for every deliberation the crew ran.
@@ -284,11 +284,10 @@ export function CrewAIIntegration() {
                 type="tip"
                 title="Pass merkle_root in task expected_output"
             >
-                Explicitly require <IC>merkle_root</IC> and{" "}
-                <IC>solana_tx_hash</IC> in your task's <IC>expected_output</IC>{" "}
-                description. This ensures CrewAI's output parser preserves these
-                fields, giving you an auditable link between each crew run and
-                its on-chain Proof of Deliberation receipt.
+                Explicitly require <IC>merkle_root</IC>, <IC>confidence</IC>,
+                and <IC>tool_usage_summary</IC> in your task's{" "}
+                <IC>expected_output</IC> description. That keeps the grounded
+                provenance intact when downstream agents summarise the result.
             </Callout>
         </div>
     );

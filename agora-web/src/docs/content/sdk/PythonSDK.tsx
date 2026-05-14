@@ -5,80 +5,58 @@ import { ParamTable } from "../../components/ParamTable";
 const constructorCode = `from agora.sdk import AgoraArbitrator
 
 arbitrator = AgoraArbitrator(
-    mechanism=None,       # auto-select (default)
-    agent_count=3,        # 3, 5, or 7
-    solana_wallet=None,   # required for staked arbitration
+    auth_token="agora_live_xxxxx.yyyyy",  # hosted mode
+    agent_count=4,
+    mechanism=None,                       # auto-select by default
 )`;
 
-const arbitrateCode = `result = await arbitrator.arbitrate(
-    task="Should we adopt TypeScript across the entire codebase?",
-    stakes=0.0,  # SOL to escrow; 0.0 for free deliberation
+const hostedLifecycleCode = `created = await arbitrator.create_task(
+    task="Should we expand to LATAM next quarter?",
+    agent_count=4,
+    source_urls=["https://www.imf.org/"],
+    enable_tools=True,
 )
 
-# Result fields:
-print(result.task_id)          # "task_01hx..."
-print(result.mechanism_used)   # "debate" | "vote" | "delphi"
-print(result.final_answer)     # Full synthesised answer string
-print(result.confidence)       # 0.0 – 1.0
-print(result.quorum_reached)   # True if convergence threshold met
-print(result.mechanism_switches)  # int: how many mid-run switches occurred
-print(result.merkle_root)      # "7f3a9c2b..."
-print(result.solana_tx_hash)   # "5KkDp..."  (None if off-chain mode)
-print(result.transcript)       # List[TranscriptEntry]
-print(result.duration_ms)      # int: wall-clock time in milliseconds`;
+result = await arbitrator.run_task(created.task_id)
+
+print(result.mechanism)
+print(result.final_answer)
+print(result.tool_usage_summary)
+print(result.citation_items[:3])`;
+
+const localCode = `result = await arbitrator.arbitrate(
+    task="Should we adopt TypeScript across the entire codebase?",
+    stakes=0.0,
+)
+
+print(result.task_id)
+print(result.mechanism_used)
+print(result.final_answer)
+print(result.confidence)
+print(result.quorum_reached)
+print(result.merkle_root)
+print(result.total_latency_ms)
+print(result.tool_usage_summary)
+print(result.citation_items)`;
 
 const verifyCode = `verification = await arbitrator.verify_receipt(result)
-# Returns:
-# {
-#   "valid": True,
-#   "merkle_match": True,     # local root matches result.merkle_root
-#   "on_chain_match": True,   # result.merkle_root matches Solana account
-#   "solana_tx_hash": "5KkD..."
-# }
+print(verification)`;
 
-# Or pass a task_id string directly:
-verification = await arbitrator.verify_receipt("task_01hx...")`;
+const streamCode = `async for event in arbitrator.stream_task_events("task_01j..."):
+    print(event["event"], event["data"])`;
 
-const streamCode = `async for event in arbitrator.stream("task_01hx..."):
-    print(event.type, event.data)
-    # mechanism_selected  {"mechanism": "debate", "reason": "..."}
-    # agent_output        {"agent_id": "a1", "faction": "pro", "output": "..."}
-    # cross_examination   {"examiner": "devil_advocate", "target": "pro", "output": "..."}
-    # convergence_update  {"confidence": 0.87, "quorum": False}
-    # mechanism_switch    {"from": "debate", "to": "vote", "reason": "..."}
-    # quorum_reached      {"mechanism": "debate", "confidence": 0.91}
-    # receipt_committed   {"merkle_root": "7f3a...", "solana_tx_hash": "5KkD..."}`;
-
-const nodeCode = `from agora.sdk import AgoraNode
-from langgraph.graph import StateGraph
-from typing import TypedDict
-
-class State(TypedDict):
-    task: str
-    agora_result: dict | None
-
-# AgoraNode reads state["task"] and writes state["agora_result"]
-node = AgoraNode(
-    mechanism=None,   # auto-select
-    agent_count=5,
+const benchmarkCode = `started = await arbitrator.run_benchmark(
+    training_per_category=2,
+    holdout_per_category=2,
+    agent_count=4,
 )
 
-builder = StateGraph(State)
-builder.add_node("deliberate", node)
-builder.set_entry_point("deliberate")
-builder.set_finish_point("deliberate")
-graph = builder.compile()
+status = await arbitrator.wait_for_benchmark_run(started.run_id)
+detail = await arbitrator.get_benchmark_detail(started.run_id)
 
-result = await graph.ainvoke({"task": "Is Rust ready for ML workloads?", "agora_result": None})
-print(result["agora_result"]["final_answer"])`;
-
-const transcriptEntryCode = `# TranscriptEntry fields (each maps to one Merkle leaf)
-entry.step          # "faction_output" | "cross_examination" | "convergence" | ...
-entry.agent_id      # "agent_0" | "devil_advocate" | "synthesiser"
-entry.content       # str: the raw agent output
-entry.confidence    # float: agent's self-reported confidence
-entry.timestamp     # ISO-8601 string
-entry.hash          # SHA-256 hash of the serialised entry (the Merkle leaf)`;
+print(status.status)
+print(detail.total_tokens)
+print(detail.total_latency_ms)`;
 
 export function PythonSDK() {
     const IC = ({ children }: { children: string }) => (
@@ -116,15 +94,39 @@ export function PythonSDK() {
                     color: "var(--text-secondary)",
                 }}
             >
-                The <IC>agora-sdk</IC> package exposes two primary interfaces:{" "}
-                <IC>AgoraArbitrator</IC> for direct async usage in any Python
-                application, and <IC>AgoraNode</IC> for drop-in integration into
-                LangGraph <IC>StateGraph</IC> pipelines. Both share the same
-                underlying HTTP client and return the same{" "}
-                <IC>DeliberationResult</IC> type.
+                The Python SDK exposes one primary client,{" "}
+                <IC>AgoraArbitrator</IC>. It supports two distinct execution
+                modes:
             </p>
 
-            {/* ── AgoraArbitrator ───────────────────────────────────────────── */}
+            <ul
+                className="text-sm leading-relaxed mb-6 space-y-2 pl-5 list-disc"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                <li>
+                    <strong style={{ color: "var(--text-primary)" }}>
+                        Hosted mode
+                    </strong>{" "}
+                    for persisted tasks, event streaming, sources, tools,
+                    evidence, citations, and benchmarks
+                </li>
+                <li>
+                    <strong style={{ color: "var(--text-primary)" }}>
+                        Local BYOK mode
+                    </strong>{" "}
+                    for in-process orchestration with explicit provider rosters
+                </li>
+            </ul>
+
+            <Callout type="warning" title="Package renamed">
+                Install the SDK as{" "}
+                <IC>agora-arbitrator-sdk</IC>. Old references to{" "}
+                <IC>agora-sdk</IC> are stale.
+            </Callout>
+
             <h2
                 id="agora-arbitrator"
                 className="text-xl font-mono font-semibold mt-10 mb-4"
@@ -133,304 +135,75 @@ export function PythonSDK() {
                 AgoraArbitrator
             </h2>
 
-            <p
-                className="text-sm leading-relaxed mb-4"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                The main client class. Instantiate it once and reuse across
-                multiple calls — it manages an internal{" "}
-                <IC>httpx.AsyncClient</IC> connection pool.
-            </p>
-
             <CodeBlock code={constructorCode} language="python" />
-
-            <h3
-                id="arbitrator-constructor"
-                className="text-lg font-mono font-semibold mt-8 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                Constructor parameters
-            </h3>
 
             <ParamTable
                 params={[
                     {
                         name: "api_url",
-                        type: "str",
+                        type: "str | None",
                         required: false,
                         default: "canonical hosted backend",
                         description:
-                            "Optional Agora API endpoint override. By default the SDK uses the canonical hosted Cloud Run backend automatically.",
+                            "Hosted API base URL. Non-canonical overrides are blocked unless AGORA_ALLOW_API_URL_OVERRIDE=1 is set.",
                     },
                     {
-                        name: "solana_wallet",
+                        name: "auth_token",
                         type: "str | None",
                         required: false,
                         default: "None",
                         description:
-                            "Base58-encoded Solana wallet address. Required for staked arbitration (stakes > 0). Agora uses this to escrow and release SOL.",
+                            "Bearer token for hosted mode. In practice this should usually be an Agora API key for programmatic callers.",
                     },
                     {
                         name: "mechanism",
-                        type: "str | None",
+                        type: '"debate" | "vote" | "delphi" | None',
                         required: false,
                         default: "None",
                         description:
-                            'Force a specific mechanism: "debate", "vote", or "delphi". Pass None (default) to let the mechanism selector choose automatically.',
+                            "Force a mechanism or let the selector choose automatically.",
                     },
                     {
                         name: "agent_count",
                         type: "int",
                         required: false,
-                        default: "3",
+                        default: "4",
                         description:
-                            "Number of agents to use. Must be 3, 5, or 7. Higher counts increase deliberation quality at the cost of latency.",
-                    },
-                ]}
-            />
-
-            {/* arbitrate() */}
-            <h3
-                id="arbitrate"
-                className="text-lg font-mono font-semibold mt-8 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                arbitrate()
-            </h3>
-
-            <p
-                className="text-sm leading-relaxed mb-4"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                The primary method. Submits a task, runs the full deliberation
-                pipeline, and returns when the mechanism reaches quorum or
-                exhausts its round budget. This is an <IC>async</IC> method —
-                use <IC>await</IC>.
-            </p>
-
-            <ParamTable
-                params={[
-                    {
-                        name: "task",
-                        type: "str",
-                        required: true,
-                        description:
-                            "The question or decision for deliberation. Any natural language string. More specific tasks generally produce higher-confidence outputs.",
+                            "Default participant count. Hosted requests currently allow 1 through 12.",
                     },
                     {
-                        name: "stakes",
+                        name: "allow_mechanism_switch",
+                        type: "bool",
+                        required: false,
+                        default: "True",
+                        description:
+                            "Allow the runtime to switch mechanisms mid-run when convergence signals say the original choice was wrong.",
+                    },
+                    {
+                        name: "allow_offline_fallback",
+                        type: "bool",
+                        required: false,
+                        default: "True",
+                        description:
+                            "Permit deterministic/provider fallback paths when a live model call fails.",
+                    },
+                    {
+                        name: "quorum_threshold",
                         type: "float",
                         required: false,
-                        default: "0.0",
+                        default: "0.6",
                         description:
-                            "SOL to escrow for this arbitration. When > 0, a solana_wallet must be set on the arbitrator. Escrowed funds are released after the on-chain receipt is committed.",
+                            "Convergence threshold used in hosted and local runs.",
                     },
                 ]}
             />
 
-            <CodeBlock code={arbitrateCode} language="python" />
-
-            {/* DeliberationResult */}
-            <h3
-                id="deliberation-result"
-                className="text-lg font-mono font-semibold mt-8 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                DeliberationResult fields
-            </h3>
-
-            <div className="overflow-x-auto my-5 rounded-lg border border-[var(--border-default)]">
-                <table className="w-full text-sm border-collapse">
-                    <thead>
-                        <tr style={{ background: "var(--bg-elevated)" }}>
-                            {["Field", "Type", "Description"].map((h) => (
-                                <th
-                                    key={h}
-                                    className="text-left px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.07em]"
-                                    style={{ color: "var(--text-tertiary)" }}
-                                >
-                                    {h}
-                                </th>
-                            ))}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {[
-                            [
-                                "task_id",
-                                "str",
-                                "Unique task identifier (ULID format).",
-                            ],
-                            [
-                                "mechanism_used",
-                                "str",
-                                '"debate", "vote", or "delphi" — whichever ran to completion.',
-                            ],
-                            [
-                                "final_answer",
-                                "str",
-                                "The synthesised answer from the winning faction or aggregated votes.",
-                            ],
-                            [
-                                "confidence",
-                                "float",
-                                "Aggregate confidence score, 0.0 – 1.0.",
-                            ],
-                            [
-                                "quorum_reached",
-                                "bool",
-                                "True if the mechanism hit its convergence threshold before exhausting rounds.",
-                            ],
-                            [
-                                "mechanism_switches",
-                                "int",
-                                "Number of mid-run mechanism switches. 0 in most cases.",
-                            ],
-                            [
-                                "merkle_root",
-                                "str",
-                                "SHA-256 Merkle root of the full deliberation transcript.",
-                            ],
-                            [
-                                "solana_tx_hash",
-                                "str | None",
-                                "Solana transaction hash of the on-chain receipt commit. None if off-chain mode.",
-                            ],
-                            [
-                                "transcript",
-                                "list[TranscriptEntry]",
-                                "Ordered list of all deliberation steps. Each entry is a Merkle leaf.",
-                            ],
-                            [
-                                "duration_ms",
-                                "int",
-                                "Total wall-clock time for the deliberation in milliseconds.",
-                            ],
-                        ].map(([field, type, desc]) => (
-                            <tr
-                                key={field}
-                                className="border-t border-[var(--border-default)]"
-                                onMouseEnter={(e) => {
-                                    (
-                                        e.currentTarget as HTMLTableRowElement
-                                    ).style.background = "var(--bg-elevated)";
-                                }}
-                                onMouseLeave={(e) => {
-                                    (
-                                        e.currentTarget as HTMLTableRowElement
-                                    ).style.background = "";
-                                }}
-                            >
-                                <td
-                                    className="px-4 py-3 font-mono text-[13px]"
-                                    style={{ color: "var(--accent-emerald)" }}
-                                >
-                                    {field}
-                                </td>
-                                <td
-                                    className="px-4 py-3 font-mono text-[12px]"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    {type}
-                                </td>
-                                <td
-                                    className="px-4 py-3 text-[13px]"
-                                    style={{
-                                        fontFamily:
-                                            "'Hanken Grotesk', sans-serif",
-                                        color: "var(--text-secondary)",
-                                    }}
-                                >
-                                    {desc}
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-
-            {/* TranscriptEntry */}
-            <h3
-                id="transcript-entry"
-                className="text-lg font-mono font-semibold mt-8 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                TranscriptEntry
-            </h3>
-            <p
-                className="text-sm leading-relaxed mb-3"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Each element of <IC>result.transcript</IC> is a{" "}
-                <IC>TranscriptEntry</IC> — a single deliberation event that maps
-                to one Merkle leaf.
-            </p>
-            <CodeBlock code={transcriptEntryCode} language="python" />
-
-            {/* verify_receipt() */}
-            <h3
-                id="verify-receipt"
-                className="text-lg font-mono font-semibold mt-8 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                verify_receipt()
-            </h3>
-
-            <p
-                className="text-sm leading-relaxed mb-4"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Reconstructs the Merkle tree from the deliberation transcript,
-                recomputes the root locally, and compares it against both the
-                value in the result and the value committed on Solana. Accepts
-                either a <IC>DeliberationResult</IC> object or a task ID string.
-            </p>
-
-            <CodeBlock code={verifyCode} language="python" />
-
-            {/* stream() */}
-            <h3
-                id="stream"
-                className="text-lg font-mono font-semibold mt-8 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                stream()
-            </h3>
-
-            <p
-                className="text-sm leading-relaxed mb-4"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Returns an async generator that yields SSE events from a running
-                or completed task. Useful for displaying live deliberation
-                progress in a UI. Each event has a <IC>type</IC> (string) and{" "}
-                <IC>data</IC> (parsed dict).
-            </p>
-
-            <CodeBlock code={streamCode} language="python" />
-
-            {/* ── AgoraNode ─────────────────────────────────────────────────── */}
             <h2
-                id="agora-node"
+                id="hosted-task-lifecycle"
                 className="text-xl font-mono font-semibold mt-10 mb-4"
                 style={{ color: "var(--text-primary)" }}
             >
-                AgoraNode
+                Hosted task lifecycle
             </h2>
 
             <p
@@ -440,22 +213,134 @@ export function PythonSDK() {
                     color: "var(--text-secondary)",
                 }}
             >
-                <IC>AgoraNode</IC> is a callable LangGraph node that wraps{" "}
-                <IC>AgoraArbitrator</IC>. It reads the task from{" "}
-                <IC>state["task"]</IC> and writes the serialised{" "}
-                <IC>DeliberationResult</IC> dict to{" "}
-                <IC>state["agora_result"]</IC>. Requires the <IC>langgraph</IC>{" "}
-                extra: <IC>pip install "agora-sdk[langgraph]"</IC>.
+                Hosted mode is the full product surface. Use{" "}
+                <IC>create_task()</IC>, <IC>run_task()</IC>,{" "}
+                <IC>get_task_status()</IC>, and{" "}
+                <IC>stream_task_events()</IC> when you want persistence, live
+                events, citations, attachments, and the benchmark-compatible
+                lifecycle.
             </p>
 
-            <CodeBlock code={nodeCode} language="python" />
+            <CodeBlock code={hostedLifecycleCode} language="python" />
 
-            <Callout type="info" title="State key configuration">
-                The default state keys (<IC>task</IC> and <IC>agora_result</IC>)
-                can be overridden by passing <IC>input_key="my_task"</IC> and{" "}
-                <IC>output_key="my_result"</IC> to the <IC>AgoraNode</IC>{" "}
-                constructor. This lets you integrate Agora into existing graphs
-                without renaming your state fields.
+            <ParamTable
+                params={[
+                    {
+                        name: "source_urls",
+                        type: "list[str]",
+                        required: false,
+                        default: "[]",
+                        description:
+                            "Public URLs available to the hosted tool stack.",
+                    },
+                    {
+                        name: "source_file_ids",
+                        type: "list[str]",
+                        required: false,
+                        default: "[]",
+                        description:
+                            "IDs of files already registered through the hosted sources flow.",
+                    },
+                    {
+                        name: "enable_tools",
+                        type: "bool",
+                        required: false,
+                        default: "True",
+                        description:
+                            "Enable Brave search, URL analysis, multimodal analysis, and sandbox execution.",
+                    },
+                    {
+                        name: "tool_policy",
+                        type: "HostedToolPolicy",
+                        required: false,
+                        default: "runtime defaults",
+                        description:
+                            "Override tool budget and limits. Default per-agent budget is currently 4.",
+                    },
+                    {
+                        name: "tier_model_overrides",
+                        type: "HostedTierModelOverrides",
+                        required: false,
+                        default: "None",
+                        description:
+                            "Override hosted pro/flash/openrouter/claude lanes for one run.",
+                    },
+                ]}
+            />
+
+            <h2
+                id="local-arbitration"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Local arbitration
+            </h2>
+
+            <CodeBlock code={localCode} language="python" />
+
+            <p
+                className="text-sm leading-relaxed mb-4"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                Local runs return the core{" "}
+                <IC>DeliberationResult</IC> model. Important fields include{" "}
+                <IC>mechanism_used</IC>, <IC>total_latency_ms</IC>,{" "}
+                <IC>tool_usage_summary</IC>, <IC>evidence_items</IC>,{" "}
+                <IC>citation_items</IC>, and <IC>sources</IC>.
+            </p>
+
+            <h2
+                id="receipt-verification"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Receipt verification
+            </h2>
+
+            <CodeBlock code={verifyCode} language="python" />
+
+            <h2
+                id="streaming"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Event streaming
+            </h2>
+
+            <CodeBlock code={streamCode} language="python" />
+
+            <p
+                className="text-sm leading-relaxed mb-4"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                Hosted task events include planner/tool activity, citations,
+                sandbox updates, selector decisions, mechanism switches, and the
+                final receipt-related events. Use streaming if you care about
+                UX or fine-grained observability.
+            </p>
+
+            <h2
+                id="benchmarks"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Hosted benchmarks
+            </h2>
+
+            <CodeBlock code={benchmarkCode} language="python" />
+
+            <Callout type="tip" title="Know the surface differences">
+                Hosted result models use fields such as{" "}
+                <IC>mechanism</IC> and <IC>latency_ms</IC>. Local results use{" "}
+                <IC>mechanism_used</IC> and <IC>total_latency_ms</IC>. They are
+                intentionally similar, but they are not interchangeable field
+                names.
             </Callout>
         </div>
     );

@@ -1,61 +1,49 @@
 import { CodeBlock } from "../components/CodeBlock";
 import { Callout } from "../components/Callout";
 
-const pipInstall = `pip install agora-sdk`;
+const pipInstall = `pip install agora-arbitrator-sdk`;
 
-const pipLangGraph = `pip install "agora-sdk[langgraph]"`;
+const pipLangGraph = `pip install "agora-arbitrator-sdk[langgraph]"`;
 
-const pipCrewAI = `pip install "agora-sdk[crewai]"`;
+const pipCrewAI = `pip install "agora-arbitrator-sdk[crewai]"`;
 
-const pipAll = `pip install "agora-sdk[all]"`;
+const pipAll = `pip install "agora-arbitrator-sdk[langgraph,crewai]"`;
 
-const sourceInstall = `# 1. Clone the repository
-git clone https://github.com/agora-protocol/agora-sdk.git
-cd agora-sdk
+const sourceInstall = `git clone https://github.com/zahemen9900/agora.git
+cd agora
 
-# 2. Create a virtual environment (requires uv)
-uv venv .venv
-source .venv/bin/activate   # Windows: .venv\\Scripts\\activate
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"`;
 
-# 3. Install in editable mode with dev dependencies
-uv pip install -e ".[dev]"`;
+const hostedExample = `from agora.sdk import AgoraArbitrator
 
-const envFile = `# .env — add to your project root (never commit this file)
+arbitrator = AgoraArbitrator(
+    auth_token="agora_live_xxxxx.yyyyy",
+)`;
 
-# Optional: override the hosted Agora API endpoint
-# AGORA_API_URL=https://agora-api-b4auawqzbq-uc.a.run.app
+const localExample = `from agora.sdk import AgoraArbitrator
+from agora.types import LocalModelSpec, LocalProviderKeys
 
-# Required for on-chain features: Helius RPC URL (get one at helius.dev)
-HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
+arbitrator = AgoraArbitrator(
+    local_models=[
+        LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+        LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+        LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+    ],
+    local_provider_keys=LocalProviderKeys(
+        gemini_api_key="...",
+        anthropic_api_key="...",
+        openrouter_api_key="...",
+    ),
+)`;
 
-# Optional: Solana network (mainnet-beta | devnet | localnet)
-SOLANA_NETWORK=devnet
+const overrideEnv = `# Optional only if you intentionally want a non-canonical backend.
+export AGORA_ALLOW_API_URL_OVERRIDE=1
+export AGORA_API_URL=https://your-custom-hosted-endpoint`;
 
-# Optional: GCP project ID (for internal Cloud Run deployments)
-GOOGLE_CLOUD_PROJECT=your-gcp-project-id`;
-
-const envLoad = `from dotenv import load_dotenv
-
-load_dotenv()
-
-from agora.sdk import AgoraArbitrator
-
-arbitrator = AgoraArbitrator()`;
-
-const dockerCompose = `# docker-compose.yml
-services:
-  agora-dev:
-    image: python:3.11-slim
-    working_dir: /app
-    volumes:
-      - .:/app
-    environment:
-      # Optional only if you need to override the hosted default:
-      # - AGORA_API_URL=https://agora-api-b4auawqzbq-uc.a.run.app
-      - SOLANA_NETWORK=devnet
-    command: pip install agora-sdk && python main.py`;
-
-const verifyInstall = `python -c "from agora.sdk import AgoraArbitrator; print('agora-sdk OK')"`;
+const verifyInstall = `python -c "from agora.sdk import AgoraArbitrator; print('agora-arbitrator-sdk OK')"`;
 
 export function Installation() {
     return (
@@ -75,13 +63,13 @@ export function Installation() {
             </h1>
 
             <p
-                className="text-base leading-relaxed mb-6"
+                className="text-base leading-relaxed mb-4"
                 style={{
                     fontFamily: "'Hanken Grotesk', sans-serif",
                     color: "var(--text-secondary)",
                 }}
             >
-                The Agora Python SDK is published to PyPI as{" "}
+                The published Python package is{" "}
                 <code
                     className="font-mono text-[12px] px-1.5 py-0.5 rounded"
                     style={{
@@ -89,13 +77,35 @@ export function Installation() {
                         color: "var(--accent-emerald)",
                     }}
                 >
-                    agora-sdk
+                    agora-arbitrator-sdk
                 </code>
-                . It supports both a minimal core install and optional extras
-                for LangGraph and CrewAI integrations.
+                . It supports a minimal core install and optional extras for LangGraph and CrewAI.
             </p>
 
-            {/* ── Requirements ──────────────────────────────────────────────── */}
+            <Callout type="warning" title="Package renamed">
+                Any docs, scripts, or pip invocations that reference{" "}
+                <code
+                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
+                    style={{
+                        background: "var(--bg-subtle)",
+                        color: "var(--accent-amber)",
+                    }}
+                >
+                    agora-sdk
+                </code>{" "}
+                are stale. The correct package name is{" "}
+                <code
+                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
+                    style={{
+                        background: "var(--bg-subtle)",
+                        color: "var(--accent-amber)",
+                    }}
+                >
+                    agora-arbitrator-sdk
+                </code>
+                .
+            </Callout>
+
             <h2
                 id="requirements"
                 className="text-xl font-mono font-semibold mt-10 mb-4"
@@ -104,91 +114,28 @@ export function Installation() {
                 Requirements
             </h2>
 
-            <div className="overflow-x-auto my-5 rounded-lg border border-[var(--border-default)]">
-                <table className="w-full text-sm border-collapse">
-                    <thead>
-                        <tr style={{ background: "var(--bg-elevated)" }}>
-                            <th
-                                className="text-left px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.07em]"
-                                style={{ color: "var(--text-tertiary)" }}
-                            >
-                                Dependency
-                            </th>
-                            <th
-                                className="text-left px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.07em]"
-                                style={{ color: "var(--text-tertiary)" }}
-                            >
-                                Version
-                            </th>
-                            <th
-                                className="text-left px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.07em]"
-                                style={{ color: "var(--text-tertiary)" }}
-                            >
-                                Notes
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {[
-                            {
-                                dep: "Python",
-                                ver: "≥ 3.11",
-                                note: "Required. 3.12 recommended.",
-                            },
-                            {
-                                dep: "pip / uv",
-                                ver: "Any",
-                                note: "uv recommended for speed.",
-                            },
-                            {
-                                dep: "Agora API URL",
-                                ver: "—",
-                                note: "Provided — see env setup below.",
-                            },
-                            {
-                                dep: "Helius RPC URL",
-                                ver: "—",
-                                note: "Optional; required for on-chain verification.",
-                            },
-                            {
-                                dep: "Solana wallet",
-                                ver: "—",
-                                note: "Optional; required for staked arbitration.",
-                            },
-                        ].map(({ dep, ver, note }) => (
-                            <tr
-                                key={dep}
-                                className="border-t border-[var(--border-default)]"
-                            >
-                                <td
-                                    className="px-4 py-3 font-mono text-[13px]"
-                                    style={{ color: "var(--accent-emerald)" }}
-                                >
-                                    {dep}
-                                </td>
-                                <td
-                                    className="px-4 py-3 font-mono text-[12px]"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    {ver}
-                                </td>
-                                <td
-                                    className="px-4 py-3 text-[13px]"
-                                    style={{
-                                        fontFamily:
-                                            "'Hanken Grotesk', sans-serif",
-                                        color: "var(--text-secondary)",
-                                    }}
-                                >
-                                    {note}
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
+            <ul
+                className="text-sm leading-relaxed mb-6 space-y-2 pl-5 list-disc"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                <li>Python 3.11 or newer</li>
+                <li>
+                    Hosted mode: an Agora API key or other bearer token for the
+                    hosted backend
+                </li>
+                <li>
+                    Local mode: explicit provider credentials for the models you
+                    want in the roster
+                </li>
+                <li>
+                    Solana/RPC configuration only if you need chain-aware
+                    verification beyond the default hosted flow
+                </li>
+            </ul>
 
-            {/* ── Install from PyPI ─────────────────────────────────────────── */}
             <h2
                 id="install-from-pypi"
                 className="text-xl font-mono font-semibold mt-10 mb-4"
@@ -197,182 +144,29 @@ export function Installation() {
                 Install from PyPI
             </h2>
 
-            <h3
-                id="core"
-                className="text-lg font-mono font-semibold mt-6 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                Core (no extras)
-            </h3>
-
-            <p
-                className="text-sm leading-relaxed mb-2"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Installs{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    AgoraArbitrator
-                </code>
-                ,{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    AgoraNode
-                </code>
-                , and all verification utilities. Sufficient for the quickstart
-                and most production use cases.
-            </p>
             <CodeBlock code={pipInstall} language="bash" />
 
             <h3
-                id="with-langgraph"
-                className="text-lg font-mono font-semibold mt-6 mb-3"
+                id="extras"
+                className="text-lg font-mono font-semibold mt-8 mb-3"
                 style={{ color: "var(--text-primary)" }}
             >
-                With LangGraph support
+                Extras
             </h3>
-            <p
-                className="text-sm leading-relaxed mb-2"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Adds{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    langgraph
-                </code>{" "}
-                and{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    langchain-core
-                </code>{" "}
-                as dependencies, enabling the{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    AgoraNode
-                </code>{" "}
-                StateGraph integration.
-            </p>
-            <CodeBlock code={pipLangGraph} language="bash" />
 
-            <h3
-                id="with-crewai"
-                className="text-lg font-mono font-semibold mt-6 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                With CrewAI support
-            </h3>
-            <p
-                className="text-sm leading-relaxed mb-2"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Adds{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    crewai
-                </code>{" "}
-                and exposes{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    AgoraCrewAITool
-                </code>{" "}
-                for use as a native CrewAI tool.
-            </p>
-            <CodeBlock code={pipCrewAI} language="bash" />
+            <div className="space-y-4">
+                <CodeBlock code={pipLangGraph} language="bash" filename="LangGraph" />
+                <CodeBlock code={pipCrewAI} language="bash" filename="CrewAI" />
+                <CodeBlock code={pipAll} language="bash" filename="Both extras" />
+            </div>
 
-            <h3
-                id="all-extras"
-                className="text-lg font-mono font-semibold mt-6 mb-3"
-                style={{ color: "var(--text-primary)" }}
-            >
-                All extras
-            </h3>
-            <CodeBlock code={pipAll} language="bash" />
-
-            {/* ── From source ───────────────────────────────────────────────── */}
             <h2
-                id="from-source"
+                id="hosted-mode"
                 className="text-xl font-mono font-semibold mt-10 mb-4"
                 style={{ color: "var(--text-primary)" }}
             >
-                Install from Source
+                Hosted mode
             </h2>
-
-            <p
-                className="text-sm leading-relaxed mb-2"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Use this path if you want to contribute to the SDK, inspect
-                internals, or pin to a specific commit. The project uses{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    uv
-                </code>{" "}
-                for dependency management — install it with{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    pip install uv
-                </code>{" "}
-                first.
-            </p>
-
-            <CodeBlock code={sourceInstall} language="bash" />
 
             <p
                 className="text-sm leading-relaxed mb-4"
@@ -381,66 +175,15 @@ export function Installation() {
                     color: "var(--text-secondary)",
                 }}
             >
-                The{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    dev
-                </code>{" "}
-                extra includes{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    pytest
-                </code>
-                ,{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    ruff
-                </code>
-                , and{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    mypy
-                </code>{" "}
-                for linting, type-checking, and running the test suite.
+                Hosted mode uses the canonical Agora backend by default. You do
+                not need to set an API URL unless you are intentionally testing
+                against a non-canonical deployment.
             </p>
 
-            {/* ── Environment setup ─────────────────────────────────────────── */}
-            <h2
-                id="environment-setup"
-                className="text-xl font-mono font-semibold mt-10 mb-4"
-                style={{ color: "var(--text-primary)" }}
-            >
-                Environment Setup
-            </h2>
+            <CodeBlock code={hostedExample} language="python" />
 
-            <p
-                className="text-sm leading-relaxed mb-3"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Create a{" "}
+            <Callout type="info" title="Hosted auth model">
+                For programmatic use, prefer Agora API keys such as{" "}
                 <code
                     className="font-mono text-[12px] px-1.5 py-0.5 rounded"
                     style={{
@@ -448,105 +191,96 @@ export function Installation() {
                         color: "var(--accent-emerald)",
                     }}
                 >
-                    .env
-                </code>{" "}
-                file in your project root with the following variables. Never
-                commit this file — add it to{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    .gitignore
-                </code>
-                .
-            </p>
-
-            <CodeBlock code={envFile} language="bash" filename=".env" />
-
-            <p
-                className="text-sm leading-relaxed mb-3"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                Load the variables in your application with{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    python-dotenv
-                </code>{" "}
-                (
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    pip install python-dotenv
-                </code>
-                ):
-            </p>
-
-            <CodeBlock code={envLoad} language="python" />
-
-            <Callout type="info" title="Docker local development">
-                If you prefer running Agora inside Docker, you can pass the
-                environment variables via your{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    docker-compose.yml
-                </code>{" "}
-                without any code changes:
-                <div className="mt-3">
-                    <CodeBlock
-                        code={dockerCompose}
-                        language="yaml"
-                        filename="docker-compose.yml"
-                    />
-                </div>
-                The SDK reads all configuration from environment variables — no
-                config files or constructor arguments are required when the
-                environment is set up correctly.
+                    agora_live_...
+                    </code>
+                . Browser/dashboard flows still use WorkOS JWTs, but the SDK is
+                designed around machine-friendly bearer tokens.
             </Callout>
 
-            {/* ── Verify the install ────────────────────────────────────────── */}
             <h2
-                id="verify-installation"
+                id="local-mode"
                 className="text-xl font-mono font-semibold mt-10 mb-4"
                 style={{ color: "var(--text-primary)" }}
             >
-                Verify the Installation
+                Local BYOK mode
             </h2>
 
             <p
-                className="text-sm leading-relaxed mb-3"
+                className="text-sm leading-relaxed mb-4"
                 style={{
                     fontFamily: "'Hanken Grotesk', sans-serif",
                     color: "var(--text-secondary)",
                 }}
             >
-                Run the following one-liner to confirm the SDK installed
-                correctly:
+                Local mode runs the orchestrator inside your process. You are
+                responsible for the participant roster and provider keys.
             </p>
+
+            <CodeBlock code={localExample} language="python" />
+
+            <h2
+                id="api-overrides"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                API URL overrides
+            </h2>
+
+            <p
+                className="text-sm leading-relaxed mb-4"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                The SDK intentionally resists arbitrary hosted endpoint
+                overrides. A custom hosted backend is only honored when{" "}
+                <code
+                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
+                    style={{
+                        background: "var(--bg-subtle)",
+                        color: "var(--accent-emerald)",
+                    }}
+                >
+                    AGORA_ALLOW_API_URL_OVERRIDE=1
+                </code>{" "}
+                is set.
+            </p>
+
+            <CodeBlock code={overrideEnv} language="bash" />
+
+            <h2
+                id="install-from-source"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Install from source
+            </h2>
+
+            <p
+                className="text-sm leading-relaxed mb-4"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                Clone the main repository and install the SDK in editable mode. Python 3.11+ is required.
+            </p>
+
+            <CodeBlock code={sourceInstall} language="bash" />
+
+            <h2
+                id="verify"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Verify the install
+            </h2>
 
             <CodeBlock code={verifyInstall} language="bash" />
 
             <p
-                className="text-sm leading-relaxed"
+                className="text-sm leading-relaxed mt-4"
                 style={{
                     fontFamily: "'Hanken Grotesk', sans-serif",
                     color: "var(--text-secondary)",
@@ -560,16 +294,13 @@ export function Installation() {
                         color: "var(--accent-emerald)",
                     }}
                 >
-                    agora-sdk OK
+                    agora-arbitrator-sdk OK
                 </code>
                 , you're ready. Head to the{" "}
-                <a
-                    href="/docs/quickstart"
-                    style={{ color: "var(--accent-emerald)" }}
-                >
+                <a href="/docs/quickstart" style={{ color: "var(--accent-emerald)" }}>
                     Quickstart
                 </a>{" "}
-                to run your first arbitration.
+                to run your first deliberation.
             </p>
         </div>
     );

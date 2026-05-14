@@ -27,7 +27,7 @@ def summarise(state: ResearchState) -> ResearchState:
     """Post-process the Agora result into a short summary."""
     result = state["agora_result"]
     summary = (
-        f"[{result['mechanism_used'].upper()} | "
+        f"[{result['mechanism'].upper()} | "
         f"confidence {result['confidence']:.0%}] "
         f"{result['final_answer']}"
     )
@@ -67,7 +67,7 @@ class DecisionState(TypedDict):
     route: str
 
 agora_node = AgoraNode(
-    agent_count=3,
+    agent_count=4,
 )
 
 def route_by_confidence(
@@ -194,7 +194,7 @@ export function LangGraphIntegration() {
                 <IC>StateGraph</IC>. It reads the task from a configurable state
                 key, runs the full Agora pipeline (including on-chain receipt
                 commitment), and writes the result dict back into state.
-                Requires <IC>pip install "agora-sdk[langgraph]"</IC>.
+                Requires <IC>pip install "agora-arbitrator-sdk[langgraph]"</IC>.
             </p>
 
             {/* ── Basic Integration ─────────────────────────────────────────── */}
