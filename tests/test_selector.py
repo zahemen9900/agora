@@ -9,6 +9,8 @@ from agora.agent import AgentCallError
 from agora.selector.reasoning import ReasoningSelector, _ReasoningResponse
 from agora.selector.selector import AgoraSelector
 from agora.types import MechanismType
+from api.routes.benchmarks import _SELECTOR_BANDIT_STATE_KEY as _BENCHMARK_SELECTOR_STATE_KEY
+from api.routes.tasks import _SELECTOR_BANDIT_STATE_KEY as _TASK_SELECTOR_STATE_KEY
 from tests.helpers import make_features
 
 
@@ -200,6 +202,35 @@ async def test_reasoning_selector_passes_hardened_routing_policy_to_model() -> N
     assert "Choose delphi when the task is open-ended, multi-criteria, or subjective" in system_prompt
     assert "Do not use stakes alone as a reason to escalate into debate" in system_prompt
     assert "Do not treat delphi as the generic choice for any hard task" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_selector_scopes_historical_payload_to_current_category() -> None:
+    caller = _CapturingReasoningCaller()
+    selector = AgoraSelector(reasoning_caller=caller)
+    selector.bandit.update(MechanismType.DEBATE, "reasoning", reward=1.0)
+    selector.bandit.update(MechanismType.VOTE, "math", reward=1.0)
+    selector.bandit.update(MechanismType.DELPHI, "creative", reward=1.0)
+
+    await selector.select(
+        task_text="Compare two governance structures for a complex organization.",
+        agent_count=4,
+        stakes=0.6,
+    )
+
+    assert len(caller.calls) == 1
+    user_prompt = str(caller.calls[0]["user_prompt"])
+    assert '"current_category": "reasoning"' in user_prompt
+    assert '"current_category_stats"' in user_prompt
+    assert '"global_pull_totals"' in user_prompt
+    assert '"creative"' not in user_prompt
+    assert '"math"' not in user_prompt
+
+
+def test_task_and_benchmark_selector_state_are_isolated() -> None:
+    assert _TASK_SELECTOR_STATE_KEY == "selector_bandit_state_tasks_v2"
+    assert _BENCHMARK_SELECTOR_STATE_KEY == "selector_bandit_state_benchmarks_v1"
+    assert _TASK_SELECTOR_STATE_KEY != _BENCHMARK_SELECTOR_STATE_KEY
 
 
 @pytest.mark.asyncio

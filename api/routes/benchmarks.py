@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
@@ -79,7 +79,7 @@ OptionalBearerCredentials = Annotated[
 
 _RESULTS_DIR = Path(__file__).resolve().parents[2] / "benchmarks" / "results"
 _RESULTS_PATH = _RESULTS_DIR / "phase2_validation.json"
-_SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state"
+_SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state_benchmarks_v1"
 _LEGACY_ARTIFACT_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 _RUN_STATUS_VALUES = {"queued", "running", "completed", "failed"}
 _BENCHMARK_DOMAIN_ORDER: tuple[BenchmarkDomainName, ...] = (
@@ -145,8 +145,7 @@ _BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
             "id": "reasoning-tradeoff",
             "title": "Tradeoff Call",
             "question": (
-                "Should a system optimize for speed or robustness when the cost of "
-                "error is high?"
+                "Should a system optimize for speed or robustness when the cost of error is high?"
             ),
         },
         {
@@ -214,8 +213,7 @@ _BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
             "id": "creative-product",
             "title": "Product Angle",
             "question": (
-                "What product idea best serves a technical operator who needs fast "
-                "decisions?"
+                "What product idea best serves a technical operator who needs fast decisions?"
             ),
         },
         {
@@ -229,8 +227,7 @@ _BENCHMARK_PROMPT_TEMPLATES: dict[BenchmarkDomainName, list[dict[str, str]]] = {
             "id": "demo-balanced",
             "title": "Stakeholder Summary",
             "question": (
-                "What is the clearest way to explain this benchmark result to a "
-                "stakeholder?"
+                "What is the clearest way to explain this benchmark result to a stakeholder?"
             ),
         },
         {
@@ -724,9 +721,10 @@ async def resume_stale_background_benchmark_runs(
             continue
         if record.get("stop_requested_at"):
             continue
-        is_unrecoverable_local_byok = (
-            str(record.get("execution_source") or "").strip().lower() == "local_byok"
-            and not bool(record.get("background_recovery_allowed", True))
+        is_unrecoverable_local_byok = str(
+            record.get("execution_source") or ""
+        ).strip().lower() == "local_byok" and not bool(
+            record.get("background_recovery_allowed", True)
         )
         updated_at = _parse_optional_timestamp(record.get("updated_at"))
         should_resume = status == "queued" or updated_at is None or updated_at <= stale_before
@@ -753,7 +751,9 @@ async def resume_stale_background_benchmark_runs(
                 },
             )
             continue
-        background_requested_at = _parse_optional_timestamp(record.get("background_run_requested_at"))
+        background_requested_at = _parse_optional_timestamp(
+            record.get("background_run_requested_at")
+        )
         if background_requested_at is None:
             await _persist_stopped_benchmark_run(
                 workspace_id=workspace_id,
@@ -762,7 +762,9 @@ async def resume_stale_background_benchmark_runs(
                 terminal=True,
             )
             continue
-        recovery_deadline_at = _parse_optional_timestamp(record.get("background_recovery_deadline_at"))
+        recovery_deadline_at = _parse_optional_timestamp(
+            record.get("background_recovery_deadline_at")
+        )
         if status == "queued" and recovery_deadline_at is not None and recovery_deadline_at <= now:
             await _persist_stopped_benchmark_run(
                 workspace_id=workspace_id,
@@ -1728,7 +1730,7 @@ def _is_completed_runtime_benchmark_payload(artifact: dict[str, Any]) -> bool:
     status = str(artifact.get("status") or payload.get("status") or "").strip().lower()
     if status and status != "completed":
         return False
-    return _payload_has_any_runs(payload)
+    return _payload_has_any_runs(payload) or _is_summary_block(_resolve_summary_block(payload))
 
 
 def _payload_has_stage_runs(payload: dict[str, Any]) -> bool:
@@ -3253,6 +3255,9 @@ async def _maybe_backfill_legacy_benchmarks() -> None:
 
         store = get_task_store()
         existing = await store.list_global_benchmark_artifacts(limit=500)
+        if existing:
+            _legacy_backfill_complete = True
+            return
         existing_ids = {
             str(item.get("artifact_id"))
             for item in existing
@@ -3910,20 +3915,15 @@ def _require_benchmark_scope(user: AuthenticatedUser, access: Literal["read", "w
 @router.get("/benchmarks")
 async def get_benchmarks(
     user: OptionalCurrentUser,
-    x_agora_admin_token: str | None = Header(default=None),
     include_demo: bool = Query(default=False),
     aggregate: bool = Query(default=False),
     aggregate_window: Literal["recent_20", "all"] = Query(default="recent_20"),
 ) -> dict[str, Any]:
     """Return the latest persisted benchmark summary."""
 
-    has_admin_secret = bool(settings.benchmark_admin_token)
-    admin_granted = has_admin_secret and x_agora_admin_token == settings.benchmark_admin_token
-
-    if not admin_granted:
-        if user is None:
-            raise HTTPException(status_code=403, detail="Benchmark access denied")
-        _require_benchmark_scope(user, "read")
+    if user is None:
+        raise HTTPException(status_code=403, detail="Benchmark access denied")
+    _require_benchmark_scope(user, "read")
 
     if aggregate:
         aggregate_limit = None if aggregate_window == "all" else _AGGREGATE_BENCHMARK_DEFAULT_LIMIT
@@ -4387,38 +4387,23 @@ async def trigger_benchmark_run(
 @router.post("/benchmarks/runs/{run_id}/stop", response_model=BenchmarkRunStatusResponse)
 async def stop_benchmark_run(
     run_id: str,
-    user: OptionalCurrentUser,
-    x_agora_admin_token: str | None = Header(default=None),
+    user: CurrentUser,
 ) -> BenchmarkRunStatusResponse:
     """Stop a queued or running benchmark run."""
 
-    has_admin_secret = bool(settings.benchmark_admin_token)
-    admin_granted = has_admin_secret and x_agora_admin_token == settings.benchmark_admin_token
-
-    workspace_id: str | None = None
-    record: dict[str, Any] | None = None
-    resolved_run_id = run_id
-    if admin_granted:
-        workspace_id, record = await _lookup_benchmark_run_record(run_id)
-        if workspace_id is None or record is None:
-            raise HTTPException(status_code=404, detail="Benchmark run not found")
-        resolved_run_id = str(record.get("run_id") or run_id).strip() or run_id
-    else:
-        if user is None:
-            raise HTTPException(status_code=403, detail="Benchmark access denied")
-        _require_benchmark_scope(user, "write")
-        workspace_id = user.workspace_id
-        resolved_run_id, record = await _resolve_benchmark_stop_target(
-            benchmark_identifier=run_id,
-            workspace_id=workspace_id,
-        )
-        if record is None:
-            raise HTTPException(status_code=404, detail="Benchmark run not found")
+    _require_benchmark_scope(user, "write")
+    workspace_id = user.workspace_id
+    resolved_run_id, record = await _resolve_benchmark_stop_target(
+        benchmark_identifier=run_id,
+        workspace_id=workspace_id,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="Benchmark run not found")
 
     stopped = await _persist_stopped_benchmark_run(
         workspace_id=workspace_id,
         run_id=resolved_run_id,
-        actor_label="user" if not admin_granted else "admin",
+        actor_label="user",
     )
     if stopped is None:
         raise HTTPException(status_code=404, detail="Benchmark run not found")

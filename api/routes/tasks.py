@@ -93,7 +93,7 @@ _INITIALIZE_TASK_OPERATION = "initialize_task"
 _RECORD_SELECTION_OPERATION = "record_selection"
 _SUBMIT_RECEIPT_OPERATION = "submit_receipt"
 _RELEASE_PAYMENT_OPERATION = "release_payment"
-_SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state"
+_SELECTOR_BANDIT_STATE_KEY = "selector_bandit_state_tasks_v2"
 _background_task_runs: dict[str, asyncio.Task[None]] = {}
 _BUFFERED_TASK_EVENT_TYPES = {
     "agent_output_delta",

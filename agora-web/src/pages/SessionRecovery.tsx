@@ -32,34 +32,61 @@ export function SessionRecoveryPage({ issue }: { issue: AuthIssue }) {
     <>
       <title>Session Recovery — Agora</title>
       <meta name="description" content="Re-authenticate or recover your Agora session to continue." />
-    <div className="min-h-screen px-6 py-10 flex items-center justify-center">
-      <div className="relative max-w-xl w-full card p-8 sm:p-10 border border-border-subtle overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(0,212,170,0.12),transparent_45%)] pointer-events-none" />
-        <div className="relative z-10">
-          <div className="wordmark text-xl mb-8">AGORA</div>
-          <div className="badge mb-4 inline-flex items-center gap-2">
-            <ShieldAlert size={14} /> {copy.eyebrow}
-          </div>
-          <h1 className="text-3xl md:text-4xl mb-4">{copy.title}</h1>
-          <p className="text-text-secondary text-base md:text-lg leading-relaxed max-w-lg">
-            {copy.body}
-          </p>
+      <div className="min-h-screen px-6 py-10 flex items-center justify-center">
+        <div className="relative max-w-lg w-full overflow-hidden" style={{
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--border-default)",
+          borderRadius: "20px",
+          padding: "36px 40px 40px",
+        }}>
+          {/* Gradient accent — top-right origin for depth */}
+          <div
+            aria-hidden
+            style={{
+              position: "absolute", inset: 0,
+              background: "radial-gradient(ellipse 80% 50% at 100% 0%, rgba(0,212,170,0.10) 0%, transparent 60%)",
+              pointerEvents: "none",
+            }}
+          />
 
-          <div className="mt-8 flex flex-col sm:flex-row gap-3">
-            <Button type="button" className="inline-flex items-center gap-2" onClick={() => signIn()} variant="primary">
-              Sign in again <ArrowRight size={16} />
-            </Button>
-            <Button onClick={() => navigate('/')} variant="secondary" className="inline-flex items-center justify-center gap-2">
-              Go to sign in
-            </Button>
-          </div>
+          <div style={{ position: "relative", zIndex: 1 }}>
+            {/* Wordmark */}
+            <div className="wordmark" style={{ fontSize: "15px", letterSpacing: "0.1em", color: "var(--text-primary)", marginBottom: "32px" }}>
+              AGORA
+            </div>
 
-          <p className="mono text-xs text-text-muted mt-6">
-            You can safely refresh after signing back in. Your previous destination is preserved.
-          </p>
+            {/* Eyebrow badge */}
+            <div className="badge" style={{ marginBottom: "16px", gap: "6px" }}>
+              <ShieldAlert size={13} /> {copy.eyebrow}
+            </div>
+
+            {/* Heading */}
+            <h1 style={{ marginBottom: "12px", fontSize: "clamp(1.6rem, 4vw, 2.2rem)", lineHeight: 1.18 }}>
+              {copy.title}
+            </h1>
+
+            {/* Body */}
+            <p style={{ color: "var(--text-secondary)", fontSize: "15px", lineHeight: 1.65, marginBottom: "32px" }}>
+              {copy.body}
+            </p>
+
+            {/* Actions */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", marginBottom: "24px" }}>
+              <Button type="button" className="inline-flex items-center gap-2" onClick={() => signIn()} variant="primary">
+                Sign in again <ArrowRight size={15} />
+              </Button>
+              <Button onClick={() => navigate('/')} variant="secondary" className="inline-flex items-center justify-center gap-2">
+                Go to sign in
+              </Button>
+            </div>
+
+            {/* Hint */}
+            <p className="mono" style={{ fontSize: "11px", color: "var(--text-muted)", lineHeight: 1.6 }}>
+              You can safely refresh after signing back in. Your previous destination is preserved.
+            </p>
+          </div>
         </div>
       </div>
-    </div>
     </>
   );
 }

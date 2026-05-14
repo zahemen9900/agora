@@ -19,13 +19,13 @@ from agora.sdk import (
     ReceiptVerificationError,
 )
 from agora.sdk.config import CANONICAL_HOSTED_API_URL, resolve_hosted_api_url
+from agora.types import DeliberationResult, MechanismType
 from api.auth import AuthenticatedUser
 from api.main import app
 from api.routes import benchmarks as benchmark_routes
 from api.routes import tasks as task_routes
 from api.store_local import LocalTaskStore
 from benchmarks.runner import BenchmarkRunner
-from agora.types import DeliberationResult, MechanismType
 from tests.helpers import make_selection
 
 
@@ -392,7 +392,9 @@ def test_with_complete_summary_derives_top_level_summary_from_all_stage_runs() -
     assert summary["per_mechanism"]["debate"]["run_count"] == 2
     assert summary["per_mechanism"]["debate"]["scored_run_count"] == 2
     assert summary["per_category_by_mechanism"]["reasoning"]["debate"]["run_count"] == 2
-    assert summary["per_category_by_mechanism"]["reasoning"]["debate"]["accuracy"] == pytest.approx(0.5)
+    assert summary["per_category_by_mechanism"]["reasoning"]["debate"]["accuracy"] == pytest.approx(
+        0.5
+    )
 
 
 def test_aggregate_benchmark_payloads_preserve_stage_summaries() -> None:
@@ -647,6 +649,7 @@ async def test_resolve_benchmark_summary_payload_prefers_newer_runtime_artifact_
             self.saved_summary = summary
 
     store = FakeStore()
+
     async def _noop_backfill() -> None:
         return None
 
@@ -790,13 +793,13 @@ async def test_benchmarks_route_reads_store_summary(
     }
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         await store.save_benchmark_summary(summary)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
                 "/benchmarks",
-                headers={"x-agora-admin-token": "admin-token"},
+                headers={"Authorization": "Bearer dummy"},
             )
 
         assert response.status_code == 200
@@ -806,6 +809,7 @@ async def test_benchmarks_route_reads_store_summary(
             reasoning_accuracy=0.75,
         )
     finally:
+        app.dependency_overrides.pop(benchmark_routes._optional_current_user, None)
         task_routes._store = None
 
 
@@ -849,7 +853,6 @@ async def test_benchmarks_route_allows_human_bearer_without_admin_token(
         )
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "")
         monkeypatch.setattr(benchmark_routes, "get_current_user", fake_human_user)
         await store.save_benchmark_summary(summary)
 
@@ -896,7 +899,6 @@ async def test_benchmarks_route_accepts_api_key_principal_without_admin_token(
         )
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "")
         monkeypatch.setattr(benchmark_routes, "get_current_user", fake_api_key_user)
         await store.save_benchmark_summary(summary)
 
@@ -959,13 +961,13 @@ async def test_benchmarks_route_uses_file_fallback_not_completed_tasks(
     }
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         await store.save_task("user-1", "task-2", task_payload)
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
                 "/benchmarks",
-                headers={"x-agora-admin-token": "admin-token"},
+                headers={"Authorization": "Bearer dummy"},
             )
 
         assert response.status_code == 200
@@ -973,6 +975,7 @@ async def test_benchmarks_route_uses_file_fallback_not_completed_tasks(
         assert payload["metadata"]["source"] == "file_artifact"
         assert payload["summary"]["per_mode"]["selector"]["accuracy"] == 0.11
     finally:
+        app.dependency_overrides.pop(benchmark_routes._optional_current_user, None)
         task_routes._store = None
         benchmark_routes._RESULTS_PATH = original_results_path
 
@@ -1000,12 +1003,12 @@ async def test_benchmarks_route_promotes_stage_summary_from_file_fallback(
     benchmark_routes._RESULTS_PATH.write_text(json.dumps(file_payload), encoding="utf-8")
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
                 "/benchmarks",
-                headers={"x-agora-admin-token": "admin-token"},
+                headers={"Authorization": "Bearer dummy"},
             )
 
         assert response.status_code == 200
@@ -1016,6 +1019,7 @@ async def test_benchmarks_route_promotes_stage_summary_from_file_fallback(
             0.5
         )
     finally:
+        app.dependency_overrides.pop(benchmark_routes._optional_current_user, None)
         task_routes._store = None
         benchmark_routes._RESULTS_PATH = original_results_path
 
@@ -1053,28 +1057,28 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
     }
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         await store.save_global_benchmark_artifact("local-stage-summary", artifact)
 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
                 "/benchmarks",
-                headers={"x-agora-admin-token": "admin-token"},
+                headers={"Authorization": "Bearer dummy"},
             )
 
         assert response.status_code == 200
         payload = response.json()
         assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
-        assert (
-            payload["summary"]["per_category"]["reasoning"]["selector"]["accuracy"]
-            == pytest.approx(0.61)
-        )
+        assert payload["summary"]["per_category"]["reasoning"]["selector"][
+            "accuracy"
+        ] == pytest.approx(0.61)
 
         healed_summary = await store.get_benchmark_summary()
         assert healed_summary is not None
         assert healed_summary["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
     finally:
+        app.dependency_overrides.pop(benchmark_routes._optional_current_user, None)
         task_routes._store = None
 
 
@@ -1120,7 +1124,7 @@ async def test_benchmarks_route_heal_skips_legacy_global_artifact(
     }
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         await store.save_global_benchmark_artifact("legacy-phase2-validation", legacy_artifact)
         await store.save_global_benchmark_artifact("current-tasklike-benchmark", current_artifact)
 
@@ -1128,17 +1132,17 @@ async def test_benchmarks_route_heal_skips_legacy_global_artifact(
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
                 "/benchmarks",
-                headers={"x-agora-admin-token": "admin-token"},
+                headers={"Authorization": "Bearer dummy"},
             )
 
         assert response.status_code == 200
         payload = response.json()
         assert payload["summary"]["per_mode"]["selector"]["accuracy"] == pytest.approx(0.73)
-        assert (
-            payload["summary"]["per_category"]["reasoning"]["selector"]["accuracy"]
-            == pytest.approx(0.61)
-        )
+        assert payload["summary"]["per_category"]["reasoning"]["selector"][
+            "accuracy"
+        ] == pytest.approx(0.61)
     finally:
+        app.dependency_overrides.pop(benchmark_routes._optional_current_user, None)
         task_routes._store = None
 
 
@@ -1184,7 +1188,6 @@ async def test_benchmark_catalog_hides_legacy_backfill_artifacts(
     }
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "")
         app.dependency_overrides[benchmark_routes.get_current_user] = _override_user
         await store.save_global_benchmark_artifact("legacy-phase2-validation", legacy_artifact)
         await store.save_global_benchmark_artifact("current-tasklike-benchmark", current_artifact)
@@ -1253,7 +1256,7 @@ async def test_benchmarks_route_include_demo_keeps_stage_runs_without_synthesize
     }
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         await store.save_benchmark_summary(summary)
         (tmp_path / "phase2_demo_local_2026-04-17.json").write_text(
             json.dumps(demo_payload),
@@ -1264,7 +1267,7 @@ async def test_benchmarks_route_include_demo_keeps_stage_runs_without_synthesize
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
                 "/benchmarks?include_demo=true",
-                headers={"x-agora-admin-token": "admin-token"},
+                headers={"Authorization": "Bearer dummy"},
             )
 
         assert response.status_code == 200
@@ -1275,6 +1278,7 @@ async def test_benchmarks_route_include_demo_keeps_stage_runs_without_synthesize
         assert "vote" in payload["summary"]["per_mechanism"]
         assert "runs" not in payload
     finally:
+        app.dependency_overrides.pop(benchmark_routes._optional_current_user, None)
         task_routes._store = None
         benchmark_routes._RESULTS_DIR = original_results_dir
 
@@ -1326,7 +1330,7 @@ async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_miss
     }
 
     try:
-        monkeypatch.setattr(benchmark_routes.settings, "benchmark_admin_token", "admin-token")
+        app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         await store.save_benchmark_summary(summary)
         (tmp_path / "phase2_demo_local_2026-04-17.json").write_text(
             json.dumps(demo_payload),
@@ -1337,7 +1341,7 @@ async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_miss
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             response = await client.get(
                 "/benchmarks?include_demo=true",
-                headers={"x-agora-admin-token": "admin-token"},
+                headers={"Authorization": "Bearer dummy"},
             )
 
         assert response.status_code == 200
@@ -1349,6 +1353,7 @@ async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_miss
         assert "demo" in payload["summary"]["per_category"]
         assert "vote" in payload["summary"]["per_mechanism"]
     finally:
+        app.dependency_overrides.pop(benchmark_routes._optional_current_user, None)
         task_routes._store = None
         benchmark_routes._RESULTS_DIR = original_results_dir
 
@@ -1402,6 +1407,7 @@ async def test_phase2_validation_reruns_are_deterministic_offline(tmp_path: Path
     holdout = [task for task in holdout if task["category"] != "demo"]
     orchestrator = AgoraOrchestrator(agent_count=3)
     orchestrator.selector.reasoning._caller = _FailingSelectorCaller()
+    orchestrator.selector.reasoning._fallback_callers = []
     runner = BenchmarkRunner(orchestrator, agents=[deterministic_agent] * 3)
 
     payload = await runner.run_phase2_validation(
@@ -1506,7 +1512,10 @@ async def test_phase2_validation_continues_after_failed_item(tmp_path: Path) -> 
     post_learning_runs = payload["post_learning"]["runs"]
 
     assert any(run["item_status"] == "failed" for run in pre_learning_runs)
-    assert any(run["item_status"] == "completed" for run in pre_learning_runs + learning_runs + post_learning_runs)
+    assert any(
+        run["item_status"] == "completed"
+        for run in pre_learning_runs + learning_runs + post_learning_runs
+    )
     assert payload["pre_learning"]["summary"]["failed_run_count"] >= 1
     assert payload["post_learning"]["summary"]["completed_run_count"] >= 1
     assert payload["pre_learning"]["summary"]["failure_counts_by_reason"]
@@ -1675,7 +1684,9 @@ async def test_phase2_validation_forwards_live_orchestrator_events_with_benchmar
         event_sink=event_sink,
     )
 
-    forwarded = [event for event in captured_events if event[0] in {"agent_output_delta", "usage_delta"}]
+    forwarded = [
+        event for event in captured_events if event[0] in {"agent_output_delta", "usage_delta"}
+    ]
     assert forwarded
     event_type, payload = forwarded[0]
     assert event_type == "agent_output_delta"
@@ -1887,6 +1898,9 @@ async def test_sdk_hosted_lifecycle_helpers_cover_create_run_status_and_pay(
         "agent_count": 4,
         "stakes": 0.01,
         "mechanism_override": "vote",
+        "source_urls": [],
+        "source_file_ids": [],
+        "enable_tools": True,
         "tier_model_overrides": {
             "pro": "gemini-2.5-pro",
             "flash": "gemini-2.5-flash",
@@ -2599,16 +2613,12 @@ async def test_sdk_get_task_result_raises_structured_failure_for_failed_task(
                 "failure_reason": "Provider fallback disabled for vote._VoteResponse",
                 "latest_error_event": {
                     "event": "error",
-                    "data": {
-                        "message": "Provider fallback disabled for vote._VoteResponse"
-                    },
+                    "data": {"message": "Provider fallback disabled for vote._VoteResponse"},
                 },
                 "events": [
                     {
                         "event": "error",
-                        "data": {
-                            "message": "Provider fallback disabled for vote._VoteResponse"
-                        },
+                        "data": {"message": "Provider fallback disabled for vote._VoteResponse"},
                         "timestamp": "2026-04-21T03:10:00Z",
                     }
                 ],
@@ -3398,8 +3408,8 @@ def test_sdk_rejects_agent_count_mismatch_for_local_models() -> None:
 async def test_sdk_local_models_fail_fast_when_provider_key_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agora.sdk import LocalModelSpec, LocalProviderKeys
     from agora.config import get_config
+    from agora.sdk import LocalModelSpec, LocalProviderKeys
 
     monkeypatch.delenv("AGORA_OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -3553,8 +3563,8 @@ async def test_sdk_local_model_roster_is_forwarded_to_orchestrator(
 async def test_sdk_local_debate_fallback_models_require_provider_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agora.sdk import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
     from agora.config import get_config
+    from agora.sdk import LocalDebateConfig, LocalModelSpec, LocalProviderKeys
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("AGORA_ANTHROPIC_API_KEY", raising=False)

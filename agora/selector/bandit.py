@@ -14,6 +14,7 @@ from agora.types import BanditArm, MechanismType, TaskFeatures
 logger = structlog.get_logger(__name__)
 
 _KNOWN_CATEGORIES = ["math", "code", "reasoning", "factual", "creative"]
+_CONFIDENCE_FULL_TRUST_PULLS = 12.0
 
 
 class ThompsonSamplingSelector:
@@ -59,20 +60,27 @@ class ThompsonSamplingSelector:
 
         with self._lock:
             samples: dict[MechanismType, float] = {}
+            context_total_pulls = 0
             for mechanism in self.mechanisms:
                 arm = self.arms[(mechanism, category)]
                 sample = float(np.random.beta(arm.alpha, arm.beta_param))
                 samples[mechanism] = sample
+                context_total_pulls += arm.total_pulls
 
         selected = max(samples.items(), key=lambda item: item[1])
         sample_sum = sum(samples.values())
-        confidence = selected[1] / sample_sum if sample_sum > 0 else 0.0
+        sample_confidence = selected[1] / sample_sum if sample_sum > 0 else 0.0
+        uniform_baseline = 1.0 / max(1, len(self.mechanisms))
+        evidence_factor = min(1.0, context_total_pulls / _CONFIDENCE_FULL_TRUST_PULLS)
+        confidence = uniform_baseline + ((sample_confidence - uniform_baseline) * evidence_factor)
 
         logger.info(
             "bandit_selected",
             category=category,
             selected_mechanism=selected[0].value,
             confidence=confidence,
+            sample_confidence=sample_confidence,
+            context_total_pulls=context_total_pulls,
             samples={k.value: v for k, v in samples.items()},
         )
         return selected[0], confidence
