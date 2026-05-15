@@ -2,6 +2,36 @@ import { CodeBlock } from "../../components/CodeBlock";
 import { Callout } from "../../components/Callout";
 import { ParamTable } from "../../components/ParamTable";
 
+const installCode = `pip install agora-arbitrator-sdk`;
+
+const quickstartHostedCode = `from agora.sdk import AgoraArbitrator
+
+arbitrator = AgoraArbitrator(auth_token="agora_live_your_public_id.your_secret")
+result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
+
+print(result.mechanism_used.value)  # e.g. 'debate'
+print(result.final_answer)
+await arbitrator.aclose()`;
+
+const quickstartLocalCode = `from agora.sdk import AgoraArbitrator
+
+async def my_agent(user_prompt: str) -> dict:
+    return {
+        "answer": "Modular monolith",
+        "confidence": 0.78,
+        "predicted_group_answer": "Modular monolith",
+        "reasoning": "Lower coordination overhead at small team size.",
+    }
+
+arbitrator = AgoraArbitrator(mechanism="vote", agent_count=3)
+result = await arbitrator.arbitrate(
+    "What architecture should a three-engineer startup use?",
+    agents=[my_agent, my_agent, my_agent],
+)
+
+print(result.final_answer)
+print(result.merkle_root)`;
+
 const constructorCode = `from agora.sdk import AgoraArbitrator
 
 arbitrator = AgoraArbitrator(
@@ -121,11 +151,57 @@ export function PythonSDK() {
                 </li>
             </ul>
 
+            {/* ── Installation ── */}
+            <h2
+                id="installation"
+                className="text-xl font-mono font-semibold mt-10 mb-3"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Installation
+            </h2>
+
+            <CodeBlock code={installCode} language="bash" />
+
             <Callout type="warning" title="Package renamed">
                 Install the SDK as{" "}
                 <IC>agora-arbitrator-sdk</IC>. Old references to{" "}
                 <IC>agora-sdk</IC> are stale.
             </Callout>
+
+            {/* ── Quickstart ── */}
+            <h2
+                id="quickstart"
+                className="text-xl font-mono font-semibold mt-10 mb-3"
+                style={{ color: "var(--text-primary)" }}
+            >
+                Quickstart
+            </h2>
+
+            <p
+                className="text-sm leading-relaxed mb-2"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                <strong style={{ color: "var(--text-primary)" }}>Hosted mode</strong> — one{" "}
+                <IC>await</IC> call, full verifiable deliberation. Requires an API key.
+            </p>
+
+            <CodeBlock code={quickstartHostedCode} language="python" />
+
+            <p
+                className="text-sm leading-relaxed mb-2"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                <strong style={{ color: "var(--text-primary)" }}>Local callable mode</strong> — bring
+                your own agents. No API key required; runs fully in-process.
+            </p>
+
+            <CodeBlock code={quickstartLocalCode} language="python" />
 
             <h2
                 id="agora-arbitrator"
