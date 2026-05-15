@@ -144,6 +144,32 @@ class _OpenRouterDeclineThenUseCaller:
         return self._responses.pop(0), {"tokens": 5, "latency_ms": 7.0}
 
 
+class _DecliningPlanningCaller:
+    def __init__(self, model: str, rationale: str = "I can answer without tools") -> None:
+        self.model = model
+        self.rationale = rationale
+        self.prompts: list[str] = []
+
+    async def call(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_format: type[BaseModel] | None = None,
+        temperature: float | None = None,
+        stream: bool = False,
+        stream_callback: Callable[[str], None] | None = None,
+    ) -> tuple[ToolDecision, dict[str, Any]]:
+        del system_prompt, response_format, temperature, stream, stream_callback
+        self.prompts.append(user_prompt)
+        return (
+            ToolDecision(
+                should_call=False,
+                rationale=self.rationale,
+            ),
+            {"tokens": 2, "latency_ms": 3.0},
+        )
+
+
 class _InvalidPlanningCaller:
     def __init__(self, model: str) -> None:
         self.model = model
@@ -694,6 +720,72 @@ async def test_tool_runtime_uses_fallback_planner_candidate_when_primary_planner
     assert selection.augmentation.planner_succeeded is True
     assert len(selection.augmentation.tool_results) == 1
     assert selection.augmentation.tool_results[0].tool_name == "execute_python"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_uses_fallback_planner_candidate_when_openrouter_declines_early_file_grounding() -> None:
+    primary = _DecliningPlanningCaller("qwen/qwen3.5-flash-02-23")
+    fallback = _GeminiFallbackCaller()
+
+    selection = await maybe_augment_prompt_with_tool_candidates(
+        candidates=[
+            ToolPlanningCandidate(caller=primary, provider="openrouter"),
+            ToolPlanningCandidate(caller=fallback, provider="flash"),
+        ],
+        system_prompt="system",
+        user_prompt="Read the attached CSV and determine the best vendor.",
+        context=ToolInvocationContext(
+            task="Read the attached CSV and determine the best vendor.",
+            agent_id="agent-1",
+            round_index=0,
+            stage="initial",
+            sources=[_source()],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_MultiToolBroker(),
+        ),
+    )
+
+    assert len(primary.prompts) == 2
+    assert "you declined tool use" in primary.prompts[-1].lower()
+    assert fallback.calls == [ToolDecision, None]
+    assert selection.provider == "flash"
+    assert selection.augmentation.planner_succeeded is True
+    assert len(selection.augmentation.tool_results) == 1
+    assert selection.augmentation.tool_results[0].tool_name == "analyze_file"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_uses_fallback_planner_candidate_when_claude_fails_and_openrouter_declines() -> None:
+    primary = _InvalidPlanningCaller("claude-sonnet-4-6")
+    middle = _DecliningPlanningCaller("qwen/qwen3.5-flash-02-23")
+    fallback = _GeminiFallbackCaller()
+
+    selection = await maybe_augment_prompt_with_tool_candidates(
+        candidates=[
+            ToolPlanningCandidate(caller=primary, provider="claude"),
+            ToolPlanningCandidate(caller=middle, provider="openrouter"),
+            ToolPlanningCandidate(caller=fallback, provider="flash"),
+        ],
+        system_prompt="system",
+        user_prompt="Read the attached CSV and determine the best vendor.",
+        context=ToolInvocationContext(
+            task="Read the attached CSV and determine the best vendor.",
+            agent_id="agent-1",
+            round_index=0,
+            stage="initial",
+            sources=[_source()],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_MultiToolBroker(),
+        ),
+    )
+
+    assert primary.calls >= 1
+    assert len(middle.prompts) == 2
+    assert fallback.calls == [ToolDecision, None]
+    assert selection.provider == "flash"
+    assert selection.augmentation.planner_succeeded is True
+    assert len(selection.augmentation.tool_results) == 1
+    assert selection.augmentation.tool_results[0].tool_name == "analyze_file"
 
 
 async def _capture_event(

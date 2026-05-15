@@ -241,8 +241,9 @@ async def maybe_augment_prompt_with_tool(
 
     if not tool_results:
         merged_usage = merge_raw_usage([entry for entry in planning_usages if entry])
+        source_note = _source_availability_context(context.sources)
         return ToolAugmentationResult(
-            user_prompt=user_prompt,
+            user_prompt=f"{user_prompt}\n\n{source_note}" if source_note else user_prompt,
             tool_results=[],
             planning_usage=merged_usage,
             planner_succeeded=bool(planning_usages),
@@ -265,7 +266,7 @@ async def maybe_augment_prompt_with_tool_candidates(
     user_prompt: str,
     context: ToolInvocationContext,
 ) -> ToolPlanningSelection:
-    """Run tool planning through one or more providers, falling through only on planner failure."""
+    """Run tool planning through one or more providers with resilient early-stage fallback."""
 
     if not candidates:
         return ToolPlanningSelection(
@@ -283,17 +284,30 @@ async def maybe_augment_prompt_with_tool_candidates(
         planning_usage={},
         planner_succeeded=False,
     )
-    for candidate in candidates:
+    accumulated_usages: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates):
         augmentation = await maybe_augment_prompt_with_tool(
             caller=candidate.caller,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             context=context,
         )
-        last_result = augmentation
-        if augmentation.planner_succeeded:
-            return ToolPlanningSelection(
+        accumulated_usages.append(augmentation.planning_usage)
+        merged_augmentation = _merge_augmentation_planning_usage(
+            augmentation=augmentation,
+            planning_usages=accumulated_usages,
+        )
+        last_result = merged_augmentation
+        if augmentation.planner_succeeded and (
+            index == len(candidates) - 1
+            or not _should_fallback_to_next_candidate_after_decline(
+                caller=candidate.caller,
+                context=context,
                 augmentation=augmentation,
+            )
+        ):
+            return ToolPlanningSelection(
+                augmentation=merged_augmentation,
                 provider=candidate.provider,
                 model_name=getattr(candidate.caller, "model", None),
             )
@@ -412,6 +426,36 @@ def merge_raw_usage(entries: list[dict[str, Any]]) -> dict[str, Any]:
         _merge_numeric_map(merged["model_latency_ms"], usage.get("model_latency_ms", {}))
         merged["fallback_events"].extend(usage.get("fallback_events", []))
     return merged
+
+
+def _merge_augmentation_planning_usage(
+    *,
+    augmentation: ToolAugmentationResult,
+    planning_usages: list[dict[str, Any]],
+) -> ToolAugmentationResult:
+    """Return one augmentation result with planning usage merged across planner candidates."""
+
+    return ToolAugmentationResult(
+        user_prompt=augmentation.user_prompt,
+        tool_results=list(augmentation.tool_results),
+        planning_usage=merge_raw_usage([entry for entry in planning_usages if entry]),
+        planner_succeeded=augmentation.planner_succeeded,
+    )
+
+
+def _should_fallback_to_next_candidate_after_decline(
+    *,
+    caller: _SupportsStructuredCall,
+    context: ToolInvocationContext,
+    augmentation: ToolAugmentationResult,
+) -> bool:
+    """Return whether a no-tool planner result should fall through to another candidate."""
+
+    if not augmentation.planner_succeeded:
+        return False
+    if augmentation.tool_results:
+        return False
+    return _should_reconsider_declined_tool_use(caller=caller, context=context)
 
 
 def _should_reconsider_declined_tool_use(
@@ -864,6 +908,30 @@ def _tool_planning_context(results: list[ToolResult]) -> str:
             f"{index}. {result.tool_name} [{result.status}] - {result.summary}"
         )
     return "\n".join(lines)
+
+
+def _source_availability_context(sources: list[SourceRef]) -> str:
+    """Return a compact note that attached sources were available during this pass."""
+
+    if not sources:
+        return ""
+
+    lines: list[str] = []
+    for source in sources[:3]:
+        descriptor = f"- {source.source_id} | {source.kind} | {source.display_name}"
+        if source.kind in {"text_file", "code_file"}:
+            descriptor += f" | sandbox_path={_sandbox_mount_path(source.source_id, source.display_name)}"
+        elif source.source_url:
+            descriptor += f" | {source.source_url}"
+        lines.append(descriptor)
+
+    return (
+        "Attached source note:\n"
+        "These sources were available to inspect via broker-owned tools during this pass.\n"
+        f"{chr(10).join(lines)}\n"
+        "Do not claim the attachments were inaccessible unless a tool attempt actually failed."
+        " If you did not inspect them with a tool, say the answer is provisional instead."
+    )
 
 
 async def _emit_tool_event(
