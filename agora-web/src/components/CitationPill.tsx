@@ -287,7 +287,7 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
           position: "fixed", inset: 0,
           background: "rgba(0,0,0,0.6)",
           backdropFilter: "blur(8px)",
-          zIndex: 9000,
+          zIndex: 10000,
           animation: "cm-backdrop 0.2s ease both",
         }}
       />
@@ -303,7 +303,7 @@ export function CitationsModal({ items, onClose }: { items: CitationItemResponse
           background: "var(--bg-elevated)",
           border: "1px solid var(--border-strong)",
           borderRadius: "20px",
-          zIndex: 9001,
+          zIndex: 10001,
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
