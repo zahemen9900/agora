@@ -1,26 +1,23 @@
 import { CodeBlock } from "../../components/CodeBlock";
 import { Callout } from "../../components/Callout";
 
-const sdkVerifyCode = `from agora import AgoraClient
+const sdkVerifyCode = `from agora.sdk import AgoraArbitrator
 
-client = AgoraClient(api_key="YOUR_KEY")
+async with AgoraArbitrator(auth_token="agora_live_xxxxx.yyyyy") as arbitrator:
+    created = await arbitrator.create_task(
+        task="What is the capital of France?",
+        mechanism="vote",
+        agent_count=4,
+    )
+    result = await arbitrator.run_task(created.task_id)
 
-# After a completed deliberation, verify the receipt
-result = client.deliberate(
-    prompt="What is the capital of France?",
-    mechanism="vote",
-    agent_count=5,
-)
-
-# One-line receipt verification
-is_valid = client.verify_receipt(result.task_id)
-print(f"Receipt valid: {is_valid}")
-# Receipt valid: True
-
-# Or pass the result object directly
-is_valid = client.verify_receipt(result)
-print(f"Merkle root: {result.merkle_root}")
-print(f"Solana TX:   {result.solana_tx_hash}")`;
+    verification = await arbitrator.verify_receipt(
+        result,
+        strict=False,  # strict=True also requires rpc_url + hosted task metadata
+    )
+    print(verification)
+    print(result.merkle_root)
+    print(result.task_id)`;
 
 const manualVerifyCode = `import hashlib
 from merkletools import MerkleTools
@@ -38,8 +35,8 @@ computed_root = mt.get_merkle_root()
 assert computed_root == result.merkle_root, "Merkle root mismatch — transcript tampered!"
 print(f"✓ Verified: {computed_root}")
 
-# 4. Check on Solana
-# Visit: https://explorer.solana.com/tx/{result.solana_tx_hash}?cluster=devnet`;
+# 4. Check on Solana using the hosted task status/result field:
+# https://explorer.solana.com/tx/<solana_tx_hash>?cluster=devnet`;
 
 const recomputeHashCode = `import hashlib, json
 
@@ -164,9 +161,9 @@ export function MerkleVerification() {
                 >
                     verify_receipt
                 </code>{" "}
-                method handles the full pipeline: it fetches the GCS transcript,
-                recomputes the Merkle tree, and compares against the on-chain
-                root. It raises{" "}
+                method recomputes the Merkle root from the result's transcript
+                hashes and, when hosted metadata is available, compares the
+                result against that stored receipt metadata. It raises{" "}
                 <code
                     className="font-mono text-[12px] px-1.5 py-0.5 rounded"
                     style={{
@@ -174,7 +171,7 @@ export function MerkleVerification() {
                         color: "var(--accent-emerald)",
                     }}
                 >
-                    ReceiptTamperedError
+                    ReceiptVerificationError
                 </code>{" "}
                 if verification fails.
             </p>
@@ -186,13 +183,11 @@ export function MerkleVerification() {
             />
 
             <Callout type="info" title="What verify_receipt checks">
-                The SDK method verifies three things: (1) the Merkle root
-                computed from the GCS transcript matches the on-chain{" "}
-                <code>transcript_merkle_root</code>, (2) the decision hash
-                computed from the final answer matches the on-chain{" "}
-                <code>decision_hash</code>, and (3) the Solana transaction that
-                submitted the receipt is confirmed finalized (not just confirmed
-                — finalized, meaning it cannot be rolled back).
+                In lenient mode (<code>strict=False</code>) the SDK verifies the
+                recomputed Merkle root and any hosted receipt metadata it can
+                fetch. In strict mode it also requires a configured{" "}
+                <code>rpc_url</code> so it can perform the on-chain receipt
+                check directly.
             </Callout>
 
             {/* ── Manual Verification ─────────────────────────────────────────── */}
@@ -304,9 +299,9 @@ export function MerkleVerification() {
                             color: "var(--accent-emerald)",
                         }}
                     >
-                        solana_tx_hash
+                    solana_tx_hash
                     </code>{" "}
-                    from the task result and visit:
+                    from the hosted task status/result payload and visit:
                 </li>
             </ol>
 

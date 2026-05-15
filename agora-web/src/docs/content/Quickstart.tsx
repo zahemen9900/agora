@@ -67,12 +67,16 @@ async def main() -> None:
 
 asyncio.run(main())`;
 
-const verifyCode = `verification = await arbitrator.verify_receipt(result)
+const verifyCode = `verification = await arbitrator.verify_receipt(
+    result,
+    strict=False,  # strict=True also requires rpc_url + hosted task metadata
+)
 print(verification)
 # {
 #   "valid": True,
 #   "merkle_match": True,
-#   "on_chain_match": True
+#   "hosted_metadata_match": True,
+#   "on_chain_match": None
 # }`;
 
 const exampleOutput = `task_01j...
@@ -215,6 +219,12 @@ export function Quickstart() {
                 Both hosted and local runs support event streaming. Use{" "}
                 <IC>stream_task_events()</IC> on the hosted path for real-time
                 selector decisions, tool calls, agent deltas, and receipt events.
+            </Callout>
+
+            <Callout type="warning" title="Receipt verification modes">
+                The SDK defaults to strict receipt verification. For the normal
+                hosted quickstart, use <IC>strict=False</IC> unless you have
+                also configured <IC>rpc_url</IC> and want a full on-chain check.
             </Callout>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-8">

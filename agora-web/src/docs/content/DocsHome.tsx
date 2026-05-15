@@ -137,8 +137,9 @@ export function DocsHome() {
                         }}
                     >
                         Best when you want in-process orchestration, explicit
-                        model rosters, or direct integration into LangGraph and
-                        CrewAI without relying on the hosted task lifecycle.
+                        model rosters, direct LangGraph integration, or manual
+                        embedding into your own CrewAI workflow without relying
+                        on the hosted task lifecycle.
                     </p>
                 </div>
             </div>

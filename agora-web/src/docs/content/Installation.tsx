@@ -3,11 +3,7 @@ import { Callout } from "../components/Callout";
 
 const pipInstall = `pip install agora-arbitrator-sdk`;
 
-const pipLangGraph = `pip install "agora-arbitrator-sdk[langgraph]"`;
-
-const pipCrewAI = `pip install "agora-arbitrator-sdk[crewai]"`;
-
-const pipAll = `pip install "agora-arbitrator-sdk[langgraph,crewai]"`;
+const pipCrewAI = `pip install agora-arbitrator-sdk crewai`;
 
 const sourceInstall = `git clone https://github.com/zahemen9900/agora.git
 cd agora
@@ -79,7 +75,18 @@ export function Installation() {
                 >
                     agora-arbitrator-sdk
                 </code>
-                . It supports a minimal core install and optional extras for LangGraph and CrewAI.
+                . LangGraph support ships in the core package already. If you
+                want to integrate Agora into your own CrewAI workflow, install{" "}
+                <code
+                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
+                    style={{
+                        background: "var(--bg-subtle)",
+                        color: "var(--accent-emerald)",
+                    }}
+                >
+                    crewai
+                </code>{" "}
+                separately.
             </p>
 
             <Callout type="warning" title="Package renamed">
@@ -151,13 +158,12 @@ export function Installation() {
                 className="text-lg font-mono font-semibold mt-8 mb-3"
                 style={{ color: "var(--text-primary)" }}
             >
-                Extras
+                Companion packages
             </h3>
 
             <div className="space-y-4">
-                <CodeBlock code={pipLangGraph} language="bash" filename="LangGraph" />
-                <CodeBlock code={pipCrewAI} language="bash" filename="CrewAI" />
-                <CodeBlock code={pipAll} language="bash" filename="Both extras" />
+                <CodeBlock code={pipInstall} language="bash" filename="Core + LangGraph" />
+                <CodeBlock code={pipCrewAI} language="bash" filename="CrewAI workflow" />
             </div>
 
             <h2

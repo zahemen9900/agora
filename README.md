@@ -1,786 +1,324 @@
-# AGORA
+# <p align="center"><img src="agora-web/public/agora-logo.png" alt="Agora logo" width="140" /></p>
 
-On-chain multi-mechanism arbitration for multi-agent LLM systems.
+<p align="center">
+  <strong>Tool-augmented multi-agent deliberation with auditable receipts.</strong>
+</p>
 
-AGORA takes a task, chooses a deliberation mechanism (Debate, Vote, or Delphi), runs multi-agent reasoning, computes convergence and quorum signals, and produces cryptographic transcript artifacts (hashes + Merkle root) that are ready for on-chain receipt submission.
+<p align="center">
+  <a href="https://pypi.org/project/agora-arbitrator-sdk/"><img src="https://img.shields.io/pypi/v/agora-arbitrator-sdk?label=PyPI&color=14b8a6" alt="PyPI version" /></a>
+  <img src="https://img.shields.io/pypi/pyversions/agora-arbitrator-sdk?color=0ea5e9" alt="Python versions" />
+  <img src="https://img.shields.io/badge/mechanisms-debate%20%7C%20vote%20%7C%20delphi-8b5cf6" alt="Mechanisms" />
+  <img src="https://img.shields.io/badge/license-MIT-f59e0b" alt="MIT license" />
+</p>
 
-## Current Implementation Status
+Agora is an arbitration and deliberation runtime for LLM systems. It can:
 
-Detailed implementation tracking lives in:
+- select a mechanism per task: `debate`, `vote`, or `delphi`
+- ground reasoning with Brave search, attached URLs, and uploaded sources
+- run sandboxed Python for tabular analysis and verification
+- emit live event streams, citations, evidence, and telemetry
+- produce Merkle-rooted receipts and optional Solana settlement metadata
 
-- `.codex/Progress-update-phase2.md`
+This repo contains the backend, the Python SDK, the hosted dashboard, the benchmark runner, and the on-chain integration surface.
 
-### Week 1 Foundation
+## What is live right now
 
-Implemented:
+Agora is no longer just a bare orchestrator. The current system includes:
 
-- Core typed models for task features, mechanism selection, agent outputs, convergence metrics, and final deliberation results.
-- Hybrid mechanism selector:
-  - Feature extraction
-  - Contextual Thompson sampling bandit
-  - LLM reasoning wrapper for explainable overrides
-- Debate engine with:
-  - Faction assignment
-  - Devil's advocate cross-exam
-  - Rebuttal rounds
-  - Claim locking (basic arithmetic verification)
-  - Adaptive early termination and switch-to-vote signaling
-- Vote engine with:
-  - Independent agent votes
-  - Confidence calibration (temperature scaling)
-  - ISP-weighted aggregation
-  - Switch-to-debate signaling when quorum is not reached
-- Orchestrator that runs selector -> mechanism -> receipt generation and optional online learning updates.
-- Deterministic transcript hashing and Merkle root generation with fallback when merkletools is unavailable.
-- CI + lint + test setup.
+- **Hosted deliberation** on the canonical backend: [https://agora-api-b4auawqzbq-uc.a.run.app](https://agora-api-b4auawqzbq-uc.a.run.app)
+- **Local BYOK execution** through the Python SDK with explicit provider rosters
+- **Three deliberation mechanisms**:
+  - `debate` for adversarial multi-factor tradeoffs
+  - `vote` for independent answer aggregation
+  - `delphi` for revision-driven convergence
+- **Tool-augmented reasoning**:
+  - Brave web search and URL grounding
+  - OpenRouter-backed PDF and image analysis
+  - sandboxed Python with `pandas`, `polars`, `duckdb`, `pyarrow`, spreadsheet readers, and standard data tooling
+- **Sources and attachments**:
+  - `source_urls`
+  - hosted uploaded files via `source_file_ids`
+- **Auditable outputs**:
+  - Merkle-rooted transcript receipts
+  - evidence items
+  - citation items
+  - per-model token, latency, and cost telemetry
+- **Hosted API keys** for SDK and server-to-server access
+- **Benchmarks** for domain-specific evaluation and artifact generation
 
-Current execution note:
+## Install
 
-- Debate and vote now execute through compiled LangGraph `StateGraph` runtimes. The orchestrator handles selection, switching, and receipt assembly around those graph-native engine executions.
+The published package is:
 
-### Phase 2 Additions
+```bash
+pip install agora-arbitrator-sdk
+```
 
-Implemented on top of the Week 1 foundation:
+Optional companion installs:
 
-- Real task lifecycle API:
-  - `POST /tasks/`
-  - `POST /tasks/{id}/run`
-  - `GET /tasks/`
-  - `GET /tasks/{id}`
-  - `GET /tasks/{id}/stream`
-  - `POST /tasks/{id}/pay`
-- Persisted selector decisions and replay-safe execution through stored task state.
-- Canonical SSE event envelopes with replay + live streaming:
-  - `event`
-  - `data`
-  - `timestamp`
-- Benchmark runner, curated datasets, and validation artifact generation under `benchmarks/`.
-- SDK surface for local and hosted execution, plus strict receipt verification.
-- Dual auth for hosted usage:
-  - WorkOS JWTs for dashboard users
-  - first-party Agora API keys for SDK, CI, and server-to-server callers
-- Provider hardening for dotenv, Secret Manager fallback, and late-bound credential resolution.
-- 4-model ensemble support in hosted/demo flows with explicit `agent_models_used` reporting.
-- OpenRouter-compatible models integrated as an active ensemble lane:
-  - the canonical fourth vote tier for 4-agent runs
-  - the debate cross-exam / devil's-advocate lane
-  - surfaced in runtime/API result metadata with exact model IDs
-- Hosted mechanism forcing supports either:
-  - request payload `mechanism_override=vote|debate|delphi`
-  - env fallback `AGORA_API_FORCE_MECHANISM=vote|debate|delphi`
-- Phase 2 telemetry is now first-class across runtime, API, SDK, and benchmarks:
-  - per-model token counts
-  - per-model input / output / thinking token splits when available
-  - per-model latency
-  - estimated USD cost at both model and run level
+```bash
+# LangGraph is already a core dependency of the SDK.
+# For CrewAI workflows, install CrewAI separately.
+pip install crewai
+```
 
-### Still Deferred / Not Implemented Yet
+Python `3.11+` is required.
 
-- SDK-side `agora/solana/client.py` remains a stub; the API-side Solana bridge and contract flow are active.
-- MoA remains a roadmap placeholder; current public support is Debate, Vote, and Delphi.
-- Final production packaging/publication work for the SDK release channel.
+## Fast start: hosted mode
 
-## End-to-End Runtime Flow
+Hosted mode is the simplest production path. You authenticate with an Agora API key such as:
 
-1. Input task enters the orchestrator.
-2. Selector extracts task features (complexity, topic, disagreement expectation, stakes).
-3. Thompson bandit proposes a mechanism and confidence.
-4. Reasoning selector produces final mechanism choice + human-readable reasoning + reasoning hash.
-5. Orchestrator executes chosen mechanism:
-   - Debate path: multi-round adversarial deliberation with convergence checks and optional switch to vote.
-   - Vote path: one-round independent voting with calibrated confidence and ISP aggregation, optional switch to debate.
-6. Engine returns a DeliberationResult:
-   - Final answer
-   - Confidence and quorum status
-   - Round/mechanism metadata
-   - Transcript hashes + Merkle root
-   - Token, split token-stream, latency, and cost accounting
-7. Orchestrator builds a receipt payload from transcript hashes for chain submission.
-8. Optional run_and_learn path updates bandit posteriors from supervised (ground truth) or proxy reward.
+- `agora_live_<public_id>.<secret>`
+- `agora_test_<public_id>.<secret>`
 
-## Cloud/Model Behavior
+```python
+import asyncio
+from agora.sdk import AgoraArbitrator
 
-Model calls route through the shared AgentCaller abstraction with provider-specific backends.
 
-- Gemini models use the direct Google GenAI SDK (`google-genai`) against Gemini Developer API (ai.google.dev).
-- Claude models use Anthropic's direct Python SDK (AsyncAnthropic).
-- OpenRouter-compatible models use OpenRouter via the OpenAI-compatible AsyncOpenAI client.
+async def main() -> None:
+    async with AgoraArbitrator(
+        auth_token="agora_live_xxxxx.yyyyy",
+    ) as arbitrator:
+        created = await arbitrator.create_task(
+            task="Should we expand to APAC next quarter?",
+            agent_count=4,
+            source_urls=[
+                "https://www.imf.org/",
+            ],
+        )
 
-- If `AGORA_GEMINI_API_KEY` (or `GEMINI_API_KEY` / `GOOGLE_API_KEY`) is configured, AGORA attempts live Gemini calls.
-- If ANTHROPIC_API_KEY is configured, AGORA attempts live Claude calls through Anthropic API.
-- If `AGORA_OPENROUTER_API_KEY` (or `OPENROUTER_API_KEY`) is configured, AGORA attempts live OpenRouter calls through the configured OpenRouter model lane.
-- If calls fail at runtime, engines fall back to deterministic local responses where implemented, so tests and local smoke paths remain reliable.
-- If AgentCaller cannot initialize due to missing credentials, that is surfaced clearly in model-layer errors.
+        result = await arbitrator.run_task(created.task_id)
+        print(result.mechanism)
+        print(result.final_answer)
+        print(result.confidence)
+        print(result.merkle_root)
+        print(result.tool_usage_summary)
+        print(result.citation_items[:3])
 
-## Project Structure
+
+asyncio.run(main())
+```
+
+Important hosted defaults:
+
+- `agent_count = 4`
+- `quorum_threshold = 0.6`
+- `enable_tools = True`
+- `max_tool_calls_per_agent = 4`
+- `max_urls_per_call = 5`
+- `max_files_per_call = 3`
+- `execution_timeout_seconds = 20`
+
+## Fast start: local BYOK mode
+
+Local mode runs the orchestrator in-process and uses your own provider credentials and roster.
+
+```python
+import asyncio
+
+from agora.sdk import AgoraArbitrator
+from agora.types import LocalModelSpec, LocalProviderKeys
+
+
+async def main() -> None:
+    async with AgoraArbitrator(
+        local_models=[
+            LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+            LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+            LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+            LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        ],
+        local_provider_keys=LocalProviderKeys(
+            gemini_api_key="...",
+            anthropic_api_key="...",
+            openrouter_api_key="...",
+        ),
+        agent_count=4,
+    ) as arbitrator:
+        result = await arbitrator.arbitrate(
+            "Should a regulated fintech choose a monolith or microservices for its next 12 months?"
+        )
+        print(result.mechanism_used)
+        print(result.final_answer)
+        print(result.total_latency_ms)
+        print(result.citation_items)
+
+
+asyncio.run(main())
+```
+
+Use local mode when you want:
+
+- direct provider control
+- custom participant rosters
+- no dependency on the hosted task lifecycle
+- in-process integration with LangGraph or a custom CrewAI workflow
+
+## Auth model
+
+There are two distinct auth paths:
+
+- **Dashboard / browser flows** use WorkOS-issued JWTs
+- **SDK / programmatic hosted flows** should use Agora API keys
+
+If you are building against the hosted REST API directly, both patterns exist in the system, but the SDK is built around Agora API keys for machine callers.
+
+## Sources, tools, and files
+
+Hosted tasks can include:
+
+- `source_urls`: public URLs
+- `source_file_ids`: files already registered through the hosted sources flow
+
+Current tool stack:
+
+- `search_online` via Brave
+- `analyze_urls` for URL-grounded synthesis
+- `analyze_file` for PDFs and images
+- `execute_python` for tabular/code analysis in a sandbox
+
+Current sandbox data stack includes:
+
+- `pandas`
+- `numpy`
+- `polars`
+- `duckdb`
+- `pyarrow`
+- `openpyxl`
+- `xlrd`
+- `pyxlsb`
+- `scipy`
+- `matplotlib`
+- `seaborn`
+
+Supported high-value analysis formats today:
+
+- `.csv`
+- `.tsv`
+- `.xlsx`
+- `.xls`
+- `.xlsb`
+- `.parquet`
+- `.pdf`
+- images
+- plain text and code files
+
+Not first-class today:
+
+- `.docx`
+- `.ods`
+- archives
+- arbitrary binaries
+
+## Hosted result surface
+
+The hosted API returns task lifecycle payloads and final results with:
+
+- `mechanism`
+- `final_answer`
+- `confidence`
+- `quorum_reached`
+- `merkle_root`
+- `decision_hash`
+- `latency_ms`
+- `sources`
+- `tool_usage_summary`
+- `evidence_items`
+- `citation_items`
+- `payment_status`
+- `chain_operations`
+- `selector_source`
+- `selector_fallback_path`
+- `mechanism_override_source`
+
+Local `DeliberationResult` objects are slightly different and still expose fields such as:
+
+- `mechanism_used`
+- `total_latency_ms`
+- `tool_usage_summary`
+- `citation_items`
+
+That distinction matters. Hosted and local surfaces are deliberately close, but not identical.
+
+## Benchmarks
+
+The SDK also supports hosted benchmark execution and artifact retrieval. That includes:
+
+- running benchmarks with tier overrides and reasoning presets
+- polling benchmark status
+- streaming benchmark events
+- retrieving benchmark item details and artifact-backed results
+
+If you care about model routing quality or provider cost/performance tradeoffs, use the benchmark layer instead of guessing.
+
+## Repo layout
 
 ```text
 agora/
-  agent.py               # Unified caller (Gemini + Claude + OpenRouter-compatible)
-  config.py              # Runtime config (models, thresholds, GCP project)
-  types.py               # Shared pydantic models and enums
+  agent.py
+  config.py
   selector/
-    features.py          # Task feature extraction
-    bandit.py            # Contextual Thompson sampling
-    reasoning.py         # LLM reasoning wrapper
-    selector.py          # Combined selection pipeline
   engines/
-    debate.py            # Debate mechanism
-    vote.py              # Vote mechanism
-    delphi.py            # Delphi mechanism
-    moa.py               # Internal roadmap scaffold (not publicly supported yet)
   runtime/
-    monitor.py           # Convergence + switch logic
-    hasher.py            # Transcript hashing + Merkle root/receipt
-    orchestrator.py      # End-to-end execution pipeline
+  tools/
   sdk/
-    arbitrator.py        # Public SDK facade (Phase 2 target)
   solana/
-    client.py            # Internal on-chain adapter stub (not publicly supported yet)
 
+api/
+  main.py
+  routes/
+  models.py
+  source_storage.py
+
+agora-web/
+  src/
+  public/
+
+sandbox_runner_service/
+  app.py
+  runtime-image.Dockerfile
+
+benchmarks/
 tests/
-  test_bandit.py
-  test_agent.py
-  test_hasher.py
-  test_debate.py
-  test_vote.py
-  test_orchestrator.py
+docs/
 ```
 
-## Local Setup
+## Local development
 
-### Requirements
-
-- Python 3.11+
-
-### Install
+Backend:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-### Auth configuration
-
-Hosted deployments now use two credential types behind one bearer-token interface:
-
-- Dashboard/browser auth: WorkOS-issued JWTs
-- Programmatic auth: Agora API keys in the form `agora_live_<public_id>.<secret>` or `agora_test_<public_id>.<secret>`
-
-Backend auth env:
-
-```bash
-export AUTH_REQUIRED=true
-export WORKOS_CLIENT_ID="..."
-export WORKOS_AUTHKIT_DOMAIN="..."
-export AUTH_AUDIENCE="..."
-export AUTH_ISSUER="https://your-authkit-domain"
-export AUTH_JWKS_URL="https://your-authkit-domain/oauth2/jwks"
-export AGORA_API_KEY_PEPPER="replace-with-a-long-random-secret"
-```
-
-Optional API key policy env:
-
-```bash
-export AGORA_API_KEY_DEFAULT_TTL_DAYS=90
-```
-
-### Lint and test
-
-```bash
 ruff check .
-./.venv/bin/python -m pytest -q -s
+pytest -q -s
 ```
 
-For frontend validation from WSL, use a WSL-native Node installation. The Windows
-`npm` wrapper fails under UNC working directories like `\\wsl.localhost\...` and
-will not reliably run `agora-web` builds from this checkout.
-
-The repo now includes a helper wrapper that prefers a WSL-native Node install
-under `~/.nvm` when your shell would otherwise hit the Windows wrapper:
+Frontend:
 
 ```bash
 ./scripts/with_wsl_node.sh npm --prefix agora-web run build
 ```
 
-### RWX cloud CI from local checkout
+## Docs
 
-RWX mirrors the required GitHub Actions jobs in `.rwx/ci.yml`, but runs them from your local shell without pushing first. First install and authenticate the CLI:
+Primary docs live in the dashboard docs surface and source files under:
 
-```bash
-# WSL/Homebrew path from the RWX docs
-brew install rwx-cloud/tap/rwx
+- [/home/zahemen/projects/dl-lib/agora.worktrees/main-sync/agora-web/src/docs](/home/zahemen/projects/dl-lib/agora.worktrees/main-sync/agora-web/src/docs)
 
-# Or install the Linux binary manually if Homebrew is not available
-mkdir -p ~/.local/bin
-curl -fsSL https://github.com/rwx-cloud/rwx/releases/download/latest/rwx-linux-x86_64 -o ~/.local/bin/rwx
-chmod +x ~/.local/bin/rwx
-export PATH="$HOME/.local/bin:$PATH"
+Key entry points:
 
-rwx login
-rwx whoami
-```
+- `/docs`
+- `/docs/installation`
+- `/docs/quickstart`
+- `/docs/sdk/python`
+- `/docs/sdk/api`
 
-Run the full CI graph:
+## Opinionated notes
 
-```bash
-rwx run .rwx/ci.yml --target ci --wait --open
-```
-
-Run one gate while iterating:
-
-```bash
-rwx run .rwx/ci.yml --target python-ci --wait
-rwx run .rwx/ci.yml --target frontend-ci --wait
-rwx run .rwx/ci.yml --target sdk-ci --wait
-rwx run .rwx/ci.yml --target anchor-ci --wait
-```
-
-The first Anchor run will be slow because RWX has to install Solana/Agave and Anchor into the tool cache. After that, the graph is mostly dependency-cache hits unless manifests or lockfiles change.
-
-Important local-dev gotcha: `rwx run` includes modified tracked files via git patching, but it does not include untracked files. Stage or commit new files before relying on a cloud run; `git add -N path/to/file` is enough when you only want intent-to-add visibility.
-
-### Paid-Provider Integration Tests (Opt-In)
-
-Some vote/debate tests are marked as paid-provider integration checks and require explicit opt-in:
-
-```bash
-export RUN_PAID_PROVIDER_TESTS=1
-export AGORA_OPENROUTER_API_KEY="..."
-pytest -s -q -m paid_integration
-```
-
-By default, these tests are skipped to avoid accidental provider spend in routine local and CI runs.
-
-### One-Command Week 1 Demo (Core + Josh Infra)
-
-Use this script to validate Week 1 end-to-end without requiring local Solana tooling:
-
-```bash
-./scripts/week1_demo.sh
-```
-
-What it covers:
-
-- Runs lint checks for `agora`, `api`, and `tests`
-- Runs all Python tests (core modules + API/infra tests)
-- Runs a local orchestrator smoke task (your side)
-- Runs direct Gemini GenAI SDK smoke checks on configured Flash/Pro models
-- Runs direct OpenRouter SDK smoke checks on the configured OpenRouter model
-- Runs a strict all-model 4-agent vote smoke when `RUN_ALL_MODELS_E2E=always`
-- Verifies the OpenRouter lane appears as an active vote tier and debate challenger, not just a fallback
-- Prints `agent_models_used` so the participating ensemble is visible in demo output
-- Runs hosted API smoke flow `create -> run -> pay` against Cloud Run (Josh infra side)
-- Automatically skips local Anchor/Solana checks when `anchor` or `solana` CLI is missing
-- Isolates Gemini API keys from the test phase so `pytest` stays deterministic and fast
-
-Optional controls:
-
-- `AGORA_API_URL`: override hosted API base URL
-- `AGORA_TEST_API_KEY`: real staging API key used for hosted smoke and E2E against authenticated deployments
-- `--query "text"`: pass the exact deliberation prompt used in orchestrator + hosted API task
-- `--api-url "url"`: override hosted API base URL via CLI (same effect as `AGORA_API_URL`)
-- `RUN_ANCHOR_CHECKS=always|auto|never`: force or skip local Anchor checks
-- `RUN_GEMINI_SMOKE=always|auto|never`: force or skip Gemini SDK smoke checks
-- `RUN_CLAUDE_SMOKE=always|auto|never`: force or skip Claude SDK smoke checks
-- `RUN_OPENROUTER_SMOKE=always|auto|never`: force or skip OpenRouter SDK smoke checks
-- `RUN_ALL_MODELS_E2E=always|auto|never`: force or skip one local 4-provider vote ensemble run
-- `RUN_HOSTED_API_E2E=always|auto|never`: require hosted `/tasks` flow or downgrade hosted failures to a warning in auto mode
-- `RUN_HOSTED_ALL_MODELS_E2E=always|never`: require hosted API to report the full 4-model vote ensemble
-- `AGORA_API_FORCE_MECHANISM=vote|debate|delphi`: fallback mechanism pin for hosted strict demo validation
-- Task create payload field `mechanism_override=vote|debate|delphi`: request-level mechanism pin for hosted runs
-- `RUN_ORCHESTRATOR_SMOKE=always|auto|never`: control the natural selector-driven local orchestrator smoke
-- `DEMO_AGENT_COUNT`: orchestrator/hosted smoke agent count (defaults to 4 unless both OpenRouter and all-model smokes are disabled)
-- `DEMO_ORCHESTRATOR_TIMEOUT_SECONDS`, `DEMO_MODEL_TIMEOUT_SECONDS`, `DEMO_ALL_MODELS_TIMEOUT_SECONDS`: cap live provider waits so demo failures are clean
-- `DEMO_ALL_MODELS_MAX_ATTEMPTS`: retry the strict 4-provider vote smoke on transient provider failures
-- `DEMO_FLASH_MODEL`: default flash model used by script (defaults to `gemini-3.1-flash-lite-preview`)
-- `DEMO_PRO_MODEL`: default pro model used by script (defaults to `gemini-3-flash-preview`)
-- `DEMO_CLAUDE_MODEL`: default Claude model used by script (defaults to `claude-sonnet-4-6`)
-- `DEMO_OPENROUTER_MODEL`: default OpenRouter model used by script (defaults to `qwen/qwen3.5-flash-02-23`)
-- `PYTHON_BIN`: custom Python executable path
-
-Examples:
-
-```bash
-# Use default hosted URL, auto-detect local Solana tools
-./scripts/week1_demo.sh
-
-# Force local contract checks if you installed Anchor/Solana
-RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
-
-# Point to a different deployed API
-AGORA_API_URL="https://your-service-url" ./scripts/week1_demo.sh
-
-# Run hosted smoke against an authenticated deployment
-AGORA_TEST_API_KEY="agora_test_your_public_id.your_secret" ./scripts/week1_demo.sh
-
-# Enforce direct Gemini 3-series validation in demo
-RUN_GEMINI_SMOKE=always ./scripts/week1_demo.sh
-
-# Enforce OpenRouter validation in demo
-RUN_OPENROUTER_SMOKE=always ./scripts/week1_demo.sh
-
-# Prove Gemini Pro, OpenRouter, Gemini Flash, and Claude all run in one local vote ensemble
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
-
-# Keep the demo local-only if hosted auth/runtime is drifting
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_API_E2E=never ./scripts/week1_demo.sh
-
-# Pass custom deliberation query from CLI
-./scripts/week1_demo.sh --query "Should our team choose debate, vote, or delphi for incident response decisions?"
-```
-
-### Validation Runbook (Recommended)
-
-Use this sequence to verify the migrated stack concretely:
-
-```bash
-cd /home/zahemen/projects/dl-lib/agora
-
-# 1) Code quality and tests
-python -m ruff check agora api tests
-python -m pytest -s -q
-
-# Optional paid-provider OpenRouter checks
-./scripts/run_paid_provider_tests.sh
-
-# 2) Strict local all-provider ensemble proof
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always ./scripts/week1_demo.sh
-
-# 3) Optional direct provider smokes if you want per-provider diagnostics too
-RUN_GEMINI_SMOKE=always RUN_CLAUDE_SMOKE=always RUN_OPENROUTER_SMOKE=always RUN_ALL_MODELS_E2E=never ./scripts/week1_demo.sh
-
-# 4) Strict model, Anchor, and hosted Week 1 E2E demo
-export GOOGLE_CLOUD_PROJECT="agora-ai-9900"
-export AGORA_API_URL="${AGORA_API_URL:-https://agora-api-b4auawqzbq-uc.a.run.app}"
-export AGORA_GEMINI_API_KEY="$(gcloud secrets versions access latest --secret agora-gemini-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
-export AGORA_OPENROUTER_API_KEY="$(gcloud secrets versions access latest --secret agora-openrouter-api-key --project "${GOOGLE_CLOUD_PROJECT}")"
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
-
-# Optional hosted strict all-model check after deploying the API with AGORA_API_FORCE_MECHANISM=vote
-RUN_GEMINI_SMOKE=never RUN_CLAUDE_SMOKE=never RUN_OPENROUTER_SMOKE=never RUN_ALL_MODELS_E2E=always RUN_HOSTED_ALL_MODELS_E2E=always RUN_ANCHOR_CHECKS=always ./scripts/week1_demo.sh
-```
-
-Expected demo summary:
-
-- `Python lint/tests`: `PASS`
-- `Orchestrator smoke`: `PASS` or `SKIPPED` in auto mode if a provider stalls
-- `Gemini 3 SDK smoke`: `PASS`
-- `Claude SDK smoke`: `PASS`
-- `OpenRouter SDK smoke`: `PASS`
-- `All-model E2E smoke`: `PASS`
-- `Local Anchor checks`: `PASS`
-- `Hosted API E2E`: `PASS`
-
-### Local Google Cloud Auth
-
-Use your user account plus Application Default Credentials for local Secret
-Manager access. Do not use or share service-account JSON keys for local
-development.
-
-```bash
-gcloud auth login
-gcloud auth application-default login
-gcloud config set project agora-ai-9900
-```
-
-Verification:
-
-```bash
-gcloud auth print-access-token >/dev/null
-gcloud auth application-default print-access-token >/dev/null
-gcloud secrets versions access latest --secret agora-gemini-api-key --project agora-ai-9900 >/dev/null
-```
-
-## Quick Usage
-
-This cell is notebook / Colab friendly. Paste it as-is into a notebook and run it
-with top-level `await`. If you are writing a plain Python script, move the body
-into `main()` and call it from your script's entry point.
-
-```python
-from agora.runtime.orchestrator import AgoraOrchestrator
-
-
-orchestrator = AgoraOrchestrator(agent_count=3)
-result = await orchestrator.run("What is the capital of France?")
-print(result.final_answer)
-print(result.confidence, result.quorum_reached)
-print(result.merkle_root)
-```
-
-### Strict Phase 2 Demo (Hosted Default + Local Strict Option + Devnet)
-
-Use this script to prove the full Phase 2 path with installed SDK + devnet chain checks.
-The default target is hosted (Cloud Run) and local strict mode remains available.
-
-Hosted mode (default) validates:
-
-- hosted API health + token auth
-- installed-wheel SDK lifecycle (`create -> run -> pay`)
-- 4-model ensemble reporting
-- receipt verification signals
-- initialize/receipt/payment tx confirmation on devnet via Helius
-
-Local mode validates the above plus local bootstrap-only checks:
-
-- local API starts in demo-human mode
-- `/auth/me` bootstraps a real personal workspace
-- `/api-keys/` creates a real workspace API key
-- the API key is revoked and rejected afterward
-
-Run it with:
-
-```bash
-python scripts/phase2_demo.py
-```
-
-Run strict local bootstrap mode explicitly:
-
-```bash
-python scripts/phase2_demo.py --target local
-```
-
-What it requires:
-
-- real Gemini, Claude, and OpenRouter credentials
-- a real Helius devnet RPC URL
-- a real Solana keypair source for the API bridge
-
-Credential/bootstrap behavior:
-
-- the script now bootstraps cloud credentials the same way as `week1_demo.sh`:
-  - uses the active `gcloud` account when available
-  - prefers Application Default Credentials for local Google client auth
-  - resolves `GOOGLE_CLOUD_PROJECT` from env or `gcloud config`
-- if model keys are not already exported, it attempts Secret Manager fetch via `gcloud` using defaults:
-  - `agora-gemini-api-key`
-  - `agora-anthropic-api-key`
-  - `agora-openrouter-api-key`
-- if `HELIUS_RPC_URL` is missing/placeholder, it attempts Secret Manager fetch from `agora-helius-rpc-url`
-- if no local Solana keypair file is present, it defaults to secret-backed keypair config using `agora-solana-devnet-keypair`
-
-Optional secret bootstrap overrides:
-
-- `AGORA_GEMINI_SECRET_NAME|PROJECT|VERSION`
-- `AGORA_ANTHROPIC_SECRET_NAME|PROJECT|VERSION`
-- `AGORA_OPENROUTER_SECRET_NAME|PROJECT|VERSION`
-- `AGORA_HELIUS_RPC_SECRET_NAME|PROJECT` and `AGORA_HELIUS_RPC_VERSION`
-- `AGORA_SOLANA_KEYPAIR_SECRET_NAME`
-
-The strict harness fails closed if the configured Solana network is not `devnet`.
-
-The script intentionally uses fake human auth only in `--target local` bootstrap before
-WorkOS is wired. Hosted mode uses a real pre-issued API key.
-
-It writes a machine-readable artifact to:
-
-```bash
-benchmarks/results/phase2_demo.json
-```
-
-The artifact includes normalized top-level acceptance fields for automation and auditing,
-including:
-
-- `workspace_id`
-- `api_key_id` and `api_key_public_id`
-- `task_id`
-- `selected_mechanism`
-- `agent_models_used`
-- `initialize_tx_hash` / `receipt_tx_hash` / `payment_tx_hash`
-- `initialize_explorer_url` / `receipt_explorer_url` / `payment_explorer_url`
-- `receipt_verification`
-- `final_status` and `payment_status`
-- `revocation_proof` and `revoked_key_reuse_status`
-- `run_summary` (compact operator-facing verdict)
-- `event_timeline` (event counts, first/last timestamps, event excerpts)
-- `status_snapshots` (create/run/pay status deltas)
-- `acceptance_checks` (boolean checks for txs, status transitions, receipt signals)
-
-Optional controls:
-
-- `--target hosted|local` (default: hosted)
-- `--api-url https://...` hosted API URL for `--target hosted`
-- `--auth-token agora_test_<id>.<secret>` (or export `AGORA_TEST_API_KEY`) for hosted mode
-- `--bootstrap-if-missing-token` / `--no-bootstrap-if-missing-token`
-- `--bootstrap-jwt-token <human_jwt>` (or export `AGORA_PHASE2_BOOTSTRAP_JWT`)
-- `--bootstrap-key-name <name>` API key name when bootstrap creates a key
-- `--bootstrap-store-secret` / `--no-bootstrap-store-secret`
-- `--bootstrap-secret-name <secret>` and `--bootstrap-secret-project <project>`
-- `--http-timeout-seconds <seconds>` hosted preflight timeout (default: 30)
-- `--http-retries <count>` hosted preflight retry attempts (default: 3)
-- `--output /path/to/artifact.json`
-- `--query "text"` to override the default deterministic quorum-friendly prompt
-- strict defaults are enforced as `--stakes 0.01`, `--agent-count 4`, and `--mechanism vote`
-- to override those for debugging, add `--allow-unsafe-overrides` together with:
-  - `--stakes <value>`
-  - `--agent-count <value>`
-  - `--mechanism vote|debate|delphi`
-- `--verbose` to print detailed deliberation/result summaries in terminal
-- `--keep-temp`
-
-Hosted auth setup notes:
-
-- Hosted mode first tries: `--auth-token` -> env token -> Secret Manager token lookup.
-- If no hosted token is found and bootstrap is enabled (default), the script can now:
-  - call `/auth/me` with a human JWT
-  - create a new workspace API key via `/api-keys/`
-  - store that key in Secret Manager
-  - continue the same hosted demo run using the new key
-- Bootstrap requires a human JWT because `/api-keys/*` is a human-authenticated surface.
-- API-key tokens are accepted for task execution, but cannot mint additional API keys.
-
-Hosted auth bootstrap example (fully automated key create + store + run):
-
-```bash
-export AGORA_API_URL="https://agora-api-b4auawqzbq-uc.a.run.app"
-export GOOGLE_CLOUD_PROJECT="agora-ai-9900"
-export AGORA_PHASE2_BOOTSTRAP_JWT="<human-workos-jwt>"
-
-# This run auto-creates a workspace API key, persists it to Secret Manager,
-# then uses it for the strict hosted flow.
-python scripts/phase2_demo.py \
-  --target hosted \
-  --bootstrap-secret-name agora-test-api-key \
-  --bootstrap-secret-project "$GOOGLE_CLOUD_PROJECT"
-```
-
-The SDK receipt check in this demo uses `verify_receipt(strict=False)` and requires:
-
-- `merkle_match == true`
-- `hosted_metadata_match == true`
-
-Real chain proof verification is still not implemented inside the SDK, so the demo separately
-confirms the initialize-task, receipt-submission, and release-payment transactions through Helius.
-
-## Environment Variables
-
-Required for live Claude calls (choose one):
-
-- ANTHROPIC_API_KEY: your Anthropic API key
-- Secret Manager access to the shared secret (default name: agora-anthropic-api-key)
-
-Required for live Gemini Developer API calls:
-
-- AGORA_GEMINI_API_KEY: preferred Gemini API key env var
-- GEMINI_API_KEY: fallback key env var
-- GOOGLE_API_KEY: fallback key env var
-
-Required for live OpenRouter calls:
-
-- AGORA_OPENROUTER_API_KEY: preferred OpenRouter API key env var
-- OPENROUTER_API_KEY: fallback key env var
-
-AGORA loads `.env` from the current working directory or repository root if present,
-without overriding environment variables already exported in your shell.
-
-To load a dotenv file from another path (for example a sibling worktree), set:
-
-- AGORA_ENV_FILE=/absolute/path/to/.env
-
-If Secret Manager client credentials are not configured as ADC, AGORA also attempts
-`gcloud secrets versions access ...` as a fallback for secret-backed key resolution.
-
-API auth verification settings (WorkOS/AuthKit):
-
-- AUTH_REQUIRED (default: true)
-- WORKOS_CLIENT_ID (used as default audience when AUTH_AUDIENCE is unset)
-- WORKOS_AUTHKIT_DOMAIN (for example your-subdomain.authkit.app)
-- AUTH_ISSUER (optional explicit override)
-- AUTH_AUDIENCE (optional explicit override)
-- AUTH_JWKS_URL (optional explicit override; default: `${AUTH_ISSUER}/oauth2/jwks`)
-- AGORA_LOCAL_DATA_DIR (optional local API persistence root; default: `api/data`)
-
-Optional model overrides:
-
-- AGORA_FLASH_MODEL (default: gemini-3.1-flash-lite-preview)
-- AGORA_PRO_MODEL (default: gemini-3-flash-preview)
-- DEMO_PRO_MODEL (default: gemini-2.5-pro for `week1_demo.sh`)
-- AGORA_GEMINI_FLASH_THINKING_LEVEL (default: minimal; set empty to use the provider default)
-- AGORA_CLAUDE_MODEL (default: claude-sonnet-4-6)
-- AGORA_OPENROUTER_MODEL (default: qwen/qwen3.5-flash-02-23)
-- AGORA_GOOGLE_CLOUD_LOCATION (default: us-central1)
-- AGORA_OPENROUTER_BASE_URL (default: https://openrouter.ai/api/v1)
-- AGORA_OPENROUTER_HTTP_REFERER (optional OpenRouter app attribution header)
-- AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
-- AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; also sends legacy `X-Title`)
-- AGORA_OPENROUTER_REASONING_EFFORT (default: low)
-- AGORA_OPENROUTER_REASONING_EXCLUDE (default: true)
-- AGORA_OPENROUTER_MAX_TOKENS (default: 512)
-- AGORA_ANTHROPIC_MAX_TOKENS (default: 1024)
-- AGORA_ANTHROPIC_THROTTLE_ENABLED (default: true)
-- AGORA_ANTHROPIC_REQUESTS_PER_MINUTE (default: 5)
-- AGORA_ANTHROPIC_THROTTLE_WINDOW_SECONDS (default: 60)
-- AGORA_KIMI_MODEL / AGORA_KIMI_REASONING_EFFORT / AGORA_KIMI_REASONING_EXCLUDE / AGORA_KIMI_MAX_TOKENS
-  Legacy compatibility aliases that now hydrate the canonical OpenRouter fields.
-- AGORA_OPENROUTER_HTTP_REFERER (optional attribution header)
-- AGORA_OPENROUTER_APP_TITLE (default: Agora Protocol)
-- AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED (default: true; keeps compatibility with legacy X-Title)
-- AGORA_API_FORCE_MECHANISM (default: empty; set `vote` on the hosted API to pin the 4-model demo run)
-
-Anthropic Secret Manager fetch controls:
-
-- AGORA_ANTHROPIC_SECRET_NAME (default: agora-anthropic-api-key)
-- AGORA_ANTHROPIC_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
-- AGORA_ANTHROPIC_SECRET_VERSION (default: latest)
-
-OpenRouter Secret Manager fetch controls:
-
-- AGORA_OPENROUTER_SECRET_NAME (default: agora-openrouter-api-key)
-- AGORA_OPENROUTER_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
-- AGORA_OPENROUTER_SECRET_VERSION (default: latest)
-
-Gemini Secret Manager fetch controls:
-
-- AGORA_GEMINI_SECRET_NAME (default: agora-gemini-api-key)
-- AGORA_GEMINI_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
-- AGORA_GEMINI_SECRET_VERSION (default: latest)
-
-OpenRouter Secret Manager fetch controls:
-
-- AGORA_OPENROUTER_SECRET_NAME (default: agora-openrouter-api-key)
-- AGORA_OPENROUTER_SECRET_PROJECT (default: GOOGLE_CLOUD_PROJECT)
-- AGORA_OPENROUTER_SECRET_VERSION (default: latest)
-
-To let AGORA fetch Gemini key directly from Secret Manager (no local API key export):
-
-```bash
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-export AGORA_GEMINI_SECRET_NAME="agora-gemini-api-key"
-unset AGORA_GEMINI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY
-```
-
-Solana/Week 1 API runtime variables:
-
-- HELIUS_RPC_URL: required real Helius endpoint for on-chain writes
-- PROGRAM_ID: deployed Agora program id
-- SOLANA_NETWORK: cluster name, default devnet
-- SOLANA_KEYPAIR_PATH: local keypair file path (default ~/.config/solana/devnet-keypair.json)
-- SOLANA_KEYPAIR_SECRET_NAME: optional Secret Manager secret containing keypair bytes/json
-- SOLANA_KEYPAIR_SECRET_PROJECT: optional secret project, falls back to GOOGLE_CLOUD_PROJECT
-- SOLANA_KEYPAIR_SECRET_VERSION: optional secret version, default latest
-- STRICT_CHAIN_WRITES: set `true` to fail the request when chain writes fail
-
-Secret-backed keypair payload formats accepted by the API bridge:
-
-- JSON byte array (recommended): `[12,34,...]`
-- JSON object with one of: `secret_key`, `keypair`, `bytes`
-- raw hex string or base64 string
-
-Week 1 bridge behavior:
-
-- Local/dev shell uses SOLANA_KEYPAIR_PATH when the file exists.
-- Cloud Run can omit local keypair files and load keypair material from Secret Manager.
-- If neither source is configured, on-chain write endpoints fail closed with a clear runtime error.
-
-Cloud Run keypair setup example:
-
-```bash
-PROJECT_ID="agora-ai-9900"
-SERVICE_ACCOUNT="agora-api-runtime@agora-ai-9900.iam.gserviceaccount.com"
-SECRET_NAME="agora-solana-devnet-keypair"
-
-gcloud secrets create "$SECRET_NAME" --replication-policy=automatic --project "$PROJECT_ID"
-gcloud secrets versions add "$SECRET_NAME" --data-file "$HOME/.config/solana/devnet-keypair.json" --project "$PROJECT_ID"
-gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
-  --member "serviceAccount:${SERVICE_ACCOUNT}" \
-  --role "roles/secretmanager.secretAccessor" \
-  --project "$PROJECT_ID"
-
-gcloud run services update agora-api \
-  --region us-central1 \
-  --project "$PROJECT_ID" \
-  --update-env-vars "SOLANA_KEYPAIR_SECRET_NAME=${SECRET_NAME},SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd,SOLANA_NETWORK=devnet,HELIUS_RPC_URL=https://devnet.helius-rpc.com/?api-key=YOUR_REAL_KEY,AGORA_API_USE_REAL_ORCHESTRATOR=true,AGORA_API_FORCE_MECHANISM=vote" \
-  --update-secrets "AGORA_GEMINI_API_KEY=agora-gemini-api-key:latest,ANTHROPIC_API_KEY=agora-anthropic-api-key:latest,AGORA_OPENROUTER_API_KEY=agora-openrouter-api-key:latest"
-```
-
-The Claude caller uses a shared async sliding-window throttle to reduce Anthropic
-429s in multi-agent runs. Tune the throttle variables above to match your org limits.
-
-Not required in the current setup:
-
-- GOOGLE_CLOUD_PROJECT for Gemini API calls (still useful for Secret Manager flows)
-
-Set in shell before running:
-
-```bash
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-
-# Option A: fetch key into shell from Secret Manager
-export SECRET_NAME="agora-anthropic-api-key"
-export ANTHROPIC_API_KEY="$(gcloud secrets versions access latest \
-  --project "$GOOGLE_CLOUD_PROJECT" \
-  --secret "$SECRET_NAME")"
-```
-
-### Fetch Anthropic Key From Google Secret Manager
-
-Teammate fetches key into shell before running AGORA:
-
-```bash
-PROJECT_ID="$(gcloud config get-value project)"
-SECRET_NAME="agora-anthropic-api-key"
-
-export ANTHROPIC_API_KEY="$(gcloud secrets versions access latest \
-  --project "$PROJECT_ID" \
-  --secret "$SECRET_NAME")"
-```
-
-Or let AGORA fetch directly from Secret Manager at runtime (no local `.env` key):
-
-```bash
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-export AGORA_ANTHROPIC_SECRET_NAME="agora-anthropic-api-key"
-unset ANTHROPIC_API_KEY
-```
-
-Note: if your organization enforces periodic reauthentication, run
-`gcloud auth login` before fetching secrets.
-
-If you enable Claude in vote routing, ensure your Anthropic account has access to the
-selected Claude model configured in AGORA_CLAUDE_MODEL, or AGORA will log the model
-error and fall back for that voter.
-
-Gemini API keys are managed from ai.google.dev. If needed, you can keep the key in
-Secret Manager and export it before running AGORA.
-
-OpenRouter keys can be kept in Secret Manager with `agora-openrouter-api-key` and
-fetched automatically at runtime, or exported directly as `AGORA_OPENROUTER_API_KEY`.
-The local/service-account path has verified access to that secret; Cloud Run service
-environment/IAM inspection may still require a privileged GCP identity.
-
-## Next Tasks for Josh
-
-The codebase already marks the Solana responsibilities as Josh-owned in the client stubs.
-
-1. Implement solana/client.py methods:
-   - submit_receipt
-   - record_mechanism_switch
-   - get_task_status
-2. Define final on-chain receipt schema and mapping:
-   - Align runtime receipt fields (merkle_root, final_answer_hash, mechanism, round metadata)
-   - Ensure deterministic task_id/decision_hash conventions
-3. Wire orchestrator -> Solana submission path:
-   - Submit receipt after successful deliberation
-   - Persist tx signature and status in returned metadata/logs
-4. Add reliability and observability around chain writes:
-   - Retry/backoff policy
-   - Idempotency for duplicate submissions
-   - Structured error codes
-5. Add integration tests with a Solana test validator or RPC sandbox.
-6. Expose API endpoints (if in Josh scope) for:
-   - Submit task
-   - Query task status
-   - Fetch finalized receipt and tx signature
-
-## Operations Runbooks
-
-- Release and deploy operations: `docs/release-operations.md`
-- Week 2 frontend acceptance report: `.codex/Week2-frontend-acceptance.md`
-- Week 2 API acceptance trace artifact: `.codex/week2_acceptance_api_trace.json`
-
-## Notes
-
-- merkletools is optional for Python 3.11+; deterministic fallback Merkle construction is built in.
-- Current public support covers Debate, Vote, and Delphi; MoA remains intentionally deferred.
+- Use **hosted mode** if you want sources, uploads, task lifecycle, streaming, API keys, benchmarks, and the full product surface.
+- Use **local mode** if you want deterministic provider control and tighter in-process integration.
+- Do not treat multi-agent reasoning as enough by itself. The tool stack is the difference between eloquent guessing and grounded synthesis.
+- If you are not using citations, evidence items, and receipts for critical paths, you are leaving most of Agora’s value on the table.

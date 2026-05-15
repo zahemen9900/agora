@@ -9,7 +9,7 @@ const quickstartHostedCode = `from agora.sdk import AgoraArbitrator
 arbitrator = AgoraArbitrator(auth_token="agora_live_your_public_id.your_secret")
 result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
 
-print(result.mechanism_used.value)  # e.g. 'debate'
+print(result.mechanism)  # e.g. "debate"
 print(result.final_answer)
 await arbitrator.aclose()`;
 
@@ -59,7 +59,6 @@ const localCode = `result = await arbitrator.arbitrate(
     stakes=0.0,
 )
 
-print(result.task_id)
 print(result.mechanism_used)
 print(result.final_answer)
 print(result.confidence)
@@ -69,7 +68,10 @@ print(result.total_latency_ms)
 print(result.tool_usage_summary)
 print(result.citation_items)`;
 
-const verifyCode = `verification = await arbitrator.verify_receipt(result)
+const verifyCode = `verification = await arbitrator.verify_receipt(
+    result,
+    strict=False,  # strict=True also requires rpc_url + hosted task metadata
+)
 print(verification)`;
 
 const streamCode = `async for event in arbitrator.stream_task_events("task_01j..."):
@@ -377,6 +379,21 @@ export function PythonSDK() {
             </h2>
 
             <CodeBlock code={verifyCode} language="python" />
+
+            <p
+                className="text-sm leading-relaxed mb-4"
+                style={{
+                    fontFamily: "'Hanken Grotesk', sans-serif",
+                    color: "var(--text-secondary)",
+                }}
+            >
+                In practice there are two verification modes.{" "}
+                <IC>strict=False</IC> recomputes the Merkle root and compares
+                against hosted receipt metadata when available.{" "}
+                <IC>strict=True</IC> also requires a configured{" "}
+                <IC>rpc_url</IC> so the SDK can verify the on-chain receipt path
+                directly.
+            </p>
 
             <h2
                 id="streaming"

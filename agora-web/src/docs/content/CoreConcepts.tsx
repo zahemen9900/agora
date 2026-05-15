@@ -416,18 +416,19 @@ export function CoreConcepts() {
                         Commit the root to Solana.
                     </strong>{" "}
                     The Merkle root is written to Solana via the Agora Anchor
-                    program. The transaction hash and the on-chain account
-                    address are both returned in the <IC>DeliberationResult</IC>
-                    .
+                    program when the hosted flow commits a receipt. Hosted task
+                    metadata can include the transaction hash; the local{" "}
+                    <IC>DeliberationResult</IC> itself is the receipt payload,
+                    not a full on-chain status object.
                 </li>
                 <li>
                     <strong style={{ color: "var(--text-primary)" }}>
                         Verify locally.
                     </strong>{" "}
-                    Call <IC>verify_receipt(result)</IC> to reconstruct the
-                    Merkle tree from the transcript, recompute the root, and
-                    compare it against the on-chain value. No trust in Agora's
-                    servers is required.
+                    Call <IC>verify_receipt(result, strict=False)</IC> to
+                    recompute the Merkle root and compare it against hosted
+                    receipt metadata when available. Add <IC>rpc_url</IC> and
+                    use strict mode only when you want a full on-chain check.
                 </li>
                 <li>
                     <strong style={{ color: "var(--text-primary)" }}>
