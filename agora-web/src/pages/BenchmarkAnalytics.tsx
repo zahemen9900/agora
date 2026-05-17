@@ -1,8 +1,8 @@
 import { useEffect, useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
 
-import { useBenchmarkOverviewQuery } from "../lib/benchmarkQueries";
+import { useBenchmarkOverviewQuery, type BenchmarkOverviewMode } from "../lib/benchmarkQueries";
 import {
   normalizeBenchmarkSummary,
   buildEnhancedParetoData,
@@ -20,7 +20,9 @@ import { CategoryRadar } from "../components/benchmark/analytics/CategoryRadar";
 export function BenchmarkAnalytics() {
   useEffect(() => { injectChartKeyframes(); }, []);
 
-  const overviewQuery = useBenchmarkOverviewQuery(true, "latest");
+  const [searchParams] = useSearchParams();
+  const overviewMode = (searchParams.get("mode") ?? "aggregate_recent") as BenchmarkOverviewMode;
+  const overviewQuery = useBenchmarkOverviewQuery(true, overviewMode);
   const isLoading = overviewQuery.isLoading;
   const overview = overviewQuery.data;
   const payload = useMemo(() => (overview as unknown as Record<string, unknown>) ?? {}, [overview]);

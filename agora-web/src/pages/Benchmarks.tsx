@@ -445,7 +445,7 @@ export function Benchmarks() {
   const location = useLocation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("latest");
+  const [overviewMode, setOverviewMode] = useState<BenchmarkOverviewMode>("aggregate_recent");
   const benchmarkOverviewQuery = useBenchmarkOverviewQuery(true, overviewMode);
   const benchmarkCatalogQuery = useBenchmarkCatalogQuery(100);
   const benchmarkPromptTemplatesQuery = useBenchmarkPromptTemplatesQuery();
@@ -1216,7 +1216,7 @@ export function Benchmarks() {
         {/* ── Analytics CTA ───────────────────────────────────────────────── */}
         <div style={{ display: "flex", justifyContent: "center", marginBottom: "16px" }}>
           <Link
-            to="/benchmarks/analytics"
+            to={`/benchmarks/analytics?mode=${overviewMode}`}
             style={{
               display: "inline-flex", alignItems: "center", justifyContent: "center",
               padding: "10px 48px",
