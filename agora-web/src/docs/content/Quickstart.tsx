@@ -3,45 +3,102 @@ import { Callout } from "../components/Callout";
 import { Steps, Step } from "../components/Steps";
 import { LinkCard } from "../components/LinkCard";
 
-const installCode = `pip install agora-sdk`;
+const installCode = `pip install agora-arbitrator-sdk`;
 
-const arbitrateCode = `import asyncio
+const hostedCode = `import asyncio
 from agora.sdk import AgoraArbitrator
 
-async def main():
-    arbitrator = AgoraArbitrator()
 
-    result = await arbitrator.arbitrate(
-        "Should a startup with 3 engineers use microservices or a monolith?"
-    )
+async def main() -> None:
+    async with AgoraArbitrator(
+        auth_token="agora_live_xxxxx.yyyyy",
+    ) as arbitrator:
+        created = await arbitrator.create_task(
+            task="Should we expand the product to APAC in the next two quarters?",
+            agent_count=4,
+            source_urls=["https://www.imf.org/"],
+        )
 
-    print(f"Mechanism: {result.mechanism_used}")     # "debate", "vote", or "delphi"
-    print(f"Answer:    {result.final_answer}")
-    print(f"Confidence:{result.confidence:.2f}")
-    print(f"Merkle Root: {result.merkle_root}")      # on-chain proof
-    print(f"Quorum:    {result.quorum_reached}")
+        result = await arbitrator.run_task(created.task_id)
+
+        print(result.task_id)
+        print(result.mechanism)           # "debate" | "vote" | "delphi"
+        print(result.final_answer)
+        print(result.confidence)
+        print(result.quorum_reached)
+        print(result.merkle_root)
+        print(result.latency_ms)
+        print(result.tool_usage_summary)
+        print(result.citation_items[:2])
+
 
 asyncio.run(main())`;
 
-const verifyCode = `verification = await arbitrator.verify_receipt(result)
+const localCode = `import asyncio
+from agora.sdk import AgoraArbitrator
+from agora.types import LocalModelSpec, LocalProviderKeys
+
+
+async def main() -> None:
+    async with AgoraArbitrator(
+        local_models=[
+            LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
+            LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+            LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+            LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
+        ],
+        local_provider_keys=LocalProviderKeys(
+            gemini_api_key="...",
+            anthropic_api_key="...",
+            openrouter_api_key="...",
+        ),
+        agent_count=4,
+    ) as arbitrator:
+        result = await arbitrator.arbitrate(
+            "Should a 4-engineer startup adopt microservices or stay on a monolith?"
+        )
+
+        print(result.mechanism_used)
+        print(result.final_answer)
+        print(result.total_latency_ms)
+        print(result.tool_usage_summary)
+        print(result.citation_items)
+
+
+asyncio.run(main())`;
+
+const verifyCode = `verification = await arbitrator.verify_receipt(
+    result,
+    strict=False,  # strict=True also requires rpc_url + hosted task metadata
+)
 print(verification)
 # {
 #   "valid": True,
 #   "merkle_match": True,
-#   "on_chain_match": True,
-#   "solana_tx_hash": "5KkD...pQr9"
+#   "hosted_metadata_match": True,
+#   "on_chain_match": None
 # }`;
 
-const exampleOutput = `Mechanism:   debate
-Answer:      A monolith is strongly recommended for a 3-engineer startup.
-             Microservices introduce operational overhead — distributed tracing,
-             independent deployments, network latency — that only pays off at
-             scale. Ship fast, extract services when the seams are clear.
-Confidence:  0.91
-Merkle Root: 7f3a9c2b1e4d8f6a0c5b3e9d2f1a7c4b8e0d6f3a1c9b5e7d...
-Quorum:      True`;
+const exampleOutput = `task_01j...
+debate
+Expand to APAC only if the launch can preserve regulatory clarity and underwriting discipline...
+0.87
+True
+1ef9d9c4...
+18420.0
+HostedToolUsageSummary(total_tool_calls=3, successful_tool_calls=3, failed_tool_calls=0, ...)
+[HostedCitationItem(title="IMF ...", url="https://www.imf.org/", ...)]`;
 
 export function Quickstart() {
+    const IC = ({ children }: { children: string }) => (
+        <code
+            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
+            style={{ background: "var(--bg-subtle)", color: "var(--accent-emerald)" }}
+        >
+            {children}
+        </code>
+    );
+
     return (
         <div>
             <p
@@ -65,84 +122,26 @@ export function Quickstart() {
                     color: "var(--text-secondary)",
                 }}
             >
-                Run your first Agora deliberation in under five minutes. You'll
-                install the SDK, submit a task, and get back a cryptographically
-                verifiable answer with a Solana receipt — all in fewer than 20
-                lines of Python.
+                The fastest useful path is hosted mode: install the SDK, pass
+                an Agora API key, create a task, and run it. If you want
+                complete provider control, the second example shows local BYOK
+                mode.
             </p>
 
-            <Callout type="info" title="Prerequisites">
-                Python 3.11 or higher is required. The SDK has no other required
-                system dependencies — Solana wallet configuration is optional
-                and only needed if you want to use staked arbitration.
+            <Callout type="info" title="Current defaults">
+                The current default agent count is{" "}
+                <strong style={{ color: "var(--text-primary)" }}>4</strong>,
+                tools are enabled, and the default per-agent tool budget is{" "}
+                <strong style={{ color: "var(--text-primary)" }}>4</strong>.
             </Callout>
 
-            {/* ── Steps ─────────────────────────────────────────────────────── */}
             <Steps>
-                {/* Step 1 */}
                 <Step number={1} title="Install the SDK">
                     <CodeBlock code={installCode} language="bash" />
-                    <p
-                        className="text-sm leading-relaxed mb-0"
-                        style={{
-                            fontFamily: "'Hanken Grotesk', sans-serif",
-                            color: "var(--text-secondary)",
-                        }}
-                    >
-                        This installs{" "}
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            agora-sdk
-                        </code>{" "}
-                        and its core dependencies:{" "}
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            httpx
-                        </code>
-                        ,{" "}
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            solders
-                        </code>
-                        , and{" "}
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            pydantic
-                        </code>
-                        . For LangGraph or CrewAI extras, see the{" "}
-                        <a
-                            href="/docs/installation"
-                            style={{ color: "var(--accent-emerald)" }}
-                        >
-                            Installation
-                        </a>{" "}
-                        page.
-                    </p>
                 </Step>
 
-                {/* Step 2 */}
-                <Step number={2} title="Run your first arbitration">
-                    <CodeBlock code={arbitrateCode} language="python" />
+                <Step number={2} title="Run a hosted deliberation">
+                    <CodeBlock code={hostedCode} language="python" />
                     <p
                         className="text-sm leading-relaxed mb-3"
                         style={{
@@ -150,81 +149,28 @@ export function Quickstart() {
                             color: "var(--text-secondary)",
                         }}
                     >
-                        Save this as{" "}
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            main.py
-                        </code>{" "}
-                        and run it with{" "}
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            python main.py
-                        </code>
-                        . Agora automatically selects the best deliberation
-                        mechanism for your task. You should see output similar
-                        to:
+                        This is the path you want if you need hosted sources,
+                        task lifecycle state, live event streams, citations,
+                        evidence, and benchmark compatibility.
                     </p>
                     <CodeBlock
                         code={exampleOutput}
                         language="text"
-                        filename="output"
+                        filename="example output"
                     />
                 </Step>
 
-                {/* Step 3 */}
-                <Step number={3} title="Verify the on-chain receipt">
+                <Step number={3} title="Verify the receipt if you need auditability">
                     <CodeBlock code={verifyCode} language="python" />
-                    <p
-                        className="text-sm leading-relaxed mb-0"
-                        style={{
-                            fontFamily: "'Hanken Grotesk', sans-serif",
-                            color: "var(--text-secondary)",
-                        }}
-                    >
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            verify_receipt
-                        </code>{" "}
-                        reconstructs the Merkle tree from the deliberation
-                        transcript, computes the root locally, and checks it
-                        against the value anchored on Solana. If all three flags
-                        are{" "}
-                        <code
-                            className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                            style={{
-                                background: "var(--bg-subtle)",
-                                color: "var(--accent-emerald)",
-                            }}
-                        >
-                            True
-                        </code>
-                        , the result is tamper-proof.
-                    </p>
                 </Step>
             </Steps>
 
-            {/* ── What just happened ────────────────────────────────────────── */}
             <h2
-                id="what-just-happened"
+                id="local-byok"
                 className="text-xl font-mono font-semibold mt-10 mb-4"
                 style={{ color: "var(--text-primary)" }}
             >
-                What just happened?
+                Local BYOK example
             </h2>
 
             <p
@@ -234,129 +180,63 @@ export function Quickstart() {
                     color: "var(--text-secondary)",
                 }}
             >
-                Behind that single{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    arbitrate()
-                </code>{" "}
-                call, Agora ran the following pipeline:
+                Use this mode when you want to pick the exact provider roster
+                yourself and run deliberation in-process rather than through the
+                hosted task API.
             </p>
 
-            <ol
-                className="text-sm leading-relaxed mb-6 space-y-3 pl-5 list-decimal"
+            <CodeBlock code={localCode} language="python" />
+
+            <h2
+                id="what-you-get-back"
+                className="text-xl font-mono font-semibold mt-10 mb-4"
+                style={{ color: "var(--text-primary)" }}
+            >
+                What you get back
+            </h2>
+
+            <ul
+                className="text-sm leading-relaxed mb-6 space-y-2 pl-5 list-disc"
                 style={{
                     fontFamily: "'Hanken Grotesk', sans-serif",
                     color: "var(--text-secondary)",
                 }}
             >
                 <li>
-                    <strong style={{ color: "var(--text-primary)" }}>
-                        Task embedding and classification.
-                    </strong>{" "}
-                    Your question was embedded and compared against the
-                    mechanism selector's task taxonomy. "Monolith vs.
-                    microservices" was classified as a complex technical
-                    reasoning task.
+                    Hosted runs return task-scoped payloads with <IC>mechanism</IC>,{" "}
+                    <IC>sources</IC>, <IC>tool_usage_summary</IC>,{" "}
+                    <IC>evidence_items</IC>, and <IC>citation_items</IC>.
                 </li>
                 <li>
-                    <strong style={{ color: "var(--text-primary)" }}>
-                        Mechanism selection (Thompson Sampling).
-                    </strong>{" "}
-                    The bandit sampled from its Beta posteriors for each
-                    mechanism and selected <em>debate</em> — the mechanism
-                    historically most reliable for multi-factor engineering
-                    trade-off questions.
+                    Local runs return <IC>DeliberationResult</IC> objects with{" "}
+                    <IC>mechanism_used</IC>, <IC>total_latency_ms</IC>, and normalized
+                    evidence/citation fields.
                 </li>
-                <li>
-                    <strong style={{ color: "var(--text-primary)" }}>
-                        Factional debate with Devil's Advocate.
-                    </strong>{" "}
-                    Three agents were assigned factions (pro-monolith,
-                    pro-microservices, neutral) before seeing each other's
-                    outputs. A Devil's Advocate agent then cross-examined the
-                    leading position, probing for weaknesses. Adaptive
-                    termination fired when convergence exceeded the quorum
-                    threshold.
-                </li>
-                <li>
-                    <strong style={{ color: "var(--text-primary)" }}>
-                        Merkle receipt construction.
-                    </strong>{" "}
-                    Every agent output and cross-examination was serialised,
-                    SHA-256 hashed, and assembled into a Merkle tree. The root
-                    was submitted to Solana's devnet via the Agora Anchor
-                    program.
-                </li>
-                <li>
-                    <strong style={{ color: "var(--text-primary)" }}>
-                        Result returned.
-                    </strong>{" "}
-                    The SDK assembled the{" "}
-                    <code
-                        className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                        style={{
-                            background: "var(--bg-subtle)",
-                            color: "var(--accent-emerald)",
-                        }}
-                    >
-                        DeliberationResult
-                    </code>{" "}
-                    object with the synthesised answer, confidence score,
-                    mechanism metadata, Merkle root, and Solana transaction
-                    hash.
-                </li>
-            </ol>
+                <li>Both paths can produce verifiable Merkle-rooted receipts.</li>
+            </ul>
 
-            <Callout type="tip" title="Inspect the full transcript">
-                Add{" "}
-                <code
-                    className="font-mono text-[12px] px-1.5 py-0.5 rounded"
-                    style={{
-                        background: "var(--bg-subtle)",
-                        color: "var(--accent-emerald)",
-                    }}
-                >
-                    print(result.transcript)
-                </code>{" "}
-                to see every agent output, cross-examination round, and
-                convergence signal in the deliberation. The transcript is the
-                raw input to the Merkle tree — each entry maps to a leaf node.
+            <Callout type="tip" title="Streaming">
+                Both hosted and local runs support event streaming. Use{" "}
+                <IC>stream_task_events()</IC> on the hosted path for real-time
+                selector decisions, tool calls, agent deltas, and receipt events.
             </Callout>
 
-            {/* ── Next Steps ────────────────────────────────────────────────── */}
-            <h2
-                id="next-steps"
-                className="text-xl font-mono font-semibold mt-10 mb-4"
-                style={{ color: "var(--text-primary)" }}
-            >
-                Next Steps
-            </h2>
+            <Callout type="warning" title="Receipt verification modes">
+                The SDK defaults to strict receipt verification. For the normal
+                hosted quickstart, use <IC>strict=False</IC> unless you have
+                also configured <IC>rpc_url</IC> and want a full on-chain check.
+            </Callout>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
-                <LinkCard
-                    title="Core Concepts"
-                    description="Understand mechanisms, the bandit selector, and Proof of Deliberation."
-                    href="/docs/concepts"
-                />
-                <LinkCard
-                    title="Python SDK Reference"
-                    description="Full API for AgoraArbitrator, AgoraNode, and all result types."
-                    href="/docs/sdk/python"
-                />
-                <LinkCard
-                    title="LangGraph Integration"
-                    description="Drop AgoraNode into a StateGraph as a deliberation step."
-                    href="/docs/sdk/langgraph"
-                />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-8">
                 <LinkCard
                     title="Installation"
-                    description="Virtual env setup, optional extras, and environment variables."
+                    description="Package names, extras, hosted auth, and local BYOK setup."
                     href="/docs/installation"
+                />
+                <LinkCard
+                    title="Python SDK"
+                    description="Full method-level breakdown of the current SDK surface."
+                    href="/docs/sdk/python"
                 />
             </div>
         </div>

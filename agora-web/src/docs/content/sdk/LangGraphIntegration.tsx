@@ -27,7 +27,7 @@ def summarise(state: ResearchState) -> ResearchState:
     """Post-process the Agora result into a short summary."""
     result = state["agora_result"]
     summary = (
-        f"[{result['mechanism_used'].upper()} | "
+        f"[{result['mechanism'].upper()} | "
         f"confidence {result['confidence']:.0%}] "
         f"{result['final_answer']}"
     )
@@ -67,7 +67,7 @@ class DecisionState(TypedDict):
     route: str
 
 agora_node = AgoraNode(
-    agent_count=3,
+    agent_count=4,
 )
 
 def route_by_confidence(
@@ -144,15 +144,6 @@ delphi_node = AgoraNode(
 # builder.add_node("fact_check",        vote_node)
 # builder.add_node("ethical_review",    delphi_node)`;
 
-const customKeysCode = `# If your graph already uses different state keys,
-# override the defaults so you don't need to rename fields.
-from agora.sdk import AgoraNode
-
-node = AgoraNode(
-    input_key="user_query",     # read from state["user_query"]
-    output_key="deliberation",  # write to state["deliberation"]
-)`;
-
 export function LangGraphIntegration() {
     const IC = ({ children }: { children: string }) => (
         <code
@@ -191,10 +182,11 @@ export function LangGraphIntegration() {
             >
                 <IC>AgoraNode</IC> is a first-class LangGraph node that
                 integrates Agora's deliberation pipeline directly into a{" "}
-                <IC>StateGraph</IC>. It reads the task from a configurable state
-                key, runs the full Agora pipeline (including on-chain receipt
-                commitment), and writes the result dict back into state.
-                Requires <IC>pip install "agora-sdk[langgraph]"</IC>.
+                <IC>StateGraph</IC>. It expects a non-empty{" "}
+                <IC>state["task"]</IC>, runs the normal Agora SDK flow, and
+                writes a JSON-serializable result dict into{" "}
+                <IC>state["agora_result"]</IC>. No special SDK extra is
+                required; <IC>langgraph</IC> is already a core dependency.
             </p>
 
             {/* ── Basic Integration ─────────────────────────────────────────── */}
@@ -287,29 +279,12 @@ export function LangGraphIntegration() {
 
             <CodeBlock code={forcedMechanismCode} language="python" />
 
-            {/* ── Custom State Keys ─────────────────────────────────────────── */}
-            <h2
-                id="custom-state-keys"
-                className="text-xl font-mono font-semibold mt-10 mb-4"
-                style={{ color: "var(--text-primary)" }}
-            >
-                Custom State Keys
-            </h2>
-
-            <p
-                className="text-sm leading-relaxed mb-4"
-                style={{
-                    fontFamily: "'Hanken Grotesk', sans-serif",
-                    color: "var(--text-secondary)",
-                }}
-            >
-                By default, <IC>AgoraNode</IC> reads from <IC>state["task"]</IC>{" "}
-                and writes to <IC>state["agora_result"]</IC>. If your graph uses
-                different key names, override them with <IC>input_key</IC> and{" "}
-                <IC>output_key</IC>:
-            </p>
-
-            <CodeBlock code={customKeysCode} language="python" />
+            <Callout type="info" title="State contract">
+                The current SDK does not expose configurable input/output keys
+                on <IC>AgoraNode</IC>. If your graph uses different field
+                names, add a tiny adapter node before or after Agora rather
+                than expecting key remapping inside the node itself.
+            </Callout>
         </div>
     );
 }

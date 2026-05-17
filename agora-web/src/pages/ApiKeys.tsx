@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Copy, KeyRound, ShieldAlert } from "lucide-react";
 
@@ -287,10 +288,8 @@ export function ApiKeys() {
             Issue workspace-scoped machine credentials for CI, services, notebooks, and SDK clients.
             Keys are shown exactly once and can be revoked at any time.
           </p>
-          <a
-            href="https://pypi.org/project/agora-arbitrator-sdk/"
-            target="_blank"
-            rel="noreferrer"
+          <Link
+            to="/docs/sdk/python"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: '6px',
               padding: '7px 14px', borderRadius: '8px',
@@ -317,10 +316,7 @@ export function ApiKeys() {
               <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
             </svg>
             Read SDK Docs
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M7 17L17 7"/><path d="M7 7h10v10"/>
-            </svg>
-          </a>
+          </Link>
         </div>
 
         {/* Workspace identity badge */}

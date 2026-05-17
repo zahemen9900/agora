@@ -1,6 +1,6 @@
 # agora-arbitrator-sdk
 
-On-chain multi-agent arbitration for LangGraph, CrewAI, and Python agent systems.
+On-chain multi-agent arbitration for LangGraph, hosted workflows, and Python agent systems.
 
 Agora decides whether a task should be resolved by structured debate or confidence-weighted voting, executes the selected mechanism, and returns a verifiable deliberation receipt.
 
@@ -31,7 +31,7 @@ from agora.sdk import AgoraArbitrator
 arbitrator = AgoraArbitrator(auth_token="agora_live_your_public_id.your_secret")
 result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
 
-print(result.mechanism_used.value)
+print(result.mechanism)
 print(result.final_answer)
 print(result.merkle_root)
 await arbitrator.aclose()
@@ -102,7 +102,7 @@ from agora.sdk import AgoraArbitrator
 async def main() -> None:
     async with AgoraArbitrator(auth_token="agora_live_your_public_id.your_secret") as arbitrator:
         result = await arbitrator.arbitrate("Should we use microservices or a monolith?")
-        print(result.mechanism_used.value)
+        print(result.mechanism)
         print(result.final_answer)
         print(result.merkle_root)
 
@@ -349,7 +349,8 @@ graph.add_node(
 )
 ```
 
-For long-lived LangGraph workers or repeated node construction, close the wrapped
+`AgoraNode` expects `state["task"]` and writes a JSON-serializable result into
+`state["agora_result"]`. For long-lived LangGraph workers or repeated node construction, close the wrapped
 HTTP client explicitly:
 
 ```python
@@ -423,6 +424,7 @@ and `AGORA_API_URL=https://your-dev-backend.example.com` before constructing the
   and strict receipt verification.
 - `AgoraNode` supports `strict_verification`, `solana_wallet`, and async cleanup pass-through for parity with `AgoraArbitrator`.
 - Set `strict_verification=False` only when intentionally opting into lenient verification behavior.
+- In normal hosted SDK usage, `verify_receipt(result, strict=False)` checks the recomputed Merkle root and any available hosted receipt metadata. Strict on-chain verification additionally requires a hosted task id and an `rpc_url`.
 
 ## Maintainer Release Notes
 
