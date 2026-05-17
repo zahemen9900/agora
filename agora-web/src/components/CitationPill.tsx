@@ -67,7 +67,7 @@ function TooltipPortal({ anchorRect, children }: TooltipPortalProps) {
         position: "fixed",
         bottom,
         left,
-        zIndex: 9999,
+        zIndex: 10002,
         maxWidth: TOOLTIP_MAX_W,
         minWidth: 200,
         background: "var(--bg-elevated)",

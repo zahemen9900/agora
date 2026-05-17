@@ -117,6 +117,7 @@ import { Flyout } from "../components/Flyout";
 import { ProviderGlyph } from "../components/ProviderGlyph";
 import { TaskActionsMenu } from "../components/task/TaskActionsMenu";
 import { CanvasView } from "../components/task/canvas/CanvasView";
+import type { CameraMode } from "../components/task/canvas/followCamera";
 import {
   startTaskRun,
   streamDeliberation,
@@ -573,11 +574,26 @@ function toolDetailTitle(event: TimelineEvent): string {
   return "tool payload";
 }
 
+function serializeDetailPayload(details: Record<string, unknown> | undefined): string | null {
+  if (!details) {
+    return null;
+  }
+  if (Object.keys(details).length === 0) {
+    return null;
+  }
+  try {
+    return JSON.stringify(details, null, 2);
+  } catch {
+    return null;
+  }
+}
+
 function ToolTimelineCard({
   entry,
   isActiveStream,
   usageLine,
   expanded,
+  hasDetailPayload,
   detailJson,
   onExpandedChange,
 }: {
@@ -585,6 +601,7 @@ function ToolTimelineCard({
   isActiveStream: boolean;
   usageLine: string | null;
   expanded: boolean;
+  hasDetailPayload: boolean;
   detailJson: string | null;
   onExpandedChange: (expanded: boolean) => void;
 }) {
@@ -631,7 +648,11 @@ function ToolTimelineCard({
         </div>
       </div>
 
-      <details className="overflow-hidden rounded-2xl border border-border-subtle bg-void/80">
+      {hasDetailPayload ? (
+      <details
+        open={expanded}
+        className="overflow-hidden rounded-2xl border border-border-subtle bg-void/80"
+      >
         <summary
           className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5"
           onClick={(event) => {
@@ -680,6 +701,7 @@ function ToolTimelineCard({
           </div>
         ) : null}
       </details>
+      ) : null}
     </div>
   );
 }
@@ -687,16 +709,21 @@ function ToolTimelineCard({
 function LazyEventDetails({
   entry,
   expanded,
+  hasDetailPayload,
   detailJson,
   onExpandedChange,
 }: {
   entry: TimelineEvent;
   expanded: boolean;
+  hasDetailPayload: boolean;
   detailJson: string | null;
   onExpandedChange: (expanded: boolean) => void;
 }) {
+  if (!hasDetailPayload) {
+    return null;
+  }
   return (
-    <details className="rounded-md border border-border-subtle bg-void p-2">
+    <details open={expanded} className="rounded-md border border-border-subtle bg-void p-2">
       <summary
         className="mono text-[11px] text-text-muted cursor-pointer select-none"
         onClick={(event) => {
@@ -924,7 +951,7 @@ const LiveTimelineList = memo(function LiveTimelineList({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rowHeightsRef = useRef<Map<string, number>>(new Map());
   const expandedKeysRef = useRef<Set<string>>(new Set());
-  const detailJsonCacheRef = useRef<Map<string, string>>(new Map());
+  const detailJsonCacheRef = useRef<Map<string, { source: Record<string, unknown> | undefined; json: string | null }>>(new Map());
   const severeLagReportedRef = useRef<Set<string>>(new Set());
   const [layoutVersion, setLayoutVersion] = useState(0);
   const [viewportState, setViewportState] = useState(() => ({
@@ -977,8 +1004,11 @@ const LiveTimelineList = memo(function LiveTimelineList({
         return next;
       });
 
-      if (expanded && details && !detailJsonCacheRef.current.has(key)) {
-        detailJsonCacheRef.current.set(key, JSON.stringify(details, null, 2));
+      if (expanded) {
+        detailJsonCacheRef.current.set(key, {
+          source: details,
+          json: serializeDetailPayload(details),
+        });
       }
     });
 
@@ -1007,6 +1037,16 @@ const LiveTimelineList = memo(function LiveTimelineList({
         setLayoutVersion((version) => version + 1);
       }
     };
+  }, []);
+
+  const detailJsonForEntry = useCallback((key: string, details: Record<string, unknown> | undefined): string | null => {
+    const cached = detailJsonCacheRef.current.get(key);
+    if (cached && cached.source === details) {
+      return cached.json;
+    }
+    const json = serializeDetailPayload(details);
+    detailJsonCacheRef.current.set(key, { source: details, json });
+    return json;
   }, []);
 
   const virtualRange = useMemo(() => {
@@ -1078,7 +1118,8 @@ const LiveTimelineList = memo(function LiveTimelineList({
         const provider = providerFromModel(entry.agentModel ?? "");
         const usageLine = formatUsageLine(entry.details);
         const isTailAnimated = absoluteIndex >= Math.max(0, timeline.length - LIVE_TAIL_EVENT_COUNT);
-        const detailJson = detailJsonCacheRef.current.get(entry.key) ?? null;
+        const detailJson = detailJsonForEntry(entry.key, entry.details);
+        const hasDetailPayload = detailJson !== null;
         const expanded = expandedKeys.has(entry.key);
         const rowRef = combineRefs<HTMLDivElement>(
           registerRow(entry.key),
@@ -1136,6 +1177,7 @@ const LiveTimelineList = memo(function LiveTimelineList({
                 isActiveStream={isActiveStream}
                 usageLine={usageLine}
                 expanded={expanded}
+                hasDetailPayload={hasDetailPayload}
                 detailJson={detailJson}
                 onExpandedChange={(nextExpanded) => setExpandedForKey(entry.key, nextExpanded, entry.details)}
               />
@@ -1161,10 +1203,11 @@ const LiveTimelineList = memo(function LiveTimelineList({
                   </div>
                 ) : null}
 
-                {entry.details ? (
+                {hasDetailPayload ? (
                   <LazyEventDetails
                     entry={entry}
                     expanded={expanded}
+                    hasDetailPayload={hasDetailPayload}
                     detailJson={detailJson}
                     onExpandedChange={(nextExpanded) => setExpandedForKey(entry.key, nextExpanded, entry.details)}
                   />
@@ -1240,6 +1283,7 @@ export function LiveDeliberation() {
   const streamHandleRef = useRef<{ close: () => void } | null>(null);
   const historyRepairAttemptedRef = useRef<string | null>(null);
   const [followLiveUpdates, setFollowLiveUpdates] = useTaskScopedState<boolean>(taskId, true);
+  const [canvasFollowMode, setCanvasFollowMode] = useTaskScopedState<CameraMode>(taskId, "follow");
   const [taskActionError, setTaskActionError] = useTaskScopedState<string | null>(taskId, null);
   const [deleteFlyout, setDeleteFlyout] = useTaskScopedState<{ title: string; body: string } | null>(taskId, null);
   const task = taskQuery.data ?? null;
@@ -2033,6 +2077,9 @@ export function LiveDeliberation() {
             liveLabel={taskActivityLabel}
             retryNotice={retryNotice}
             switchNotice={switchBanner}
+            enableAutoFollow
+            followMode={canvasFollowMode}
+            onFollowModeChange={setCanvasFollowMode}
           />
         </div>
       )}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ProviderGlyph } from "../../ProviderGlyph";
@@ -12,6 +13,15 @@ import { GraphNodeCard, CanvasMarkdownText, CanvasStreamText, NODE_WIDTH, NODE_H
 import { QuorumOverlay } from "./QuorumOverlay";
 import { useGraphLayout } from "./useGraphLayout";
 import type { GraphNode, NodeKind } from "./canvasTypes";
+import {
+  computeFollowTransform,
+  computeRowBounds,
+  resolveFollowCameraState,
+  type CameraMode,
+  type CameraTransform,
+  type FollowCameraState,
+  type FollowTarget,
+} from "./followCamera";
 import { usePostHog } from "@posthog/react";
 
 interface TimelineEventLike {
@@ -38,6 +48,9 @@ interface CanvasViewProps {
   liveLabel?: string;
   retryNotice?: string | null;
   switchNotice?: string | null;
+  enableAutoFollow?: boolean;
+  followMode?: CameraMode;
+  onFollowModeChange?: (mode: CameraMode) => void;
 }
 
 interface TransitionPill {
@@ -559,10 +572,67 @@ function CompactMetaTile({ label, value }: { label: string; value: string }) {
   );
 }
 
+// ─── Canvas icon button with custom tooltip ───────────────────────────────────
+function CanvasBtn({
+  tooltip,
+  onClick,
+  style,
+  children,
+}: {
+  tooltip: string;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const [tipRect, setTipRect] = useState<DOMRect | null>(null);
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        onClick={onClick}
+        onMouseEnter={() => { if (ref.current) setTipRect(ref.current.getBoundingClientRect()); }}
+        onMouseLeave={() => setTipRect(null)}
+        style={{ ...iconBtn, ...style }}
+      >
+        {children}
+      </button>
+      {tipRect && createPortal(
+        <div style={{
+          position: "fixed",
+          left: Math.round(tipRect.left + tipRect.width / 2),
+          top: Math.round(tipRect.top - 6),
+          transform: "translate(-50%, -100%)",
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--border-strong)",
+          borderRadius: "7px",
+          padding: "4px 10px",
+          fontFamily: "'Commit Mono', monospace",
+          fontSize: "10px",
+          color: "var(--text-primary)",
+          whiteSpace: "nowrap",
+          pointerEvents: "none",
+          zIndex: 99999,
+          boxShadow: "0 4px 16px rgba(0,0,0,0.45)",
+          letterSpacing: "0.04em",
+        }}>
+          {tooltip}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 // ─── Status / toolbar ─────────────────────────────────────────────────────────
-function StatusBar({ mechanism, roundCount, eventCount, entropy, nodeCount, isFullscreen, onFullscreen, onReset }: {
+function StatusBar({ mechanism, roundCount, eventCount, entropy, nodeCount, isFullscreen, onFullscreen, onReset, autoFollowEnabled, cameraMode, canResumeFollow, onResumeFollow }: {
   mechanism: string; roundCount: number; eventCount: number; entropy?: number; nodeCount: number;
   isFullscreen: boolean; onFullscreen: () => void; onReset: () => void;
+  autoFollowEnabled?: boolean;
+  cameraMode?: CameraMode;
+  canResumeFollow?: boolean;
+  onResumeFollow?: () => void;
 }) {
     const posthog = usePostHog();
   return (
@@ -575,8 +645,31 @@ function StatusBar({ mechanism, roundCount, eventCount, entropy, nodeCount, isFu
       <Dot /><Stat label="Events" value={String(eventCount)} />
       {entropy !== undefined && <><Dot /><Stat label="Entropy" value={entropy.toFixed(2)} /></>}
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: "8px" }}>
+        {autoFollowEnabled ? (
+          cameraMode === "follow" ? (
+            <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", padding: "4px 10px", borderRadius: "999px", background: "rgba(52,211,153,0.12)", color: "#34d399", border: "1px solid rgba(52,211,153,0.24)", letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Following
+            </span>
+          ) : canResumeFollow ? (
+            <CanvasBtn
+              tooltip="Resume follow-along camera"
+              onClick={(e: any) => { posthog?.capture("canvasview_resume_follow_clicked"); const handler = onResumeFollow; if (typeof handler === "function") (handler as any)(e); }}
+              style={{
+                padding: "5px 10px",
+                fontFamily: "'Commit Mono', monospace",
+                fontSize: "10px",
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "#34d399",
+                borderColor: "rgba(52,211,153,0.3)",
+              }}
+            >
+              Resume Follow
+            </CanvasBtn>
+          ) : null
+        ) : null}
         <span style={{ fontFamily: "'Commit Mono', monospace", fontSize: "10px", color: "var(--text-muted)" }}>Drag · Scroll to zoom</span>
-        <button onClick={(e: any) => { posthog?.capture('canvasview_fit_to_content_clicked'); const handler = onReset; if (typeof handler === 'function') (handler as any)(e); }} title="Fit to content" style={iconBtn}>
+        <CanvasBtn tooltip="Fit to content" onClick={(e: any) => { posthog?.capture('canvasview_fit_to_content_clicked'); const handler = onReset; if (typeof handler === 'function') (handler as any)(e); }}>
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
             <circle cx="7" cy="7" r="2.5" />
             <line x1="7" y1="0.5" x2="7" y2="3.5" />
@@ -584,13 +677,13 @@ function StatusBar({ mechanism, roundCount, eventCount, entropy, nodeCount, isFu
             <line x1="0.5" y1="7" x2="3.5" y2="7" />
             <line x1="10.5" y1="7" x2="13.5" y2="7" />
           </svg>
-        </button>
-        <button onClick={(e: any) => { posthog?.capture('canvasview_action_clicked'); const handler = onFullscreen; if (typeof handler === 'function') (handler as any)(e); }} title={isFullscreen ? "Exit fullscreen" : "Fullscreen"} style={iconBtn}>
+        </CanvasBtn>
+        <CanvasBtn tooltip={isFullscreen ? "Exit fullscreen" : "Fullscreen"} onClick={(e: any) => { posthog?.capture('canvasview_action_clicked'); const handler = onFullscreen; if (typeof handler === 'function') (handler as any)(e); }}>
           {isFullscreen
             ? <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M1 4V1h3M8 1h3v3M11 8v3H8M4 11H1V8" /></svg>
             : <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M4 1H1v3M8 1h3v3M1 8v3h3M8 11h3V8" /></svg>
           }
-        </button>
+        </CanvasBtn>
       </div>
     </div>
   );
@@ -790,16 +883,47 @@ function LiveStatusCard({ liveLabel, eventCount, retryNotice, switchNotice }: Li
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism, roundCount, eventCount, entropy, citationItems = [], isLive = false, liveLabel = "RUNNING LIVE", retryNotice = null, switchNotice = null }: CanvasViewProps) {
+export function CanvasView({
+  timeline,
+  finalAnswer,
+  taskId,
+  taskText,
+  mechanism,
+  roundCount,
+  eventCount,
+  entropy,
+  citationItems = [],
+  isLive = false,
+  liveLabel = "RUNNING LIVE",
+  retryNotice = null,
+  switchNotice = null,
+  enableAutoFollow = false,
+  followMode,
+  onFollowModeChange,
+}: CanvasViewProps) {
   const containerRef  = useRef<HTMLDivElement>(null);
+  const sceneRef      = useRef<HTMLDivElement>(null);
   const hasFitRef     = useRef(false);
   const scaleRef      = useRef(1);
+  const transformRef  = useRef<CameraTransform>({ x: 60, y: 60, scale: 0.85 });
   const drag          = useRef<DragState>({ kind: "none" });
+  const animationFrameRef = useRef<number | null>(null);
+  const followStateRef = useRef<FollowCameraState>({
+    currentTarget: null,
+    queuedTarget: null,
+    previousNodeState: {},
+    activeRows: [],
+  });
+  const latestFollowTargetRef = useRef<FollowTarget | null>(null);
 
-  const [transform, setTransform] = useState({ x: 60, y: 60, scale: 0.85 });
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [cardOffsets, setCardOffsets] = useState<Record<string, { dx: number; dy: number }>>({});
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const [internalCameraMode, setInternalCameraMode] = useState<CameraMode>(
+    enableAutoFollow ? "follow" : "manual",
+  );
+  const [canResumeFollow, setCanResumeFollow] = useState(false);
 
   // Track actual rendered card heights so edge source Y exits from the real card bottom.
   const [nodeHeights, setNodeHeights] = useState(() => new Map<string, number>());
@@ -852,7 +976,38 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => { scaleRef.current = transform.scale; }, [transform.scale]);
+  const applyTransform = useCallback((next: CameraTransform) => {
+    transformRef.current = next;
+    scaleRef.current = next.scale;
+    if (sceneRef.current) {
+      sceneRef.current.style.transform = `translate(${next.x}px,${next.y}px) scale(${next.scale})`;
+    }
+  }, []);
+
+  const setCameraMode = useCallback((mode: CameraMode) => {
+    if (!enableAutoFollow) return;
+    onFollowModeChange?.(mode);
+    if (followMode === undefined) {
+      setInternalCameraMode(mode);
+    }
+  }, [enableAutoFollow, followMode, onFollowModeChange]);
+
+  const cameraMode = enableAutoFollow
+    ? (followMode ?? internalCameraMode)
+    : "manual";
+
+  const stopCameraAnimation = useCallback(() => {
+    if (animationFrameRef.current !== null) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+  }, []);
+
+  const pauseAutoFollow = useCallback(() => {
+    if (!enableAutoFollow) return;
+    stopCameraAnimation();
+    setCameraMode("manual");
+  }, [enableAutoFollow, setCameraMode, stopCameraAnimation]);
 
   const { nodes, edges } = useGraphLayout(timeline, { taskText, taskId });
 
@@ -939,19 +1094,70 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
     const scale  = Math.min(0.9, scaleW, scaleH);
     const x = (rect.width  - canvasW * scale) / 2;
     const y = PADDING / 2;
-    setTransform({ x, y, scale });
-  }, [canvasW, canvasH, nodes.length]);
+    applyTransform({ x, y, scale });
+  }, [applyTransform, canvasW, canvasH, nodes.length]);
+
+  const animateCameraTo = useCallback((target: CameraTransform, durationMs = 420) => {
+    stopCameraAnimation();
+    const start = performance.now();
+    const from = transformRef.current;
+    const delta = {
+      x: target.x - from.x,
+      y: target.y - from.y,
+      scale: target.scale - from.scale,
+    };
+    const distance = Math.abs(delta.x) + Math.abs(delta.y) + Math.abs(delta.scale);
+    if (distance < 0.5) {
+      applyTransform(target);
+      return;
+    }
+
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / durationMs);
+      const eased = 1 - Math.pow(1 - t, 3);
+      const next = {
+        x: from.x + delta.x * eased,
+        y: from.y + delta.y * eased,
+        scale: from.scale + delta.scale * eased,
+      };
+      applyTransform(next);
+      if (t < 1) {
+        animationFrameRef.current = requestAnimationFrame(step);
+        return;
+      }
+      animationFrameRef.current = null;
+    };
+
+    animationFrameRef.current = requestAnimationFrame(step);
+  }, [applyTransform, stopCameraAnimation]);
 
   useEffect(() => {
     if (hasFitRef.current || nodes.length <= 1) return;
-    const id = setTimeout(() => { fitToContent(); hasFitRef.current = true; }, 80);
+    const id = setTimeout(() => {
+      fitToContent();
+      hasFitRef.current = true;
+      setCameraReady(true);
+    }, 80);
     return () => clearTimeout(id);
   }, [nodes.length, fitToContent]);
 
   useEffect(() => {
     hasFitRef.current = false;
+    stopCameraAnimation();
+    followStateRef.current = {
+      currentTarget: null,
+      queuedTarget: null,
+      previousNodeState: {},
+      activeRows: [],
+    };
+    latestFollowTargetRef.current = null;
+    setCanResumeFollow(false);
+    setCameraReady(false);
+    if (enableAutoFollow && followMode === undefined) {
+      setInternalCameraMode("follow");
+    }
     _animatedNodeIds.clear();
-  }, [taskId]);
+  }, [enableAutoFollow, followMode, stopCameraAnimation, taskId]);
 
   const toggleFullscreen = useCallback(() => {
     setIsFullscreen((v) => {
@@ -959,6 +1165,45 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
       return !v;
     });
   }, [fitToContent]);
+
+  const animateToFollowTarget = useCallback((target: FollowTarget) => {
+    if (!containerRef.current) return;
+    const rowNodes = nodes.filter((node) => node.row === target.row);
+    if (rowNodes.length === 0) return;
+    const bounds = computeRowBounds(rowNodes, positions, nodeHeights, target.anchorNodeId);
+    if (!bounds) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const nextTransform = computeFollowTransform(bounds, {
+      width: rect.width,
+      height: rect.height,
+    }, transformRef.current);
+    animateCameraTo(nextTransform);
+  }, [animateCameraTo, nodeHeights, nodes, positions]);
+
+  useEffect(() => {
+    if (!enableAutoFollow) return;
+    const resolution = resolveFollowCameraState(
+      followStateRef.current,
+      nodes,
+      Date.now(),
+    );
+    followStateRef.current = resolution.state;
+    latestFollowTargetRef.current = resolution.state.currentTarget ?? resolution.state.queuedTarget ?? latestFollowTargetRef.current;
+    setCanResumeFollow(Boolean(latestFollowTargetRef.current));
+
+    if (cameraMode !== "follow" || !cameraReady || !resolution.nextTarget || !resolution.changed) {
+      return;
+    }
+    animateToFollowTarget(resolution.nextTarget);
+  }, [animateToFollowTarget, cameraMode, cameraReady, enableAutoFollow, nodes]);
+
+  useEffect(() => {
+    if (!enableAutoFollow || cameraMode !== "follow" || !cameraReady) return;
+    const target = latestFollowTargetRef.current;
+    if (!target) return;
+    animateToFollowTarget(target);
+  }, [animateToFollowTarget, cameraMode, cameraReady, enableAutoFollow]);
 
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
@@ -968,13 +1213,15 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
     const isInteractive = !!target.closest("button, details, summary, input, a, [data-no-drag]");
 
     if (cardEl && !isInteractive) {
+      pauseAutoFollow();
       drag.current = { kind: "card", nodeId: cardEl.dataset.cardId!, lastX: e.clientX, lastY: e.clientY };
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } else if (!cardEl && !isInteractive) {
+      pauseAutoFollow();
       drag.current = { kind: "pan", lastX: e.clientX, lastY: e.clientY };
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     }
-  }, []);
+  }, [pauseAutoFollow]);
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const cur = drag.current;
@@ -984,7 +1231,8 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
     drag.current = { ...cur, lastX: e.clientX, lastY: e.clientY };
 
     if (cur.kind === "pan") {
-      setTransform((t) => ({ ...t, x: t.x + dx, y: t.y + dy }));
+      const t = transformRef.current;
+      applyTransform({ ...t, x: t.x + dx, y: t.y + dy });
     } else {
       const s = scaleRef.current;
       setCardOffsets((o) => {
@@ -1001,18 +1249,26 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
     if (target.closest('[data-modal="true"]')) return;
     if (target.closest('[data-no-zoom]')) return;
 
+    pauseAutoFollow();
     e.preventDefault();
     const factor = e.deltaY > 0 ? 0.95 : 1.05;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const cx = e.clientX - rect.left;
     const cy = e.clientY - rect.top;
-    setTransform((t) => {
-      const ns = Math.min(2.5, Math.max(0.2, t.scale * factor));
-      const r  = ns / t.scale;
-      return { x: cx - r * (cx - t.x), y: cy - r * (cy - t.y), scale: ns };
-    });
-  }, []);
+    const t = transformRef.current;
+    const ns = Math.min(2.5, Math.max(0.2, t.scale * factor));
+    const r  = ns / t.scale;
+    applyTransform({ x: cx - r * (cx - t.x), y: cy - r * (cy - t.y), scale: ns });
+  }, [applyTransform, pauseAutoFollow]);
+
+  useEffect(() => {
+    applyTransform(transformRef.current);
+  }, [applyTransform]);
+
+  useEffect(() => () => {
+    stopCameraAnimation();
+  }, [stopCameraAnimation]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -1033,8 +1289,25 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
       <StatusBar
         mechanism={mechanism} roundCount={roundCount} eventCount={eventCount}
         entropy={entropy} nodeCount={nodes.length}
-        isFullscreen={isFullscreen} onFullscreen={toggleFullscreen}
-        onReset={fitToContent}
+        isFullscreen={isFullscreen}
+        onFullscreen={() => {
+          pauseAutoFollow();
+          toggleFullscreen();
+        }}
+        onReset={() => {
+          pauseAutoFollow();
+          fitToContent();
+        }}
+        autoFollowEnabled={enableAutoFollow}
+        cameraMode={cameraMode}
+        canResumeFollow={canResumeFollow}
+        onResumeFollow={() => {
+          setCameraMode("follow");
+          const target = latestFollowTargetRef.current;
+          if (target) {
+            animateToFollowTarget(target);
+          }
+        }}
       />
 
       <div
@@ -1054,9 +1327,9 @@ export function CanvasView({ timeline, finalAnswer, taskId, taskText, mechanism,
         {isEmpty ? <EmptyCanvas awaitingStream={awaitingStream} /> : (
           <div style={{
             position: "absolute", transformOrigin: "0 0",
-            transform: `translate(${transform.x}px,${transform.y}px) scale(${transform.scale})`,
+            transform: `translate(${transformRef.current.x}px,${transformRef.current.y}px) scale(${transformRef.current.scale})`,
             width: canvasW, height: canvasH, willChange: "transform",
-          }}>
+          }} ref={sceneRef}>
             <GraphEdges edges={edges} positions={positions} nodeHeights={nodeHeights} totalWidth={canvasW} totalHeight={canvasH} />
             {splitTransitionPills.map((pill) => (
               <SplitTransitionPill
