@@ -2029,6 +2029,10 @@ export function LiveDeliberation() {
             eventCount={deferredCanvasTimeline.length}
             entropy={convergence.entropy}
             citationItems={taskResult?.citation_items ?? []}
+            isLive={isTaskActive}
+            liveLabel={taskActivityLabel}
+            retryNotice={retryNotice}
+            switchNotice={switchBanner}
           />
         </div>
       )}
