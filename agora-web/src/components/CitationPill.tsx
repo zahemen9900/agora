@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ExternalLink, X } from "lucide-react";
+import { Code2, ExternalLink, FileText, Globe, ImageIcon, X } from "lucide-react";
 import type { CitationItemResponse } from "../lib/api.generated";
 
 const FONT = "'Commit Mono', 'SF Mono', monospace";
@@ -11,6 +11,32 @@ function extractDomain(item: CitationItemResponse): string {
     try { return new URL(item.url).hostname; } catch { /* fall through */ }
   }
   return item.source_kind ?? "source";
+}
+
+// ─── Source-kind metadata ────────────────────────────────────────────────────
+
+interface SourceKindMeta {
+  isFile: boolean;
+  Icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>;
+  iconColor: string;
+  badge: string;
+}
+
+function getSourceKindMeta(item: CitationItemResponse): SourceKindMeta {
+  const kind = item.source_kind;
+  if (!kind || kind === "url") {
+    return { isFile: false, Icon: Globe, iconColor: "var(--text-muted)", badge: "URL" };
+  }
+  if (kind === "pdf") {
+    return { isFile: true, Icon: FileText, iconColor: "var(--accent-rose)", badge: "PDF" };
+  }
+  if (kind === "image") {
+    return { isFile: true, Icon: ImageIcon, iconColor: "var(--accent-emerald)", badge: "IMG" };
+  }
+  if (kind === "code_file") {
+    return { isFile: true, Icon: Code2, iconColor: "var(--accent-emerald)", badge: "CODE" };
+  }
+  return { isFile: true, Icon: FileText, iconColor: "var(--accent-emerald)", badge: "TXT" };
 }
 
 // ─── Shared tooltip portal ───────────────────────────────────────────────────
@@ -67,6 +93,7 @@ export function CitationPill({ item }: { item: CitationItemResponse }) {
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
 
+  const meta = getSourceKindMeta(item);
   const domain = extractDomain(item);
   const faviconSrc = `https://www.google.com/s2/favicons?domain=${domain}&sz=16`;
 
@@ -78,7 +105,9 @@ export function CitationPill({ item }: { item: CitationItemResponse }) {
 
   const pillContent = (
     <>
-      {!imgErr && (
+      {meta.isFile ? (
+        <meta.Icon size={10} style={{ flexShrink: 0, color: meta.iconColor }} />
+      ) : !imgErr ? (
         <img
           src={faviconSrc}
           width={11} height={11}
@@ -86,7 +115,7 @@ export function CitationPill({ item }: { item: CitationItemResponse }) {
           onError={() => setImgErr(true)}
           alt=""
         />
-      )}
+      ) : null}
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
         {item.title}
       </span>
@@ -130,11 +159,13 @@ export function CitationPill({ item }: { item: CitationItemResponse }) {
             {item.title}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-            {!imgErr && (
+            {meta.isFile ? (
+              <meta.Icon size={12} style={{ color: meta.iconColor, flexShrink: 0 }} />
+            ) : !imgErr ? (
               <img src={faviconSrc} width={12} height={12} style={{ borderRadius: "2px", objectFit: "contain", flexShrink: 0 }} alt="" />
-            )}
-            <span style={{ fontFamily: FONT, fontSize: "9px", color: "var(--text-muted)", background: "var(--bg-base)", border: "1px solid var(--border-default)", borderRadius: "4px", padding: "1px 6px" }}>
-              {domain}
+            ) : null}
+            <span style={{ fontFamily: FONT, fontSize: "9px", color: meta.isFile ? meta.iconColor : "var(--text-muted)", background: "var(--bg-base)", border: `1px solid ${meta.isFile ? `${meta.iconColor}40` : "var(--border-default)"}`, borderRadius: "4px", padding: "1px 6px" }}>
+              {meta.isFile ? meta.badge : domain}
             </span>
             {typeof item.rank === "number" && (
               <span style={{ fontFamily: FONT, fontSize: "9px", color: "var(--text-muted)" }}>rank {item.rank}</span>
@@ -165,6 +196,7 @@ function CitationFaviconBubble({
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const anchorRef = useRef<HTMLDivElement>(null);
 
+  const meta = getSourceKindMeta(item);
   const domain = extractDomain(item);
   const faviconSrc = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
 
@@ -188,15 +220,17 @@ function CitationFaviconBubble({
       <div style={{
         width: 28, height: 28,
         borderRadius: "50%",
-        border: "2px solid var(--bg-elevated)",
-        background: "var(--bg-base)",
+        border: meta.isFile ? `2px solid ${meta.iconColor}55` : "2px solid var(--bg-elevated)",
+        background: meta.isFile ? `${meta.iconColor}18` : "var(--bg-base)",
         display: "flex", alignItems: "center", justifyContent: "center",
         overflow: "hidden",
         cursor: item.url ? "pointer" : "default",
         transform: hovered ? "translateY(-3px) scale(1.08)" : "translateY(0) scale(1)",
         transition: "transform 0.15s ease",
       }}>
-        {!imgErr ? (
+        {meta.isFile ? (
+          <meta.Icon size={13} style={{ color: meta.iconColor }} />
+        ) : !imgErr ? (
           <img
             src={faviconSrc}
             width={16} height={16}
@@ -217,11 +251,13 @@ function CitationFaviconBubble({
             {item.title}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
-            {!imgErr && (
+            {meta.isFile ? (
+              <meta.Icon size={12} style={{ color: meta.iconColor, flexShrink: 0 }} />
+            ) : !imgErr ? (
               <img src={faviconSrc} width={12} height={12} style={{ borderRadius: "2px", flexShrink: 0 }} alt="" />
-            )}
-            <span style={{ fontFamily: FONT, fontSize: "9px", color: "var(--text-muted)", background: "var(--bg-base)", border: "1px solid var(--border-default)", borderRadius: "4px", padding: "1px 6px" }}>
-              {domain}
+            ) : null}
+            <span style={{ fontFamily: FONT, fontSize: "9px", color: meta.isFile ? meta.iconColor : "var(--text-muted)", background: "var(--bg-base)", border: `1px solid ${meta.isFile ? `${meta.iconColor}40` : "var(--border-default)"}`, borderRadius: "4px", padding: "1px 6px" }}>
+              {meta.isFile ? meta.badge : domain}
             </span>
             {typeof item.rank === "number" && (
               <span style={{ fontFamily: FONT, fontSize: "9px", color: "var(--text-muted)" }}>rank {item.rank}</span>
