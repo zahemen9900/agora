@@ -120,6 +120,39 @@ Variables:
 - `SOLANA_KEYPAIR_SECRET_PROJECT=agora-ai-1199`
 - `AGORA_SANDBOX_RUNNER_URL=<private runner URL once VM is live>`
 
+Local values confirmed present during restore prep:
+
+- `WORKOS_CLIENT_ID=client_01KNVQVZ4B193J74RHVJF3AKVF`
+- `WORKOS_AUTHKIT_DOMAIN=https://healthy-flare-22-staging.authkit.app`
+- `AUTH_ISSUER=https://api.workos.com`
+- `AUTH_AUDIENCE=client_01KNVQVZ4B193J74RHVJF3AKVF`
+- `AUTH_JWKS_URL=https://api.workos.com/sso/jwks/client_01KNVQVZ4B193J74RHVJF3AKVF`
+
+CLI update commands once a token with GitHub Actions admin permissions is available:
+
+```bash
+gh variable set GCP_RUNTIME_SERVICE_ACCOUNT --repo zahemen9900/agora --body 'agora-api-runtime@agora-ai-1199.iam.gserviceaccount.com'
+gh variable set AGORA_GCS_BUCKET --repo zahemen9900/agora --body 'agora-ai-1199-agora-data'
+gh variable set AGORA_COORDINATION_NAMESPACE --repo zahemen9900/agora --body 'agora-prod'
+gh variable set WORKOS_CLIENT_ID --repo zahemen9900/agora --body 'client_01KNVQVZ4B193J74RHVJF3AKVF'
+gh variable set WORKOS_AUTHKIT_DOMAIN --repo zahemen9900/agora --body 'https://healthy-flare-22-staging.authkit.app'
+gh variable set AUTH_ISSUER --repo zahemen9900/agora --body 'https://api.workos.com'
+gh variable set AUTH_AUDIENCE --repo zahemen9900/agora --body 'client_01KNVQVZ4B193J74RHVJF3AKVF'
+gh variable set AUTH_JWKS_URL --repo zahemen9900/agora --body 'https://api.workos.com/sso/jwks/client_01KNVQVZ4B193J74RHVJF3AKVF'
+gh variable set SOLANA_NETWORK --repo zahemen9900/agora --body 'devnet'
+gh variable set PROGRAM_ID --repo zahemen9900/agora --body '82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd'
+gh variable set SOLANA_KEYPAIR_SECRET_NAME --repo zahemen9900/agora --body 'agora-solana-devnet-keypair'
+gh variable set SOLANA_KEYPAIR_SECRET_PROJECT --repo zahemen9900/agora --body 'agora-ai-1199'
+```
+
+At restore time, also set these secrets with an Actions-admin-capable token:
+
+```bash
+gh secret set GCP_PROJECT_ID --repo zahemen9900/agora --body 'agora-ai-1199'
+gh secret set GCP_SERVICE_ACCOUNT --repo zahemen9900/agora --body 'github-deploy@agora-ai-1199.iam.gserviceaccount.com'
+gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo zahemen9900/agora --body '<provider-resource-name>'
+```
+
 ## Verification checklist
 
 - `gcloud services list --enabled --project agora-ai-1199`
