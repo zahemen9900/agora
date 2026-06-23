@@ -44,7 +44,7 @@ from api.coordination import (
     get_coordination_backend,
     reset_coordination_state_for_tests,
 )
-from api.live_journal import BufferedEventJournal
+from api.live_journal import BufferedEventJournal, BufferedStateWriter
 from api.local_execution import is_local_execution_request, validate_local_execution_request
 from api.models import (
     BenchmarkCostEstimateResponse,
@@ -88,6 +88,7 @@ _SUPPORTED_MECHANISMS_TEXT = ", ".join(
 _STREAM_POLL_INTERVAL_SECONDS = 0.15
 _STREAM_BUFFER_FLUSH_INTERVAL_SECONDS = 0.1
 _STREAM_BUFFER_MAX_EVENTS = 8
+_TASK_STATE_SNAPSHOT_FLUSH_INTERVAL_SECONDS = 5.0
 _RATE_LIMIT_WINDOW_SECONDS = 60
 _INITIALIZE_TASK_OPERATION = "initialize_task"
 _RECORD_SELECTION_OPERATION = "record_selection"
@@ -2268,6 +2269,7 @@ async def _execute_task_run(
     lease_lost = False
     heartbeat_stop = asyncio.Event()
     current_lease = lease
+    state_writer: BufferedStateWriter | None = None
 
     async def _run_lock_heartbeat() -> None:
         nonlocal current_lease, lease_lost
@@ -2316,6 +2318,9 @@ async def _execute_task_run(
                         heartbeat_stop.set()
                         return
                 current_lease = refreshed
+                if state_writer is not None:
+                    task.updated_at = datetime.now(UTC)
+                    await state_writer.mark_dirty()
 
     heartbeat_task = asyncio.create_task(_run_lock_heartbeat())
 
@@ -2425,6 +2430,16 @@ async def _execute_task_run(
         flush_interval_seconds=_STREAM_BUFFER_FLUSH_INTERVAL_SECONDS,
         max_buffered_events=_STREAM_BUFFER_MAX_EVENTS,
     )
+    state_writer = BufferedStateWriter(
+        save=lambda snapshot: _save_raw_task_record(
+            store=store,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            snapshot=snapshot,
+        ),
+        snapshot=lambda: task.model_dump(mode="json"),
+        flush_interval_seconds=_TASK_STATE_SNAPSHOT_FLUSH_INTERVAL_SECONDS,
+    )
 
     orchestrator = _build_orchestrator(
         agent_count=task.agent_count,
@@ -2531,6 +2546,7 @@ async def _execute_task_run(
     except asyncio.CancelledError:
         try:
             await journal.close()
+            await state_writer.close()
             await _persist_stopped_task(
                 store=store,
                 stream=stream,
@@ -2546,6 +2562,7 @@ async def _execute_task_run(
     except HTTPException as exc:
         try:
             await journal.close()
+            await state_writer.close()
             await _mark_task_failed(
                 store=store,
                 stream=stream,
@@ -2560,6 +2577,7 @@ async def _execute_task_run(
     except Exception as exc:
         try:
             await journal.close()
+            await state_writer.close()
             await _mark_task_failed(
                 store=store,
                 stream=stream,
@@ -2573,6 +2591,7 @@ async def _execute_task_run(
             await _release_run_lock_once()
         raise HTTPException(status_code=500, detail="Task execution failed") from exc
 
+    await state_writer.close()
     await journal.flush()
     result_response = _result_to_response(
         task_id,
