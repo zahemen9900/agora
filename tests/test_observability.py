@@ -167,7 +167,7 @@ def test_initialize_telemetry_from_env_loads_axiom_token_from_secret_manager_fal
     monkeypatch.setenv("AGORA_AXIOM_ENABLED", "true")
     monkeypatch.setenv("AGORA_AXIOM_TRACES_DATASET", "agora-traces")
     monkeypatch.setenv("AGORA_AXIOM_BASE_URL", "https://api.axiom.co")
-    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agora-ai-493714")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agora-ai-1199")
     monkeypatch.setenv("AGORA_AXIOM_SECRET_NAME", "agora-axiom-token")
     monkeypatch.setattr(telemetry, "_load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(telemetry, "_load_secret_manager_value", lambda **_kwargs: "secret-token")

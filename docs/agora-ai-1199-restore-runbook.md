@@ -153,6 +153,12 @@ gh secret set GCP_SERVICE_ACCOUNT --repo zahemen9900/agora --body 'github-deploy
 gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo zahemen9900/agora --body '<provider-resource-name>'
 ```
 
+Or use the helper script:
+
+```bash
+./scripts/bootstrap_github_actions_restore.sh --provider '<provider-resource-name>'
+```
+
 ## Verification checklist
 
 - `gcloud services list --enabled --project agora-ai-1199`
