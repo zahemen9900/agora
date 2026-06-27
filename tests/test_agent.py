@@ -270,6 +270,42 @@ def test_gemini_uses_google_genai_client(monkeypatch: pytest.MonkeyPatch) -> Non
     assert created["client"].api_key == "gemini-test-key"
 
 
+def test_gemini_can_use_vertexai_without_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gemini caller should initialize google-genai in Vertex AI mode when enabled."""
+
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_GEMINI_USE_VERTEXAI", "true")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "agora-ai-1199")
+    monkeypatch.delenv("AGORA_GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("AGORA_GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    created: dict[str, object] = {}
+
+    def _fake_client_ctor(
+        *,
+        vertexai: bool | None = None,
+        project: str | None = None,
+        location: str | None = None,
+        api_key: str | None = None,
+    ) -> _FakeGeminiClient:
+        created["vertexai"] = vertexai
+        created["project"] = project
+        created["location"] = location
+        created["api_key"] = api_key
+        return _FakeGeminiClient(api_key="vertexai", response=_FakeGeminiResponse("ok"))
+
+    monkeypatch.setattr(agent_module, "genai", SimpleNamespace(Client=_fake_client_ctor))
+
+    caller = AgentCaller(model="gemini-2.5-flash", temperature=0.2)
+
+    assert caller.provider == "gemini"
+    assert created["vertexai"] is True
+    assert created["project"] == "agora-ai-1199"
+    assert created["location"] == get_config().google_cloud_location
+    assert created["api_key"] is None
+
+
 def test_gemini_uses_late_bound_env_key_after_config_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -321,6 +321,21 @@ def test_explicit_gemini_key_wins_over_secret_manager(monkeypatch: pytest.Monkey
     assert config.gemini_api_key == "explicit-gemini-key"
 
 
+def test_gemini_vertexai_flag_resolves_from_env_aliases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    get_config.cache_clear()
+    monkeypatch.setenv("AGORA_GEMINI_USE_VERTEXAI", "true")
+    config = get_config()
+    assert config.gemini_use_vertexai is True
+
+    get_config.cache_clear()
+    monkeypatch.delenv("AGORA_GEMINI_USE_VERTEXAI", raising=False)
+    monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "1")
+    config = get_config()
+    assert config.gemini_use_vertexai is True
+
+
 def test_gemini_flash_thinking_level_defaults_and_can_be_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

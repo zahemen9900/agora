@@ -99,6 +99,12 @@ def test_sdk_smoke_build_report_includes_summary() -> None:
                 "total_tokens_used": 42,
                 "total_latency_ms": 12.5,
                 "agent_models_used": ["model-a", "model-b"],
+                "execution_mode": "fallback",
+                "fallback_count": 2,
+                "fallback_events": [
+                    {"reason": "provider_openrouter_unavailable_or_invalid"},
+                    {"reason": "provider_flash_and_openrouter_unavailable_or_invalid"},
+                ],
                 "model_telemetry": {
                     "model-a": {"total_tokens": 21},
                     "model-b": {"total_tokens": 21},
@@ -120,7 +126,13 @@ def test_sdk_smoke_build_report_includes_summary() -> None:
     assert report["summary"]["final_answer"] == "Use a modular monolith"
     assert report["summary"]["model_count"] == 2
     assert report["summary"]["model_telemetry_models"] == ["model-a", "model-b"]
+    assert report["summary"]["execution_mode"] == "fallback"
+    assert report["summary"]["provider_health_status"] == "fallback_execution"
     assert report["request"]["mechanism"] == "vote"
+    assert report["provider_health"]["fallback_reasons"] == [
+        "provider_flash_and_openrouter_unavailable_or_invalid",
+        "provider_openrouter_unavailable_or_invalid",
+    ]
     assert report["receipt_verification"]["valid"] is True
 
 
@@ -167,7 +179,31 @@ def test_sdk_smoke_runner_streams_before_final_json() -> None:
     assert "start_task_run" in script
     assert "wait_for_task_result" in script
     assert "final json payload" in script
+    assert "provider health" in script
     assert "--api-url" not in script
+
+
+@pytest.mark.asyncio
+async def test_sdk_smoke_consume_task_stream_does_not_stop_on_complete(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_module()
+
+    class _FakeArbitrator:
+        async def stream_task_events(self, task_id: str):
+            assert task_id == "task-123"
+            yield {"event": "complete", "data": {"status": "completed"}, "timestamp": "2026-04-20T10:00:00Z"}
+            yield {
+                "event": "payment_released",
+                "data": {"status": "paid"},
+                "timestamp": "2026-04-20T10:00:01Z",
+            }
+
+    await module._consume_task_stream(_FakeArbitrator(), "task-123")
+
+    stdout = capsys.readouterr().out
+    assert "complete" in stdout
+    assert "payment_released" in stdout
 
 
 def test_sdk_readme_notebook_examples_avoid_top_level_async_context_manager() -> None:

@@ -201,6 +201,7 @@ class AgentCaller:
         self.temperature = temperature
         self.project = project or os.getenv("GOOGLE_CLOUD_PROJECT") or config.google_cloud_project
         self.location = location or config.google_cloud_location
+        self.gemini_use_vertexai = config.gemini_use_vertexai
         self.gemini_api_key = (
             gemini_api_key
             or os.getenv("AGORA_GEMINI_API_KEY")
@@ -257,19 +258,36 @@ class AgentCaller:
 
         if model.startswith("gemini"):
             self.provider = "gemini"
-            if not self.gemini_api_key:
+            if not self.gemini_use_vertexai and not self.gemini_api_key:
                 raise AgentCallError(
                     "Gemini API key is not set. Configure AGORA_GEMINI_API_KEY "
                     "(or GEMINI_API_KEY/GOOGLE_API_KEY) or use "
                     "fallback-capable runtime paths."
+                )
+            if self.gemini_use_vertexai and not self.project:
+                raise AgentCallError(
+                    "Gemini Vertex AI mode requires GOOGLE_CLOUD_PROJECT "
+                    "or an explicit project= value."
                 )
             if genai is None:
                 raise AgentCallError(
                     "google-genai SDK is not installed; direct Gemini API client unavailable"
                 )
             try:
-                self._gemini_client = genai.Client(api_key=self.gemini_api_key)
+                if self.gemini_use_vertexai:
+                    self._gemini_client = genai.Client(
+                        vertexai=True,
+                        project=self.project,
+                        location=self.location,
+                    )
+                else:
+                    self._gemini_client = genai.Client(api_key=self.gemini_api_key)
             except Exception as exc:
+                if self.gemini_use_vertexai:
+                    raise AgentCallError(
+                        "Failed to initialize google-genai Gemini client in Vertex AI mode. "
+                        "Ensure Vertex AI is enabled and the runtime identity can call it."
+                    ) from exc
                 raise AgentCallError(
                     "Failed to initialize google-genai Gemini client. Ensure the configured "
                     "Gemini API key is valid for ai.google.dev Gemini API access."

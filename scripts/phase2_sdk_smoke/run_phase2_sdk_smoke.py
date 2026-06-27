@@ -12,7 +12,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
-from agora.sdk import AgoraArbitrator
+from agora.sdk import AgoraArbitrator, HostedTaskExecutionError
 
 PACKAGE_NAME = "agora-arbitrator-sdk"
 DEFAULT_PROMPT = (
@@ -139,6 +139,7 @@ def _build_report(
     agora_module = importlib.import_module("agora")
     result_payload = result.model_dump(mode="json", exclude_none=True)
     model_telemetry = result_payload.get("model_telemetry", {})
+    provider_health = _build_provider_health(result_payload)
     summary = {
         "mechanism_used": result_payload.get("mechanism_used"),
         "final_answer": result_payload.get("final_answer"),
@@ -149,6 +150,9 @@ def _build_report(
         "total_latency_ms": result_payload.get("total_latency_ms"),
         "model_count": len(result_payload.get("agent_models_used") or []),
         "model_telemetry_models": sorted(model_telemetry.keys()),
+        "execution_mode": result_payload.get("execution_mode"),
+        "fallback_count": result_payload.get("fallback_count"),
+        "provider_health_status": provider_health["status"],
     }
     return {
         "sdk": {
@@ -165,8 +169,32 @@ def _build_report(
             "quorum_threshold": config.quorum_threshold,
         },
         "summary": summary,
+        "provider_health": provider_health,
         "receipt_verification": verification,
         "result": result_payload,
+    }
+
+
+def _build_provider_health(result_payload: dict[str, Any]) -> dict[str, Any]:
+    fallback_events = result_payload.get("fallback_events")
+    normalized_events = fallback_events if isinstance(fallback_events, list) else []
+    fallback_reasons = sorted(
+        {
+            str(event.get("reason", "")).strip()
+            for event in normalized_events
+            if isinstance(event, dict) and str(event.get("reason", "")).strip()
+        }
+    )
+    execution_mode = str(result_payload.get("execution_mode") or "unknown")
+    fallback_count = int(result_payload.get("fallback_count") or 0)
+    used_fallback = execution_mode != "live" or fallback_count > 0
+    status = "fallback_execution" if used_fallback else "live_provider_execution"
+    return {
+        "status": status,
+        "execution_mode": execution_mode,
+        "fallback_count": fallback_count,
+        "fallback_reasons": fallback_reasons,
+        "agent_models_used": list(result_payload.get("agent_models_used") or []),
     }
 
 
@@ -191,8 +219,28 @@ def _format_stream_event(event: dict[str, Any]) -> str:
 async def _consume_task_stream(arbitrator: AgoraArbitrator, task_id: str) -> None:
     async for event in arbitrator.stream_task_events(task_id):
         print(_format_stream_event(event))
-        if event.get("event") == "complete":
-            return
+
+
+def _print_provider_health(report: dict[str, Any]) -> None:
+    provider_health = report.get("provider_health")
+    if not isinstance(provider_health, dict):
+        return
+
+    status = str(provider_health.get("status") or "unknown")
+    execution_mode = str(provider_health.get("execution_mode") or "unknown")
+    fallback_count = int(provider_health.get("fallback_count") or 0)
+    fallback_reasons = provider_health.get("fallback_reasons")
+    if not isinstance(fallback_reasons, list):
+        fallback_reasons = []
+
+    if status == "live_provider_execution":
+        print("[sdk] provider health: live provider execution confirmed")
+    else:
+        print("[sdk] provider health: fallback execution detected")
+    print(f"[sdk] execution_mode: {execution_mode}")
+    print(f"[sdk] fallback_count: {fallback_count}")
+    if fallback_reasons:
+        print(f"[sdk] fallback_reasons: {', '.join(str(reason) for reason in fallback_reasons)}")
 
 
 async def _run(config: SmokeConfig) -> dict[str, Any]:
@@ -242,7 +290,15 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[sdk] python: {sys.executable}")
     print(f"[sdk] prompt: {config.prompt}")
 
-    report = asyncio.run(_run(config))
+    try:
+        report = asyncio.run(_run(config))
+    except HostedTaskExecutionError as exc:
+        print(f"[sdk] hosted task failed: {exc.failure_reason or exc.status}")
+        if exc.latest_error_event:
+            print("[sdk] latest error event:")
+            print(json.dumps(exc.latest_error_event, indent=2, sort_keys=True))
+        raise
+    _print_provider_health(report)
     print("[sdk] final json payload:")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

@@ -308,6 +308,13 @@ class AgoraConfig(BaseModel):
     google_cloud_project: str | None = Field(
         default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT")
     )
+    gemini_use_vertexai: bool = Field(
+        default_factory=lambda: _env_bool_alias(
+            "AGORA_GEMINI_USE_VERTEXAI",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            default=False,
+        )
+    )
     gemini_api_key: str | None = Field(default_factory=_resolve_gemini_api_key)
     gemini_secret_name: str = Field(
         default_factory=lambda: os.getenv("AGORA_GEMINI_SECRET_NAME", "agora-gemini-api-key")

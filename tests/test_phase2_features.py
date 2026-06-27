@@ -2188,6 +2188,9 @@ async def test_sdk_hosted_streaming_helpers_cover_start_and_task_events(
                 "event: complete",
                 'data: {"payload": {"task_id": "task-stream", "status": "completed"}, "timestamp": "2026-04-20T10:01:00Z"}',
                 "",
+                "event: payment_released",
+                'data: {"payload": {"task_id": "task-stream", "status": "paid"}, "timestamp": "2026-04-20T10:02:00Z"}',
+                "",
             ]
         )
 

@@ -60,6 +60,7 @@ DEFAULT_HTTP_TIMEOUT_SECONDS = 300.0
 _SDK_SERVICE_NAME = "agora-sdk"
 _SDK_SERVICE_VERSION = "0.1.0"
 _SDK_API_KEY_PREFIXES = ("agora_live_", "agora_test_")
+_TERMINAL_TASK_STREAM_EVENTS = frozenset({"complete", "error", "task_stopped"})
 
 
 @dataclass(frozen=True)
@@ -1291,6 +1292,7 @@ class AgoraArbitrator:
                     async for event in self._stream_hosted_events(
                         ticket_path=f"/tasks/{task_id}/stream-ticket",
                         stream_path=f"/tasks/{task_id}/stream",
+                        terminal_events=_TERMINAL_TASK_STREAM_EVENTS,
                     ):
                         event_count += 1
                         yield event
@@ -1526,6 +1528,7 @@ class AgoraArbitrator:
         *,
         ticket_path: str,
         stream_path: str,
+        terminal_events: set[str] | frozenset[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Stream normalized SSE events from a hosted API endpoint."""
 
@@ -1573,10 +1576,13 @@ class AgoraArbitrator:
                             continue
                         raw_data = "\n".join(data_lines)
                         data_lines = []
-                        yield self._normalize_sse_event(
+                        normalized_event = self._normalize_sse_event(
                             event_type=event_type,
                             raw_data=raw_data,
                         )
+                        yield normalized_event
+                        if terminal_events and normalized_event["event"] in terminal_events:
+                            break
                         event_type = "message"
             except Exception as exc:
                 mark_span_error(exc)
