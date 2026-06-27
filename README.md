@@ -25,7 +25,7 @@ This repo contains the backend, the Python SDK, the hosted dashboard, the benchm
 
 Agora is no longer just a bare orchestrator. The current system includes:
 
-- **Hosted deliberation** on the canonical backend: [https://agora-api-b4auawqzbq-uc.a.run.app](https://agora-api-b4auawqzbq-uc.a.run.app)
+- **Hosted deliberation** on the canonical backend: [https://agora-api-rdxjjuk2wa-uc.a.run.app](https://agora-api-rdxjjuk2wa-uc.a.run.app)
 - **Local BYOK execution** through the Python SDK with explicit provider rosters
 - **Three deliberation mechanisms**:
   - `debate` for adversarial multi-factor tradeoffs

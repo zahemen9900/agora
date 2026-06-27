@@ -2,9 +2,9 @@ import type { ReactNode } from "react";
 import { CodeBlock } from "../../components/CodeBlock";
 import { Callout } from "../../components/Callout";
 
-const baseUrl = `https://agora-api-b4auawqzbq-uc.a.run.app`;
+const baseUrl = `https://agora-api-rdxjjuk2wa-uc.a.run.app`;
 
-const authCurlCode = `curl -X POST https://agora-api-b4auawqzbq-uc.a.run.app/tasks/ \\
+const authCurlCode = `curl -X POST https://agora-api-rdxjjuk2wa-uc.a.run.app/tasks/ \\
   -H "Authorization: Bearer agora_live_xxxxx.yyyyy" \\
   -H "Content-Type: application/json" \\
   -d '{
