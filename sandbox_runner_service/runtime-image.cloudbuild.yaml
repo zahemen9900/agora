@@ -3,7 +3,7 @@ steps:
     args:
       - build
       - -f
-      - sandbox_runner_service/runtime-image.Dockerfile
+      - sandbox_runner_service/Dockerfile
       - -t
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:${_TAG}
       - .
