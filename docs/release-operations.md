@@ -9,7 +9,7 @@
 
 ## SDK Release Runbook (Trusted Publishing, Current Cycle)
 
-Target package: `agora-arbitrator-sdk==0.1.0a21`
+Target package: `agora-arbitrator-sdk==0.1.0a22`
 
 Version discipline:
 
@@ -46,8 +46,8 @@ version in `sdk/pyproject.toml` is not already present on PyPI.
 Optional explicit tag flow still works:
 
 ```bash
-git tag sdk-v0.1.0a21
-git push origin sdk-v0.1.0a21
+git tag sdk-v0.1.0a22
+git push origin sdk-v0.1.0a22
 ```
 
 Trusted publishing is wired for the repository in `.github/workflows/deploy-sdk.yml`
@@ -61,7 +61,7 @@ is still available as fallback. Local `twine upload` is fallback-only for emerge
 python -m venv /tmp/agora-arbitrator-sdk-verify
 source /tmp/agora-arbitrator-sdk-verify/bin/activate
 python -m pip install --upgrade pip
-python -m pip install agora-arbitrator-sdk==0.1.0a21
+python -m pip install agora-arbitrator-sdk==0.1.0a22
 python - <<'PY'
 from agora.sdk import AgoraArbitrator, AgoraNode, ReceiptVerificationError
 print("sdk-import-ok")
