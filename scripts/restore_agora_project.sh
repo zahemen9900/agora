@@ -614,7 +614,7 @@ seed_secrets() {
 
   add_secret_version "agora-gemini-api-key" "${AGORA_GEMINI_API_KEY:-}"
   add_secret_version "agora-anthropic-api-key" "${ANTHROPIC_API_KEY:-}"
-  add_secret_version "agora-openrouter-api-key" "${OPENROUTER_API_KEY:-${AGORA_OPENROUTER_API_KEY:-}}"
+  add_secret_version "agora-openrouter-api-key" "${OPENROUTER_API_KEY:-${AGORA_OPENROUTER_API_KEY:-${OPENROUTER_API_KEY_2:-${AGORA_OPENROUTER_API_KEY_2:-}}}}"
   add_secret_version "agora-helius-rpc-url" "${HELIUS_RPC_URL:-${HELIUS_URL:-}}"
   add_secret_version "agora-solana-devnet-keypair" "$solana_keypair_payload"
   add_secret_version "agora-api-key-pepper" "${AGORA_API_KEY_PEPPER:-$(random_secret)}"

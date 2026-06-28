@@ -258,8 +258,15 @@ def _resolve_gemini_api_key() -> str | None:
 def _resolve_openrouter_api_key() -> str | None:
     """Resolve OpenRouter API key from env first, then Secret Manager fallback."""
 
-    explicit_key = os.getenv("AGORA_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-    if explicit_key:
+    for env_name in (
+        "AGORA_OPENROUTER_API_KEY",
+        "OPENROUTER_API_KEY",
+        "AGORA_OPENROUTER_API_KEY_2",
+        "OPENROUTER_API_KEY_2",
+    ):
+        explicit_key = os.getenv(env_name)
+        if not explicit_key:
+            continue
         cleaned = explicit_key.strip()
         # Guard against accidental duplicated prefix copy/paste corruption.
         if cleaned.startswith("sk-or-v1-") and cleaned.count("sk-or-v1-") > 1:

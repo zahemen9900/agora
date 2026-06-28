@@ -671,11 +671,46 @@ def test_openrouter_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY_2", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY_2", "")
     monkeypatch.setenv("AGORA_OPENROUTER_SECRET_NAME", "")
     monkeypatch.setattr(agent_module, "AsyncOpenAI", lambda **kwargs: object())
 
     with pytest.raises(AgentCallError, match="OPENROUTER_API_KEY is not set"):
         AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+
+
+def test_openrouter_accepts_secondary_env_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OpenRouter caller should honor the secondary env alias when primary is absent."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY_2", "backup-or-key")
+    created: dict[str, _FakeOpenRouterClient] = {}
+
+    def _fake_async_openai_ctor(
+        *,
+        api_key: str,
+        base_url: str,
+        max_retries: int = 0,
+        default_headers: dict[str, str] | None = None,
+    ) -> _FakeOpenRouterClient:
+        client = _FakeOpenRouterClient(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            response=_FakeOpenRouterResponse("ok"),
+        )
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
+
+    caller = AgentCaller(model="moonshotai/kimi-k2-thinking", temperature=0.2)
+
+    assert caller.provider == "openrouter"
+    assert created["client"].api_key == "backup-or-key"
 
 
 @pytest.mark.asyncio

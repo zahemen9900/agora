@@ -227,6 +227,8 @@ class AgentCaller:
             openrouter_api_key
             or os.getenv("AGORA_OPENROUTER_API_KEY")
             or os.getenv("OPENROUTER_API_KEY")
+            or os.getenv("AGORA_OPENROUTER_API_KEY_2")
+            or os.getenv("OPENROUTER_API_KEY_2")
             or config.openrouter_api_key
         )
         self.openrouter_base_url = config.openrouter_base_url
