@@ -185,13 +185,31 @@ class _FakeOpenRouterResponse:
         )
 
 
+class _FakeOpenRouterStream:
+    def __init__(self, chunks: list[Any]) -> None:
+        self._chunks = list(chunks)
+
+    def __aiter__(self):
+        self._iter = iter(self._chunks)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iter)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
 class _FakeOpenRouterCompletionsAPI:
-    def __init__(self, response: _FakeOpenRouterResponse) -> None:
+    def __init__(self, response: _FakeOpenRouterResponse, stream_response: Any | None = None) -> None:
         self._response = response
+        self._stream_response = stream_response
         self.last_kwargs: dict[str, Any] | None = None
 
-    async def create(self, **kwargs: Any) -> _FakeOpenRouterResponse:
+    async def create(self, **kwargs: Any) -> Any:
         self.last_kwargs = kwargs
+        if kwargs.get("stream"):
+            return self._stream_response if self._stream_response is not None else _FakeOpenRouterStream([])
         return self._response
 
 
@@ -204,12 +222,18 @@ class _FakeOpenRouterClient:
         max_retries: int,
         default_headers: dict[str, str] | None,
         response: _FakeOpenRouterResponse,
+        stream_response: Any | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url
         self.max_retries = max_retries
         self.default_headers = default_headers
-        self.chat = SimpleNamespace(completions=_FakeOpenRouterCompletionsAPI(response))
+        self.chat = SimpleNamespace(
+            completions=_FakeOpenRouterCompletionsAPI(
+                response,
+                stream_response=stream_response,
+            )
+        )
 
 
 def _patch_gemini_sdk(
@@ -424,7 +448,7 @@ async def test_openrouter_structured_output_parses_pydantic(
     assert kwargs["model"] == "moonshotai/kimi-k2-thinking"
     assert kwargs["response_format"] == {"type": "json_object"}
     assert kwargs["max_tokens"] == get_config().kimi_max_tokens
-    assert kwargs["extra_body"] == {"reasoning": {"exclude": True, "effort": "low"}}
+    assert kwargs["extra_body"] == {"reasoning": {"exclude": False, "effort": "low"}}
 
 
 @pytest.mark.asyncio
@@ -769,7 +793,100 @@ async def test_openrouter_uses_agora_key_alias_and_optional_headers(
     kwargs = created["client"].chat.completions.last_kwargs
     assert kwargs is not None
     assert kwargs["max_tokens"] == get_config().kimi_max_tokens
-    assert kwargs["extra_body"] == {"reasoning": {"exclude": True, "effort": "low"}}
+    assert kwargs["extra_body"] == {"reasoning": {"exclude": False, "effort": "low"}}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_streaming_emits_thinking_deltas_and_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming OpenRouter calls should forward reasoning deltas alongside content."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "agora-or-key")
+    fake_response = _FakeOpenRouterResponse("ignored")
+    stream_response = _FakeOpenRouterStream(
+        [
+            SimpleNamespace(
+                id="chunk-1",
+                model="qwen/qwen3.5-flash-02-23",
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="",
+                            reasoning="Plan:",
+                            reasoning_details=[{"type": "reasoning.text", "text": "Plan:"}],
+                        )
+                    )
+                ],
+                usage=None,
+            ),
+            SimpleNamespace(
+                id="chunk-2",
+                model="qwen/qwen3.5-flash-02-23",
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Hel"))],
+                usage=None,
+            ),
+            SimpleNamespace(
+                id="chunk-3",
+                model="qwen/qwen3.5-flash-02-23",
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="lo"))],
+                usage=SimpleNamespace(
+                    prompt_tokens=3,
+                    completion_tokens=4,
+                    completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+                ),
+            ),
+        ]
+    )
+    created: dict[str, _FakeOpenRouterClient] = {}
+
+    def _fake_async_openai_ctor(
+        *,
+        api_key: str,
+        base_url: str,
+        max_retries: int = 0,
+        default_headers: dict[str, str] | None = None,
+    ) -> _FakeOpenRouterClient:
+        client = _FakeOpenRouterClient(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            response=fake_response,
+            stream_response=stream_response,
+        )
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
+
+    caller = AgentCaller(model="qwen/qwen3.5-flash-02-23", temperature=0.2)
+    streamed_chunks: list[str] = []
+    text, usage = await caller.call(
+        system_prompt="Be brief.",
+        user_prompt="Say hello",
+        stream=True,
+        stream_callback=streamed_chunks.append,
+    )
+
+    assert text == "Hello"
+    assert streamed_chunks == [
+        "\u001eAGORA_STREAM_EVENT\u001ethinking_delta\u001fPlan:",
+        "Hel",
+        "lo",
+    ]
+    assert usage["provider"] == "openrouter"
+    assert usage["input_tokens"] == 3
+    assert usage["output_tokens"] == 4
+    assert usage["reasoning_tokens"] == 2
+    assert usage["thinking_tokens"] == 2
+    assert usage["thinking_trace_present"] is True
+    assert usage["thinking_trace_chars"] >= len("Plan:")
+
+    kwargs = created["client"].chat.completions.last_kwargs
+    assert kwargs is not None
+    assert kwargs["stream"] is True
+    assert kwargs["extra_body"] == {"reasoning": {"exclude": False, "effort": "low"}}
 
 
 @pytest.mark.asyncio

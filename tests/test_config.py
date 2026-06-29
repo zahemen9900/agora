@@ -400,10 +400,10 @@ def test_openrouter_reasoning_defaults_and_overrides(monkeypatch: pytest.MonkeyP
 
     config = get_config()
     assert config.openrouter_reasoning_effort == "low"
-    assert config.openrouter_reasoning_exclude is True
+    assert config.openrouter_reasoning_exclude is False
     assert config.openrouter_max_tokens == 512
     assert config.kimi_reasoning_effort == "low"
-    assert config.kimi_reasoning_exclude is True
+    assert config.kimi_reasoning_exclude is False
     assert config.kimi_max_tokens == 512
 
     get_config.cache_clear()

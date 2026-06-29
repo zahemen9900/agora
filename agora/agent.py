@@ -11,6 +11,7 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from threading import Lock
+from types import SimpleNamespace
 from typing import Any, cast
 
 import structlog
@@ -70,6 +71,28 @@ _GEN_AI_SYSTEM_BY_PROVIDER = {
     "claude": "anthropic",
     "openrouter": "openrouter",
 }
+
+
+def _get_maybe_mapping_value(payload: Any, key: str) -> Any:
+    """Read one field from either an object-like payload or a dict."""
+
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
+
+
+def _extract_openrouter_reasoning_text(reasoning_details: Any) -> str:
+    """Best-effort text extraction from OpenRouter reasoning detail blocks."""
+
+    if not isinstance(reasoning_details, list):
+        return ""
+
+    parts: list[str] = []
+    for item in reasoning_details:
+        text = _get_maybe_mapping_value(item, "text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "".join(parts)
 
 
 def _emit_stream_event(
@@ -1495,21 +1518,50 @@ class AgentCaller:
         """Stream OpenRouter text chunks and return full text plus last chunk metadata."""
 
         chunks: list[str] = []
+        reasoning_chunks: list[str] = []
+        reasoning_details_payload: list[Any] = []
         last_chunk: Any | None = None
 
         async for chunk in stream_response:
             last_chunk = chunk
             chunk_text: str | None = None
+            reasoning_chunk: str | None = None
+            reasoning_details: Any = None
             choices = getattr(chunk, "choices", None)
             if isinstance(choices, list) and choices:
                 first_choice = choices[0]
                 delta = getattr(first_choice, "delta", None)
                 if delta is not None:
                     chunk_text = getattr(delta, "content", None)
+                    reasoning_chunk = getattr(delta, "reasoning", None)
+                    reasoning_details = getattr(delta, "reasoning_details", None)
                 elif isinstance(first_choice, dict):
                     delta_dict = first_choice.get("delta")
                     if isinstance(delta_dict, dict):
                         chunk_text = delta_dict.get("content")
+                        reasoning_chunk = delta_dict.get("reasoning")
+                        reasoning_details = delta_dict.get("reasoning_details")
+
+            if reasoning_details:
+                if isinstance(reasoning_details, list):
+                    reasoning_details_payload.extend(reasoning_details)
+                else:
+                    reasoning_details_payload.append(reasoning_details)
+                if not reasoning_chunk:
+                    extracted = _extract_openrouter_reasoning_text(reasoning_details)
+                    if extracted:
+                        reasoning_chunk = extracted
+
+            if isinstance(reasoning_chunk, str) and reasoning_chunk:
+                reasoning_chunks.append(reasoning_chunk)
+                if stream_callback is not None:
+                    try:
+                        stream_callback(
+                            f"{_STREAM_EVENT_PREFIX}thinking_delta"
+                            f"{_STREAM_EVENT_SEPARATOR}{reasoning_chunk}"
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("stream_callback_error", error=str(exc))
 
             if isinstance(chunk_text, str) and chunk_text:
                 chunks.append(chunk_text)
@@ -1519,7 +1571,17 @@ class AgentCaller:
                     except Exception as exc:  # pragma: no cover
                         logger.warning("stream_callback_error", error=str(exc))
 
-        return "".join(chunks), last_chunk
+        if last_chunk is None:
+            return "".join(chunks), None
+
+        return "".join(chunks), SimpleNamespace(
+            id=_get_maybe_mapping_value(last_chunk, "id"),
+            model=_get_maybe_mapping_value(last_chunk, "model"),
+            usage=_get_maybe_mapping_value(last_chunk, "usage"),
+            choices=_get_maybe_mapping_value(last_chunk, "choices"),
+            _agora_reasoning_details=reasoning_details_payload or None,
+            _agora_reasoning_text="".join(reasoning_chunks) or None,
+        )
 
     @staticmethod
     def _build_openrouter_headers(config: Any) -> dict[str, str]:
@@ -1758,21 +1820,50 @@ class AgentCaller:
         """Stream OpenRouter text chunks and return full text plus last chunk metadata."""
 
         chunks: list[str] = []
+        reasoning_chunks: list[str] = []
+        reasoning_details_payload: list[Any] = []
         last_chunk: Any | None = None
 
         async for chunk in stream_response:
             last_chunk = chunk
             chunk_text: str | None = None
+            reasoning_chunk: str | None = None
+            reasoning_details: Any = None
             choices = getattr(chunk, "choices", None)
             if isinstance(choices, list) and choices:
                 first_choice = choices[0]
                 delta = getattr(first_choice, "delta", None)
                 if delta is not None:
                     chunk_text = getattr(delta, "content", None)
+                    reasoning_chunk = getattr(delta, "reasoning", None)
+                    reasoning_details = getattr(delta, "reasoning_details", None)
                 elif isinstance(first_choice, dict):
                     delta_dict = first_choice.get("delta")
                     if isinstance(delta_dict, dict):
                         chunk_text = delta_dict.get("content")
+                        reasoning_chunk = delta_dict.get("reasoning")
+                        reasoning_details = delta_dict.get("reasoning_details")
+
+            if reasoning_details:
+                if isinstance(reasoning_details, list):
+                    reasoning_details_payload.extend(reasoning_details)
+                else:
+                    reasoning_details_payload.append(reasoning_details)
+                if not reasoning_chunk:
+                    extracted = _extract_openrouter_reasoning_text(reasoning_details)
+                    if extracted:
+                        reasoning_chunk = extracted
+
+            if isinstance(reasoning_chunk, str) and reasoning_chunk:
+                reasoning_chunks.append(reasoning_chunk)
+                if stream_callback is not None:
+                    try:
+                        stream_callback(
+                            f"{_STREAM_EVENT_PREFIX}thinking_delta"
+                            f"{_STREAM_EVENT_SEPARATOR}{reasoning_chunk}"
+                        )
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("stream_callback_error", error=str(exc))
 
             if isinstance(chunk_text, str) and chunk_text:
                 chunks.append(chunk_text)
@@ -1782,7 +1873,17 @@ class AgentCaller:
                     except Exception as exc:  # pragma: no cover
                         logger.warning("stream_callback_error", error=str(exc))
 
-        return "".join(chunks), last_chunk
+        if last_chunk is None:
+            return "".join(chunks), None
+
+        return "".join(chunks), SimpleNamespace(
+            id=_get_maybe_mapping_value(last_chunk, "id"),
+            model=_get_maybe_mapping_value(last_chunk, "model"),
+            usage=_get_maybe_mapping_value(last_chunk, "usage"),
+            choices=_get_maybe_mapping_value(last_chunk, "choices"),
+            _agora_reasoning_details=reasoning_details_payload or None,
+            _agora_reasoning_text="".join(reasoning_chunks) or None,
+        )
 
     @staticmethod
     def _build_openrouter_headers(config: Any) -> dict[str, str]:
@@ -2181,6 +2282,24 @@ class AgentCaller:
         thinking_trace_present = False
         thinking_trace_chars = 0
         if raw_message is not None:
+            streamed_reasoning_details = _get_maybe_mapping_value(
+                raw_message,
+                "_agora_reasoning_details",
+            )
+            if streamed_reasoning_details:
+                thinking_trace_present = True
+                thinking_trace_chars += len(
+                    json.dumps(streamed_reasoning_details, default=str)
+                )
+
+            streamed_reasoning_text = _get_maybe_mapping_value(
+                raw_message,
+                "_agora_reasoning_text",
+            )
+            if isinstance(streamed_reasoning_text, str) and streamed_reasoning_text:
+                thinking_trace_present = True
+                thinking_trace_chars += len(streamed_reasoning_text)
+
             additional_kwargs = getattr(raw_message, "additional_kwargs", None)
             if isinstance(additional_kwargs, dict):
                 thought_payload = (

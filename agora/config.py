@@ -429,7 +429,7 @@ class AgoraConfig(BaseModel):
         default_factory=lambda: _env_bool_alias(
             "AGORA_OPENROUTER_REASONING_EXCLUDE",
             "AGORA_KIMI_REASONING_EXCLUDE",
-            default=True,
+            default=False,
         )
     )
     openrouter_max_tokens: int = Field(

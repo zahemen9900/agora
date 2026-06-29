@@ -1,0 +1,16 @@
+bundle_id,provider_mix,workload,tasks,pass_rate,tool_success_rate,p95_latency_ms,avg_cost_usd,reasoning_tokens,policy_violations_per_1k,abstain_rate
+bundle_a,gemini_flash+qwen_fallback,customer_support,4200,0.79,0.81,4100,0.021,340,1.8,0.06
+bundle_a,gemini_flash+qwen_fallback,ops_automation,2600,0.76,0.85,5600,0.034,520,1.6,0.07
+bundle_a,gemini_flash+qwen_fallback,research_agent,1800,0.74,0.79,7100,0.041,880,1.5,0.09
+bundle_b,gemini_pro+qwen_fallback,customer_support,4200,0.83,0.86,5400,0.034,620,1.3,0.04
+bundle_b,gemini_pro+qwen_fallback,ops_automation,2600,0.81,0.89,6900,0.048,910,1.2,0.04
+bundle_b,gemini_pro+qwen_fallback,research_agent,1800,0.84,0.82,9800,0.061,1500,1.1,0.05
+bundle_c,claude_sonnet+gemini_flash,customer_support,4200,0.84,0.85,5900,0.039,780,1.0,0.05
+bundle_c,claude_sonnet+gemini_flash,ops_automation,2600,0.82,0.91,7600,0.055,1180,0.9,0.04
+bundle_c,claude_sonnet+gemini_flash,research_agent,1800,0.87,0.86,11200,0.072,2100,0.8,0.03
+bundle_d,openrouter_claude+qwen_router,customer_support,4200,0.81,0.84,5200,0.029,560,1.4,0.05
+bundle_d,openrouter_claude+qwen_router,ops_automation,2600,0.79,0.88,6800,0.043,980,1.3,0.05
+bundle_d,openrouter_claude+qwen_router,research_agent,1800,0.83,0.84,10300,0.058,1700,1.1,0.05
+bundle_e,claude_sonnet+gemini_pro,customer_support,4200,0.86,0.87,6500,0.047,940,0.9,0.03
+bundle_e,claude_sonnet+gemini_pro,ops_automation,2600,0.85,0.93,8300,0.066,1460,0.8,0.03
+bundle_e,claude_sonnet+gemini_pro,research_agent,1800,0.89,0.88,11900,0.089,2540,0.7,0.02
