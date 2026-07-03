@@ -348,6 +348,16 @@ async def maybe_augment_prompt_with_tool_candidates(
             planning_usages=accumulated_usages,
         )
         last_result = merged_augmentation
+        if (
+            augmentation.planner_succeeded
+            and not augmentation.tool_results
+            and index == len(candidates) - 1
+            and _should_apply_deterministic_grounding(
+                original_prompt=user_prompt,
+                context=context,
+            )
+        ):
+            break
         if augmentation.planner_succeeded and (
             index == len(candidates) - 1
             or not _should_fallback_to_next_candidate_after_decline(
