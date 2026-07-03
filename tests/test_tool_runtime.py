@@ -354,6 +354,25 @@ class _MultiToolBroker:
         )
 
 
+class _InspectingBroker:
+    async def execute_python(
+        self,
+        *,
+        code: str,
+        sources: list[SourceRef],
+        timeout_seconds: int,
+    ) -> ToolResult:
+        return ToolResult(
+            tool_name="execute_python",
+            status="success",
+            request={"timeout_seconds": timeout_seconds, "code": code},
+            summary="Executed Python sandbox task successfully",
+            sources=sources,
+            stdout=code,
+            exit_code=0,
+        )
+
+
 def _source() -> SourceRef:
     return SourceRef(
         source_id="file-1",
@@ -786,6 +805,49 @@ async def test_tool_runtime_uses_fallback_planner_candidate_when_claude_fails_an
     assert selection.augmentation.planner_succeeded is True
     assert len(selection.augmentation.tool_results) == 1
     assert selection.augmentation.tool_results[0].tool_name == "analyze_file"
+
+
+@pytest.mark.asyncio
+async def test_tool_runtime_deterministically_grounds_small_attached_csv_after_decline() -> None:
+    caller = _FakeCaller(
+        [
+            ToolDecision(
+                should_call=False,
+                rationale="I can answer without touching the attachment.",
+            )
+        ]
+    )
+
+    selection = await maybe_augment_prompt_with_tool_candidates(
+        candidates=[ToolPlanningCandidate(caller=caller, provider="fake")],
+        system_prompt="system",
+        user_prompt=(
+            "Analyze the attached CSV in Python, compute the exact weighted winner, "
+            "and do not answer from inspection."
+        ),
+        context=ToolInvocationContext(
+            task=(
+                "Analyze the attached CSV in Python, compute the exact weighted winner, "
+                "and do not answer from inspection."
+            ),
+            agent_id="agent-1",
+            round_index=0,
+            stage="vote",
+            sources=[_source()],
+            tool_policy=ToolPolicyConfig(max_tool_calls_per_agent=1),
+            broker=_InspectingBroker(),
+        ),
+    )
+    result = selection.augmentation
+
+    assert len(caller.prompts) == 1
+    assert result.planner_succeeded is True
+    assert len(result.tool_results) == 1
+    tool_result = result.tool_results[0]
+    assert tool_result.tool_name == "execute_python"
+    assert "deterministic_attached_source_snapshot" in (tool_result.stdout or "")
+    assert "dataset.csv" in (tool_result.stdout or "")
+    assert "Executed Python sandbox task successfully" in result.user_prompt
 
 
 async def _capture_event(

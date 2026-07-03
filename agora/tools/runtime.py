@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -110,6 +111,55 @@ Rules:
 - If attached files exist, prefer analyze_file or execute_python over guessing from memory.
 - Return strictly the requested JSON schema.
 """
+
+_TABULAR_SUFFIXES = {".csv", ".tsv", ".xlsx", ".xls", ".xlsb", ".parquet"}
+_TEXT_SNAPSHOT_SUFFIXES = {
+    ".txt",
+    ".md",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".csv",
+    ".tsv",
+}
+_DETERMINISTIC_GROUNDING_TRIGGERS = (
+    "attached",
+    "dataset",
+    "spreadsheet",
+    "table",
+    "csv",
+    "tsv",
+    "xlsx",
+    "xls",
+    "xlsb",
+    "parquet",
+    "load",
+    "parse",
+    "compute",
+    "calculate",
+    "exact",
+    "weighted",
+    "rank",
+    "sort",
+    "distinct",
+    "count",
+    "sum",
+    "average",
+    "mean",
+    "median",
+    "group",
+    "rows",
+    "columns",
+    "python",
+    "pandas",
+    "do not answer from inspection",
+    "do not guess from memory",
+)
 
 
 @dataclass(slots=True)
@@ -255,7 +305,7 @@ async def maybe_augment_prompt_with_tool(
         user_prompt=f"{user_prompt}\n\n{evidence_blocks}",
         tool_results=tool_results,
         planning_usage=merged_usage,
-        planner_succeeded=True,
+        planner_succeeded=bool(planning_usages) or bool(tool_results),
     )
 
 
@@ -311,6 +361,23 @@ async def maybe_augment_prompt_with_tool_candidates(
                 provider=candidate.provider,
                 model_name=getattr(candidate.caller, "model", None),
             )
+
+    deterministic_grounding = await _maybe_apply_deterministic_grounding(
+        original_prompt=user_prompt,
+        context=context,
+    )
+    if deterministic_grounding is not None:
+        evidence_blocks = _tool_result_context_block(deterministic_grounding)
+        return ToolPlanningSelection(
+            augmentation=ToolAugmentationResult(
+                user_prompt=f"{last_result.user_prompt}\n\n{evidence_blocks}",
+                tool_results=[deterministic_grounding],
+                planning_usage=last_result.planning_usage,
+                planner_succeeded=True,
+            ),
+            provider=candidates[-1].provider,
+            model_name=getattr(candidates[-1].caller, "model", None),
+        )
 
     return ToolPlanningSelection(
         augmentation=last_result,
@@ -547,6 +614,223 @@ def _task_has_freshness_or_retrieval_trigger(task: str) -> bool:
         "2025",
     )
     return any(token in normalized for token in triggers)
+
+
+async def _maybe_apply_deterministic_grounding(
+    *,
+    original_prompt: str,
+    context: ToolInvocationContext,
+) -> ToolResult | None:
+    """Ground obvious attached-file tasks when planner output is missing or declines tool use."""
+
+    if not _should_apply_deterministic_grounding(original_prompt=original_prompt, context=context):
+        return None
+
+    decision = _build_deterministic_grounding_decision(context=context)
+    if decision is None:
+        return None
+
+    call_id = f"tool-auto-ground-{uuid.uuid4().hex[:12]}"
+    try:
+        return await _execute_tool_decision(
+            decision=decision,
+            context=context,
+            call_id=call_id,
+        )
+    except Exception as exc:
+        return _failed_tool_result(
+            decision=decision,
+            context=context,
+            call_id=call_id,
+            message=str(exc) or exc.__class__.__name__,
+        )
+
+
+def _should_apply_deterministic_grounding(
+    *,
+    original_prompt: str,
+    context: ToolInvocationContext,
+) -> bool:
+    """Return whether attached sources are important enough to ground without planner help."""
+
+    if not context.sources:
+        return False
+    if not context.tool_policy.enabled or not context.tool_policy.allow_code_execution:
+        return False
+
+    code_sources = [source for source in context.sources if source.kind in {"text_file", "code_file"}]
+    if not code_sources:
+        return False
+
+    total_size = sum(max(0, int(source.size_bytes or 0)) for source in code_sources)
+    if total_size > 512_000:
+        return False
+
+    combined = f"{context.task}\n{original_prompt}".lower()
+    if any(trigger in combined for trigger in _DETERMINISTIC_GROUNDING_TRIGGERS):
+        return True
+
+    return any(_source_suffix(source) in _TABULAR_SUFFIXES for source in code_sources)
+
+
+def _build_deterministic_grounding_decision(
+    *,
+    context: ToolInvocationContext,
+) -> ToolDecision | None:
+    """Build a synthetic tool decision that snapshots attached sources into structured evidence."""
+
+    selected_sources = _pick_code_sources(context=context, requested_ids=[])
+    if not selected_sources:
+        return None
+
+    return ToolDecision(
+        should_call=True,
+        tool_name="execute_python",
+        rationale=(
+            "Planner did not ground attached small text/tabular sources. "
+            "Deterministically snapshotting them into structured evidence first."
+        ),
+        source_ids=[source.source_id for source in selected_sources],
+        python_code=_build_deterministic_grounding_python(selected_sources),
+    )
+
+
+def _build_deterministic_grounding_python(sources: list[SourceRef]) -> str:
+    """Generate a small sandbox program that snapshots attached sources into JSON."""
+
+    source_specs = [
+        {
+            "source_id": source.source_id,
+            "display_name": source.display_name,
+            "mime_type": source.mime_type,
+            "kind": source.kind,
+            "size_bytes": int(source.size_bytes or 0),
+            "sandbox_path": _sandbox_mount_path(source.source_id, source.display_name),
+        }
+        for source in sources
+    ]
+    payload = json.dumps(source_specs, ensure_ascii=True)
+    return f"""import json
+from pathlib import Path
+
+import pandas as pd
+
+SOURCES = {payload}
+TABULAR_SUFFIXES = {sorted(_TABULAR_SUFFIXES)!r}
+TEXT_SUFFIXES = {sorted(_TEXT_SNAPSHOT_SUFFIXES)!r}
+MAX_INLINE_ROWS = 200
+MAX_INLINE_COLUMNS = 50
+MAX_INLINE_TEXT_CHARS = 20000
+
+
+def normalize(value):
+    if isinstance(value, dict):
+        return {{str(key): normalize(item) for key, item in value.items()}}
+    if isinstance(value, (list, tuple)):
+        return [normalize(item) for item in value]
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return value
+
+
+def tabular_snapshot(spec):
+    path = spec["sandbox_path"]
+    suffix = Path(path).suffix.lower()
+    if suffix == ".csv":
+        frame = pd.read_csv(path)
+    elif suffix == ".tsv":
+        frame = pd.read_csv(path, sep="\\t")
+    elif suffix in {{".xlsx", ".xls", ".xlsb"}}:
+        frame = pd.read_excel(path)
+    elif suffix == ".parquet":
+        frame = pd.read_parquet(path)
+    else:
+        raise RuntimeError(f"Unsupported tabular suffix: {{suffix}}")
+
+    if len(frame.columns) > MAX_INLINE_COLUMNS:
+        frame = frame.iloc[:, :MAX_INLINE_COLUMNS]
+
+    inline = frame if len(frame) <= MAX_INLINE_ROWS else frame.head(MAX_INLINE_ROWS)
+    records = inline.to_dict(orient="records")
+    return {{
+        "mode": "tabular",
+        "row_count": int(len(frame)),
+        "column_count": int(len(frame.columns)),
+        "columns": [str(column) for column in frame.columns],
+        "rows_included": int(len(inline)),
+        "rows_truncated": bool(len(frame) > len(inline)),
+        "records": normalize(records),
+    }}
+
+
+def text_snapshot(spec):
+    path = spec["sandbox_path"]
+    raw = Path(path).read_text(encoding="utf-8", errors="replace")
+    trimmed = raw[:MAX_INLINE_TEXT_CHARS]
+    return {{
+        "mode": "text",
+        "char_count": len(raw),
+        "truncated": len(raw) > MAX_INLINE_TEXT_CHARS,
+        "text": trimmed,
+    }}
+
+
+snapshots = []
+for spec in SOURCES:
+    suffix = Path(spec["sandbox_path"]).suffix.lower()
+    base = {{
+        "source_id": spec["source_id"],
+        "display_name": spec["display_name"],
+        "mime_type": spec["mime_type"],
+        "kind": spec["kind"],
+        "size_bytes": spec["size_bytes"],
+        "sandbox_path": spec["sandbox_path"],
+    }}
+    if suffix in TABULAR_SUFFIXES:
+        base.update(tabular_snapshot(spec))
+    elif suffix in TEXT_SUFFIXES:
+        base.update(text_snapshot(spec))
+    else:
+        base.update({{
+            "mode": "unsupported_snapshot",
+            "note": "Deterministic grounding supports text/tabular files only.",
+        }})
+    snapshots.append(base)
+
+print(
+    json.dumps(
+        {{
+            "grounding": "deterministic_attached_source_snapshot",
+            "sources": normalize(snapshots),
+        }},
+        ensure_ascii=False,
+    )
+)
+"""
+
+
+def _source_suffix(source: SourceRef) -> str:
+    candidate = Path(source.display_name or "").suffix.lower()
+    if candidate:
+        return candidate
+    mime_type = str(source.mime_type or "").lower()
+    if "csv" in mime_type:
+        return ".csv"
+    if "tab-separated" in mime_type or "tsv" in mime_type:
+        return ".tsv"
+    if "parquet" in mime_type:
+        return ".parquet"
+    if "excel" in mime_type or "spreadsheet" in mime_type:
+        return ".xlsx"
+    return ""
 
 
 def tool_results_to_evidence(
