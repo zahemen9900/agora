@@ -1,5 +1,10 @@
 # Agora AI 9900 Architecture Plan
 
+> Historical note:
+> This document captures the hardened target architecture that was originally drafted
+> for a placeholder project name `agora-ai-9900`. The active restore target is now
+> `agora-ai-1199`, documented in `docs/agora-ai-1199-restore-runbook.md`.
+
 ## Purpose
 
 This document defines the target production architecture for migrating Agora to the new Google Cloud project `agora-ai-9900`.
