@@ -782,158 +782,102 @@ interface LiveStatusCardProps {
 }
 
 function LiveStatusCard({ liveLabel, eventCount, retryNotice, switchNotice }: LiveStatusCardProps) {
-  useEffect(() => {
-    injectFsLiveKeyframes();
-  }, []);
+  useEffect(() => { injectFsLiveKeyframes(); }, []);
 
   const isStopping = liveLabel.startsWith("STOPPING");
-  const isQueuing = liveLabel.startsWith("QUEUEING") || liveLabel.startsWith("WAITING");
+  const isQueuing  = liveLabel.startsWith("QUEUEING") || liveLabel.startsWith("WAITING");
   const accentColor = isStopping ? "#fbbf24" : isQueuing ? "#9ca3af" : "#34d399";
-  const borderColor = retryNotice || isStopping ? "rgba(251,191,36,0.3)" : "rgba(52,211,153,0.22)";
+  const borderColor = (retryNotice || isStopping) ? "rgba(251,191,36,0.3)" : "rgba(52,211,153,0.22)";
 
   return (
     <div
       data-modal="true"
       style={{
-        position: "absolute",
-        bottom: 16,
-        right: 16,
-        zIndex: 20,
-        pointerEvents: "auto",
+        position: "absolute", bottom: 16, right: 16,
+        zIndex: 20, pointerEvents: "auto",
         background: "rgba(10,14,20,0.90)",
         border: `1px solid ${borderColor}`,
         borderRadius: "14px",
         backdropFilter: "blur(16px)",
         padding: "12px 14px",
-        minWidth: "210px",
-        maxWidth: "272px",
+        minWidth: "210px", maxWidth: "272px",
         boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04)",
         animation: "fs-live-in 0.32s cubic-bezier(0.22,1,0.36,1) both",
-        display: "flex",
-        flexDirection: "column",
-        gap: "8px",
+        display: "flex", flexDirection: "column", gap: "8px",
       }}
     >
+      {/* Primary row: spinner + label + event count */}
       <div style={{ display: "flex", alignItems: "center", gap: "9px" }}>
-        <div
-          style={{
-            width: 13,
-            height: 13,
-            flexShrink: 0,
-            border: `2px solid ${accentColor}`,
-            borderTopColor: "transparent",
-            borderRadius: "50%",
-            animation: "fs-live-spin 0.75s linear infinite",
-          }}
-        />
-        <span
-          style={{
-            fontFamily: "'Commit Mono', monospace",
-            fontSize: "10px",
-            letterSpacing: "0.1em",
-            color: accentColor,
-            fontWeight: 600,
-            flex: 1,
-          }}
-        >
+        <div style={{
+          width: 13, height: 13, flexShrink: 0,
+          border: `2px solid ${accentColor}`,
+          borderTopColor: "transparent",
+          borderRadius: "50%",
+          animation: "fs-live-spin 0.75s linear infinite",
+        }} />
+        <span style={{
+          fontFamily: "'Commit Mono', monospace", fontSize: "10px",
+          letterSpacing: "0.1em", color: accentColor, fontWeight: 600, flex: 1,
+        }}>
           {liveLabel}
         </span>
-        <span
-          style={{
-            fontFamily: "'Commit Mono', monospace",
-            fontSize: "9px",
-            color: accentColor,
-            background: `${accentColor}18`,
-            border: `1px solid ${accentColor}40`,
-            borderRadius: "999px",
-            padding: "2px 8px",
-            flexShrink: 0,
-          }}
-        >
+        <span style={{
+          fontFamily: "'Commit Mono', monospace", fontSize: "9px",
+          color: accentColor,
+          background: `${accentColor}18`,
+          border: `1px solid ${accentColor}40`,
+          borderRadius: "999px", padding: "2px 8px", flexShrink: 0,
+        }}>
           {eventCount} evt{eventCount !== 1 ? "s" : ""}
         </span>
       </div>
 
-      {switchNotice ? (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "7px",
-            padding: "6px 10px",
-            background: "rgba(251,191,36,0.07)",
-            border: "1px solid rgba(251,191,36,0.22)",
-            borderRadius: "8px",
-          }}
-        >
-          <svg
-            width="11"
-            height="11"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="#fbbf24"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M5 12h14M12 5l7 7-7 7" />
+      {/* Mechanism switch row */}
+      {switchNotice && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: "7px",
+          padding: "6px 10px",
+          background: "rgba(251,191,36,0.07)",
+          border: "1px solid rgba(251,191,36,0.22)",
+          borderRadius: "8px",
+        }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 12h14M12 5l7 7-7 7"/>
           </svg>
-          <span
-            style={{
-              fontFamily: "'Commit Mono', monospace",
-              fontSize: "9px",
-              color: "#fbbf24",
-              letterSpacing: "0.06em",
-              fontWeight: 600,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
+          <span style={{
+            fontFamily: "'Commit Mono', monospace", fontSize: "9px",
+            color: "#fbbf24", letterSpacing: "0.06em", fontWeight: 600,
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          }}>
             {switchNotice}
           </span>
         </div>
-      ) : null}
+      )}
 
-      {retryNotice ? (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            padding: "6px 10px",
-            background: "rgba(251,191,36,0.05)",
-            border: "1px solid rgba(251,191,36,0.16)",
-            borderRadius: "8px",
-          }}
-        >
-          <div
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: "#fbbf24",
-              flexShrink: 0,
-              animation: "fs-live-pulse 1.1s ease-in-out infinite",
-            }}
-          />
-          <span
-            style={{
-              fontFamily: "'Commit Mono', monospace",
-              fontSize: "9px",
-              color: "#fcd34d",
-              letterSpacing: "0.04em",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              flex: 1,
-              minWidth: 0,
-            }}
-          >
+      {/* Retry row */}
+      {retryNotice && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: "8px",
+          padding: "6px 10px",
+          background: "rgba(251,191,36,0.05)",
+          border: "1px solid rgba(251,191,36,0.16)",
+          borderRadius: "8px",
+        }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: "#fbbf24", flexShrink: 0,
+            animation: "fs-live-pulse 1.1s ease-in-out infinite",
+          }} />
+          <span style={{
+            fontFamily: "'Commit Mono', monospace", fontSize: "9px",
+            color: "#fcd34d", letterSpacing: "0.04em",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            flex: 1, minWidth: 0,
+          }}>
             {retryNotice}
           </span>
         </div>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -1436,14 +1380,15 @@ export function CanvasView({
           <QuorumOverlay finalAnswer={finalAnswer} taskId={taskId} citationItems={citationItems} />
         </div>
 
-        {isFullscreen && (isLive || retryNotice || switchNotice) ? (
+        {/* Fullscreen live-status card — bottom-right, only when fullscreen and task is active */}
+        {isFullscreen && (isLive || retryNotice || switchNotice) && (
           <LiveStatusCard
             liveLabel={liveLabel}
             eventCount={eventCount}
             retryNotice={retryNotice}
             switchNotice={switchNotice}
           />
-        ) : null}
+        )}
       </div>
     </div>
   );

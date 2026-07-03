@@ -1848,6 +1848,84 @@ async def test_resume_stale_background_task_runs_fails_unrecoverable_local_byok_
 
 
 @pytest.mark.asyncio
+async def test_run_task_refreshes_in_progress_snapshot_during_long_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "run-progress-heartbeat"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+        monkeypatch.setattr(task_routes.settings, "task_run_lock_ttl_seconds", 3)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="long running heartbeat refresh", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+
+        saved_snapshots: list[dict[str, Any]] = []
+        original_save_raw_task_record = task_routes._save_raw_task_record
+
+        async def capture_save_raw_task_record(
+            *,
+            store,
+            workspace_id: str,
+            task_id: str,
+            snapshot: dict[str, Any],
+        ) -> dict[str, Any]:
+            saved_snapshots.append(dict(snapshot))
+            return await original_save_raw_task_record(
+                store=store,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                snapshot=snapshot,
+            )
+
+        async def fake_execute_task_like_run(**_kwargs: Any) -> SimpleNamespace:
+            await asyncio.sleep(1.2)
+            return SimpleNamespace(
+                status="completed",
+                failure_reason=None,
+                result=DeliberationResult(
+                    task="long running heartbeat refresh",
+                    mechanism_used=MechanismType.DEBATE,
+                    mechanism_selection=make_selection(
+                        mechanism=MechanismType.DEBATE,
+                        topic_category="reasoning",
+                    ),
+                    final_answer="Completed after lease heartbeat",
+                    confidence=0.8,
+                    quorum_reached=True,
+                    round_count=1,
+                    agent_count=3,
+                    mechanism_switches=0,
+                    merkle_root="merkle-root",
+                    transcript_hashes=["tx-1"],
+                    agent_models_used=["gemini-3-flash-preview"],
+                    model_token_usage={"gemini-3-flash-preview": 10},
+                    model_latency_ms={"gemini-3-flash-preview": 1200.0},
+                    total_tokens_used=10,
+                    total_latency_ms=1200.0,
+                ),
+            )
+
+        monkeypatch.setattr(task_routes, "_save_raw_task_record", capture_save_raw_task_record)
+        monkeypatch.setattr(task_routes, "execute_task_like_run", fake_execute_task_like_run)
+
+        response = await task_routes.run_task(create.task_id, _override_user())
+    finally:
+        monkeypatch.setattr(task_routes.settings, "task_run_lock_ttl_seconds", 900)
+        task_routes._store = None
+
+    assert response.final_answer == "Completed after lease heartbeat"
+    in_progress_snapshots = [
+        snapshot for snapshot in saved_snapshots if snapshot.get("status") == "in_progress"
+    ]
+    assert len(in_progress_snapshots) >= 2
+    assert in_progress_snapshots[0]["updated_at"] != in_progress_snapshots[-1]["updated_at"]
+
+
+@pytest.mark.asyncio
 async def test_run_rejects_when_coordination_lock_is_held(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

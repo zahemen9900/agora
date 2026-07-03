@@ -30,8 +30,12 @@ def test_restore_script_builds_runner_service_image() -> None:
     assert "sandbox_runner_service/Dockerfile" in cloudbuild
     assert "metadata.google.internal" in restore_script
     assert "Runner image tag" in restore_script
-    assert "docker.io" in runner_dockerfile
+    assert "FROM docker:28-cli AS docker_cli" in runner_dockerfile
+    assert "COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker" in runner_dockerfile
+    assert "runtime-requirements.txt" in runner_dockerfile
     assert "uvicorn" in runner_dockerfile
+    assert "-e AGORA_SANDBOX_IMAGE=${image_uri}" in restore_script
+    assert "-v /tmp/agora-sandbox:/tmp/agora-sandbox" in restore_script
 
 
 def test_rwx_restore_validation_assets_are_present() -> None:

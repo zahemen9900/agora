@@ -1,4 +1,10 @@
-"""OpenRouter-backed multimodal analysis helpers for PDFs and images."""
+"""OpenRouter-backed multimodal analysis helpers for PDFs and images.
+
+OpenRouter's default PDF handling is currently more reliable than forcing the
+``file-parser`` plugin with the ``cloudflare-ai`` engine. We therefore send the
+plain ``file`` content part and let OpenRouter/provider routing decide how to
+parse the PDF.
+"""
 
 from __future__ import annotations
 
@@ -64,8 +70,6 @@ class OpenRouterMultimodalClient:
             ],
             "stream": False,
         }
-        if source.kind == "pdf":
-            payload["plugins"] = [{"id": "file-parser", "pdf": {"engine": "cloudflare-ai"}}]
         response = await self._http.post(
             "/chat/completions",
             json=payload,

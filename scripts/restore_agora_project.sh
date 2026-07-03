@@ -403,8 +403,10 @@ docker run -d --restart unless-stopped \\
   --name agora-sandbox-runner \\
   -p 8080:8080 \\
   -e GOOGLE_CLOUD_PROJECT=${PROJECT_ID} \\
+  -e AGORA_SANDBOX_IMAGE=${image_uri} \\
   -e AGORA_SANDBOX_RUNNER_BEARER_TOKEN="\$RUNNER_TOKEN" \\
   -e AGORA_SANDBOX_ROOT=/tmp/agora-sandbox \\
+  -v /tmp/agora-sandbox:/tmp/agora-sandbox \\
   -v /var/run/docker.sock:/var/run/docker.sock \\
   ${image_uri}
 EOF

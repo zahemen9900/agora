@@ -792,6 +792,11 @@ async def test_benchmarks_route_reads_store_summary(
         }
     }
 
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
+
     try:
         app.dependency_overrides[benchmark_routes._optional_current_user] = _override_user
         await store.save_benchmark_summary(summary)
@@ -835,6 +840,11 @@ async def test_benchmarks_route_allows_human_bearer_without_admin_token(
 ) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-human-auth"))
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
     summary = {
         "summary": {
             "per_mode": {"selector": {"accuracy": 0.91}},
@@ -880,6 +890,11 @@ async def test_benchmarks_route_accepts_api_key_principal_without_admin_token(
 ) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-api-key-auth"))
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
     summary = {
         "summary": {
             "per_mode": {"selector": {"accuracy": 0.5}},
@@ -923,6 +938,11 @@ async def test_benchmarks_route_uses_file_fallback_not_completed_tasks(
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-order"))
     original_results_path = benchmark_routes._RESULTS_PATH
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
     benchmark_routes._RESULTS_PATH = tmp_path / "phase2-validation-file.json"
 
     file_payload = {
@@ -988,6 +1008,11 @@ async def test_benchmarks_route_promotes_stage_summary_from_file_fallback(
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-stage-summary"))
     original_results_path = benchmark_routes._RESULTS_PATH
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
     benchmark_routes._RESULTS_PATH = tmp_path / "phase2-validation-stage-summary.json"
 
     file_payload = {
@@ -1031,6 +1056,11 @@ async def test_benchmarks_route_heals_missing_store_summary_from_global_artifact
 ) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-artifact-heal"))
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
 
     artifact_payload = {
         "generated_at": "2026-04-21T00:00:00+00:00",
@@ -1089,6 +1119,11 @@ async def test_benchmarks_route_heal_skips_legacy_global_artifact(
 ) -> None:
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-artifact-heal-skip-legacy"))
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
 
     legacy_artifact = {
         "artifact_id": "legacy-phase2-validation",
@@ -1154,6 +1189,11 @@ async def test_benchmark_catalog_hides_legacy_backfill_artifacts(
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmark-catalog-hides-legacy"))
     task_routes._store = store
 
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
+
     legacy_artifact = {
         "artifact_id": "legacy-phase2-validation",
         "scope": "global",
@@ -1217,6 +1257,11 @@ async def test_benchmarks_route_include_demo_keeps_stage_runs_without_synthesize
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-include-demo-stage-runs"))
     original_results_dir = benchmark_routes._RESULTS_DIR
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
     benchmark_routes._RESULTS_DIR = tmp_path
 
     summary = {
@@ -1291,6 +1336,11 @@ async def test_benchmarks_route_include_demo_synthesizes_top_level_run_when_miss
     store = LocalTaskStore(data_dir=str(tmp_path / "benchmarks-include-demo-synthesized"))
     original_results_dir = benchmark_routes._RESULTS_DIR
     task_routes._store = store
+
+    async def _noop_backfill() -> None:
+        return None
+
+    monkeypatch.setattr(benchmark_routes, "_maybe_backfill_legacy_benchmarks", _noop_backfill)
     benchmark_routes._RESULTS_DIR = tmp_path
 
     summary = {

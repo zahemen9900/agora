@@ -1,5 +1,10 @@
 # AGENTS: Release Discipline
 
+Environment rule:
+
+- For Python commands in this repo, use the repo-local interpreter at `/home/zahemen/projects/dl-lib/agora/agora-env/bin/python`.
+- Prefer `/home/zahemen/projects/dl-lib/agora/agora-env/bin/python -m pytest ...`, `/home/zahemen/projects/dl-lib/agora/agora-env/bin/python -m ruff ...`, and similar module invocations over system `python` or unrelated virtual environments.
+
 Use this repo rule for every public release:
 
 - Backend and SDK versions must stay identical.
