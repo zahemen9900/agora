@@ -1834,7 +1834,7 @@ async def test_resume_stale_background_task_runs_relaunches_requested_pending_ta
 
 
 @pytest.mark.asyncio
-async def test_resume_stale_background_task_runs_skips_stop_requested_task(
+async def test_resume_stale_background_task_runs_finalizes_stale_stop_requested_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1842,6 +1842,7 @@ async def test_resume_stale_background_task_runs_skips_stop_requested_task(
     try:
         monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
         monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+        monkeypatch.setattr(task_routes.settings, "workspace_concurrent_task_runs", 1)
 
         create = await task_routes.create_task(
             TaskCreateRequest(task="do not resume stopped task", agent_count=3, stakes=0.0),
@@ -1857,6 +1858,16 @@ async def test_resume_stale_background_task_runs_skips_stop_requested_task(
         task["stop_requested_by"] = "user"
         task["updated_at"] = "2026-04-29T00:00:00+00:00"
         await store.save_task("user-1", create.task_id, task)
+
+        run_key = task_routes._task_run_key("user-1", create.task_id)
+        lease = await task_routes._acquire_task_run_lock(run_key)
+        assert lease is not None
+        slot = await task_routes._acquire_workspace_run_slot(
+            "user-1",
+            run_key=run_key,
+            lease_id=lease.lease_id,
+        )
+        assert slot is not None
 
         launches: list[tuple[str, str]] = []
 
@@ -1874,6 +1885,21 @@ async def test_resume_stale_background_task_runs_skips_stop_requested_task(
 
         assert recovered == 0
         assert launches == []
+        stored = await store.get_task("user-1", create.task_id)
+        assert stored is not None
+        assert stored["status"] == "failed"
+        assert stored["failure_reason"] == "Task stopped by user."
+        assert stored["latest_error_event"]["event"] == "task_stopped"
+        assert stored["events"][-1]["event"] == "task_stopped"
+
+        reclaimed_lease = await task_routes._acquire_task_run_lock(run_key)
+        assert reclaimed_lease is not None
+        reclaimed_slot = await task_routes._acquire_workspace_run_slot(
+            "user-1",
+            run_key=run_key,
+            lease_id=reclaimed_lease.lease_id,
+        )
+        assert reclaimed_slot is not None
     finally:
         task_routes._store = None
 

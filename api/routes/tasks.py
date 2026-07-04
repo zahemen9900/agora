@@ -540,7 +540,7 @@ async def resume_stale_background_task_runs(
     for raw_task in records:
         if not isinstance(raw_task, dict):
             continue
-        if _is_deleted_task_record(raw_task) or _stop_requested(raw_task):
+        if _is_deleted_task_record(raw_task):
             continue
         workspace_id = str(raw_task.get("workspace_id") or "").strip()
         task_id = str(raw_task.get("task_id") or "").strip()
@@ -549,6 +549,35 @@ async def resume_stale_background_task_runs(
         status = str(raw_task.get("status") or "").strip().lower()
         updated_at = _parse_timestamp(raw_task.get("updated_at"))
         is_stale = updated_at is None or updated_at <= stale_before
+        if _stop_requested(raw_task):
+            if status not in {"pending", "in_progress"} or not is_stale:
+                continue
+            logger.info(
+                "finalize_stale_stop_requested_task",
+                workspace_id=workspace_id,
+                task_id=task_id,
+                status=status,
+                updated_at=raw_task.get("updated_at"),
+            )
+            if status == "in_progress":
+                released = await _force_release_task_run_state(workspace_id, task_id)
+                if released["released_run_lock"] or released["released_workspace_slot"]:
+                    logger.info(
+                        "finalize_stale_stop_requested_task_cleared_run_state",
+                        workspace_id=workspace_id,
+                        task_id=task_id,
+                        released_run_lock=released["released_run_lock"],
+                        released_workspace_slot=released["released_workspace_slot"],
+                    )
+            await _persist_stopped_task(
+                store=store,
+                stream=get_stream_manager(),
+                workspace_id=workspace_id,
+                task_id=task_id,
+                actor_label=str(raw_task.get("stop_requested_by") or _TASK_STOP_ACTOR),
+                terminal=True,
+            )
+            continue
         background_requested = bool(raw_task.get("background_run_requested_at"))
         is_unrecoverable_local_byok = (
             str(raw_task.get("execution_source") or "").strip().lower() == "local_byok"
