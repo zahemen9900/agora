@@ -46,12 +46,18 @@ if [[ -z "${AGORA_API_KEY:-}" ]]; then
   exit 1
 fi
 
+# The smoke test uses a short-lived throwaway venv; disable telemetry export so
+# shutdown hooks do not race cleanup and produce misleading OTLP/certifi noise.
+export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"
+export AGORA_AXIOM_ENABLED="${AGORA_AXIOM_ENABLED:-false}"
+unset AGORA_AXIOM_TOKEN OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS
+
 PROMPT="${AGORA_PHASE2_SMOKE_PROMPT:-Should we use a monolith or microservices for a small internal tool?}"
 AGENT_COUNT="${AGORA_PHASE2_SMOKE_AGENT_COUNT:-3}"
 MECHANISM="${AGORA_PHASE2_SMOKE_MECHANISM:-vote}"
 
 echo "[run] executing hosted SDK smoke test"
-"$VENV_DIR/bin/python" "$SCRIPT_DIR/run_phase2_sdk_smoke.py" \
+PYTHONUNBUFFERED=1 "$VENV_DIR/bin/python" "$SCRIPT_DIR/run_phase2_sdk_smoke.py" \
   --auth-token "$AGORA_API_KEY" \
   --prompt "$PROMPT" \
   --mechanism "$MECHANISM" \

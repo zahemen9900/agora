@@ -130,6 +130,15 @@ class CoordinationBackend(Protocol):
 
     async def release_run_lock(self, run_key: str, *, lease_id: str) -> bool: ...
 
+    async def force_release_run_lock(self, run_key: str) -> bool: ...
+
+    async def force_release_concurrency_slot(
+        self,
+        bucket_key: str,
+        *,
+        holder_key: str,
+    ) -> bool: ...
+
     async def reset_state(self) -> None: ...
 
 
@@ -262,6 +271,13 @@ class InMemoryCoordinationBackend:
         self._run_locks.pop(run_key, None)
         return True
 
+    async def force_release_run_lock(self, run_key: str) -> bool:
+        current = self._run_locks.get(run_key)
+        if current is None:
+            return False
+        self._run_locks.pop(run_key, None)
+        return True
+
     async def claim_dedupe_key(
         self,
         key: str,
@@ -373,6 +389,20 @@ class InMemoryCoordinationBackend:
             self._concurrency_slots.pop(bucket_key, None)
         return True
 
+    async def force_release_concurrency_slot(
+        self,
+        bucket_key: str,
+        *,
+        holder_key: str,
+    ) -> bool:
+        holders = self._concurrency_slots.get(bucket_key)
+        if holders is None or holder_key not in holders:
+            return False
+        holders.pop(holder_key, None)
+        if not holders:
+            self._concurrency_slots.pop(bucket_key, None)
+        return True
+
     async def reset_state(self) -> None:
         self._stream_tickets.clear()
         self._run_locks.clear()
@@ -387,7 +417,15 @@ class RedisCoordinationBackend:
     def __init__(self, redis_url: str, *, namespace: str) -> None:
         from redis.asyncio import Redis
 
-        self._redis = Redis.from_url(redis_url, decode_responses=True)
+        self._redis = Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            health_check_interval=30,
+            retry_on_timeout=True,
+            socket_keepalive=True,
+            socket_connect_timeout=5,
+            socket_timeout=30,
+        )
         self._namespace = namespace
 
     def _ticket_key(self, ticket: str) -> str:
@@ -524,6 +562,10 @@ class RedisCoordinationBackend:
             self._run_lock_key(run_key),
             lease_id,
         )
+        return bool(deleted)
+
+    async def force_release_run_lock(self, run_key: str) -> bool:
+        deleted = await self._redis.delete(self._run_lock_key(run_key))
         return bool(deleted)
 
     async def claim_dedupe_key(
@@ -699,6 +741,28 @@ class RedisCoordinationBackend:
             self._concurrency_bucket_meta_key(bucket_key),
             holder_key,
             lease_id,
+        )
+        return bool(deleted)
+
+    async def force_release_concurrency_slot(
+        self,
+        bucket_key: str,
+        *,
+        holder_key: str,
+    ) -> bool:
+        deleted = await self._redis.eval(
+            """
+            local removed_meta = redis.call('HDEL', KEYS[2], ARGV[1])
+            local removed_zset = redis.call('ZREM', KEYS[1], ARGV[1])
+            if removed_meta > 0 or removed_zset > 0 then
+              return 1
+            end
+            return 0
+            """,
+            2,
+            self._concurrency_bucket_key(bucket_key),
+            self._concurrency_bucket_meta_key(bucket_key),
+            holder_key,
         )
         return bool(deleted)
 

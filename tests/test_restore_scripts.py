@@ -36,6 +36,15 @@ def test_restore_script_builds_runner_service_image() -> None:
     assert "uvicorn" in runner_dockerfile
     assert "-e AGORA_SANDBOX_IMAGE=${image_uri}" in restore_script
     assert "-v /tmp/agora-sandbox:/tmp/agora-sandbox" in restore_script
+    assert 'RUNNER_MACHINE_TYPE="${RUNNER_MACHINE_TYPE:-e2-standard-4}"' in restore_script
+    assert "set-machine-type" in restore_script
+    assert "--no-cpu-throttling" in restore_script
+    assert "--min-instances 1" in restore_script
+    assert "--max-instances 6" in restore_script
+    assert "AGORA_FLASH_MODEL=gemini-2.5-flash-lite" in restore_script
+    assert "AGORA_PRO_MODEL=gemini-2.5-flash" in restore_script
+    assert "AGORA_CLAUDE_MODEL=anthropic/claude-sonnet-4.6" in restore_script
+    assert "AGORA_WORKSPACE_CONCURRENT_TASK_RUNS=2" in restore_script
 
 
 def test_rwx_restore_validation_assets_are_present() -> None:

@@ -169,6 +169,9 @@ def test_sdk_smoke_wrapper_installs_before_run() -> None:
     assert run_line in script
     assert "AGORA_API_URL" not in script
     assert script.index(install_line) < script.index(run_line)
+    assert 'export OTEL_SDK_DISABLED="${OTEL_SDK_DISABLED:-true}"' in script
+    assert "unset AGORA_AXIOM_TOKEN OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS" in script
+    assert 'PYTHONUNBUFFERED=1 "$VENV_DIR/bin/python"' in script
 
 
 def test_sdk_smoke_runner_streams_before_final_json() -> None:
@@ -181,6 +184,15 @@ def test_sdk_smoke_runner_streams_before_final_json() -> None:
     assert "final json payload" in script
     assert "provider health" in script
     assert "--api-url" not in script
+
+
+def test_sdk_import_path_resolves_debate_engine_alias() -> None:
+    from agora.engines import debate as debate_module
+    from agora.sdk import AgoraArbitrator
+    from agora.tools import debate as tool_debate_module
+
+    assert debate_module is tool_debate_module
+    assert AgoraArbitrator is not None
 
 
 @pytest.mark.asyncio

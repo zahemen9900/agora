@@ -50,6 +50,7 @@ from api.routes import benchmarks as benchmark_routes
 from api.routes import sources as source_routes
 from api.routes import tasks as task_routes
 from api.routes import webhooks as webhook_routes
+from api.source_storage import SourceStorageService
 from api.store_local import LocalTaskStore
 from api.streaming import DeliberationStream, get_stream_manager, reset_stream_manager_for_tests
 from tests.helpers import make_selection
@@ -1458,6 +1459,123 @@ async def test_run_async_schedules_background_execution(
 
 
 @pytest.mark.asyncio
+async def test_create_task_defers_chain_setup_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "deferred-chain-setup"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: True)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_finalize_chain_setup_operations(**_kwargs):
+            started.set()
+            await release.wait()
+
+        monkeypatch.setattr(
+            task_routes,
+            "_finalize_chain_setup_operations",
+            fake_finalize_chain_setup_operations,
+        )
+
+        created = await task_routes.create_task(
+            TaskCreateRequest(task="defer chain setup", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+
+        assert created.status == "pending"
+        await asyncio.wait_for(started.wait(), timeout=1.0)
+    finally:
+        release.set()
+        await asyncio.sleep(0)
+        task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_create_task_with_attached_source_uses_fast_heuristic_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "attached-source-create"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(
+            task_routes,
+            "resolve_task_like_selection",
+            AsyncMock(side_effect=AssertionError("LLM selector should be skipped for attached sources")),
+        )
+
+        class _FakeBandit:
+            def select(self, _features):
+                return (MechanismType.VOTE, 0.7)
+
+        class _FakeHeuristic:
+            def select(self, *, features, bandit_recommendation):
+                return MechanismSelection(
+                    mechanism=MechanismType.VOTE,
+                    confidence=0.72,
+                    reasoning="Use heuristic vote for attached-file task.",
+                    reasoning_hash="heuristic-hash",
+                    bandit_recommendation=bandit_recommendation[0],
+                    bandit_confidence=bandit_recommendation[1],
+                    task_features=features,
+                    selector_source="heuristic_fallback",
+                    selector_fallback_path=["reasoning", "heuristic"],
+                )
+
+        fake_orchestrator = SimpleNamespace(
+            selector=SimpleNamespace(
+                bandit=_FakeBandit(),
+                heuristic=_FakeHeuristic(),
+            )
+        )
+        monkeypatch.setattr(
+            task_routes,
+            "_build_orchestrator",
+            lambda **_kwargs: fake_orchestrator,
+        )
+        monkeypatch.setattr(task_routes, "_load_selector_state", AsyncMock())
+
+        store = task_routes._store
+        assert store is not None
+        storage = SourceStorageService(task_store=store)
+        source = storage.build_source_record(
+            workspace_id="user-1",
+            created_by="user-1",
+            source_id="source-fast-heuristic",
+            display_name="probe.csv",
+            mime_type="text/csv",
+            size_bytes=18,
+        )
+        await storage.create_upload_session(workspace_id="user-1", source=source)
+        digest = await storage.write_upload_bytes(source=source, data=b"a,b\n1,2\n3,4\n")
+        await storage.mark_upload_complete(
+            workspace_id="user-1",
+            source=source,
+            sha256=digest,
+        )
+
+        created = await task_routes.create_task(
+            TaskCreateRequest(
+                task="Read the attached CSV and answer with the row count.",
+                agent_count=3,
+                stakes=0.0,
+                source_file_ids=[source.source_id],
+                enable_tools=True,
+            ),
+            _override_user(),
+        )
+    finally:
+        task_routes._store = None
+
+    assert created.selector_source == "heuristic_fallback"
+    assert created.mechanism == "vote"
+
+
+@pytest.mark.asyncio
 async def test_run_async_with_local_execution_persists_only_sanitized_marker(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1758,6 +1876,70 @@ async def test_resume_stale_background_task_runs_skips_stop_requested_task(
         assert launches == []
     finally:
         task_routes._store = None
+
+
+@pytest.mark.asyncio
+async def test_resume_stale_background_task_runs_clears_stale_coordination_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_routes._store = LocalTaskStore(data_dir=str(tmp_path / "resume-stale-lock-clear"))
+    try:
+        monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+        monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+        monkeypatch.setattr(task_routes.settings, "workspace_concurrent_task_runs", 1)
+
+        create = await task_routes.create_task(
+            TaskCreateRequest(task="recover stale lock", agent_count=3, stakes=0.0),
+            _override_user(),
+        )
+        store = task_routes._store
+        assert store is not None
+        task = await store.get_task("user-1", create.task_id)
+        assert task is not None
+        task["status"] = "in_progress"
+        task["background_run_requested_at"] = "2026-04-29T00:00:00+00:00"
+        task["updated_at"] = "2026-04-29T00:00:00+00:00"
+        await store.save_task("user-1", create.task_id, task)
+
+        run_key = task_routes._task_run_key("user-1", create.task_id)
+        lease = await task_routes._acquire_task_run_lock(run_key)
+        assert lease is not None
+        slot = await task_routes._acquire_workspace_run_slot(
+            "user-1",
+            run_key=run_key,
+            lease_id=lease.lease_id,
+        )
+        assert slot is not None
+
+        launches: list[tuple[str, str]] = []
+
+        def fake_launch_background_task_run(*, task_id: str, workspace_id: str) -> None:
+            launches.append((task_id, workspace_id))
+
+        monkeypatch.setattr(
+            task_routes, "_launch_background_task_run", fake_launch_background_task_run
+        )
+
+        recovered = await task_routes.resume_stale_background_task_runs(
+            stale_after_seconds=60,
+            limit=50,
+        )
+
+        reclaimed_lease = await task_routes._acquire_task_run_lock(run_key)
+        assert reclaimed_lease is not None
+        reclaimed_slot = await task_routes._acquire_workspace_run_slot(
+            "user-1",
+            run_key=run_key,
+            lease_id=reclaimed_lease.lease_id,
+        )
+        assert reclaimed_slot is not None
+    finally:
+        task_routes._store = None
+        await task_routes._reset_coordination_state_for_tests()
+
+    assert recovered == 1
+    assert launches == [(create.task_id, "user-1")]
 
 
 @pytest.mark.asyncio
@@ -3451,6 +3633,101 @@ async def test_persist_and_emit_preserves_full_timestamped_envelope(
 
 
 @pytest.mark.asyncio
+async def test_stream_emit_does_not_block_on_remote_publish() -> None:
+    stream = DeliberationStream()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_publish(_task_id: str, _envelope: dict[str, object]) -> None:
+        started.set()
+        await release.wait()
+
+    stream._redis_enabled = lambda: True  # type: ignore[method-assign]
+    stream._publish_remote = fake_publish  # type: ignore[method-assign]
+
+    await asyncio.wait_for(
+        stream.emit("task-stream-remote", {"event": "agent_output", "data": {"content": "BTC"}}),
+        timeout=0.1,
+    )
+    await asyncio.sleep(0)
+
+    assert started.is_set()
+    assert len(stream._publish_tasks) == 1
+
+    release.set()
+    await asyncio.gather(*list(stream._publish_tasks), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stream_reset_state_cancels_remote_publish_tasks() -> None:
+    stream = DeliberationStream()
+    cancelled = asyncio.Event()
+
+    async def fake_publish(_task_id: str, _envelope: dict[str, object]) -> None:
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    stream._redis_enabled = lambda: True  # type: ignore[method-assign]
+    stream._publish_remote = fake_publish  # type: ignore[method-assign]
+
+    await stream.emit("task-stream-reset", {"event": "agent_output", "data": {"content": "BTC"}})
+    await asyncio.sleep(0)
+    assert stream._publish_tasks
+
+    await stream.reset_state()
+
+    assert cancelled.is_set()
+    assert not stream._publish_tasks
+
+
+@pytest.mark.asyncio
+async def test_persist_and_emit_still_persists_when_stream_emit_fails(
+    tmp_path: Path,
+) -> None:
+    store = LocalTaskStore(data_dir=str(tmp_path / "stream-failure-data"))
+    user = _override_user()
+    task_id = "task-stream-failure"
+    task_payload = {
+        "task_id": task_id,
+        "task_text": "Stream failure should not abort persistence",
+        "mechanism": "vote",
+        "status": "pending",
+        "selector_reasoning": "Use vote.",
+        "selector_reasoning_hash": "selector-hash",
+        "selector_confidence": 0.9,
+        "agent_count": 3,
+        "payment_amount": 0.0,
+        "payment_status": "none",
+        "created_at": datetime.now(UTC).isoformat(),
+        "events": [],
+    }
+    await store.upsert_user(user.id, user.email, user.display_name)
+    task_payload["workspace_id"] = user.workspace_id
+    await store.save_task(user.workspace_id, task_id, task_payload)
+
+    class _FailingStream:
+        async def emit(self, _stream_key: str, _payload: dict[str, object]) -> None:
+            raise RuntimeError("redis publish lost")
+
+    await task_routes.persist_and_emit(
+        store=store,
+        stream=_FailingStream(),
+        workspace_id=user.workspace_id,
+        task_id=task_id,
+        event_type="agent_output",
+        event_data={"agent_id": "agent-1", "content": "BTC"},
+    )
+
+    stored_events = await store.get_events(user.workspace_id, task_id)
+    assert len(stored_events) == 1
+    assert stored_events[0]["event"] == "agent_output"
+    assert stored_events[0]["data"]["content"] == "BTC"
+
+
+@pytest.mark.asyncio
 async def test_persist_and_emit_benchmark_event_persists_before_streaming() -> None:
     calls: list[str] = []
 
@@ -3845,6 +4122,55 @@ async def test_stop_pending_task_marks_failed_and_prevents_recovery(
     )
     assert recovered == 0
     assert launches == []
+
+
+@pytest.mark.asyncio
+async def test_stop_in_progress_task_force_releases_coordination_state(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(task_routes.bridge, "is_configured", lambda: False)
+    monkeypatch.setattr(task_routes, "AgoraOrchestrator", _FakeSelectionOnlyOrchestrator)
+    monkeypatch.setattr(task_routes.settings, "workspace_concurrent_task_runs", 1)
+
+    create_response = await client.post(
+        "/tasks",
+        json={"task": "stop stale in progress task", "agent_count": 3, "stakes": 0.0},
+    )
+    assert create_response.status_code == 200
+    task_id = create_response.json()["task_id"]
+
+    store = task_routes._store
+    assert store is not None
+    record = await store.get_task("user-1", task_id)
+    assert record is not None
+    record["status"] = "in_progress"
+    await store.save_task("user-1", task_id, record)
+
+    run_key = task_routes._task_run_key("user-1", task_id)
+    lease = await task_routes._acquire_task_run_lock(run_key)
+    assert lease is not None
+    slot = await task_routes._acquire_workspace_run_slot(
+        "user-1",
+        run_key=run_key,
+        lease_id=lease.lease_id,
+    )
+    assert slot is not None
+
+    stop_response = await client.post(f"/tasks/{task_id}/stop")
+    assert stop_response.status_code == 200
+    payload = stop_response.json()
+    assert payload["status"] == "in_progress"
+    assert payload["stop_requested_at"]
+
+    reclaimed_lease = await task_routes._acquire_task_run_lock(run_key)
+    assert reclaimed_lease is not None
+    reclaimed_slot = await task_routes._acquire_workspace_run_slot(
+        "user-1",
+        run_key=run_key,
+        lease_id=reclaimed_lease.lease_id,
+    )
+    assert reclaimed_slot is not None
 
 
 @pytest.mark.asyncio

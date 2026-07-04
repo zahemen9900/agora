@@ -1484,7 +1484,11 @@ class AgoraArbitrator:
                 if strict_mode:
                     raise ReceiptVerificationError(f"Hosted receipt fetch failed: {exc}") from exc
             else:
-                hosted_metadata_match = self._hosted_receipt_matches(status, result)
+                hosted_metadata_match = self._hosted_receipt_matches(
+                    status,
+                    result,
+                    require_chain_receipt=strict_mode,
+                )
                 if strict_mode and not hosted_metadata_match:
                     raise ReceiptVerificationError(
                         "Hosted receipt verification failed: stored receipt fields mismatch"
@@ -1840,6 +1844,8 @@ class AgoraArbitrator:
         self,
         payload: HostedTaskStatus | dict[str, Any],
         result: DeliberationResult,
+        *,
+        require_chain_receipt: bool = False,
     ) -> bool:
         """Validate hosted receipt payload fields against the local deliberation result."""
 
@@ -1882,7 +1888,7 @@ class AgoraArbitrator:
         recomputed_root = self._hasher.build_merkle_tree(transcript_hashes)
 
         return (
-            bool(payload_dict.get("solana_tx_hash"))
+            (not require_chain_receipt or bool(payload_dict.get("solana_tx_hash")))
             and str(payload_dict.get("merkle_root", "")) == result.merkle_root
             and str(payload_dict.get("decision_hash", "")) == expected_decision_hash
             and str(result_payload.get("merkle_root", "")) == result.merkle_root

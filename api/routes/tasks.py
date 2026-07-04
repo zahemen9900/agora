@@ -580,6 +580,16 @@ async def resume_stale_background_task_runs(
             status=status,
             updated_at=raw_task.get("updated_at"),
         )
+        if status == "in_progress":
+            released = await _force_release_task_run_state(workspace_id, task_id)
+            if released["released_run_lock"] or released["released_workspace_slot"]:
+                logger.info(
+                    "resume_stale_background_task_cleared_run_state",
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    released_run_lock=released["released_run_lock"],
+                    released_workspace_slot=released["released_workspace_slot"],
+                )
         _launch_background_task_run(task_id=task_id, workspace_id=workspace_id)
         relaunched += 1
 
@@ -658,6 +668,27 @@ async def _release_workspace_run_slot(
         holder_key=run_key,
         lease_id=lease_id,
     )
+
+
+async def _force_release_task_run_state(
+    workspace_id: str,
+    task_id: str,
+) -> dict[str, bool]:
+    """Clear a task's coordination state without requiring the original lease id."""
+
+    backend = get_coordination_backend()
+    run_key = _task_run_key(workspace_id, task_id)
+    released_run_lock = await backend.force_release_run_lock(run_key)
+    released_workspace_slot = False
+    if settings.workspace_concurrent_task_runs > 0:
+        released_workspace_slot = await backend.force_release_concurrency_slot(
+            _workspace_run_bucket_key(workspace_id),
+            holder_key=run_key,
+        )
+    return {
+        "released_run_lock": released_run_lock,
+        "released_workspace_slot": released_workspace_slot,
+    }
 
 
 async def _reset_coordination_state_for_tests() -> None:
@@ -1838,8 +1869,16 @@ async def persist_and_emit(
         )
         return
 
-    await stream.emit(_stream_key(workspace_id, task_id), payload)
     await store.append_event(workspace_id, task_id, payload)
+    try:
+        await stream.emit(_stream_key(workspace_id, task_id), payload)
+    except Exception:
+        logger.warning(
+            "task_event_stream_emit_failed",
+            workspace_id=workspace_id,
+            task_id=task_id,
+            event_type=event_type,
+        )
 
 
 async def _mark_task_failed(
@@ -1948,7 +1987,7 @@ async def create_task(
     request: TaskCreateRequest,
     user: CurrentUser,
 ) -> TaskCreateResponse:
-    """Create a task, run selector, and initialize its on-chain metadata."""
+    """Create a task, run selector, and queue any on-chain metadata initialization."""
 
     require_scope(user, "tasks:write")
     await _enforce_task_create_rate_limit(user.workspace_id)
@@ -2000,19 +2039,42 @@ async def create_task(
         tier_model_overrides=tier_model_overrides,
     )
     await _load_selector_state(store, orchestrator)
-    (
-        selection,
-        selector_source,
-        selector_fallback_path,
-        mechanism_override_source,
-    ) = await resolve_task_like_selection(
-        orchestrator=orchestrator,
-        task_text=request.task,
-        agent_count=request.agent_count,
-        stakes=request.stakes,
-        forced_override=forced_override,
-        requested_override=requested_override,
-    )
+    selector = getattr(orchestrator, "selector", None)
+    heuristic_selector = getattr(selector, "heuristic", None)
+    bandit_selector = getattr(selector, "bandit", None)
+    if (
+        effective_override is None
+        and sources
+        and heuristic_selector is not None
+        and bandit_selector is not None
+    ):
+        features = await extract_features(
+            task_text=request.task,
+            agent_count=request.agent_count,
+            stakes=request.stakes,
+        )
+        bandit_rec = bandit_selector.select(features)
+        selection = heuristic_selector.select(
+            features=features,
+            bandit_recommendation=bandit_rec,
+        )
+        selector_source = selection.selector_source
+        selector_fallback_path = list(selection.selector_fallback_path)
+        mechanism_override_source = None
+    else:
+        (
+            selection,
+            selector_source,
+            selector_fallback_path,
+            mechanism_override_source,
+        ) = await resolve_task_like_selection(
+            orchestrator=orchestrator,
+            task_text=request.task,
+            agent_count=request.agent_count,
+            stakes=request.stakes,
+            forced_override=forced_override,
+            requested_override=requested_override,
+        )
     _require_supported_mechanism(
         selection.mechanism,
         status_code=500,
@@ -2078,22 +2140,30 @@ async def create_task(
     await store.save_task(user.workspace_id, task_id, task_status.model_dump(mode="json"))
 
     if bridge.is_configured():
-        try:
-            await _finalize_chain_setup_operations(
-                store=store,
-                workspace_id=user.workspace_id,
-                task_id=task_id,
-                task=task_status,
-            )
-        except HTTPException:
-            task_status.status = "failed"
-            await _save_task_status(
-                store=store,
-                workspace_id=user.workspace_id,
-                task_id=task_id,
-                task=task_status,
-            )
-            raise
+        async def _finalize_chain_setup_in_background() -> None:
+            try:
+                await _finalize_chain_setup_operations(
+                    store=store,
+                    workspace_id=user.workspace_id,
+                    task_id=task_id,
+                    task=task_status,
+                )
+            except HTTPException as exc:
+                logger.warning(
+                    "task_chain_setup_deferred_failed",
+                    workspace_id=user.workspace_id,
+                    task_id=task_id,
+                    status_code=exc.status_code,
+                    detail=str(exc.detail),
+                )
+            except Exception:
+                logger.exception(
+                    "task_chain_setup_deferred_unhandled",
+                    workspace_id=user.workspace_id,
+                    task_id=task_id,
+                )
+
+        asyncio.create_task(_finalize_chain_setup_in_background())
 
     await persist_and_emit(
         store=store,
@@ -2798,6 +2868,16 @@ async def stop_task(
     local_task = _background_task_runs.get(_task_run_key(user.workspace_id, task_id))
     if local_task is not None and not local_task.done():
         local_task.cancel()
+    elif current_status == "in_progress":
+        released = await _force_release_task_run_state(user.workspace_id, task_id)
+        if released["released_run_lock"] or released["released_workspace_slot"]:
+            logger.info(
+                "stop_task_cleared_run_state",
+                workspace_id=user.workspace_id,
+                task_id=task_id,
+                released_run_lock=released["released_run_lock"],
+                released_workspace_slot=released["released_workspace_slot"],
+            )
 
     refreshed = await _load_task_for_user(store, user.workspace_id, task_id)
     return _to_status_response(refreshed, detailed=True)

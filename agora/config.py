@@ -337,10 +337,10 @@ class AgoraConfig(BaseModel):
     )
 
     flash_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-3.1-flash-lite-preview")
+        default_factory=lambda: os.getenv("AGORA_FLASH_MODEL", "gemini-2.5-flash-lite")
     )
     pro_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-3-flash-preview")
+        default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-2.5-flash")
     )
     claude_model: str = Field(
         default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")

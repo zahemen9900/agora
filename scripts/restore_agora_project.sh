@@ -18,7 +18,7 @@ RUNNER_VM_NAME="${RUNNER_VM_NAME:-agora-sandbox-runner}"
 COORDINATION_NAMESPACE="${COORDINATION_NAMESPACE:-agora-prod}"
 PROGRAM_ID="${PROGRAM_ID:-82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd}"
 SOLANA_NETWORK="${SOLANA_NETWORK:-devnet}"
-RUNNER_MACHINE_TYPE="${RUNNER_MACHINE_TYPE:-e2-small}"
+RUNNER_MACHINE_TYPE="${RUNNER_MACHINE_TYPE:-e2-standard-4}"
 RUNNER_IMAGE_FAMILY="${RUNNER_IMAGE_FAMILY:-ubuntu-2204-lts}"
 RUNNER_IMAGE_PROJECT="${RUNNER_IMAGE_PROJECT:-ubuntu-os-cloud}"
 RUNNER_STARTUP_TIMEOUT_SECONDS="${RUNNER_STARTUP_TIMEOUT_SECONDS:-240}"
@@ -416,7 +416,7 @@ EOF
 
 ensure_runner_vm() {
   local startup_script="$1"
-  local instance_exists status
+  local instance_exists status current_machine_type
 
   instance_exists="$(gcloud compute instances describe "$RUNNER_VM_NAME" \
     --zone "$ZONE" \
@@ -443,6 +443,27 @@ ensure_runner_vm() {
     --project "$PROJECT_ID" \
     --zone "$ZONE" \
     --metadata-from-file=startup-script="$startup_script" >/dev/null
+
+  current_machine_type="$(gcloud compute instances describe "$RUNNER_VM_NAME" \
+    --project "$PROJECT_ID" \
+    --zone "$ZONE" \
+    --format='value(machineType.basename())')"
+  if [[ "$current_machine_type" != "$RUNNER_MACHINE_TYPE" ]]; then
+    log "Resizing sandbox runner VM from ${current_machine_type} to ${RUNNER_MACHINE_TYPE}"
+    status="$(gcloud compute instances describe "$RUNNER_VM_NAME" \
+      --project "$PROJECT_ID" \
+      --zone "$ZONE" \
+      --format='value(status)')"
+    if [[ "$status" == "RUNNING" ]]; then
+      gcloud compute instances stop "$RUNNER_VM_NAME" \
+        --project "$PROJECT_ID" \
+        --zone "$ZONE" >/dev/null
+    fi
+    gcloud compute instances set-machine-type "$RUNNER_VM_NAME" \
+      --project "$PROJECT_ID" \
+      --zone "$ZONE" \
+      --machine-type "$RUNNER_MACHINE_TYPE" >/dev/null
+  fi
 
   status="$(gcloud compute instances describe "$RUNNER_VM_NAME" \
     --project "$PROJECT_ID" \
@@ -688,13 +709,18 @@ deploy_api() {
     --project "$PROJECT_ID" \
     --region "$REGION" \
     --platform managed \
-    --memory 1Gi \
-    --concurrency 16 \
+    --cpu 2 \
+    --memory 2Gi \
+    --concurrency 4 \
+    --min-instances 1 \
+    --max-instances 6 \
+    --timeout 900 \
+    --no-cpu-throttling \
     --service-account "$RUNTIME_SA_EMAIL" \
     --network default \
     --subnet default \
     --vpc-egress private-ranges-only \
-    --update-env-vars "AGORA_ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},AUTH_REQUIRED=true,AGORA_COORDINATION_BACKEND=redis,AGORA_COORDINATION_NAMESPACE=${COORDINATION_NAMESPACE},AGORA_GEMINI_USE_VERTEXAI=true,AGORA_FLASH_MODEL=gemini-3.1-flash-lite-preview,AGORA_PRO_MODEL=gemini-3-flash-preview,AGORA_CLAUDE_MODEL=claude-sonnet-4-6,AGORA_OPENROUTER_MODEL=qwen/qwen3.5-flash-02-23,AGORA_OPENROUTER_ANALYSIS_MODEL=google/gemma-4-31b-it,AGORA_WORKOS_CLIENT_ID=${auth_values[0]},AGORA_WORKOS_AUTHKIT_DOMAIN=${auth_values[1]},AGORA_AUTH_ISSUER=${auth_values[2]},AGORA_AUTH_AUDIENCE=${auth_values[3]},AGORA_AUTH_JWKS_URL=${auth_values[4]},SOLANA_NETWORK=${SOLANA_NETWORK},PROGRAM_ID=${PROGRAM_ID},SOLANA_KEYPAIR_SECRET_NAME=agora-solana-devnet-keypair,SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,AGORA_SANDBOX_RUNNER_URL=${runner_url},AGORA_SANDBOX_EXECUTION_TIMEOUT_SECONDS=20,AGORA_SOURCE_MAX_FILE_BYTES=5242880,AGORA_SOURCE_MAX_ATTACHMENTS_PER_TASK=3,AGORA_BACKGROUND_RECOVERY_ENABLED=true,AGORA_BACKGROUND_RECOVERY_POLL_SECONDS=30,AGORA_BACKGROUND_RECOVERY_STALE_SECONDS=420,AGORA_BACKGROUND_RECOVERY_SCAN_LIMIT=500,AGORA_TASK_CREATE_RATE_LIMIT_PER_MINUTE=60,AGORA_TASK_RUN_RATE_LIMIT_PER_MINUTE=30,AGORA_WORKSPACE_CONCURRENT_TASK_RUNS=4,AGORA_AXIOM_ENABLED=true,AGORA_AXIOM_TRACES_DATASET=agora-traces,AGORA_AXIOM_BASE_URL=https://api.axiom.co,AGORA_AXIOM_CAPTURE_CONTENT=metadata_only" \
+    --update-env-vars "AGORA_ENVIRONMENT=production,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GCS_BUCKET=${BUCKET_NAME},AUTH_REQUIRED=true,AGORA_COORDINATION_BACKEND=redis,AGORA_COORDINATION_NAMESPACE=${COORDINATION_NAMESPACE},AGORA_GEMINI_USE_VERTEXAI=true,AGORA_FLASH_MODEL=gemini-2.5-flash-lite,AGORA_PRO_MODEL=gemini-2.5-flash,AGORA_CLAUDE_MODEL=anthropic/claude-sonnet-4.6,AGORA_OPENROUTER_MODEL=qwen/qwen3.5-flash-02-23,AGORA_OPENROUTER_ANALYSIS_MODEL=google/gemma-4-31b-it,AGORA_WORKOS_CLIENT_ID=${auth_values[0]},AGORA_WORKOS_AUTHKIT_DOMAIN=${auth_values[1]},AGORA_AUTH_ISSUER=${auth_values[2]},AGORA_AUTH_AUDIENCE=${auth_values[3]},AGORA_AUTH_JWKS_URL=${auth_values[4]},SOLANA_NETWORK=${SOLANA_NETWORK},PROGRAM_ID=${PROGRAM_ID},SOLANA_KEYPAIR_SECRET_NAME=agora-solana-devnet-keypair,SOLANA_KEYPAIR_SECRET_PROJECT=${PROJECT_ID},SOLANA_KEYPAIR_SECRET_VERSION=latest,AGORA_SANDBOX_RUNNER_URL=${runner_url},AGORA_SANDBOX_EXECUTION_TIMEOUT_SECONDS=20,AGORA_SOURCE_MAX_FILE_BYTES=5242880,AGORA_SOURCE_MAX_ATTACHMENTS_PER_TASK=3,AGORA_BACKGROUND_RECOVERY_ENABLED=true,AGORA_BACKGROUND_RECOVERY_POLL_SECONDS=30,AGORA_BACKGROUND_RECOVERY_STALE_SECONDS=420,AGORA_BACKGROUND_RECOVERY_SCAN_LIMIT=500,AGORA_TASK_CREATE_RATE_LIMIT_PER_MINUTE=60,AGORA_TASK_RUN_RATE_LIMIT_PER_MINUTE=30,AGORA_WORKSPACE_CONCURRENT_TASK_RUNS=2,AGORA_AXIOM_ENABLED=true,AGORA_AXIOM_TRACES_DATASET=agora-traces,AGORA_AXIOM_BASE_URL=https://api.axiom.co,AGORA_AXIOM_CAPTURE_CONTENT=metadata_only" \
     --update-secrets "AGORA_GEMINI_API_KEY=agora-gemini-api-key:latest,ANTHROPIC_API_KEY=agora-anthropic-api-key:latest,AGORA_OPENROUTER_API_KEY=agora-openrouter-api-key:latest,HELIUS_RPC_URL=agora-helius-rpc-url:latest,AGORA_API_KEY_PEPPER=agora-api-key-pepper:latest,AGORA_REDIS_URL=agora-redis-url:latest,BENCHMARK_ADMIN_TOKEN=agora-benchmark-admin-token:latest,AGORA_AXIOM_TOKEN=agora-axiom-token:latest,AGORA_BRAVE_API_KEY=agora-brave-api-key:latest,AGORA_BRAVE_API_KEY_2=agora-brave-api-key-2:latest,AGORA_BRAVE_API_KEY_3=agora-brave-api-key-3:latest,AGORA_SANDBOX_RUNNER_BEARER_TOKEN=agora-sandbox-runner-bearer-token:latest" \
     --allow-unauthenticated \
     --no-invoker-iam-check

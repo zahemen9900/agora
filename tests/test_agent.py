@@ -890,6 +890,93 @@ async def test_openrouter_streaming_emits_thinking_deltas_and_usage(
 
 
 @pytest.mark.asyncio
+async def test_openrouter_streaming_extracts_summarized_reasoning_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter Claude summarized reasoning blocks should still surface as thinking deltas."""
+
+    monkeypatch.setenv("AGORA_OPENROUTER_API_KEY", "agora-or-key")
+    fake_response = _FakeOpenRouterResponse("ignored")
+    stream_response = _FakeOpenRouterStream(
+        [
+            SimpleNamespace(
+                id="chunk-1",
+                model="anthropic/claude-sonnet-4.6",
+                choices=[
+                    SimpleNamespace(
+                        delta=SimpleNamespace(
+                            content="",
+                            reasoning=None,
+                            reasoning_details=[
+                                {
+                                    "type": "reasoning.summary",
+                                    "summary": "Summarized plan.",
+                                }
+                            ],
+                        )
+                    )
+                ],
+                usage=None,
+            ),
+            SimpleNamespace(
+                id="chunk-2",
+                model="anthropic/claude-sonnet-4.6",
+                choices=[SimpleNamespace(delta=SimpleNamespace(content="Done"))],
+                usage=SimpleNamespace(
+                    prompt_tokens=3,
+                    completion_tokens=4,
+                    completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+                ),
+            ),
+        ]
+    )
+    created: dict[str, _FakeOpenRouterClient] = {}
+
+    def _fake_async_openai_ctor(
+        *,
+        api_key: str,
+        base_url: str,
+        max_retries: int = 0,
+        default_headers: dict[str, str] | None = None,
+    ) -> _FakeOpenRouterClient:
+        client = _FakeOpenRouterClient(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=max_retries,
+            default_headers=default_headers,
+            response=fake_response,
+            stream_response=stream_response,
+        )
+        created["client"] = client
+        return client
+
+    monkeypatch.setattr(agent_module, "AsyncOpenAI", _fake_async_openai_ctor)
+
+    caller = AgentCaller(model="anthropic/claude-sonnet-4.6", temperature=0.2)
+    streamed_chunks: list[str] = []
+    text, usage = await caller.call(
+        system_prompt="Be brief.",
+        user_prompt="Say hello",
+        stream=True,
+        stream_callback=streamed_chunks.append,
+    )
+
+    assert text == "Done"
+    assert streamed_chunks == [
+        "\u001eAGORA_STREAM_EVENT\u001ethinking_delta\u001fSummarized plan.",
+        "Done",
+    ]
+    assert usage["provider"] == "openrouter"
+    assert usage["thinking_trace_present"] is True
+    assert usage["thinking_trace_chars"] >= len("Summarized plan.")
+
+    kwargs = created["client"].chat.completions.last_kwargs
+    assert kwargs is not None
+    assert kwargs["stream"] is True
+    assert kwargs["extra_body"] == {"reasoning": {"exclude": False, "effort": "low"}}
+
+
+@pytest.mark.asyncio
 async def test_openrouter_disables_legacy_x_title_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

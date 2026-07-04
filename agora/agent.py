@@ -89,9 +89,10 @@ def _extract_openrouter_reasoning_text(reasoning_details: Any) -> str:
 
     parts: list[str] = []
     for item in reasoning_details:
-        text = _get_maybe_mapping_value(item, "text")
-        if isinstance(text, str) and text:
-            parts.append(text)
+        for key in ("text", "summary"):
+            value = _get_maybe_mapping_value(item, key)
+            if isinstance(value, str) and value:
+                parts.append(value)
     return "".join(parts)
 
 
@@ -190,7 +191,7 @@ class AgentCaller:
 
     def __init__(
         self,
-        model: str = "gemini-3.1-flash-lite-preview",
+        model: str = "gemini-2.5-flash-lite",
         temperature: float = 0.7,
         project: str | None = None,
         location: str | None = None,

@@ -3124,6 +3124,56 @@ async def test_sdk_verify_receipt_strict_hosted_payload_mismatch_raises(
 
 
 @pytest.mark.asyncio
+async def test_sdk_verify_receipt_lenient_hosted_payload_allows_missing_chain_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unanimous_agent(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        del system_prompt, user_prompt
+        return {
+            "answer": "BTC",
+            "confidence": 0.93,
+            "predicted_group_answer": "BTC",
+            "reasoning": "Deterministic vote.",
+        }
+
+    arbitrator = AgoraArbitrator(
+        mechanism="vote",
+        agent_count=3,
+        strict_verification=False,
+    )
+    result = await arbitrator.arbitrate(
+        "Should I buy Solana or BTC?",
+        agents=[unanimous_agent, unanimous_agent, unanimous_agent],
+    )
+    arbitrator._result_task_ids[result.merkle_root] = "task-verify-lenient"
+
+    decision_hash = TranscriptHasher().hash_content(result.final_answer)
+    payload: dict[str, Any] = {
+        "merkle_root": result.merkle_root,
+        "decision_hash": decision_hash,
+        "solana_tx_hash": "",
+        "result": {
+            "merkle_root": result.merkle_root,
+            "decision_hash": decision_hash,
+            "final_answer": result.final_answer,
+            "transcript_hashes": result.transcript_hashes,
+        },
+    }
+
+    async def fake_get(*_args: object, **_kwargs: object) -> _FakeResponse:
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr(arbitrator._client, "get", fake_get)
+    verification = await arbitrator.verify_receipt(result)
+    await arbitrator.aclose()
+
+    assert verification["valid"] is True
+    assert verification["merkle_match"] is True
+    assert verification["hosted_metadata_match"] is True
+    assert verification["on_chain_match"] is None
+
+
+@pytest.mark.asyncio
 async def test_sdk_verify_receipt_strict_hosted_payload_requires_rpc_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

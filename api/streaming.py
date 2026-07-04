@@ -23,6 +23,7 @@ class DeliberationStream:
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any] | None]]] = defaultdict(list)
         self._instance_id = uuid.uuid4().hex
         self._listener_task: asyncio.Task[None] | None = None
+        self._publish_tasks: set[asyncio.Task[None]] = set()
         self._redis = None
         self._pubsub = None
         self._config_signature = self._current_config_signature()
@@ -36,7 +37,15 @@ class DeliberationStream:
             try:
                 from redis.asyncio import Redis
 
-                self._redis = Redis.from_url(redis_url, decode_responses=True)
+                self._redis = Redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    health_check_interval=30,
+                    retry_on_timeout=True,
+                    socket_keepalive=True,
+                    socket_connect_timeout=0.5,
+                    socket_timeout=1,
+                )
                 self._pubsub = self._redis.pubsub(ignore_subscribe_messages=True)
             except Exception as exc:  # pragma: no cover - import/runtime guard
                 logger.warning(
@@ -127,37 +136,55 @@ class DeliberationStream:
 
         return queue
 
+    def _schedule_remote_publish(self, task_id: str, envelope: dict[str, Any]) -> None:
+        """Run Redis fan-out out-of-band so local task execution stays latency-safe."""
+
+        if not self._redis_enabled():
+            return
+
+        publish_task = asyncio.create_task(self._publish_remote(task_id, envelope))
+        self._publish_tasks.add(publish_task)
+        publish_task.add_done_callback(self._publish_tasks.discard)
+
     async def emit(self, task_id: str, payload: dict[str, Any]) -> None:
         """Emit a fully-formed event envelope to all live subscribers for a task."""
 
         await self._emit_local(task_id, payload)
-        if self._redis_enabled():
-            assert self._redis is not None
-            await self._redis.publish(
-                self._channel(task_id),
-                json.dumps(
-                    {
-                        "origin": self._instance_id,
-                        "kind": "event",
-                        "payload": payload,
-                    }
-                ),
-            )
+        self._schedule_remote_publish(
+            task_id,
+            {
+                "origin": self._instance_id,
+                "kind": "event",
+                "payload": payload,
+            },
+        )
 
     async def close(self, task_id: str) -> None:
         """Close all live streams for a task."""
 
         await self._close_local(task_id)
-        if self._redis_enabled():
-            assert self._redis is not None
-            await self._redis.publish(
-                self._channel(task_id),
-                json.dumps(
-                    {
-                        "origin": self._instance_id,
-                        "kind": "close",
-                    }
-                ),
+        self._schedule_remote_publish(
+            task_id,
+            {
+                "origin": self._instance_id,
+                "kind": "close",
+            },
+        )
+
+    async def _publish_remote(self, task_id: str, envelope: dict[str, Any]) -> None:
+        """Best-effort Redis fan-out for cross-instance subscribers."""
+
+        if not self._redis_enabled():
+            return
+
+        assert self._redis is not None
+        try:
+            await self._redis.publish(self._channel(task_id), json.dumps(envelope))
+        except Exception as exc:  # pragma: no cover - live guard
+            logger.warning(
+                "stream_redis_publish_failed",
+                task_id=task_id,
+                error=str(exc),
             )
 
     def unsubscribe(
@@ -190,6 +217,13 @@ class DeliberationStream:
             except asyncio.CancelledError:
                 pass
             self._listener_task = None
+
+        publish_tasks = list(self._publish_tasks)
+        for task in publish_tasks:
+            task.cancel()
+        if publish_tasks:
+            await asyncio.gather(*publish_tasks, return_exceptions=True)
+        self._publish_tasks.clear()
 
         if self._pubsub is not None:
             try:

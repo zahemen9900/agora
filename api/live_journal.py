@@ -6,6 +6,10 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 
 class BufferedEventJournal:
     """Emit live events immediately while batching durable writes in-order."""
@@ -35,7 +39,7 @@ class BufferedEventJournal:
         if self._closed:
             raise RuntimeError("BufferedEventJournal is closed")
 
-        await self._emit(payload)
+        await self._emit_best_effort(payload)
         if not buffered:
             await self.flush()
             await self._append_many([payload])
@@ -54,6 +58,14 @@ class BufferedEventJournal:
         if batch_to_flush:
             await self._append_many(batch_to_flush)
             self._raise_if_failed()
+
+    async def _emit_best_effort(self, payload: dict[str, Any]) -> None:
+        """Emit a live event without letting transient stream failures kill the run."""
+
+        try:
+            await self._emit(payload)
+        except Exception as exc:  # pragma: no cover - defensive runtime guard
+            logger.warning("buffered_event_emit_failed", error=str(exc))
 
     async def flush(self) -> None:
         """Persist any buffered events immediately."""
