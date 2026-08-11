@@ -1,28 +1,26 @@
-# Agora AI 1199 Restore Runbook
+# Agora AI 1190 Restore Runbook
 
 This runbook captures the concrete fast-parity restore path for the active GCP target:
 
 - Project name: `agora-ai`
-- Project id: `agora-ai-1199`
+- Project id: `agora-ai-1190`
 - Region: `us-central1`
 - Zone: `us-central1-a`
 
-## Current external blocker
+## Required Google APIs
 
-As of 2026-06-23, the account `david@maigreeks.com` has `roles/owner` on the project, but:
-
-- billing is **not** attached to `agora-ai-1199`
-- the visible billing account `01E5D5-10A0BB-CAFD30` fails project linking with
-  `Cloud billing quota exceeded`
-
-That means the repo-side restore work can be prepared now, but these Google APIs cannot be enabled until billing is fixed:
+As of 2026-08-11, billing is enabled on `agora-ai-1190`. A blank-project restore requires:
 
 - `run.googleapis.com`
 - `artifactregistry.googleapis.com`
+- `aiplatform.googleapis.com`
 - `secretmanager.googleapis.com`
 - `redis.googleapis.com`
 - `compute.googleapis.com`
 - `cloudbuild.googleapis.com`
+- `cloudbilling.googleapis.com`
+- `cloudresourcemanager.googleapis.com`
+- `iam.googleapis.com`
 - `iamcredentials.googleapis.com`
 - `vpcaccess.googleapis.com`
 
@@ -34,8 +32,8 @@ Fast-parity target shape:
 - Artifact Registry repo `agora`
 - GCS bucket `${PROJECT_ID}-agora-data`
 - Redis instance `agora-redis-prod`
-- runtime service account `agora-api-runtime@agora-ai-1199.iam.gserviceaccount.com`
-- deploy service account `github-deploy@agora-ai-1199.iam.gserviceaccount.com`
+- runtime service account `agora-api-runtime@agora-ai-1190.iam.gserviceaccount.com`
+- deploy service account `github-deploy@agora-ai-1190.iam.gserviceaccount.com`
 - sandbox-runner VM `agora-sandbox-runner`
 - Secret Manager entries required by `.github/workflows/deploy.yml`
 
@@ -43,9 +41,9 @@ Primary durable state remains GCS-backed object storage, not Postgres.
 
 ## Repo automation
 
-Use [`/home/zahemen/projects/dl-lib/agora.worktrees/main-sync/scripts/restore_agora_project.sh`](/home/zahemen/projects/dl-lib/agora.worktrees/main-sync/scripts/restore_agora_project.sh:1).
+Use [`scripts/restore_agora_project.sh`](../scripts/restore_agora_project.sh).
 
-Typical flow once billing is fixed:
+Typical flow:
 
 ```bash
 ./scripts/restore_agora_project.sh preflight
@@ -96,18 +94,11 @@ Also present locally:
 
 - Solana devnet keypair at `/home/zahemen/.config/solana/devnet-keypair.json`
 
-## GitHub Actions variables/secrets to set
+## Runtime values
 
-Secrets:
-
-- `GCP_PROJECT_ID=agora-ai-1199`
-- `GCP_SERVICE_ACCOUNT=github-deploy@agora-ai-1199.iam.gserviceaccount.com`
-- `GCP_WORKLOAD_IDENTITY_PROVIDER=<new provider resource>`
-
-Variables:
-
-- `GCP_RUNTIME_SERVICE_ACCOUNT=agora-api-runtime@agora-ai-1199.iam.gserviceaccount.com`
-- `AGORA_GCS_BUCKET=agora-ai-1199-agora-data`
+- `GCP_PROJECT_ID=agora-ai-1190`
+- `GCP_RUNTIME_SERVICE_ACCOUNT=agora-api-runtime@agora-ai-1190.iam.gserviceaccount.com`
+- `AGORA_GCS_BUCKET=agora-ai-1190-agora-data`
 - `AGORA_COORDINATION_NAMESPACE=agora-prod`
 - `WORKOS_CLIENT_ID=<from local env / WorkOS>`
 - `WORKOS_AUTHKIT_DOMAIN=<from local env / WorkOS>`
@@ -117,17 +108,17 @@ Variables:
 - `SOLANA_NETWORK=devnet`
 - `PROGRAM_ID=82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd`
 - `SOLANA_KEYPAIR_SECRET_NAME=agora-solana-devnet-keypair`
-- `SOLANA_KEYPAIR_SECRET_PROJECT=agora-ai-1199`
+- `SOLANA_KEYPAIR_SECRET_PROJECT=agora-ai-1190`
 - `AGORA_SANDBOX_RUNNER_URL=<private runner URL once VM is live>`
 
 ## Verification checklist
 
-- `gcloud services list --enabled --project agora-ai-1199`
-- `gcloud artifacts repositories list --project agora-ai-1199 --location us-central1`
-- `gcloud storage buckets list --project agora-ai-1199`
-- `gcloud redis instances list --project agora-ai-1199 --region us-central1`
-- `gcloud secrets list --project agora-ai-1199`
-- `gcloud run services list --project agora-ai-1199 --region us-central1`
+- `gcloud services list --enabled --project agora-ai-1190`
+- `gcloud artifacts repositories list --project agora-ai-1190 --location us-central1`
+- `gcloud storage buckets list --project agora-ai-1190`
+- `gcloud redis instances list --project agora-ai-1190 --region us-central1`
+- `gcloud secrets list --project agora-ai-1190`
+- `gcloud run services list --project agora-ai-1190 --region us-central1`
 - `curl https://<cloud-run-url>/health`
 - `curl https://<cloud-run-url>/auth/config`
 

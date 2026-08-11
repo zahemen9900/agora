@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$(mktemp -d -t agora-restore-XXXXXX)"
 
-PROJECT_ID="${PROJECT_ID:-agora-ai-1199}"
+PROJECT_ID="${PROJECT_ID:-agora-ai-1190}"
 PROJECT_NAME="${PROJECT_NAME:-agora-ai}"
 REGION="${REGION:-us-central1}"
 ZONE="${ZONE:-us-central1-a}"
@@ -18,7 +18,7 @@ RUNNER_VM_NAME="${RUNNER_VM_NAME:-agora-sandbox-runner}"
 COORDINATION_NAMESPACE="${COORDINATION_NAMESPACE:-agora-prod}"
 PROGRAM_ID="${PROGRAM_ID:-82b5DxHBmKFYohQJTMSBtnMyYVER9XepMnSdwuJB1gkd}"
 SOLANA_NETWORK="${SOLANA_NETWORK:-devnet}"
-RUNNER_MACHINE_TYPE="${RUNNER_MACHINE_TYPE:-e2-standard-4}"
+RUNNER_MACHINE_TYPE="${RUNNER_MACHINE_TYPE:-e2-small}"
 RUNNER_IMAGE_FAMILY="${RUNNER_IMAGE_FAMILY:-ubuntu-2204-lts}"
 RUNNER_IMAGE_PROJECT="${RUNNER_IMAGE_PROJECT:-ubuntu-os-cloud}"
 RUNNER_STARTUP_TIMEOUT_SECONDS="${RUNNER_STARTUP_TIMEOUT_SECONDS:-240}"
@@ -36,10 +36,14 @@ RESTORE_REQUIRE_AUTHENTICATED_SMOKE="${RESTORE_REQUIRE_AUTHENTICATED_SMOKE:-0}"
 REQUIRED_SERVICES=(
   run.googleapis.com
   artifactregistry.googleapis.com
+  aiplatform.googleapis.com
   secretmanager.googleapis.com
   redis.googleapis.com
   compute.googleapis.com
   cloudbuild.googleapis.com
+  cloudbilling.googleapis.com
+  cloudresourcemanager.googleapis.com
+  iam.googleapis.com
   iamcredentials.googleapis.com
   vpcaccess.googleapis.com
   storage.googleapis.com
@@ -593,6 +597,10 @@ create_core() {
     --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
     --role="roles/artifactregistry.reader" \
     --condition=None >/dev/null
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${RUNTIME_SA_EMAIL}" \
+    --role="roles/aiplatform.user" \
+    --condition=None >/dev/null
 
   log "Ensuring Redis instance exists"
   gcloud redis instances describe "$REDIS_INSTANCE_NAME" \
@@ -605,8 +613,6 @@ create_core() {
       --redis-version=redis_7_2 \
       --network=default \
       --connect-mode=direct-peering
-
-  upsert_redis_secret
 }
 
 create_secrets() {
@@ -637,7 +643,7 @@ seed_secrets() {
 
   add_secret_version "agora-gemini-api-key" "${AGORA_GEMINI_API_KEY:-}"
   add_secret_version "agora-anthropic-api-key" "${ANTHROPIC_API_KEY:-}"
-  add_secret_version "agora-openrouter-api-key" "${OPENROUTER_API_KEY:-${AGORA_OPENROUTER_API_KEY:-${OPENROUTER_API_KEY_2:-${AGORA_OPENROUTER_API_KEY_2:-}}}}"
+  add_secret_version "agora-openrouter-api-key" "${OPENROUTER_API_KEY_2:-${AGORA_OPENROUTER_API_KEY_2:-${OPENROUTER_API_KEY:-${AGORA_OPENROUTER_API_KEY:-}}}}"
   add_secret_version "agora-helius-rpc-url" "${HELIUS_RPC_URL:-${HELIUS_URL:-}}"
   add_secret_version "agora-solana-devnet-keypair" "$solana_keypair_payload"
   add_secret_version "agora-api-key-pepper" "${AGORA_API_KEY_PEPPER:-$(random_secret)}"
@@ -709,8 +715,8 @@ deploy_api() {
     --project "$PROJECT_ID" \
     --region "$REGION" \
     --platform managed \
-    --cpu 2 \
-    --memory 2Gi \
+    --cpu 1 \
+    --memory 1Gi \
     --concurrency 4 \
     --min-instances 1 \
     --max-instances 6 \
