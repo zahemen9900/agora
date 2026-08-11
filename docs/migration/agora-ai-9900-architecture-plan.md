@@ -3,7 +3,7 @@
 > Historical note:
 > This document captures the hardened target architecture that was originally drafted
 > for a placeholder project name `agora-ai-9900`. The active restore target is now
-> `agora-ai-1199`, documented in `docs/agora-ai-1199-restore-runbook.md`.
+> `agora-ai-1190`, documented in `docs/agora-ai-1190-restore-runbook.md`.
 
 ## Purpose
 
