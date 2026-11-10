@@ -114,6 +114,8 @@ class S3Blob:
         self.name = name
         self._generation = generation
         self._updated = updated
+        self._size: int | None = None
+        self._content_type: str | None = None
 
     @property
     def generation(self) -> str | None:
@@ -123,11 +125,25 @@ class S3Blob:
     def updated(self) -> datetime | None:
         return self._updated
 
+    @property
+    def size(self) -> int | None:
+        return self._size
+
+    @property
+    def content_type(self) -> str | None:
+        return self._content_type
+
     def _record_metadata(self, response: dict[str, Any]) -> None:
         self._generation = _normalize_etag(response.get("ETag")) or self._generation
         updated = response.get("LastModified")
         if isinstance(updated, datetime):
             self._updated = updated
+        size = response.get("ContentLength")
+        if isinstance(size, int):
+            self._size = size
+        content_type = response.get("ContentType")
+        if isinstance(content_type, str):
+            self._content_type = content_type
 
     def _download(self) -> bytes:
         try:
@@ -217,6 +233,8 @@ class S3Blob:
             raise
 
         self._record_metadata(response)
+        self._size = len(body)
+        self._content_type = content_type
         if self._updated is None:
             self._updated = datetime.now(UTC)
 

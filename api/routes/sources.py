@@ -49,6 +49,28 @@ def _to_source_record(raw_source: dict[str, object], *, workspace_id: str) -> Ta
     return source
 
 
+async def _read_limited_body(request: Request, *, max_bytes: int) -> bytes:
+    """Read a request body without ever buffering more than the allowed size."""
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header") from exc
+        if declared_length > max_bytes:
+            raise HTTPException(status_code=413, detail="Uploaded source exceeds the size limit")
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="Uploaded source exceeds the size limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/upload-init", response_model=SourceUploadInitResponse)
 @router.post("/upload-init/", response_model=SourceUploadInitResponse, include_in_schema=False)
 async def upload_init(
@@ -104,8 +126,12 @@ async def upload_bytes(
     if raw_source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     source = _to_source_record(raw_source, workspace_id=user.workspace_id)
-    payload = await request.body()
-    digest = await storage.write_upload_bytes(source=source, data=payload)
+    max_bytes = min(source.size_bytes, settings.source_max_file_bytes)
+    payload = await _read_limited_body(request, max_bytes=max_bytes)
+    try:
+        digest = await storage.write_upload_bytes(source=source, data=payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"source_id": source_id, "sha256": digest}
 
 
@@ -135,6 +161,8 @@ async def upload_complete(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     response = TaskSourceResponse.model_validate(completed.model_dump(mode="json"))
     response.source_url = build_source_content_path(response.source_id)
     return response

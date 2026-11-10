@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -60,6 +61,14 @@ class _RunnerSettings(BaseModel):
     output_file_limit: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_OUTPUT_FILE_LIMIT", "20")))
     max_concurrent_runs: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_MAX_CONCURRENT_RUNS", "1")))
     google_cloud_project: str = Field(default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT", ""))
+    data_bucket: str = Field(
+        default_factory=lambda: os.getenv("AGORA_S3_BUCKET")
+        or os.getenv("GCS_BUCKET", "")
+    )
+    allow_file_sources: bool = Field(
+        default_factory=lambda: os.getenv("AGORA_SANDBOX_ALLOW_FILE_SOURCES", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
 
 
 class _SandboxExecutor:
@@ -68,6 +77,7 @@ class _SandboxExecutor:
     def __init__(self, settings: _RunnerSettings) -> None:
         self._settings = settings
         self._storage_client: storage.Client | None = None
+        self._s3_client: Any | None = None
         self._slots = asyncio.Semaphore(max(1, settings.max_concurrent_runs))
 
     async def execute(self, request: ExecuteRequest) -> ExecuteResponse:
@@ -119,13 +129,25 @@ class _SandboxExecutor:
         target_name = self._target_filename(source.source_id, source.display_name)
         target_path = target_dir / target_name
         parsed = urlparse(source.storage_uri)
+        self._validate_bucket(scheme=parsed.scheme, bucket_name=parsed.netloc)
         if parsed.scheme == "gs":
             payload = await asyncio.to_thread(
                 self._read_gcs_bytes,
                 bucket_name=parsed.netloc,
                 object_name=parsed.path.lstrip("/"),
             )
+        elif parsed.scheme == "s3":
+            payload = await asyncio.to_thread(
+                self._read_s3_bytes,
+                bucket_name=parsed.netloc,
+                object_name=parsed.path.lstrip("/"),
+            )
         elif parsed.scheme == "file":
+            if not self._settings.allow_file_sources:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="file:// source URIs are disabled for this runner",
+                )
             payload = await asyncio.to_thread(Path(parsed.path).read_bytes)
         else:
             raise HTTPException(
@@ -134,12 +156,39 @@ class _SandboxExecutor:
             )
         await asyncio.to_thread(target_path.write_bytes, payload)
 
+    def _validate_bucket(self, *, scheme: str, bucket_name: str) -> None:
+        if scheme not in {"gs", "s3"}:
+            return
+        configured = self._settings.data_bucket.strip()
+        if configured and bucket_name != configured:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Source bucket {bucket_name!r} is not the configured data bucket",
+            )
+
     def _read_gcs_bytes(self, *, bucket_name: str, object_name: str) -> bytes:
         if self._storage_client is None:
             project = self._settings.google_cloud_project or None
             self._storage_client = storage.Client(project=project)
         bucket = self._storage_client.bucket(bucket_name)
         return bucket.blob(object_name).download_as_bytes()
+
+    def _read_s3_bytes(self, *, bucket_name: str, object_name: str) -> bytes:
+        if self._s3_client is None:
+            import boto3
+
+            self._s3_client = boto3.client(
+                "s3",
+                region_name=os.getenv("AWS_REGION") or None,
+            )
+        response = self._s3_client.get_object(Bucket=bucket_name, Key=object_name)
+        body = response["Body"]
+        try:
+            return body.read()
+        finally:
+            close = getattr(body, "close", None)
+            if callable(close):
+                close()
 
     async def _run_docker(
         self,

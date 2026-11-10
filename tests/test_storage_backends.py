@@ -42,12 +42,14 @@ class _FakeS3Client:
         *,
         etag: str | None = None,
         updated: datetime | None = None,
+        content_type: str = "application/octet-stream",
     ) -> None:
         self._etag_counter += 1
         self.objects[(bucket, key)] = {
             "body": payload,
             "etag": etag or f'"etag-{self._etag_counter}"',
             "updated": updated or datetime.now(UTC),
+            "content_type": content_type,
         }
 
     @staticmethod
@@ -68,14 +70,20 @@ class _FakeS3Client:
             "Body": _FakeBody(record["body"]),
             "ETag": record["etag"],
             "LastModified": record["updated"],
-            "ContentType": "application/json",
+            "ContentLength": len(record["body"]),
+            "ContentType": record["content_type"],
         }
 
     def head_object(self, *, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
         record = self.objects.get((Bucket, Key))
         if record is None:
             raise self._error("404", 404, "HeadObject")
-        return {"ETag": record["etag"], "LastModified": record["updated"]}
+        return {
+            "ETag": record["etag"],
+            "LastModified": record["updated"],
+            "ContentLength": len(record["body"]),
+            "ContentType": record["content_type"],
+        }
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]:
         self.put_calls.append(dict(kwargs))
@@ -94,6 +102,7 @@ class _FakeS3Client:
             "body": kwargs["Body"],
             "etag": etag,
             "updated": datetime.now(UTC),
+            "content_type": kwargs.get("ContentType", "application/octet-stream"),
         }
         return {"ETag": etag}
 

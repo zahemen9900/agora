@@ -35,7 +35,7 @@ async def test_source_upload_flow_local_store(tmp_path: Path) -> None:
                 json={
                     "filename": "notes.py",
                     "mime_type": "text/x-python",
-                    "size_bytes": 14,
+                    "size_bytes": 15,
                 },
             )
             assert init_response.status_code == 200
@@ -133,13 +133,31 @@ class _FakeBlob:
     def __init__(self) -> None:
         self.uploaded: bytes | None = None
         self.content_type: str | None = None
+        self.size: int | None = None
 
     def generate_signed_url(self, **_: object) -> str:
         raise AttributeError("signing unavailable")
 
-    def upload_from_string(self, data: bytes, *, content_type: str) -> None:
+    def upload_from_string(
+        self,
+        data: bytes,
+        *,
+        content_type: str,
+        if_generation_match: int | str | None = None,
+    ) -> None:
+        del if_generation_match
         self.uploaded = data
         self.content_type = content_type
+        self.size = len(data)
+
+    def download_as_bytes(self) -> bytes:
+        if self.uploaded is None:
+            raise FileNotFoundError("missing")
+        return self.uploaded
+
+    def reload(self) -> None:
+        if self.uploaded is None:
+            raise FileNotFoundError("missing")
 
     def exists(self) -> bool:
         return self.uploaded is not None
@@ -168,6 +186,7 @@ async def test_source_upload_session_falls_back_to_api_upload_when_signing_is_un
     store = LocalTaskStore(data_dir=str(tmp_path / "sources"))
     storage = SourceStorageService(task_store=store)
     blob = _FakeBlob()
+    storage._backend = "gcs"
     storage._storage_client = _FakeStorageClient(blob)  # type: ignore[assignment]
     storage._bucket_name = "agora-data"
 
@@ -177,7 +196,7 @@ async def test_source_upload_session_falls_back_to_api_upload_when_signing_is_un
         source_id="source-1",
         display_name="notes.py",
         mime_type="text/x-python",
-        size_bytes=14,
+        size_bytes=15,
     )
 
     session = await storage.create_upload_session(workspace_id="user-1", source=source)
