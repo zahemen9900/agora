@@ -37,6 +37,18 @@ class Settings(BaseSettings):
 
     google_cloud_project: str = ""
     gcs_bucket: str = ""
+    storage_backend: Literal["gcs", "s3"] = Field(
+        default="gcs",
+        validation_alias=AliasChoices("AGORA_STORAGE_BACKEND", "STORAGE_BACKEND"),
+    )
+    s3_bucket: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGORA_S3_BUCKET", "S3_BUCKET"),
+    )
+    aws_region: str = Field(
+        default="us-east-1",
+        validation_alias=AliasChoices("AWS_REGION", "AGORA_AWS_REGION"),
+    )
     source_upload_expiry_minutes: int = Field(
         default=15,
         ge=1,

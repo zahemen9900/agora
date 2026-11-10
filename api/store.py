@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from google.api_core import exceptions as gcs_exceptions
 from google.cloud import storage
 
+from api.config import Settings
 from api.security import validate_storage_id
+from api.storage_backends import S3StorageClient
 from api.store_errors import TaskStoreNotFound, TaskStorePayloadError, TaskStoreUnavailable
 from api.store_local import LocalTaskStore
 
@@ -21,8 +23,24 @@ class TaskStore:
     _APPEND_EVENT_MAX_RETRIES = 3
     _AGORA_NAMESPACE_PREFIX = "agora"
 
-    def __init__(self, bucket_name: str) -> None:
-        self.client = storage.Client()
+    def __init__(
+        self,
+        bucket_name: str,
+        *,
+        backend: Literal["gcs", "s3"] = "gcs",
+        client: Any | None = None,
+        region_name: str | None = None,
+    ) -> None:
+        if backend not in {"gcs", "s3"}:
+            raise ValueError(f"Unsupported storage backend: {backend}")
+        self.backend = backend
+        self.bucket_name = bucket_name
+        if client is not None:
+            self.client = client
+        elif backend == "s3":
+            self.client = S3StorageClient(region_name=region_name)
+        else:
+            self.client = storage.Client()
         self.bucket = self.client.bucket(bucket_name)
 
     @staticmethod
@@ -76,7 +94,7 @@ class TaskStore:
         data: dict[str, Any],
         *,
         operation: str,
-        if_generation_match: int | None = None,
+        if_generation_match: int | str | None = None,
     ) -> None:
         upload_kwargs: dict[str, Any] = {}
         if if_generation_match is not None:
@@ -95,7 +113,55 @@ class TaskStore:
                 f"Failed to write blob while {operation}: blob={blob.name}"
             ) from exc
 
-    def _list_blobs(self, *, prefix: str, operation: str) -> list[storage.Blob]:
+    def _download_blob_json_for_append(
+        self,
+        blob: Any,
+        *,
+        allow_missing: bool,
+        operation: str,
+    ) -> tuple[dict[str, Any] | None, int | str | None]:
+        """Read a blob and the generation token that belongs to those bytes.
+
+        GCS does not populate ``Blob.generation`` from a download response, so the
+        metadata is refreshed *before* the download. If another writer replaces
+        the object in between, the later conditional write fails and retries.
+        S3 returns the ETag in the same GET response as the body.
+        """
+
+        backend = getattr(self, "backend", "gcs")
+        generation: int | str | None = None
+        if backend == "gcs":
+            try:
+                blob.reload()
+            except gcs_exceptions.NotFound:
+                if allow_missing:
+                    return None, None
+                raise TaskStoreNotFound(
+                    f"Missing blob while {operation}: blob={blob.name}"
+                ) from None
+            except Exception as exc:
+                raise TaskStoreUnavailable(
+                    f"Failed to refresh blob metadata while {operation}: blob={blob.name}"
+                ) from exc
+            generation = getattr(blob, "generation", None)
+
+        payload = self._download_blob_json(
+            blob,
+            allow_missing=allow_missing,
+            operation=operation,
+        )
+        if payload is None:
+            return None, None
+
+        if backend == "s3":
+            generation = getattr(blob, "generation", None)
+        if generation is None:
+            raise TaskStoreUnavailable(
+                f"Missing blob generation metadata while {operation}: blob={blob.name}"
+            )
+        return payload, generation
+
+    def _list_blobs(self, *, prefix: str, operation: str) -> list[Any]:
         try:
             return list(self.bucket.list_blobs(prefix=prefix))
         except Exception as exc:
@@ -394,14 +460,14 @@ class TaskStore:
         blob = self.bucket.blob(self._task_blob_name(workspace_id, task_id))
 
         for attempt in range(1, self._APPEND_EVENT_MAX_RETRIES + 1):
-            task = self._download_blob_json(
+            task, generation = self._download_blob_json_for_append(
                 blob,
                 allow_missing=True,
                 operation="append_event.read_task",
             )
             if task is None and attempt == 1:
                 legacy_blob = self.bucket.blob(self._legacy_task_blob_name(workspace_id, task_id))
-                legacy_task = self._download_blob_json(
+                legacy_task, legacy_generation = self._download_blob_json_for_append(
                     legacy_blob,
                     allow_missing=True,
                     operation="append_event.read_legacy_task",
@@ -409,6 +475,7 @@ class TaskStore:
                 if legacy_task is not None:
                     blob = legacy_blob
                     task = legacy_task
+                    generation = legacy_generation
             if task is None:
                 raise TaskStoreNotFound(
                     "Cannot append event: "
@@ -425,21 +492,6 @@ class TaskStore:
                     }
                 )
 
-            generation = blob.generation
-            if generation is None:
-                try:
-                    blob.reload()
-                except gcs_exceptions.NotFound as exc:
-                    raise TaskStoreNotFound(
-                        "Cannot append event: "
-                        f"task disappeared workspace_id={workspace_id} task_id={task_id}"
-                    ) from exc
-                except Exception as exc:
-                    raise TaskStoreUnavailable(
-                        "Failed to refresh blob metadata during append_event"
-                    ) from exc
-                generation = blob.generation
-
             if generation is None:
                 raise TaskStoreUnavailable(
                     "Missing blob generation metadata during append_event"
@@ -450,7 +502,7 @@ class TaskStore:
                     blob,
                     task,
                     operation="append_event.write_task",
-                    if_generation_match=int(generation),
+                    if_generation_match=generation,
                 )
                 return
             except gcs_exceptions.PreconditionFailed as exc:
@@ -662,7 +714,7 @@ class TaskStore:
         blob = self.bucket.blob(self._user_test_blob_name(user_id, run_id))
 
         for attempt in range(1, self._APPEND_EVENT_MAX_RETRIES + 1):
-            record = self._download_blob_json(
+            record, generation = self._download_blob_json_for_append(
                 blob,
                 allow_missing=True,
                 operation="append_user_test_event.read_test",
@@ -683,21 +735,6 @@ class TaskStore:
                     }
                 )
 
-            generation = blob.generation
-            if generation is None:
-                try:
-                    blob.reload()
-                except gcs_exceptions.NotFound as exc:
-                    raise TaskStoreNotFound(
-                        "Cannot append benchmark event: "
-                        f"run disappeared user_id={user_id} run_id={run_id}"
-                    ) from exc
-                except Exception as exc:
-                    raise TaskStoreUnavailable(
-                        "Failed to refresh benchmark run blob metadata during append"
-                    ) from exc
-                generation = blob.generation
-
             if generation is None:
                 raise TaskStoreUnavailable(
                     "Missing benchmark run blob generation metadata during append"
@@ -708,7 +745,7 @@ class TaskStore:
                     blob,
                     record,
                     operation="append_user_test_event.write_test",
-                    if_generation_match=int(generation),
+                    if_generation_match=generation,
                 )
                 return
             except gcs_exceptions.PreconditionFailed as exc:
@@ -843,11 +880,38 @@ class TaskStore:
         return current
 
 
+def resolve_storage_settings(settings: Settings) -> tuple[Literal["gcs", "s3"], str | None]:
+    """Resolve the configured durable-storage backend and bucket."""
+
+    backend = (settings.storage_backend or "gcs").strip().lower()
+    if backend not in {"gcs", "s3"}:
+        raise RuntimeError(
+            f"Unsupported storage backend {backend!r}; set AGORA_STORAGE_BACKEND to 'gcs' or 's3'."
+        )
+    bucket = (
+        settings.s3_bucket.strip()
+        if backend == "s3"
+        else settings.gcs_bucket.strip()
+    )
+    if settings.environment.strip().lower() in {"prod", "production"} and not bucket:
+        raise RuntimeError(
+            f"Production storage backend {backend!r} requires a bucket; "
+            "set AGORA_S3_BUCKET or GCS_BUCKET."
+        )
+    return backend, (bucket or None)
+
+
 def get_store(
     bucket_name: str | None,
     *,
+    backend: Literal["gcs", "s3"] = "gcs",
     local_data_dir: str | None = None,
+    region_name: str | None = None,
 ) -> TaskStore | LocalTaskStore:
     if bucket_name:
-        return TaskStore(bucket_name)
+        return TaskStore(
+            bucket_name,
+            backend=backend,
+            region_name=region_name,
+        )
     return LocalTaskStore(data_dir=local_data_dir or "api/data")

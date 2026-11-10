@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from api.auth import AuthenticatedUser, get_current_user, require_scope
+from api.config import settings
 from api.models import (
     SourceUploadCompleteRequest,
     SourceUploadInitRequest,
@@ -20,9 +21,8 @@ from api.source_storage import (
     build_source_id,
     is_supported_source_file,
 )
-from api.store import TaskStore, get_store
+from api.store import TaskStore, get_store, resolve_storage_settings
 from api.store_local import LocalTaskStore
-from api.config import settings
 
 router = APIRouter(prefix="/sources", tags=["sources"])
 CurrentUser = AuthenticatedUser
@@ -32,8 +32,11 @@ _store: TaskStore | LocalTaskStore | None = None
 def get_task_store() -> TaskStore | LocalTaskStore:
     global _store
     if _store is None:
+        backend, bucket = resolve_storage_settings(settings)
         _store = get_store(
-            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None,
+            bucket,
+            backend=backend,
+            region_name=settings.aws_region,
             local_data_dir=settings.local_data_dir,
         )
     return _store
