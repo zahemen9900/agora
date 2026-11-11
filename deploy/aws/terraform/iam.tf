@@ -192,7 +192,10 @@ data "aws_iam_policy_document" "instance" {
     sid       = "ReadRuntimeSecrets"
     effect    = "Allow"
     actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
-    resources = ["arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/agora/prod/*"]
+    resources = [
+      "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/agora/prod",
+      "arn:${data.aws_partition.current.partition}:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/agora/prod/*",
+    ]
   }
 
   statement {
