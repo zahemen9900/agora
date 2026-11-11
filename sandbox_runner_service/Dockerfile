@@ -12,8 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 
 COPY sandbox_runner_service/requirements.txt ./requirements.txt
-COPY sandbox_runner_service/runtime-requirements.txt ./runtime-requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt -r runtime-requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY sandbox_runner_service ./sandbox_runner_service
 

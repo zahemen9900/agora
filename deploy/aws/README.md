@@ -54,7 +54,7 @@ Before creating compute:
 1. `aws sso login --profile gsl-admin`
 2. `aws sts get-caller-identity --profile gsl-admin` must report `866160682016`.
 3. `pytest tests/ -q -m 'not paid_integration and not localnet_integration'` baseline is recorded above.
-4. GCS export is re-inventoried: 83 objects expected before migration.
+4. GCS export is re-inventoried: 34 objects expected before migration (verified 2,321,767 bytes).
 5. AWS account spend is below the operational gate of $28 projected.
 
 ## Data export location

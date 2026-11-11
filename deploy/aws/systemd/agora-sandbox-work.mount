@@ -1,0 +1,13 @@
+[Unit]
+Description=Agora sandbox tmpfs
+DefaultDependencies=no
+Before=local-fs.target
+
+[Mount]
+What=tmpfs
+Where=/opt/agora/sandbox-work
+Type=tmpfs
+Options=size=192m,mode=0711,nosuid,nodev,noexec
+
+[Install]
+WantedBy=multi-user.target

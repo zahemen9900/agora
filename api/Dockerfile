@@ -14,7 +14,7 @@ COPY agora ./agora
 COPY api ./api
 COPY benchmarks ./benchmarks
 
-RUN useradd --create-home --shell /usr/sbin/nologin agora \
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin agora \
     && chown -R agora:agora /app
 USER agora
 

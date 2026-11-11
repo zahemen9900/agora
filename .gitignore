@@ -239,3 +239,11 @@ node_modules
 benchmarks/results/
 scratchpad
 .misc/
+deploy/aws/config.env
+deploy/aws/terraform/.terraform/
+deploy/aws/terraform/*.tfstate
+deploy/aws/terraform/*.tfstate.*
+deploy/aws/terraform/*.tfplan
+deploy/aws/terraform/terraform.tfvars
+deploy/aws/terraform/crash.log
+deploy/aws/terraform/crash.*.log

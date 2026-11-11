@@ -48,7 +48,7 @@ The monthly budget is **under $30**. That constraint rules out the usual managed
 | Component | Current implementation |
 |---|---|
 | API | FastAPI in `api/`, container port 8080 on GCP Cloud Run |
-| Durable state | GCS bucket `agora-ai-1190-agora-data` (83 objects, ~2.3 MB) |
+| Durable state | GCS bucket `agora-ai-1190-agora-data` (34 objects, ~2.3 MB) |
 | Coordination | GCP Memorystore Redis `agora-redis-prod` |
 | Sandbox | FastAPI runner on a GCE VM, launches sibling Docker containers |
 | Images | GCP Artifact Registry |

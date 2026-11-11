@@ -203,6 +203,7 @@ class _SandboxExecutor:
             "docker",
             "run",
             "--rm",
+            "--pull=never",
             "--name",
             container_name,
             "--network",

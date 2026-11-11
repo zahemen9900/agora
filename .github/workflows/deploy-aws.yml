@@ -1,0 +1,134 @@
+name: Deploy AWS
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy the release to the tagged EC2 instance after building"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-aws
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  DATA_BUCKET: agora-866160682016-data
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push API image
+        id: api
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: api/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/agora-api:${{ github.sha }}
+
+      - name: Build and push sandbox runner image
+        id: runner
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sandbox_runner_service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/agora-sandbox-runner:${{ github.sha }}
+
+      - name: Build and push sandbox runtime image
+        id: runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: sandbox_runner_service/runtime-image.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/agora-sandbox-runtime:${{ github.sha }}
+
+      - name: Create and upload release bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp -R deploy/aws/docker-compose.yml deploy/aws/Caddyfile deploy/aws/scripts deploy/aws/systemd release/
+          cat > release/config.env <<EOF
+          API_HOST=
+          DATA_BUCKET=${DATA_BUCKET}
+          AWS_REGION=${AWS_REGION}
+          API_IMAGE=${{ steps.ecr.outputs.registry }}/agora-api@${{ steps.api.outputs.digest }}
+          RUNNER_IMAGE=${{ steps.ecr.outputs.registry }}/agora-sandbox-runner@${{ steps.runner.outputs.digest }}
+          SANDBOX_RUNTIME_IMAGE=${{ steps.ecr.outputs.registry }}/agora-sandbox-runtime@${{ steps.runtime.outputs.digest }}
+          ACME_EMAIL=
+          WEB_URL=https://agora-bay-seven.vercel.app
+          EOF
+          tar -czf bundle.tar.gz -C release .
+          sha256sum bundle.tar.gz | awk '{print $1}' > bundle.tar.gz.sha256
+          aws s3 cp bundle.tar.gz "s3://${DATA_BUCKET}/_deploy/releases/${{ github.sha }}/bundle.tar.gz" --only-show-errors
+          aws s3 cp bundle.tar.gz.sha256 "s3://${DATA_BUCKET}/_deploy/releases/${{ github.sha }}/bundle.tar.gz.sha256" --only-show-errors
+          echo "checksum=$(cat bundle.tar.gz.sha256)" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy through SSM
+        if: ${{ inputs.deploy }}
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          COMMAND_ID="$(aws ssm send-command \
+            --document-name agora-deploy \
+            --parameters "ReleaseSha=${RELEASE_SHA}" \
+            --targets Key=tag:AgoraInstance,Values=true \
+            --comment "Deploy ${RELEASE_SHA}" \
+            --query 'Command.CommandId' --output text)"
+          echo "SSM command: ${COMMAND_ID}"
+          for _ in $(seq 1 120); do
+            STATUS="$(aws ssm list-command-invocations \
+              --command-id "${COMMAND_ID}" \
+              --details \
+              --query 'CommandInvocations[0].Status' --output text 2>/dev/null || echo Pending)"
+            echo "status: ${STATUS}"
+            case "${STATUS}" in
+              Success) exit 0 ;;
+              Cancelled|TimedOut|Failed)
+                aws ssm list-command-invocations --command-id "${COMMAND_ID}" --details \
+                  --query 'CommandInvocations[0].CommandPlugins[0].Output' --output text || true
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          echo "deployment command did not finish" >&2
+          exit 1
+
+      - name: Summary
+        run: |
+          echo "release SHA: ${{ github.sha }}"
+          echo "bundle checksum: ${{ steps.bundle.outputs.checksum }}"
+          echo "API digest: ${{ steps.api.outputs.digest }}"
+          echo "runner digest: ${{ steps.runner.outputs.digest }}"
+          echo "runtime digest: ${{ steps.runtime.outputs.digest }}"
