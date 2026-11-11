@@ -155,6 +155,24 @@ class Settings(BaseSettings):
             "WORKSPACE_CONCURRENT_TASK_RUNS",
         ),
     )
+    host_concurrent_runs: int = Field(
+        default=2,
+        ge=0,
+        le=1_000,
+        validation_alias=AliasChoices(
+            "AGORA_HOST_CONCURRENT_RUNS",
+            "HOST_CONCURRENT_RUNS",
+        ),
+    )
+    host_pending_runs: int = Field(
+        default=8,
+        ge=0,
+        le=1_000,
+        validation_alias=AliasChoices(
+            "AGORA_HOST_PENDING_RUNS",
+            "HOST_PENDING_RUNS",
+        ),
+    )
     coordination_backend: str = Field(
         default="memory",
         validation_alias=AliasChoices("AGORA_COORDINATION_BACKEND", "COORDINATION_BACKEND"),
