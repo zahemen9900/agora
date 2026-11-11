@@ -1,6 +1,9 @@
 name: Deploy AWS
 
 on:
+  push:
+    branches:
+      - aws-migration
   workflow_dispatch:
     inputs:
       deploy:
