@@ -59,8 +59,8 @@ services:
       AGORA_FLASH_MODEL: gemini-3.1-flash-lite-preview
       AGORA_PRO_MODEL: gemini-3-flash-preview
       AGORA_CLAUDE_MODEL: claude-sonnet-4-6
-      AGORA_OPENROUTER_MODEL: qwen/qwen3.5-flash-02-23
-      AGORA_OPENROUTER_ANALYSIS_MODEL: google/gemma-4-31b-it
+      AGORA_OPENROUTER_MODEL: openai/gpt-4o-mini
+      AGORA_OPENROUTER_ANALYSIS_MODEL: openai/gpt-4o-mini
       AGORA_WORKOS_CLIENT_ID: ${AGORA_WORKOS_CLIENT_ID:-}
       AGORA_WORKOS_AUTHKIT_DOMAIN: ${AGORA_WORKOS_AUTHKIT_DOMAIN:-}
       AGORA_AUTH_ISSUER: ${AGORA_AUTH_ISSUER:-}

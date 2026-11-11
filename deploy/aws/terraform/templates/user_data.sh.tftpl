@@ -60,6 +60,12 @@ set -a
 # shellcheck disable=SC1090
 . /opt/agora/current/config.env
 set +a
+for _ in $(seq 1 30); do
+  if docker info >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
 docker pull "$${SANDBOX_RUNTIME_IMAGE:?SANDBOX_RUNTIME_IMAGE is required}"
 
 systemctl start agora-secrets.service
