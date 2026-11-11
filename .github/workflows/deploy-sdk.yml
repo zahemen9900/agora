@@ -84,7 +84,7 @@ jobs:
           if event_name == "workflow_dispatch":
               should_publish = input_publish and not published
           elif event_name == "push":
-              should_publish = not published and (ref_type == "tag" or ref_type == "branch")
+              should_publish = not published and ref_type == "tag"
 
           output_path = Path(os.environ["GITHUB_OUTPUT"])
           with output_path.open("a", encoding="utf-8") as handle:
