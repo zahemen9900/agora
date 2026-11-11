@@ -59,8 +59,13 @@ class S3StorageClient:
     def __init__(self, *, client: Any | None = None, region_name: str | None = None) -> None:
         if client is None:
             import boto3
+            from botocore.config import Config
 
-            client = boto3.client("s3", region_name=region_name)
+            client = boto3.client(
+                "s3",
+                region_name=region_name,
+                config=Config(signature_version="s3v4"),
+            )
         self._client = client
 
     def bucket(self, name: str) -> S3Bucket:
