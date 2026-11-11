@@ -31,7 +31,7 @@ No credentials belong in this directory. Secret values live in SSM Parameter Sto
 
 Verified after cutover: `/health`, `/ready`, `/auth/config`, preserved `agora_live_` API key `/auth/me`, signed S3 source upload/read, sandbox `execute_python` (`42`), and a 4-agent vote task (`OK`, confidence 1.0).
 
-Provider status: Gemini returns `403` because the API key's Google project is on the unavailable free tier; Anthropic returns `400` because its credit balance is low. OpenRouter is live and the fallback model is `openai/gpt-4o-mini`. Add billing to Gemini or Anthropic to restore those direct providers.
+Provider status: Gemini returns `403` because the API key's Google project is on the unavailable free tier; Anthropic returns `400` because its credit balance is low. OpenRouter is live and the fallback/tier model is `openai/gpt-6-luna`. The Claude tier default is `claude-haiku-5-5`. Add billing to Gemini or Anthropic to restore those direct providers.
 
 Operational warning: `enable_compute` defaults to `false`. Any full `terraform apply` must pass `-var='enable_compute=true'` with the current release SHA/checksum, or Terraform will destroy the instance. Use targeted applies for IAM/budget-only changes.
 
