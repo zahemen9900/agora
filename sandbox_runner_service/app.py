@@ -60,6 +60,9 @@ class _RunnerSettings(BaseModel):
     pids_limit: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_PIDS_LIMIT", "128")))
     output_file_limit: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_OUTPUT_FILE_LIMIT", "20")))
     max_concurrent_runs: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_MAX_CONCURRENT_RUNS", "1")))
+    max_pending_runs: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_MAX_PENDING_RUNS", "2")))
+    stdio_max_bytes: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_STDIO_MAX_BYTES", "1048576")))
+    max_output_bytes: int = Field(default_factory=lambda: int(os.getenv("AGORA_SANDBOX_MAX_OUTPUT_BYTES", "67108864")))
     google_cloud_project: str = Field(default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT", ""))
     data_bucket: str = Field(
         default_factory=lambda: os.getenv("AGORA_S3_BUCKET")
@@ -90,8 +93,13 @@ class _SandboxExecutor:
             output_dir = base_dir / "output"
             input_dir.mkdir(parents=True, exist_ok=True)
             output_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(base_dir, 0o755)
+            os.chmod(input_dir, 0o755)
+            os.chown(output_dir, 65532, 65532)
+            os.chmod(output_dir, 0o755)
             program_path = base_dir / "program.py"
             program_path.write_text(request.code, encoding="utf-8")
+            os.chmod(program_path, 0o644)
 
             try:
                 for source in request.sources:
@@ -209,8 +217,16 @@ class _SandboxExecutor:
             "--network",
             "none",
             "--read-only",
+            "--user",
+            "65532:65532",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
             "--tmpfs",
-            "/tmp:rw,size=64m",
+            "/tmp:rw,size=64m,mode=1777",
+            "--log-driver",
+            "none",
             "--env",
             "HOME=/tmp/home",
             "--env",
@@ -220,6 +236,8 @@ class _SandboxExecutor:
             "--cpus",
             self._settings.cpu_limit,
             "--memory",
+            self._settings.memory_limit,
+            "--memory-swap",
             self._settings.memory_limit,
             "--pids-limit",
             str(self._settings.pids_limit),
@@ -246,20 +264,20 @@ class _SandboxExecutor:
                 timeout=timeout_seconds,
             )
             return (
-                stdout.decode("utf-8", errors="replace"),
-                stderr.decode("utf-8", errors="replace"),
+                self._decode_output(stdout),
+                self._decode_output(stderr),
                 int(process.returncode or 0),
             )
         except TimeoutError:
             process.kill()
             stdout, stderr = await process.communicate()
-            stderr_text = stderr.decode("utf-8", errors="replace")
+            stderr_text = self._decode_output(stderr)
             if stderr_text:
                 stderr_text = f"{stderr_text}\nExecution timed out."
             else:
                 stderr_text = "Execution timed out."
             return (
-                stdout.decode("utf-8", errors="replace"),
+                self._decode_output(stdout),
                 stderr_text,
                 124,
             )
@@ -277,11 +295,25 @@ class _SandboxExecutor:
         )
         await process.communicate()
 
+    def _decode_output(self, payload: bytes) -> str:
+        limit = max(1, self._settings.stdio_max_bytes)
+        text = payload[:limit].decode("utf-8", errors="replace")
+        if len(payload) > limit:
+            text = f"{text}\n[output truncated]"
+        return text
+
     def _collect_artifacts(self, output_dir: Path) -> list[str]:
         artifacts: list[str] = []
+        total_bytes = 0
         for path in sorted(output_dir.rglob("*")):
-            if not path.is_file():
+            if path.is_symlink() or not path.is_file():
                 continue
+            total_bytes += path.stat().st_size
+            if total_bytes > self._settings.max_output_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="Sandbox output exceeds the configured size limit",
+                )
             artifacts.append(str(path.relative_to(output_dir)))
             if len(artifacts) >= self._settings.output_file_limit:
                 break
