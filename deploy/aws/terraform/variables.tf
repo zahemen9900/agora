@@ -67,7 +67,7 @@ variable "initial_release_checksum" {
 variable "budget_notification_email" {
   description = "Email address for AWS Budget notifications. Leave empty to skip the budget."
   type        = string
-  default     = ""
+  default     = "davidzahemenyeboah@signify-ai.org"
 }
 
 variable "log_retention_days" {
