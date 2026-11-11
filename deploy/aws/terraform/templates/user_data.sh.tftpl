@@ -55,6 +55,13 @@ sed -i '/^API_HOST=/d' /opt/agora/current/config.env
 printf '\nAPI_HOST=%s\n' "$${API_HOST}" >> /opt/agora/current/config.env
 
 bash /opt/agora/current/scripts/bootstrap.sh
+
+set -a
+# shellcheck disable=SC1090
+. /opt/agora/current/config.env
+set +a
+docker pull "$${SANDBOX_RUNTIME_IMAGE:?SANDBOX_RUNTIME_IMAGE is required}"
+
 systemctl start agora-secrets.service
 systemctl start agora.service
 

@@ -89,6 +89,11 @@ jobs:
           SANDBOX_RUNTIME_IMAGE=${{ steps.ecr.outputs.registry }}/agora-sandbox-runtime@${{ steps.runtime.outputs.digest }}
           ACME_EMAIL=
           WEB_URL=https://agora-bay-seven.vercel.app
+          AGORA_WORKOS_CLIENT_ID=${{ vars.WORKOS_CLIENT_ID }}
+          AGORA_WORKOS_AUTHKIT_DOMAIN=${{ vars.WORKOS_AUTHKIT_DOMAIN }}
+          AGORA_AUTH_ISSUER=${{ vars.AUTH_ISSUER }}
+          AGORA_AUTH_AUDIENCE=${{ vars.AUTH_AUDIENCE }}
+          AGORA_AUTH_JWKS_URL=${{ vars.AUTH_JWKS_URL }}
           EOF
           tar -czf bundle.tar.gz -C release .
           sha256sum bundle.tar.gz | awk '{print $1}' > bundle.tar.gz.sha256
