@@ -71,6 +71,16 @@ The migration script keeps immutable `original/` and `rewritten/` trees plus a m
 
 Secrets are copied from GCP Secret Manager into SSM Parameter Store SecureString parameters under `/agora/prod/`. The seeder must never print values, write them to Terraform, or pass them as shell arguments. See `scripts/aws_seed_secrets.py` when it lands.
 
+## Completed during migration
+
+- 2026-11-11: Terraform foundation applied. Created the private S3 bucket, three ECR repositories, GitHub OIDC provider and deploy role, EC2 instance role/profile, security group, CloudWatch log groups, SSM deploy document, and IAM policies. No EC2 instance yet.
+- 2026-11-11: 13 SSM SecureString parameters created under `/agora/prod/` from GCP Secret Manager. Pepper equality verified; Solana keypair bytes and public key equality verified. No secret values were printed.
+- 2026-11-11: GCS export verified at 34 objects / 2,321,767 bytes. Two source records had `storage_uri` rewritten from `gs://agora-ai-1190-agora-data/` to `s3://agora-866160682016-data/`; all other objects were copied byte-for-byte, including both API-key records.
+- 2026-11-11: S3 conditional-write smoke test passed against the real bucket: create-only, duplicate-create rejection, fresh ETag update, stale ETag rejection, read-back, and cleanup.
+- 2026-11-11: Presigned browser-style PUT passed against the real bucket after forcing SigV4: first PUT 200, replay PUT 412 with `If-None-Match: *`.
+- 2026-11-11: Host-wide task/benchmark admission and sandbox capability/output bounds added to the migration branch.
+- The deployment workflow is `.github/workflows/deploy-aws.yml`; it builds all three linux/amd64 images and publishes `_deploy/releases/<sha>/bundle.tar.gz`.
+
 ## Cutover gates
 
 Do not point Vercel or the SDK at AWS until these pass:

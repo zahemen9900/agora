@@ -1,8 +1,9 @@
-name: Deploy
+name: Deploy (legacy GCP)
 
+# GCP project agora-ai-1190 is suspended. The production deploy path is
+# .github/workflows/deploy-aws.yml. Keep this workflow manual-only until the
+# GCP resources are formally retired.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:

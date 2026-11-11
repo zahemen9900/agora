@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - aws-migration
+    paths-ignore:
+      - "agora-web/**"
+      - "sdk/**"
+      - "docs/**"
+      - "README.md"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch:
     inputs:
       deploy:
