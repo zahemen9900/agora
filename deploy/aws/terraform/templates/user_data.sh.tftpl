@@ -1,0 +1,74 @@
+#!/bin/bash
+set -euxo pipefail
+exec > >(tee -a /var/log/agora-bootstrap.log) 2>&1
+
+export AWS_DEFAULT_REGION="${aws_region}"
+
+if ! command -v aws >/dev/null 2>&1; then
+  dnf install -y awscli-2 || dnf install -y awscli
+fi
+
+BUCKET="${data_bucket}"
+SHA="${initial_release_sha}"
+CHECKSUM="${initial_release_checksum}"
+
+if [[ -z "$${SHA}" ]]; then
+  echo "initial_release_sha is required when compute is enabled" >&2
+  exit 1
+fi
+
+mkdir -p /opt/agora/releases
+BUNDLE="/tmp/agora-$${SHA}.tar.gz"
+CHECKSUM_FILE="/tmp/agora-$${SHA}.sha256"
+aws s3 cp "s3://$${BUCKET}/_deploy/releases/$${SHA}/bundle.tar.gz" "$${BUNDLE}" --only-show-errors
+aws s3 cp "s3://$${BUCKET}/_deploy/releases/$${SHA}/bundle.tar.gz.sha256" "$${CHECKSUM_FILE}" --only-show-errors
+EXPECTED="$(tr -d '[:space:]' < "$${CHECKSUM_FILE}")"
+ACTUAL="$(sha256sum "$${BUNDLE}" | awk '{print $1}')"
+if [[ -z "$${CHECKSUM}" || "$${EXPECTED}" != "$${ACTUAL}" || "$${CHECKSUM}" != "$${ACTUAL}" ]]; then
+  echo "release checksum mismatch" >&2
+  exit 2
+fi
+
+RELEASE_DIR="/opt/agora/releases/$${SHA}"
+rm -rf "$${RELEASE_DIR}"
+mkdir -p "$${RELEASE_DIR}"
+tar -xzf "$${BUNDLE}" -C "$${RELEASE_DIR}"
+ln -sfn "$${RELEASE_DIR}" /opt/agora/current
+printf '%s\n' "$${SHA}" > /opt/agora/current-sha
+
+TOKEN="$(curl -fsS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' http://169.254.169.254/latest/api/token)"
+PUBLIC_IP=""
+for _ in $(seq 1 30); do
+  PUBLIC_IP="$(curl -fsS -H "X-aws-ec2-metadata-token: $${TOKEN}" http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
+  if [[ -n "$${PUBLIC_IP}" ]]; then
+    break
+  fi
+  sleep 5
+done
+if [[ -z "$${PUBLIC_IP}" ]]; then
+  echo "could not determine the instance public IP" >&2
+  exit 3
+fi
+API_HOST="agora-api.$${PUBLIC_IP}.nip.io"
+printf '%s\n' "$${API_HOST}" > /opt/agora/api-host
+sed -i '/^API_HOST=/d' /opt/agora/current/config.env
+printf '\nAPI_HOST=%s\n' "$${API_HOST}" >> /opt/agora/current/config.env
+
+bash /opt/agora/current/scripts/bootstrap.sh
+
+set -a
+# shellcheck disable=SC1090
+. /opt/agora/current/config.env
+set +a
+for _ in $(seq 1 30); do
+  if docker info >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+docker pull "$${SANDBOX_RUNTIME_IMAGE:?SANDBOX_RUNTIME_IMAGE is required}"
+
+systemctl start agora-secrets.service
+systemctl start agora.service
+
+echo "agora bootstrap finished for $${SHA}"

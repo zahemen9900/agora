@@ -22,7 +22,7 @@ from api.auth_keys import (
 )
 from api.config import settings
 from api.security import validate_storage_id
-from api.store import TaskStore, get_store
+from api.store import TaskStore, get_store, resolve_storage_settings
 from api.store_local import LocalTaskStore
 from api.telemetry import bind_user_to_current_span
 
@@ -48,8 +48,11 @@ class AuthenticatedUser(BaseModel):
 def get_auth_store() -> TaskStore | LocalTaskStore:
     global _store
     if _store is None:
+        backend, bucket = resolve_storage_settings(settings)
         _store = get_store(
-            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None,
+            bucket,
+            backend=backend,
+            region_name=settings.aws_region,
             local_data_dir=settings.local_data_dir,
         )
     return _store

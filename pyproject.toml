@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # Public SDK releases are built from sdk/pyproject.toml as agora-arbitrator-sdk.
 [project]
 name = "agora-protocol"
-version = "0.1.0a22"
+version = "0.1.0a24"
 description = "On-chain debate-or-vote arbitration for multi-agent LLM systems"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -29,6 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "boto3>=1.40",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "build>=1.2",

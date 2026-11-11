@@ -826,7 +826,7 @@ async def test_task_source_metadata_survives_upload_create_run_and_detailed_stat
                 json={
                     "filename": "worker.py",
                     "mime_type": "text/x-python",
-                    "size_bytes": 12,
+                    "size_bytes": 10,
                 },
             )
             assert init_response.status_code == 200
@@ -1548,7 +1548,7 @@ async def test_create_task_with_attached_source_uses_fast_heuristic_selection(
             source_id="source-fast-heuristic",
             display_name="probe.csv",
             mime_type="text/csv",
-            size_bytes=18,
+            size_bytes=12,
         )
         await storage.create_upload_session(workspace_id="user-1", source=source)
         digest = await storage.write_upload_bytes(source=source, data=b"a,b\n1,2\n3,4\n")

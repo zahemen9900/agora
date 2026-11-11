@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import httpx
 import pytest
@@ -59,6 +60,66 @@ async def test_sandbox_runner_execute_returns_executor_payload(
     assert payload["exit_code"] == 0
     assert payload["stdout"] == "hello\n"
     assert payload["artifacts"] == ["output/result.txt"]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_runner_materializes_s3_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    settings = sandbox_app._RunnerSettings(
+        bearer_token="token",
+        max_concurrent_runs=1,
+        data_bucket="agora-data",
+    )
+    executor = sandbox_app._SandboxExecutor(settings)
+
+    def fake_read_s3(*, bucket_name: str, object_name: str) -> bytes:
+        assert bucket_name == "agora-data"
+        assert object_name.endswith("original.txt")
+        return b"hello"
+
+    monkeypatch.setattr(executor, "_read_s3_bytes", fake_read_s3)
+    source = sandbox_app.SandboxSourceRef(
+        source_id="source-1",
+        kind="text_file",
+        display_name="notes.txt",
+        mime_type="text/plain",
+        storage_uri="s3://agora-data/agora/users/u/source-objects/source-1/original.txt",
+        size_bytes=5,
+    )
+    target_dir = tmp_path / "input"
+    target_dir.mkdir()
+
+    await executor._materialize_source(source=source, target_dir=target_dir)
+
+    target_file = target_dir / executor._target_filename("source-1", "notes.txt")
+    assert target_file.read_bytes() == b"hello"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_runner_rejects_file_sources_in_production(
+    tmp_path: Path,
+) -> None:
+    settings = sandbox_app._RunnerSettings(
+        bearer_token="token",
+        max_concurrent_runs=1,
+        allow_file_sources=False,
+    )
+    executor = sandbox_app._SandboxExecutor(settings)
+    source = sandbox_app.SandboxSourceRef(
+        source_id="source-1",
+        kind="text_file",
+        display_name="notes.txt",
+        mime_type="text/plain",
+        storage_uri="file:///etc/passwd",
+        size_bytes=5,
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await executor._materialize_source(source=source, target_dir=tmp_path)
+
+    assert "file://" in str(exc_info.value)
 
 
 def test_sandbox_runner_sanitizes_source_filenames() -> None:

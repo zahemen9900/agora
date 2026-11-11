@@ -1,0 +1,187 @@
+name: agora
+
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    mem_limit: 64m
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_HOST: ${API_HOST:?API_HOST is required}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    env_file:
+      - path: /run/agora/api.env
+        format: raw
+    environment:
+      AGORA_ENVIRONMENT: production
+      AGORA_STORAGE_BACKEND: s3
+      AGORA_S3_BUCKET: ${DATA_BUCKET:?DATA_BUCKET is required}
+      AWS_REGION: ${AWS_REGION:?AWS_REGION is required}
+      AGORA_COORDINATION_BACKEND: redis
+      AGORA_COORDINATION_NAMESPACE: agora-prod
+      AGORA_SANDBOX_RUNNER_URL: http://sandbox-runner:8080
+      AGORA_SANDBOX_EXECUTION_TIMEOUT_SECONDS: "20"
+      AGORA_SOURCE_MAX_FILE_BYTES: "5242880"
+      AGORA_SOURCE_MAX_ATTACHMENTS_PER_TASK: "3"
+      AGORA_BACKGROUND_RECOVERY_ENABLED: "false"
+      AGORA_TASK_CREATE_RATE_LIMIT_PER_MINUTE: "60"
+      AGORA_TASK_RUN_RATE_LIMIT_PER_MINUTE: "30"
+      AGORA_WORKSPACE_CONCURRENT_TASK_RUNS: "2"
+      AGORA_AXIOM_ENABLED: "true"
+      AGORA_AXIOM_TRACES_DATASET: agora-traces
+      AGORA_AXIOM_BASE_URL: https://api.axiom.co
+      AGORA_AXIOM_CAPTURE_CONTENT: metadata_only
+      AGORA_FLASH_MODEL: gemini-3.1-flash-lite-preview
+      AGORA_PRO_MODEL: gemini-3-flash-preview
+      AGORA_CLAUDE_MODEL: claude-sonnet-4-6
+      AGORA_OPENROUTER_MODEL: openai/gpt-4o-mini
+      AGORA_OPENROUTER_ANALYSIS_MODEL: openai/gpt-4o-mini
+      AGORA_WORKOS_CLIENT_ID: ${AGORA_WORKOS_CLIENT_ID:-}
+      AGORA_WORKOS_AUTHKIT_DOMAIN: ${AGORA_WORKOS_AUTHKIT_DOMAIN:-}
+      AGORA_AUTH_ISSUER: ${AGORA_AUTH_ISSUER:-}
+      AGORA_AUTH_AUDIENCE: ${AGORA_AUTH_AUDIENCE:-}
+      AGORA_AUTH_JWKS_URL: ${AGORA_AUTH_JWKS_URL:-}
+      AGORA_ANTHROPIC_SECRET_NAME: ""
+      AGORA_ANTHROPIC_SECRET_PROJECT: ""
+      AGORA_GEMINI_SECRET_NAME: ""
+      AGORA_GEMINI_SECRET_PROJECT: ""
+      AGORA_OPENROUTER_SECRET_NAME: ""
+      AGORA_OPENROUTER_SECRET_PROJECT: ""
+      AGORA_AXIOM_SECRET_NAME: ""
+      AGORA_AXIOM_SECRET_PROJECT: ""
+      AGORA_GEMINI_USE_VERTEXAI: "false"
+      GOOGLE_GENAI_USE_VERTEXAI: "false"
+      GOOGLE_CLOUD_PROJECT: ""
+      GCS_BUCKET: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+      SOLANA_KEYPAIR_PATH: /run/secrets/devnet-keypair.json
+    volumes:
+      - /run/agora/devnet-keypair.json:/run/secrets/devnet-keypair.json:ro
+    networks:
+      - edge
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      sandbox-runner:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 192m
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis_data:/data
+      - /run/agora/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - /run/agora/redis-password:/run/agora/redis-password:ro
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "redis-cli --no-auth-warning -a \"$$(cat /run/agora/redis-password)\" ping | grep -q PONG"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sandbox-runner:
+    image: ${RUNNER_IMAGE:?RUNNER_IMAGE is required}
+    restart: unless-stopped
+    mem_limit: 192m
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    env_file:
+      - path: /run/agora/runner.env
+        format: raw
+    environment:
+      AGORA_SANDBOX_IMAGE: ${SANDBOX_RUNTIME_IMAGE:?SANDBOX_RUNTIME_IMAGE is required}
+      AGORA_SANDBOX_ROOT: /opt/agora/sandbox-work
+      AGORA_SANDBOX_MAX_CONCURRENT_RUNS: "1"
+      AGORA_SANDBOX_MAX_PENDING_RUNS: "2"
+      AGORA_SANDBOX_STDIO_MAX_BYTES: "1048576"
+      AGORA_SANDBOX_MAX_OUTPUT_BYTES: "67108864"
+      AGORA_SANDBOX_CPU_LIMIT: "0.5"
+      AGORA_SANDBOX_MEMORY_LIMIT: "512m"
+      AGORA_SANDBOX_ALLOW_FILE_SOURCES: "false"
+      HOME: /tmp
+      DOCKER_CONFIG: /tmp/.docker
+      AWS_REGION: ${AWS_REGION:?AWS_REGION is required}
+      AGORA_S3_BUCKET: ${DATA_BUCKET:?DATA_BUCKET is required}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/agora/sandbox-work:/opt/agora/sandbox-work
+    networks:
+      - backend
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redis_data:
+
+networks:
+  edge:
+  backend:

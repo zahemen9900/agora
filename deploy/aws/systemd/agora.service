@@ -1,0 +1,18 @@
+[Unit]
+Description=Agora API and sandbox stack
+After=network-online.target docker.service agora-secrets.service
+Requires=docker.service agora-secrets.service
+RequiresMountsFor=/opt/agora/sandbox-work
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/agora/current
+ExecStart=/usr/bin/docker compose --env-file /opt/agora/current/config.env -f /opt/agora/current/docker-compose.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose --env-file /opt/agora/current/config.env -f /opt/agora/current/docker-compose.yml down
+TimeoutStartSec=600
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

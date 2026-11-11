@@ -63,7 +63,8 @@ from api.models import (
     RuntimeTierConfigResponse,
     TaskEvent,
 )
-from api.routes.tasks import get_task_store
+from api.routes.tasks import background_run_count, get_task_store
+from api.run_capacity import get_run_capacity
 from api.security import validate_storage_id
 from api.streaming import DeliberationStream, get_stream_manager
 from api.telemetry import add_span_event, mark_span_error, set_current_span_attributes
@@ -312,6 +313,24 @@ def _launch_background_benchmark_run(
 ) -> None:
     existing = _background_benchmark_runs.get(run_id)
     if existing is not None and not existing.done():
+        return
+
+    active_benchmark_runs = sum(
+        1 for background_task in _background_benchmark_runs.values() if not background_task.done()
+    )
+    admission_limit = settings.host_concurrent_runs + settings.host_pending_runs
+    if (
+        settings.host_pending_runs > 0
+        and background_run_count() + active_benchmark_runs >= admission_limit
+    ):
+        logger.warning(
+            "background_benchmark_run_queue_full",
+            workspace_id=workspace_id,
+            run_id=run_id,
+            active_background_runs=background_run_count(),
+            active_benchmark_runs=active_benchmark_runs,
+            admission_limit=admission_limit,
+        )
         return
 
     async def _runner() -> None:
@@ -3443,10 +3462,25 @@ async def _execute_benchmark_run(
         )
         return
 
+    host_slot = await get_run_capacity().acquire(
+        run_key=run_key,
+        lease_id=lease.lease_id,
+    )
+    if settings.host_concurrent_runs > 0 and host_slot is None:
+        await backend.release_run_lock(run_key, lease_id=lease.lease_id)
+        logger.info(
+            "benchmark_run_host_capacity_full",
+            workspace_id=workspace_id,
+            run_id=run_id,
+            run_key=run_key,
+        )
+        return
+
     heartbeat_stop = asyncio.Event()
     current_lease = lease
     lease_lost = False
     run_lock_released = False
+    host_slot_released = False
 
     async def _run_lock_heartbeat() -> None:
         nonlocal current_lease, lease_lost
@@ -3471,17 +3505,38 @@ async def _execute_benchmark_run(
                     )
                     heartbeat_stop.set()
                     return
+                if settings.host_concurrent_runs > 0:
+                    host = await get_run_capacity().refresh(
+                        run_key=run_key,
+                        lease_id=current_lease.lease_id,
+                    )
+                    if host is None:
+                        lease_lost = True
+                        logger.error(
+                            "benchmark_run_host_slot_lost",
+                            workspace_id=workspace_id,
+                            run_id=run_id,
+                            run_key=run_key,
+                        )
+                        heartbeat_stop.set()
+                        return
                 current_lease = refreshed
 
     heartbeat_task = asyncio.create_task(_run_lock_heartbeat())
 
     async def _release_run_lock_once() -> None:
-        nonlocal run_lock_released
+        nonlocal run_lock_released, host_slot_released
         if run_lock_released:
             return
         heartbeat_stop.set()
         with suppress(asyncio.CancelledError, Exception):
             await heartbeat_task
+        if settings.host_concurrent_runs > 0 and not host_slot_released:
+            await get_run_capacity().release(
+                run_key=run_key,
+                lease_id=current_lease.lease_id,
+            )
+            host_slot_released = True
         await backend.release_run_lock(run_key, lease_id=current_lease.lease_id)
         run_lock_released = True
 

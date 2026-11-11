@@ -141,6 +141,8 @@ class CoordinationBackend(Protocol):
 
     async def reset_state(self) -> None: ...
 
+    async def ping(self) -> bool: ...
+
 
 class InMemoryCoordinationBackend:
     """Single-process coordination backend for local development and tests."""
@@ -401,6 +403,9 @@ class InMemoryCoordinationBackend:
         holders.pop(holder_key, None)
         if not holders:
             self._concurrency_slots.pop(bucket_key, None)
+        return True
+
+    async def ping(self) -> bool:
         return True
 
     async def reset_state(self) -> None:
@@ -765,6 +770,9 @@ class RedisCoordinationBackend:
             holder_key,
         )
         return bool(deleted)
+
+    async def ping(self) -> bool:
+        return bool(await self._redis.ping())
 
     async def reset_state(self) -> None:
         keys: list[str] = []

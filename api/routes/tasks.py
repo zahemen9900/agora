@@ -49,25 +49,26 @@ from api.local_execution import is_local_execution_request, validate_local_execu
 from api.models import (
     BenchmarkCostEstimateResponse,
     ChainOperationRecord,
+    CitationItemResponse,
     DeliberationResultResponse,
     EvidenceItemResponse,
-    CitationItemResponse,
     MechanismName,
     ModelTelemetryResponse,
     PaymentStatusName,
-    TaskSourceResponse,
-    TaskDeleteResponse,
     TaskCreateRequest,
     TaskCreateResponse,
+    TaskDeleteResponse,
     TaskEvent,
     TaskRunRequest,
+    TaskSourceResponse,
     TaskStatusResponse,
     ToolPolicy,
     ToolUsageSummaryResponse,
 )
-from api.source_storage import build_source_content_path, normalize_source_url
+from api.run_capacity import get_run_capacity
 from api.solana_bridge import LAMPORTS_PER_SOL, bridge
-from api.store import TaskStore, get_store
+from api.source_storage import build_source_content_path, normalize_source_url
+from api.store import TaskStore, get_store, resolve_storage_settings
 from api.store_local import LocalTaskStore
 from api.streaming import DeliberationStream, get_stream_manager
 from api.telemetry import (
@@ -124,8 +125,11 @@ def get_task_store() -> TaskStore | LocalTaskStore:
 
     global _store
     if _store is None:
+        backend, bucket = resolve_storage_settings(settings)
         _store = get_store(
-            settings.gcs_bucket if settings.gcs_bucket and settings.google_cloud_project else None,
+            bucket,
+            backend=backend,
+            region_name=settings.aws_region,
             local_data_dir=settings.local_data_dir,
         )
     return _store
@@ -151,7 +155,7 @@ def _build_url_source(url: str) -> TaskSourceResponse:
     display_name = parsed.netloc or url
     if parsed.path and parsed.path not in {"", "/"}:
         display_name = f"{display_name}{parsed.path}"
-    source_id = hashlib.sha256(f"url:{url}".encode("utf-8")).hexdigest()
+    source_id = hashlib.sha256(f"url:{url}".encode()).hexdigest()
     return TaskSourceResponse(
         source_id=source_id,
         kind="url",
@@ -483,6 +487,20 @@ def _launch_background_task_run(
     if existing is not None and not existing.done():
         return
 
+    active_background_runs = sum(
+        1 for background_task in _background_task_runs.values() if not background_task.done()
+    )
+    admission_limit = settings.host_concurrent_runs + settings.host_pending_runs
+    if settings.host_pending_runs > 0 and active_background_runs >= admission_limit:
+        logger.warning(
+            "background_task_run_queue_full",
+            task_id=task_id,
+            workspace_id=workspace_id,
+            active_background_runs=active_background_runs,
+            admission_limit=admission_limit,
+        )
+        return
+
     async def _runner() -> None:
         try:
             await _execute_task_run(
@@ -506,6 +524,12 @@ def _launch_background_task_run(
             )
 
     _track_background_task(run_key, asyncio.create_task(_runner()))
+
+
+def background_run_count() -> int:
+    """Return the number of active in-process task runs for admission checks."""
+
+    return sum(1 for task in _background_task_runs.values() if not task.done())
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -699,6 +723,26 @@ async def _release_workspace_run_slot(
     )
 
 
+async def _acquire_host_run_slot(
+    *,
+    run_key: str,
+    lease_id: str,
+) -> ConcurrencySlotLease | None:
+    return await get_run_capacity().acquire(run_key=run_key, lease_id=lease_id)
+
+
+async def _refresh_host_run_slot(
+    *,
+    run_key: str,
+    lease_id: str,
+) -> ConcurrencySlotLease | None:
+    return await get_run_capacity().refresh(run_key=run_key, lease_id=lease_id)
+
+
+async def _release_host_run_slot(*, run_key: str, lease_id: str) -> bool:
+    return await get_run_capacity().release(run_key=run_key, lease_id=lease_id)
+
+
 async def _force_release_task_run_state(
     workspace_id: str,
     task_id: str,
@@ -714,9 +758,11 @@ async def _force_release_task_run_state(
             _workspace_run_bucket_key(workspace_id),
             holder_key=run_key,
         )
+    released_host_slot = await get_run_capacity().force_release(run_key=run_key)
     return {
         "released_run_lock": released_run_lock,
         "released_workspace_slot": released_workspace_slot,
+        "released_host_slot": released_host_slot,
     }
 
 
@@ -2363,8 +2409,27 @@ async def _execute_task_run(
             headers={"Retry-After": "1"},
         )
 
+    host_slot = await _acquire_host_run_slot(
+        run_key=run_key,
+        lease_id=lease.lease_id,
+    )
+    if settings.host_concurrent_runs > 0 and host_slot is None:
+        if workspace_slot is not None:
+            await _release_workspace_run_slot(
+                workspace_id,
+                run_key=run_key,
+                lease_id=lease.lease_id,
+            )
+        await _release_task_run_lock(run_key, lease_id=lease.lease_id)
+        raise HTTPException(
+            status_code=429,
+            detail="Host concurrent task run limit exceeded",
+            headers={"Retry-After": "1"},
+        )
+
     run_lock_released = False
     workspace_slot_released = False
+    host_slot_released = False
     lease_lost = False
     heartbeat_stop = asyncio.Event()
     current_lease = lease
@@ -2416,6 +2481,20 @@ async def _execute_task_run(
                         )
                         heartbeat_stop.set()
                         return
+                if settings.host_concurrent_runs > 0:
+                    host = await _refresh_host_run_slot(
+                        run_key=run_key,
+                        lease_id=current_lease.lease_id,
+                    )
+                    if host is None:
+                        lease_lost = True
+                        logger.error(
+                            "task_run_host_slot_lost",
+                            task_id=task_id,
+                            run_key=run_key,
+                        )
+                        heartbeat_stop.set()
+                        return
                 current_lease = refreshed
                 if state_writer is not None:
                     task.updated_at = datetime.now(UTC)
@@ -2424,7 +2503,7 @@ async def _execute_task_run(
     heartbeat_task = asyncio.create_task(_run_lock_heartbeat())
 
     async def _release_run_lock_once() -> None:
-        nonlocal run_lock_released, workspace_slot_released
+        nonlocal run_lock_released, workspace_slot_released, host_slot_released
         if run_lock_released:
             return
         heartbeat_stop.set()
@@ -2437,6 +2516,12 @@ async def _execute_task_run(
                 lease_id=current_lease.lease_id,
             )
             workspace_slot_released = True
+        if settings.host_concurrent_runs > 0 and not host_slot_released:
+            await _release_host_run_slot(
+                run_key=run_key,
+                lease_id=current_lease.lease_id,
+            )
+            host_slot_released = True
         await _release_task_run_lock(run_key, lease_id=current_lease.lease_id)
         run_lock_released = True
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Final
 
-CANONICAL_HOSTED_API_URL: Final[str] = "https://agora-api-3euffsvtaq-uc.a.run.app"
+CANONICAL_HOSTED_API_URL: Final[str] = "https://agora-api.3.217.158.36.nip.io"
 _API_URL_OVERRIDE_ENV = "AGORA_API_URL"
 _ALLOW_API_URL_OVERRIDE_ENV = "AGORA_ALLOW_API_URL_OVERRIDE"
 _TRUTHY = {"1", "true", "yes", "on"}
