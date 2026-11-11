@@ -19,6 +19,22 @@ This directory holds the AWS deployment runbook, Terraform, Compose, Caddy, and 
 
 No credentials belong in this directory. Secret values live in SSM Parameter Store under `/agora/prod/`.
 
+## Live production (2026-11-11)
+
+- API: <https://agora-api.3.217.158.36.nip.io>
+- Frontend: <https://agora-bay-seven.vercel.app>
+- Release: `f193f3b9599d39163ce773a1de3fee77375f3f41`
+- Version: `0.1.0a24`
+- Instance: `i-0a96229f91f492d50` (`t3a.small`, `us-east-1a`)
+- Elastic IP: `3.217.158.36`
+- Budget: `agora-monthly`, $30, alerts at actual $20/$24 and forecast $28 to `davidzahemenyeboah@signify-ai.org`
+
+Verified after cutover: `/health`, `/ready`, `/auth/config`, preserved `agora_live_` API key `/auth/me`, signed S3 source upload/read, sandbox `execute_python` (`42`), and a 4-agent vote task (`OK`, confidence 1.0).
+
+Provider status: Gemini returns `403` because the API key's Google project is on the unavailable free tier; Anthropic returns `400` because its credit balance is low. OpenRouter is live and the fallback model is `openai/gpt-4o-mini`. Add billing to Gemini or Anthropic to restore those direct providers.
+
+Operational warning: `enable_compute` defaults to `false`. Any full `terraform apply` must pass `-var='enable_compute=true'` with the current release SHA/checksum, or Terraform will destroy the instance. Use targeted applies for IAM/budget-only changes.
+
 ## Baseline test evidence
 
 Recorded on 2026-11-10 from commit `4cdf9057bb26399a8b94444a7418293097c0608d` in the migration worktree, using Python 3.11 and `api/requirements.lock`:
