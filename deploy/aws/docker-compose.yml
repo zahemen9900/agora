@@ -151,6 +151,8 @@ services:
       AGORA_SANDBOX_CPU_LIMIT: "0.5"
       AGORA_SANDBOX_MEMORY_LIMIT: "512m"
       AGORA_SANDBOX_ALLOW_FILE_SOURCES: "false"
+      HOME: /tmp
+      DOCKER_CONFIG: /tmp/.docker
       AWS_REGION: ${AWS_REGION:?AWS_REGION is required}
       AGORA_S3_BUCKET: ${DATA_BUCKET:?DATA_BUCKET is required}
       PYTHONDONTWRITEBYTECODE: "1"
