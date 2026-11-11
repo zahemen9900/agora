@@ -519,3 +519,17 @@ def test_openrouter_legacy_x_title_toggle_parses_env(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("AGORA_OPENROUTER_LEGACY_X_TITLE_ENABLED", "true")
     config = get_config()
     assert config.openrouter_legacy_x_title_enabled is True
+
+
+def test_current_hosted_model_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """The hosted defaults should use the current catalog models."""
+
+    monkeypatch.chdir(tmp_path)
+    for key in _CONFIG_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    get_config.cache_clear()
+
+    config = get_config()
+
+    assert config.claude_model == "claude-haiku-5-5"
+    assert config.openrouter_model == "openai/gpt-6-luna"

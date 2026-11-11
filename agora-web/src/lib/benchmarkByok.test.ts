@@ -105,7 +105,7 @@ test("buildBenchmarkByokRunRequest omits unused provider keys from the ephemeral
       {
         id: "agent-2",
         provider: "anthropic",
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-5-5",
       },
     ],
     providerKeys: {
@@ -118,6 +118,5 @@ test("buildBenchmarkByokRunRequest omits unused provider keys from the ephemeral
   assert.deepEqual(request.local_provider_keys, {
     gemini_api_key: "gemini-key",
     anthropic_api_key: "anthropic-key",
-    openrouter_api_key: undefined,
   });
 });

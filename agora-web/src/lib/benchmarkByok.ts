@@ -48,8 +48,8 @@ const PROVIDER_FAMILIES: BenchmarkByokProviderFamily[] = [
 
 const DEFAULT_MODEL_BY_PROVIDER: Record<BenchmarkByokProviderFamily, string> = {
   gemini: "gemini-3-flash-preview",
-  anthropic: "claude-sonnet-4-6",
-  openrouter: "qwen/qwen3.5-flash-02-23",
+  anthropic: "claude-haiku-5-5",
+  openrouter: "qwen/qwen3.7-flash",
 };
 
 function providerFamilyForTier(tier: string): BenchmarkByokProviderFamily {
@@ -265,22 +265,23 @@ export function buildBenchmarkByokRunRequest(
   "local_models" | "local_provider_keys"
 > {
   const selectedProviders = new Set(config.roster.map((item) => item.provider));
+  const localProviderKeys: Partial<Record<keyof BenchmarkByokProviderKeys, string | null>> = {};
+  if (selectedProviders.has("gemini")) {
+    localProviderKeys.gemini_api_key = config.providerKeys.gemini_api_key.trim() || null;
+  }
+  if (selectedProviders.has("anthropic")) {
+    localProviderKeys.anthropic_api_key = config.providerKeys.anthropic_api_key.trim() || null;
+  }
+  if (selectedProviders.has("openrouter")) {
+    localProviderKeys.openrouter_api_key = config.providerKeys.openrouter_api_key.trim() || null;
+  }
+
   return {
     local_models: config.roster.map((item) => ({
       provider: item.provider,
       model: item.model,
       reasoning_preset: null,
     })),
-    local_provider_keys: {
-      gemini_api_key: selectedProviders.has("gemini")
-        ? (config.providerKeys.gemini_api_key.trim() || null)
-        : null,
-      anthropic_api_key: selectedProviders.has("anthropic")
-        ? (config.providerKeys.anthropic_api_key.trim() || null)
-        : null,
-      openrouter_api_key: selectedProviders.has("openrouter")
-        ? (config.providerKeys.openrouter_api_key.trim() || null)
-        : null,
-    },
+    local_provider_keys: localProviderKeys as BenchmarkRunRequestPayload["local_provider_keys"],
   };
 }

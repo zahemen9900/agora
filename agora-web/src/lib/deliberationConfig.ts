@@ -68,6 +68,7 @@ export interface RuntimeModelOptionLike {
   output_usd_per_million?: number | null;
   usage_telemetry_mode?: string | null;
   allowed_tiers?: ProviderTier[] | null;
+  selectable?: boolean;
 }
 
 export interface DeliberationRuntimeConfigLike {
@@ -104,15 +105,15 @@ const STATIC_TIER_DEFINITIONS: Record<ProviderTier, TierDefinition> = {
   },
   openrouter: {
     provider: "openrouter",
-    model: "qwen/qwen3.5-flash-02-23",
-    displayName: "Qwen 3.5 Flash",
+    model: "openai/gpt-6-luna",
+    displayName: "GPT-6 Luna",
     voteRole: "Diversity voter",
     debateRole: "Debater",
   },
   claude: {
     provider: "claude",
-    model: "claude-sonnet-4-6",
-    displayName: "Claude Sonnet 4.6",
+    model: "claude-haiku-5-5",
+    displayName: "Claude Haiku 5.5",
     voteRole: "Challenge voter",
     debateRole: "Debater",
   },
@@ -160,8 +161,8 @@ const STATIC_RUNTIME_MODEL_CATALOG: Record<ModelProviderFamily, RuntimeModelOpti
   anthropic: [
     {
       provider_family: "anthropic",
-      model_id: "claude-sonnet-4-6",
-      display_name: "Claude Sonnet 4.6",
+      model_id: "claude-haiku-5-5",
+      display_name: "Claude Haiku 5.5",
       allowed_tiers: ["claude"],
     },
     {
@@ -180,8 +181,8 @@ const STATIC_RUNTIME_MODEL_CATALOG: Record<ModelProviderFamily, RuntimeModelOpti
   openrouter: [
     {
       provider_family: "openrouter",
-      model_id: "deepseek/deepseek-v3.2-exp",
-      display_name: "DeepSeek V3.2 Exp",
+      model_id: "deepseek/deepseek-v4.1-flash-1017",
+      display_name: "DeepSeek V4.1 Flash 1017",
       allowed_tiers: ["openrouter"],
     },
     {
@@ -198,20 +199,14 @@ const STATIC_RUNTIME_MODEL_CATALOG: Record<ModelProviderFamily, RuntimeModelOpti
     },
     {
       provider_family: "openrouter",
-      model_id: "z-ai/glm-4.7-flash",
-      display_name: "GLM 4.7 Flash",
+      model_id: "z-ai/glm-5.3-flash",
+      display_name: "GLM 5.3 Flash",
       allowed_tiers: ["openrouter"],
     },
     {
       provider_family: "openrouter",
-      model_id: "qwen/qwen3.5-flash-02-23",
-      display_name: "Qwen 3.5 Flash",
-      allowed_tiers: ["openrouter"],
-    },
-    {
-      provider_family: "openrouter",
-      model_id: "moonshotai/kimi-k2-thinking",
-      display_name: "Kimi K2 Thinking",
+      model_id: "qwen/qwen3.7-flash",
+      display_name: "Qwen 3.7 Flash",
       allowed_tiers: ["openrouter"],
     },
   ],
@@ -476,6 +471,9 @@ export function buildTierModelOptions(
   );
 
   const filtered = catalogEntries.filter((entry) => {
+    if (entry.selectable === false) {
+      return false;
+    }
     const allowedTiers = entry.allowed_tiers ?? [];
     return allowedTiers.length === 0 || allowedTiers.includes(tier);
   });
@@ -502,6 +500,7 @@ export function buildProviderFamilyModelOptions(
     (entry): entry is RuntimeModelOptionLike => (
       Boolean(entry?.model_id)
       && entry.provider_family === providerFamily
+      && entry.selectable !== false
     ),
   );
   return catalogEntries;

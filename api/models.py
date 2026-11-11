@@ -374,6 +374,7 @@ class RuntimeModelOptionResponse(BaseModel):
     display_name: str
     source_url: str
     stability_tier: ModelStabilityTierName
+    selectable: bool = True
     allowed_tiers: list[ProviderTierName] = Field(default_factory=list)
     supports_streaming: bool = True
     supports_json_schema: bool = True

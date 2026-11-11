@@ -24,8 +24,8 @@ from agora.types import LocalModelSpec, LocalProviderKeys
 arbitrator = AgoraArbitrator(
     local_models=[
         LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
-        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
-        LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+        LocalModelSpec(provider="anthropic", model="claude-haiku-5-5"),
+        LocalModelSpec(provider="openrouter", model="qwen/qwen3.7-flash"),
         LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
     ],
     local_provider_keys=LocalProviderKeys(

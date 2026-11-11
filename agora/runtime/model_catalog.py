@@ -31,6 +31,7 @@ class ModelCatalogEntry:
     supports_reasoning_continuation: bool = False
     usage_telemetry_mode: str = "provider_dependent"
     stability_tier: ModelStabilityTier = "candidate"
+    selectable: bool = True
     thinking_billed_as_output: bool = True
     checked_at: datetime = MODEL_CATALOG_CHECKED_AT
     version: str = MODEL_CATALOG_VERSION
@@ -108,6 +109,17 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         provider_family="anthropic",
+        model_id="claude-haiku-5-5",
+        display_name="Claude Haiku 5.5",
+        input_usd_per_million=1.00,
+        output_usd_per_million=5.00,
+        source_url="https://www.anthropic.com/pricing#anthropic-api",
+        allowed_tiers=("claude",),
+        aliases=("claude-haiku-5.5",),
+        stability_tier="stable",
+    ),
+    ModelCatalogEntry(
+        provider_family="anthropic",
         model_id="claude-sonnet-4-6",
         display_name="Claude Sonnet 4.6",
         input_usd_per_million=3.00,
@@ -116,6 +128,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         allowed_tiers=("claude",),
         aliases=("claude-sonnet-4.6",),
         stability_tier="legacy",
+        selectable=False,
     ),
     ModelCatalogEntry(
         provider_family="anthropic",
@@ -143,13 +156,13 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         provider_family="openrouter",
-        model_id="deepseek/deepseek-v3.2-exp",
-        display_name="DeepSeek V3.2 Exp",
-        input_usd_per_million=0.27,
-        output_usd_per_million=0.41,
-        source_url="https://openrouter.ai/deepseek/deepseek-v3.2-exp",
+        model_id="deepseek/deepseek-v4.1-flash-1017",
+        display_name="DeepSeek V4.1 Flash 1017",
+        input_usd_per_million=6.00,
+        output_usd_per_million=0.50,
+        source_url="https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017",
         allowed_tiers=("openrouter",),
-        stability_tier="candidate",
+        stability_tier="stable",
     ),
     ModelCatalogEntry(
         provider_family="openrouter",
@@ -173,13 +186,56 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         provider_family="openrouter",
+        model_id="openai/gpt-6-luna",
+        display_name="GPT-6 Luna",
+        input_usd_per_million=0.10,
+        output_usd_per_million=0.50,
+        source_url="https://openrouter.ai/openai/gpt-6-luna",
+        allowed_tiers=("openrouter",),
+        stability_tier="stable",
+        selectable=False,
+    ),
+    ModelCatalogEntry(
+        provider_family="openrouter",
+        model_id="z-ai/glm-5.3-flash",
+        display_name="GLM 5.3 Flash",
+        input_usd_per_million=0.0399,
+        output_usd_per_million=0.0784,
+        source_url="https://openrouter.ai/z-ai/glm-5.3-flash",
+        allowed_tiers=("openrouter",),
+        stability_tier="stable",
+    ),
+    ModelCatalogEntry(
+        provider_family="openrouter",
+        model_id="qwen/qwen3.7-flash",
+        display_name="Qwen 3.7 Flash",
+        input_usd_per_million=0.03,
+        output_usd_per_million=0.13,
+        source_url="https://openrouter.ai/qwen/qwen3.7-flash",
+        allowed_tiers=("openrouter",),
+        stability_tier="stable",
+    ),
+    ModelCatalogEntry(
+        provider_family="openrouter",
+        model_id="deepseek/deepseek-v3.2-exp",
+        display_name="DeepSeek V3.2 Exp",
+        input_usd_per_million=0.27,
+        output_usd_per_million=0.41,
+        source_url="https://openrouter.ai/deepseek/deepseek-v3.2-exp",
+        allowed_tiers=("openrouter",),
+        stability_tier="legacy",
+        selectable=False,
+    ),
+    ModelCatalogEntry(
+        provider_family="openrouter",
         model_id="z-ai/glm-4.7-flash",
         display_name="GLM 4.7 Flash",
         input_usd_per_million=0.06,
         output_usd_per_million=0.40,
         source_url="https://openrouter.ai/z-ai/glm-4.7-flash",
         allowed_tiers=("openrouter",),
-        stability_tier="candidate",
+        stability_tier="legacy",
+        selectable=False,
     ),
     ModelCatalogEntry(
         provider_family="openrouter",
@@ -189,7 +245,8 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         output_usd_per_million=0.26,
         source_url="https://openrouter.ai/qwen/qwen3.5-flash-02-23",
         allowed_tiers=("openrouter",),
-        stability_tier="stable",
+        stability_tier="legacy",
+        selectable=False,
     ),
     ModelCatalogEntry(
         provider_family="openrouter",
@@ -202,6 +259,7 @@ _MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         aliases=("moonshotai/kimi-k2", "kimi-k2-thinking", "kimi-k2"),
         stability_tier="legacy",
         supports_reasoning_continuation=True,
+        selectable=False,
     ),
 )
 

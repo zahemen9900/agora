@@ -1314,6 +1314,7 @@ def _deliberation_runtime_config_response() -> DeliberationRuntimeConfigResponse
                 display_name=entry.display_name,
                 source_url=entry.source_url,
                 stability_tier=entry.stability_tier,
+                selectable=entry.selectable,
                 supports_streaming=entry.supports_streaming,
                 supports_json_schema=entry.supports_json_schema,
                 supports_reasoning=entry.supports_reasoning,

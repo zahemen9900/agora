@@ -343,16 +343,16 @@ class AgoraConfig(BaseModel):
         default_factory=lambda: os.getenv("AGORA_PRO_MODEL", "gemini-2.5-flash")
     )
     claude_model: str = Field(
-        default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-sonnet-4-6")
+        default_factory=lambda: os.getenv("AGORA_CLAUDE_MODEL", "claude-haiku-5-5")
     )
     openrouter_model: str = Field(
         default_factory=lambda: (
             _env_optional_str_alias(
                 "AGORA_OPENROUTER_MODEL",
                 "AGORA_KIMI_MODEL",
-                default="qwen/qwen3.5-flash-02-23",
+                default="openai/gpt-6-luna",
             )
-            or "qwen/qwen3.5-flash-02-23"
+            or "openai/gpt-6-luna"
         )
     )
     openrouter_analysis_model: str = Field(

@@ -151,7 +151,7 @@ arbitrator = AgoraArbitrator(
     local_models=[
         LocalModelSpec(provider="gemini", model="gemini-3-flash-preview"),
         LocalModelSpec(provider="gemini", model="gemini-3.1-flash-lite-preview"),
-        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+        LocalModelSpec(provider="anthropic", model="claude-haiku-5-5"),
     ],
     local_provider_keys=LocalProviderKeys(
         gemini_api_key="your-gemini-key",
@@ -161,12 +161,12 @@ arbitrator = AgoraArbitrator(
     local_debate_config=LocalDebateConfig(
         devils_advocate_model=LocalModelSpec(
             provider="openrouter",
-            model="qwen/qwen3.5-flash-02-23",
+            model="qwen/qwen3.7-flash",
         ),
         devils_advocate_fallback_models=[
             LocalModelSpec(
                 provider="anthropic",
-                model="claude-sonnet-4-6",
+                model="claude-haiku-5-5",
             ),
             LocalModelSpec(
                 provider="gemini",
@@ -231,7 +231,7 @@ arbitrator = AgoraArbitrator(
     agent_count=2,
     local_models=[
         LocalModelSpec(provider="gemini", model="gemini-2.5-pro"),
-        LocalModelSpec(provider="anthropic", model="claude-sonnet-4-6"),
+        LocalModelSpec(provider="anthropic", model="claude-haiku-5-5"),
     ],
     local_provider_keys=LocalProviderKeys(
         gemini_api_key="your-gemini-key",
@@ -256,7 +256,7 @@ arbitrator = AgoraArbitrator(
     local_models=[
         LocalModelSpec(provider="gemini", model="gemini-2.5-flash"),
         LocalModelSpec(provider="anthropic", model="claude-haiku-4-5"),
-        LocalModelSpec(provider="openrouter", model="qwen/qwen3.5-flash-02-23"),
+        LocalModelSpec(provider="openrouter", model="qwen/qwen3.7-flash"),
     ],
     local_provider_keys=LocalProviderKeys(
         gemini_api_key="your-gemini-key",
@@ -282,11 +282,11 @@ arbitrator = AgoraArbitrator(
 The OpenRouter lane is model-configurable. These are valid examples for the
 same `provider="openrouter"` slot:
 
-- `qwen/qwen3.5-flash-02-23`
+- `qwen/qwen3.7-flash`
 - `openai/gpt-oss-120b`
 - `google/gemma-4-31b-it`
-- `deepseek/deepseek-v3.2-exp`
-- `moonshotai/kimi-k2-thinking`
+- `z-ai/glm-5.3-flash`
+- `deepseek/deepseek-v4.1-flash-1017`
 
 Some OpenRouter models are slower or weaker on structured outputs than others.
 If you care about benchmark reliability, prefer the cataloged stable lane first

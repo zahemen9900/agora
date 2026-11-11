@@ -522,6 +522,7 @@ export interface RuntimeModelOptionResponse {
   display_name: string;
   source_url: string;
   stability_tier: "stable" | "candidate" | "legacy";
+  selectable: boolean;
   allowed_tiers: Array<"pro" | "flash" | "openrouter" | "claude">;
   supports_streaming: boolean;
   supports_json_schema: boolean;

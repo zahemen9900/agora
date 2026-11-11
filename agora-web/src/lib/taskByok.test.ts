@@ -105,7 +105,7 @@ test("buildTaskByokRunRequest omits unused provider keys from the ephemeral payl
       {
         id: "agent-2",
         provider: "anthropic",
-        model: "claude-sonnet-4-6",
+        model: "claude-haiku-5-5",
       },
     ],
     providerKeys: {

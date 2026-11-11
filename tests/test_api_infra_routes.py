@@ -5891,18 +5891,29 @@ async def test_benchmark_runtime_config_endpoint_exposes_resolved_tiers_and_cata
         if "flash" in entry["allowed_tiers"]
     } >= {"gemini-3.1-flash-lite-preview", "gemini-2.5-flash", "gemini-2.5-flash-lite"}
     assert {entry["model_id"] for entry in payload["catalog"]["anthropic"]} >= {
-        "claude-sonnet-4-6",
+        "claude-haiku-5-5",
         "claude-sonnet-4-5",
         "claude-haiku-4-5",
     }
     assert {entry["model_id"] for entry in payload["catalog"]["openrouter"]} >= {
-        "deepseek/deepseek-v3.2-exp",
+        "deepseek/deepseek-v4.1-flash-1017",
         "google/gemma-4-31b-it",
         "openai/gpt-oss-120b",
-        "z-ai/glm-4.7-flash",
-        "qwen/qwen3.5-flash-02-23",
+        "z-ai/glm-5.3-flash",
+        "qwen/qwen3.7-flash",
+        "openai/gpt-6-luna",
         "moonshotai/kimi-k2-thinking",
     }
+    assert next(
+        entry
+        for entry in payload["catalog"]["openrouter"]
+        if entry["model_id"] == "moonshotai/kimi-k2-thinking"
+    )["selectable"] is False
+    assert next(
+        entry
+        for entry in payload["catalog"]["openrouter"]
+        if entry["model_id"] == "openai/gpt-6-luna"
+    )["selectable"] is False
 
 
 @pytest.mark.asyncio

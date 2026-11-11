@@ -58,8 +58,8 @@ services:
       AGORA_AXIOM_CAPTURE_CONTENT: metadata_only
       AGORA_FLASH_MODEL: gemini-3.1-flash-lite-preview
       AGORA_PRO_MODEL: gemini-3-flash-preview
-      AGORA_CLAUDE_MODEL: claude-sonnet-4-6
-      AGORA_OPENROUTER_MODEL: openai/gpt-4o-mini
+      AGORA_CLAUDE_MODEL: claude-haiku-5-5
+      AGORA_OPENROUTER_MODEL: openai/gpt-6-luna
       AGORA_OPENROUTER_ANALYSIS_MODEL: openai/gpt-4o-mini
       AGORA_WORKOS_CLIENT_ID: ${AGORA_WORKOS_CLIENT_ID:-}
       AGORA_WORKOS_AUTHKIT_DOMAIN: ${AGORA_WORKOS_AUTHKIT_DOMAIN:-}

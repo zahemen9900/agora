@@ -56,8 +56,8 @@ const PROVIDER_FAMILIES: TaskByokProviderFamily[] = [
 
 const DEFAULT_MODEL_BY_PROVIDER: Record<TaskByokProviderFamily, string> = {
   gemini: "gemini-3-flash-preview",
-  anthropic: "claude-sonnet-4-6",
-  openrouter: "qwen/qwen3.5-flash-02-23",
+  anthropic: "claude-haiku-5-5",
+  openrouter: "qwen/qwen3.7-flash",
 };
 
 function providerFamilyForTier(tier: string): TaskByokProviderFamily {
