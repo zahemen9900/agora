@@ -55,14 +55,14 @@ sysctl --system >/dev/null
 install -m 0755 "${RELEASE_DIR}/scripts/deploy.sh" /opt/agora/bin/deploy.sh
 install -m 0755 "${RELEASE_DIR}/scripts/rollback.sh" /opt/agora/bin/rollback.sh
 
-cp "${RELEASE_DIR}/systemd/agora-sandbox-work.mount" /etc/systemd/system/
+cp "${RELEASE_DIR}/systemd/opt-agora-sandbox\x2dwork.mount" /etc/systemd/system/
 cp "${RELEASE_DIR}/systemd/agora-secrets.service" /etc/systemd/system/
 cp "${RELEASE_DIR}/systemd/agora.service" /etc/systemd/system/
-chmod 0644 /etc/systemd/system/agora*.service /etc/systemd/system/agora-sandbox-work.mount
+chmod 0644 /etc/systemd/system/agora*.service /etc/systemd/system/opt-agora-sandbox*.mount
 
 systemctl daemon-reload
-systemctl enable agora-sandbox-work.mount
-systemctl start agora-sandbox-work.mount
+systemctl enable 'opt-agora-sandbox\x2dwork.mount'
+systemctl start 'opt-agora-sandbox\x2dwork.mount'
 systemctl enable agora-secrets.service agora.service
 
 echo "agora host bootstrap complete"

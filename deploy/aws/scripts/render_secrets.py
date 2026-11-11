@@ -134,12 +134,10 @@ def main() -> int:
             "",
         ]
     )
-    _atomic_write(REDIS_CONF, redis_config, mode=stat.S_IRUSR | stat.S_IWUSR)
-    _atomic_write(
-        REDIS_PASSWORD,
-        redis_password + "\n",
-        mode=stat.S_IRUSR | stat.S_IWUSR,
-    )
+    # The Redis image runs as its own unprivileged user; the bind-mounted
+    # config and password file must be readable inside the container.
+    _atomic_write(REDIS_CONF, redis_config, mode=0o644)
+    _atomic_write(REDIS_PASSWORD, redis_password + "\n", mode=0o644)
 
     keypair = json.loads(values["SOLANA_KEYPAIR_JSON"])
     if not isinstance(keypair, list) or len(keypair) != 64:
